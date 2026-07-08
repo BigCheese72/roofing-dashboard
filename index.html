@@ -72,6 +72,10 @@
   @media print{ .doc .photocell{break-inside:avoid;page-break-inside:avoid} }
 
   .hint{font-size:13px;color:var(--muted);margin:-4px 0 12px}
+  .cc-link{background:#F1F6F0;border:1px solid #C8DDC3;border-radius:6px;padding:8px 12px;
+    font-size:13px;color:var(--slate);margin:2px 0 12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .cc-link b{color:#2E7D32}
+  .cc-link .sp{flex:1}
   .toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);
     background:var(--slate);color:#fff;padding:10px 18px;border-radius:6px;font-size:14px;
     z-index:50;box-shadow:0 4px 14px rgba(0,0,0,.25);display:none;max-width:90vw}
@@ -86,6 +90,22 @@
   .saved-item .meta{font-size:13px;color:var(--muted)}
   .empty{background:#fff;border:1px dashed var(--line);border-radius:6px;padding:28px;
     text-align:center;color:var(--muted)}
+
+  /* building history */
+  .bld-item{background:#fff;border:1px solid var(--card-line);border-left:4px solid #37474F;
+    border-radius:6px;padding:12px 14px;margin-bottom:10px;display:flex;align-items:center;
+    gap:10px;flex-wrap:wrap;cursor:pointer}
+  .bld-item:hover{border-left-color:var(--orange)}
+  .bld-item .info{flex:1;min-width:180px}
+  .bld-item .name{font-weight:700;font-size:16px}
+  .bld-item .meta{font-size:13px;color:var(--muted)}
+  .evt-item{background:#fff;border:1px solid var(--card-line);border-left:4px solid #90A4AE;
+    border-radius:6px;padding:10px 14px;margin-bottom:8px}
+  .evt-item .evt-head{display:flex;gap:8px;flex-wrap:wrap;align-items:baseline;margin-bottom:4px}
+  .evt-item .evt-date{font-weight:700;color:var(--slate)}
+  .evt-item .evt-tag{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;
+    background:#ECEFF1;color:#37474F;border-radius:3px;padding:2px 6px}
+  .evt-item .evt-row{font-size:13px;color:var(--muted);margin-top:2px}
 
   /* document preview */
   .doc{background:#fff;border:1px solid var(--line);box-shadow:0 2px 10px rgba(0,0,0,.08);
@@ -110,6 +130,7 @@
 </style>
 <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-storage-compat.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
 </head>
@@ -123,6 +144,7 @@
   <button class="tab cond active" id="tab-edit" onclick="showView('edit')">Edit</button>
   <button class="tab cond" id="tab-preview" onclick="showView('preview')">Preview</button>
   <button class="tab cond" id="tab-saved" onclick="showView('saved')">Saved (<span id="saved-count">0</span>)</button>
+  <button class="tab cond" id="tab-history" onclick="showView('history')">Building History</button>
 </header>
 
 <div class="wrap">
@@ -144,6 +166,7 @@
         <div class="fld"><label>Billing Contact</label><input type="text" id="billContact"></div>
         <div class="fld"><label>Contact Phone</label><input type="text" id="billPhone"></div>
         <div class="fld"><label>Site Contact</label><input type="text" id="siteContact"></div>
+        <div class="fld"><label>Technician</label><input type="text" id="technician"></div>
         <div class="fld"><label>Roof System</label>
           <select id="roofSystem">
             <option value=""></option>
@@ -204,6 +227,7 @@
         <button class="btn primary" onclick="document.getElementById('photoInput').click()">+ Add Photos</button>
         <button class="btn" onclick="openCC()">Import from CompanyCam</button>
       </div>
+      <div id="cc-link-info"></div>
     </div>
 
     <div class="btnrow">
@@ -250,6 +274,17 @@
     <div id="saved-list"></div>
   </div>
 
+  <!-- ================= BUILDING HISTORY VIEW (foundation) ================= -->
+  <div id="view-history" style="display:none">
+    <div class="card">
+      <h2 class="cond">Building / Site History</h2>
+      <p class="hint">Every roof remembers. Each building below is created automatically from the Job Name and
+        Bill To fields when a work order is saved or a report is sent — its timeline fills in as reports go out.</p>
+    </div>
+    <div id="history-list"></div>
+    <div id="history-detail"></div>
+  </div>
+
 </div>
 
 <div id="cc-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:40" onclick="if(event.target===this)closeCC()">
@@ -280,10 +315,12 @@ var FIREBASE_CONFIG = {
   appId: "1:806263881954:web:16fb8f9cfac591dce25ebb"
 };
 var fdb = null;
+var fstorage = null;
 try{
   if (window.firebase && firebase.initializeApp){
     firebase.initializeApp(FIREBASE_CONFIG);
     fdb = firebase.firestore();
+    try{ fstorage = firebase.storage(); }catch(e){ fstorage = null; }
   }
 }catch(e){ fdb = null; }
 var cloudIndexCache = [];
@@ -363,10 +400,74 @@ function cloudErrMsg(e){
   return "Cloud save failed: " + m + " \u2014 saved on this device only.";
 }
 
+/* ================= building / customer history foundation =================
+   Foundation for the RoofOps building-history vision: every building/roof
+   should accumulate a timeline of work orders, repairs, photos and reports
+   over its lifetime. This section does NOT change the existing work order
+   workflow \u2014 it silently derives customer + building records from the
+   existing Bill To / Job Name / Location fields whenever a work order is
+   saved or a report is generated, and links history events to them. */
+function slugify(s){
+  return String(s || "").toLowerCase().trim()
+    .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "unknown";
+}
+async function ensureCustomerAndBuilding(o){
+  if (!fdb) return { customerId: null, buildingId: null };
+  var custName = (o.billTo || "").trim();
+  var bldName = (o.jobName || "").trim();
+  if (!bldName) return { customerId: null, buildingId: null };
+  var custId = custName ? ("cust_" + slugify(custName)) : null;
+  var bldId = "bld_" + slugify((custId || "nocust") + "_" + bldName);
+  try{
+    if (custId){
+      await fdb.collection("customers").doc(custId).set({
+        name: custName, updatedAt: Date.now()
+      }, { merge: true });
+    }
+    var bldRef = fdb.collection("buildings").doc(bldId);
+    var snap = await bldRef.get();
+    var patch = {
+      name: bldName, customerId: custId || null, customerName: custName || "",
+      location: o.location || "", roofSystem: o.roofSystem || "",
+      updatedAt: Date.now()
+    };
+    if (o.companyCamProjectId) patch.companyCamProjectId = o.companyCamProjectId;
+    if (!snap.exists){
+      patch.createdAt = Date.now();
+      /* Roof map / leak-location foundation \u2014 Phase 1 does not build the
+         map UI yet, but every building gets these fields so a future
+         "Roof Map" feature has somewhere to read/write without a migration.
+         roof_base_map_type is one of: "drone" | "satellite" | "plan" | "sketch" | null. */
+      patch.roof_base_map_type = null;
+      patch.roof_base_map_url = null;
+      patch.roof_section = null;
+      patch.map_pin_x = null;
+      patch.map_pin_y = null;
+    }
+    await bldRef.set(patch, { merge: true });
+  }catch(e){ console.warn("customer/building sync failed", e); }
+  return { customerId: custId, buildingId: bldId };
+}
+function computeWarrantyStatus(o){
+  var w = (o.warrantable || "").trim(), n = (o.nonWarrantable || "").trim();
+  if (w && n) return "Mixed";
+  if (w) return "Warrantable";
+  if (n) return "Non-warrantable";
+  var filled = (o.findings || []).filter(function(f){ return f.condition || f.location; });
+  var fw = filled.some(function(f){ return f.warranty === "Warrantable" || f.warranty === "Warrantable condition noted"; });
+  var fn = filled.some(function(f){ return f.warranty === "Non-warrantable"; });
+  if (fw && fn) return "Mixed";
+  if (fw) return "Warrantable";
+  if (fn) return "Non-warrantable";
+  return "Undetermined";
+}
+
 var currentId = null;
 var findings = [];
 var repairs = [];
 var photos = [];
+var ccLinkedProjectId = null;
+var ccLinkedProjectName = "";
 var toastTimer = null;
 
 function esc(s){
@@ -396,7 +497,11 @@ function setVal(id,v){
 
 /* ================= dynamic rows ================= */
 function addFinding(data){
-  findings.push(data || {condition:"",location:"",warranty:"Warrantable"});
+  /* leak_location_label / leak_latitude / leak_longitude are foundation
+     fields for the future roof map feature — no UI yet, but every finding
+     carries the keys so a leak can be pinned to a map without a data migration. */
+  findings.push(data || {condition:"",location:"",warranty:"Warrantable",
+    leak_location_label:null, leak_latitude:null, leak_longitude:null});
   renderFindings();
 }
 function removeFinding(i){ findings.splice(i,1); renderFindings(); }
@@ -531,7 +636,7 @@ function renderPhotos(){
 
 /* ================= collect / fill ================= */
 var FIELD_IDS = ["jobName","location","serviceDate","jobNo","billTo","billContact","billPhone",
-  "siteContact","roofSystem","reportedArea","warrantable","nonWarrantable","summary"];
+  "siteContact","technician","roofSystem","reportedArea","warrantable","nonWarrantable","summary"];
 
 function collect(){
   var o = { id: currentId || ("wo_" + Date.now()) };
@@ -539,6 +644,8 @@ function collect(){
   o.findings = findings.slice();
   o.repairs = repairs.slice();
   o.photos = photos.slice();
+  o.companyCamProjectId = ccLinkedProjectId || null;
+  o.companyCamProjectName = ccLinkedProjectName || "";
   return o;
 }
 function fill(o){
@@ -547,7 +654,9 @@ function fill(o){
   findings = (o.findings || []).slice(); if (!findings.length) findings = [{condition:"",location:"",warranty:"Warrantable"}];
   repairs = (o.repairs || []).slice(); if (!repairs.length) repairs = [{repair:"",location:""}];
   photos = (o.photos || []).slice();
-  renderFindings(); renderRepairs(); renderPhotos();
+  ccLinkedProjectId = o.companyCamProjectId || null;
+  ccLinkedProjectName = o.companyCamProjectName || "";
+  renderFindings(); renderRepairs(); renderPhotos(); renderCCLinkInfo();
 }
 function todayStr(){
   var d = new Date();
@@ -752,6 +861,74 @@ function renderSaved(){
   }
 }
 
+/* ================= building history view (foundation) ================= */
+function fmtTs(ms){
+  if (!ms) return "";
+  try{ return new Date(ms).toLocaleString(); }catch(e){ return ""; }
+}
+async function renderHistoryList(){
+  var host = document.getElementById("history-list");
+  var detail = document.getElementById("history-detail");
+  detail.innerHTML = "";
+  if (!fdb){
+    host.innerHTML = '<div class="empty">Building history needs cloud sync (internet connection) to load.</div>';
+    return;
+  }
+  host.innerHTML = '<p class="hint">Loading buildings\u2026</p>';
+  try{
+    var qs = await fdb.collection("buildings").orderBy("updatedAt", "desc").limit(100).get();
+    var list = [];
+    qs.forEach(function(d){ list.push(Object.assign({ id: d.id }, d.data())); });
+    if (!list.length){
+      host.innerHTML = '<div class="empty">No building history yet. Save a work order or send a report to start one.</div>';
+      return;
+    }
+    host.innerHTML = list.map(function(b){
+      return '<div class="bld-item" onclick="openBuildingHistory(\'' + b.id + '\')"><div class="info">' +
+        '<div class="name">' + esc(b.name) + '</div>' +
+        '<div class="meta">' + esc(b.customerName || "") + (b.location ? ' \u00b7 ' + esc(b.location) : "") +
+        (b.roofSystem ? ' \u00b7 ' + esc(b.roofSystem) : "") +
+        (b.companyCamProjectId ? ' \u00b7 \ud83d\udd17 CompanyCam linked' : "") + '</div></div>' +
+        '<button class="btn">View Timeline</button></div>';
+    }).join("");
+  }catch(e){
+    host.innerHTML = '<div class="empty">Couldn\u2019t load building history: ' + esc(e.message) + '</div>';
+  }
+}
+async function openBuildingHistory(buildingId){
+  var detail = document.getElementById("history-detail");
+  detail.innerHTML = '<p class="hint">Loading timeline\u2026</p>';
+  try{
+    var qs = await fdb.collection("building_history_events")
+      .where("buildingId", "==", buildingId).orderBy("createdAt", "desc").limit(50).get();
+    var events = [];
+    qs.forEach(function(d){ events.push(d.data()); });
+    if (!events.length){
+      detail.innerHTML = '<div class="card"><h2 class="cond">Timeline</h2>' +
+        '<div class="empty">No reports logged for this building yet.</div></div>';
+      return;
+    }
+    detail.innerHTML = '<div class="card"><h2 class="cond">Timeline (' + events.length + ')</h2>' +
+      events.map(function(e){
+        return '<div class="evt-item"><div class="evt-head">' +
+          '<span class="evt-date">' + esc(e.date || fmtTs(e.createdAt)) + '</span>' +
+          '<span class="evt-tag">' + esc(e.reportType || "") + '</span>' +
+          '<span class="evt-tag">' + esc(e.warrantyStatus || "") + '</span>' +
+          (e.emailSent ? '<span class="evt-tag">Emailed \u2713</span>' : '') +
+          '</div>' +
+          (e.workOrderNo ? '<div class="evt-row">Job No. ' + esc(e.workOrderNo) + '</div>' : '') +
+          (e.technician ? '<div class="evt-row">Technician: ' + esc(e.technician) + '</div>' : '') +
+          (e.roofType ? '<div class="evt-row">Roof: ' + esc(e.roofType) + '</div>' : '') +
+          (e.conditionsSummary ? '<div class="evt-row">Findings: ' + esc(e.conditionsSummary) + '</div>' : '') +
+          (e.repairsSummary ? '<div class="evt-row">Repairs: ' + esc(e.repairsSummary) + '</div>' : '') +
+          (e.pdfRef && e.pdfRef.url ? '<div class="evt-row"><a href="' + esc(e.pdfRef.url) + '" target="_blank" rel="noopener">View saved PDF</a></div>' : '') +
+          '</div>';
+      }).join("") + '</div>';
+  }catch(e){
+    detail.innerHTML = '<div class="card"><div class="empty">Couldn\u2019t load timeline: ' + esc(e.message) + '</div></div>';
+  }
+}
+
 /* ================= document build ================= */
 function filledFindings(){ return findings.filter(function(f){ return f.condition || f.location; }); }
 function filledRepairs(){ return repairs.filter(function(r){ return r.repair || r.location; }); }
@@ -771,6 +948,7 @@ function buildText(){
   if (o.billContact) L.push((o.billTo || "Billing") + " Contact: " + o.billContact);
   if (o.billPhone) L.push("Contact Phone: " + o.billPhone);
   L.push("Site Contact: " + o.siteContact);
+  if (o.technician) L.push("Technician: " + o.technician);
   L.push("Reported Leak Area: " + o.reportedArea);
   L.push("Roof System: " + o.roofSystem);
   L.push("");
@@ -818,7 +996,7 @@ function renderDoc(){
   h += "<h3 class='cond'>Job Information</h3>" + kvTable([
     ["Job Name",o.jobName],["Location",o.location],["Date of Service",o.serviceDate],
     ["Job No.",o.jobNo],["Bill To",o.billTo],["Billing Contact",o.billContact],
-    ["Contact Phone",o.billPhone],["Site Contact",o.siteContact],
+    ["Contact Phone",o.billPhone],["Site Contact",o.siteContact],["Technician",o.technician],
     ["Reported Leak Area",o.reportedArea],["Roof System",o.roofSystem]]);
 
   var ff = filledFindings();
@@ -971,7 +1149,7 @@ async function generatePdf(){
   kvTablePdf([
     ["Job Name", o.jobName], ["Location", o.location], ["Date of Service", o.serviceDate],
     ["Job No.", o.jobNo], ["Bill To", o.billTo], ["Billing Contact", o.billContact],
-    ["Contact Phone", o.billPhone], ["Site Contact", o.siteContact],
+    ["Contact Phone", o.billPhone], ["Site Contact", o.siteContact], ["Technician", o.technician],
     ["Reported Leak Area", o.reportedArea], ["Roof System", o.roofSystem]
   ]);
 
@@ -1074,12 +1252,81 @@ async function generatePdf(){
   }
   return doc;
 }
+/* ================= building history logging + Storage/CompanyCam PDF persistence ================= */
+async function uploadPdfToStorage(doc, o){
+  if (!fstorage) return null;
+  try{
+    var blob = doc.output("blob");
+    var path = "workorder-pdfs/" + o.id + "/" + Date.now() + "_" + pdfFileName();
+    var ref = fstorage.ref().child(path);
+    await ref.put(blob);
+    var url = await ref.getDownloadURL();
+    return { path: path, url: url };
+  }catch(e){
+    console.warn("PDF storage upload failed", e);
+    return null;
+  }
+}
+/* CompanyCam's v2 API has no direct "attach to project" for arbitrary
+   generated files other than its Documents endpoint (base64, ~30MB limit,
+   see netlify/functions/companycam.js). If that ever changes shape, this
+   is the only place that needs updating. */
+async function uploadPdfToCompanyCam(doc, o){
+  if (!o.companyCamProjectId) return { skipped: true };
+  try{
+    var base64 = doc.output("datauristring").split("base64,")[1] || "";
+    if (!base64) throw new Error("couldn't encode PDF");
+    await ccApiPost({ action: "upload_document", project_id: o.companyCamProjectId,
+      name: pdfFileName(), attachment: base64 });
+    return { ok: true };
+  }catch(e){
+    return { ok: false, error: e.message };
+  }
+}
+function summarizeRows(rows, keyA, keyB){
+  return rows.filter(function(r){ return r[keyA] || r[keyB]; })
+    .map(function(r){ return r[keyA] + (r[keyB] ? " \u2014 " + r[keyB] : ""); })
+    .join("; ").slice(0, 600);
+}
+/* Saves one history record to both `reports` (flat log of every generated
+   report) and `building_history_events` (per-building timeline) so a
+   future building/roof history view can query either. Never blocks or
+   fails the user-facing PDF action \u2014 logging errors are swallowed. */
+async function logReportAndHistoryEvent(o, doc, kind, emailInfo){
+  if (!fdb) return;
+  try{
+    var ids = await ensureCustomerAndBuilding(o);
+    var pdfRef = doc ? await uploadPdfToStorage(doc, o) : null;
+    var payload = {
+      buildingId: ids.buildingId, buildingName: o.jobName || "",
+      customerId: ids.customerId, customerName: o.billTo || "",
+      workOrderId: o.id, workOrderNo: o.jobNo || "",
+      date: o.serviceDate || "", technician: o.technician || "",
+      roofType: o.roofSystem || "", reportType: kind,
+      conditionsSummary: summarizeRows(o.findings || [], "condition", "location"),
+      repairsSummary: summarizeRows(o.repairs || [], "repair", "location"),
+      warrantyStatus: computeWarrantyStatus(o),
+      companyCamProjectId: o.companyCamProjectId || null,
+      companyCamPhotoIds: (o.photos || []).filter(function(p){ return p.ccPhotoId; }).map(function(p){ return p.ccPhotoId; }),
+      pdfRef: pdfRef,
+      emailSent: !!(emailInfo && emailInfo.sent),
+      emailRecipients: (emailInfo && emailInfo.to) || [],
+      createdAt: Date.now()
+    };
+    var batch = fdb.batch();
+    batch.set(fdb.collection("reports").doc(), payload);
+    batch.set(fdb.collection("building_history_events").doc(), payload);
+    await batch.commit();
+  }catch(e){ console.warn("history log failed", e); }
+}
+
 async function downloadPdf(){
   toast("Building PDF\u2026");
   var d = await generatePdf();
   if (!d) return;
   d.save(pdfFileName());
   toast("PDF downloaded \u2014 attach it to your email.");
+  logReportAndHistoryEvent(collect(), d, "PDF Downloaded", null);
 }
 async function sendEmailNow(){
   var addrs = val("emailTo").split(",").map(function(s){ return s.trim(); }).filter(Boolean);
@@ -1114,6 +1361,13 @@ async function sendEmailNow(){
     try{ out = await resp.json(); }catch(e){}
     if (resp.ok && out && out.ok){
       toast("Email sent \u2713 to " + addrs.join(", "));
+      logReportAndHistoryEvent(o, d, "PDF Emailed", { sent: true, to: addrs });
+      if (o.companyCamProjectId){
+        uploadPdfToCompanyCam(d, o).then(function(ccUp){
+          if (ccUp.ok) toast("Email sent \u2713 \u2014 PDF also saved to CompanyCam project \u2713");
+          else if (!ccUp.skipped) toast("Email sent \u2713 \u2014 but saving the PDF to CompanyCam failed: " + ccUp.error + " (the PDF is still saved in this app's history).");
+        });
+      }
     } else {
       toast("Send failed: " + ((out && out.error) || ("server error " + resp.status)));
     }
@@ -1144,6 +1398,7 @@ async function sharePdf(){
   toast("Building PDF\u2026");
   var d = await generatePdf();
   if (!d) return;
+  var o = collect();
   var fname = pdfFileName();
   if (isMobile){
     try{
@@ -1151,16 +1406,19 @@ async function sharePdf(){
       var file = new File([blob], fname, { type: "application/pdf" });
       if (navigator.canShare && navigator.share && navigator.canShare({ files: [file] })){
         await navigator.share({ files: [file], title: fname });
+        logReportAndHistoryEvent(o, d, "PDF Shared", null);
         return;
       }
     }catch(e){
       if (e && e.name === "AbortError") return; /* user closed the share sheet */
     }
     d.save(fname);
+    logReportAndHistoryEvent(o, d, "PDF Shared", null);
     toast("Sharing isn't supported on this device \u2014 PDF downloaded instead. Attach it to your email.");
     return;
   }
   d.save(fname);
+  logReportAndHistoryEvent(o, d, "PDF Shared", null);
   toast("PDF downloaded \u2014 drag it from Downloads into the email that just opened, then send.");
 }
 
@@ -1181,6 +1439,66 @@ async function ccApi(params){
   try{ out = await r.json(); }catch(e){}
   if (!r.ok || !out) throw new Error((out && out.error) || ("server error " + r.status));
   return out;
+}
+async function ccApiPost(body){
+  var r = await fetch("/.netlify/functions/companycam", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  });
+  var out = null;
+  try{ out = await r.json(); }catch(e){}
+  if (!r.ok || !out) throw new Error((out && out.error) || ("server error " + r.status));
+  return out;
+}
+/* Pulls CompanyCam project metadata + photo metadata (ids/urls/timestamps only —
+   never re-downloads full images) and stores it in Firestore so this building's
+   CompanyCam project history survives even if photos are later removed from
+   the work order itself. CompanyCam's API does not expose a general activity
+   log, so this is limited to project + photo/document metadata. */
+async function syncCompanyCamHistory(){
+  if (!ccLinkedProjectId){
+    toast("No CompanyCam project linked yet — open a project and import at least one photo first.");
+    return;
+  }
+  if (!fdb){
+    toast("Cloud not available — can't sync CompanyCam history without internet.");
+    return;
+  }
+  toast("Syncing CompanyCam history…");
+  try{
+    var detail = null;
+    try{ detail = (await ccApi({ action:"project_detail", project_id: ccLinkedProjectId })).project; }catch(e){}
+    var allPhotos = [];
+    var page = 1;
+    while (page <= 20){ /* safety cap ~600 photos per sync */
+      var out = await ccApi({ action:"photos", project_id: ccLinkedProjectId, page: page });
+      var ph = out.photos || [];
+      allPhotos = allPhotos.concat(ph);
+      if (ph.length < 30) break;
+      page++;
+    }
+    await fdb.collection("companycam_projects").doc(ccLinkedProjectId).set({
+      id: ccLinkedProjectId,
+      name: (detail && detail.name) || ccLinkedProjectName || "",
+      address: (detail && detail.address) || "",
+      photoCount: allPhotos.length,
+      photos: allPhotos.slice(0, 500).map(function(p){
+        return { id: p.id, thumb: p.thumb, full: p.full, captured_at: p.captured_at };
+      }),
+      lastSyncedAt: Date.now()
+    }, { merge: true });
+    var ids = await ensureCustomerAndBuilding(collect());
+    if (ids.buildingId){
+      await fdb.collection("buildings").doc(ids.buildingId).set({
+        companyCamProjectId: ccLinkedProjectId,
+        companyCamLastSyncedAt: Date.now()
+      }, { merge: true });
+    }
+    toast("Synced " + allPhotos.length + " CompanyCam photo record(s) ✓");
+  }catch(e){
+    toast("CompanyCam sync failed: " + e.message);
+  }
 }
 function ccShowProjects(q){
   document.getElementById("cc-title").textContent = "Import from CompanyCam";
@@ -1220,6 +1538,7 @@ async function ccLoadProjects(q){
 var ccPage = 1, ccProjId = null, ccPhotos = [];
 async function ccOpenProject(id, name){
   ccProjId = id; ccPage = 1; ccPhotos = []; ccSelected = {};
+  ccLinkedProjectId = id; ccLinkedProjectName = name || "";
   document.getElementById("cc-title").textContent = name || "Project photos";
   var b = document.getElementById("cc-body");
   b.innerHTML =
@@ -1227,6 +1546,7 @@ async function ccOpenProject(id, name){
     '<button class="btn" onclick="ccShowProjects(\'\')">\u2190 Back to projects</button>' +
     '<span class="hint" style="margin:0" id="cc-count">Tap photos to select</span>' +
     '<span style="flex:1"></span>' +
+    '<button class="btn" onclick="syncCompanyCamHistory()">Sync CompanyCam History</button>' +
     '<button class="btn primary" onclick="ccImport()">Import Selected</button></div>' +
     '<div class="cc-grid" id="cc-grid"></div>' +
     '<div style="margin-top:10px"><button class="btn" id="cc-more" onclick="ccLoadPhotos()">Load more</button></div>';
@@ -1293,23 +1613,41 @@ async function ccImport(){
     try{
       var out = await ccApi({ action:"image", url: p.full });
       var compressed = await ccCompress(out.dataUrl);
+      compressed.ccPhotoId = p.id;
       photos.push(compressed);
       ok++;
     }catch(e){ fail++; }
   }
   renderPhotos();
+  renderCCLinkInfo();
   closeCC();
   toast("Imported " + ok + " photo" + (ok === 1 ? "" : "s") + " from CompanyCam" +
     (fail ? " (" + fail + " failed)" : "") + " \u2014 add captions, then Save.");
 }
+function renderCCLinkInfo(){
+  var host = document.getElementById("cc-link-info");
+  if (!host) return;
+  if (!ccLinkedProjectId){ host.innerHTML = ""; return; }
+  host.innerHTML =
+    '<div class="cc-link">\ud83d\udd17 Linked to CompanyCam project: <b>' + esc(ccLinkedProjectName || ccLinkedProjectId) + '</b>' +
+    '<span class="sp"></span>' +
+    '<button class="btn" onclick="syncCompanyCamHistory()">Sync CompanyCam History</button>' +
+    '<button class="btn danger" onclick="unlinkCC()">Unlink</button></div>';
+}
+function unlinkCC(){
+  ccLinkedProjectId = null; ccLinkedProjectName = "";
+  renderCCLinkInfo();
+  toast("Unlinked CompanyCam project from this work order");
+}
 /* ================= views ================= */
 function showView(v){
-  ["edit","preview","saved"].forEach(function(name){
+  ["edit","preview","saved","history"].forEach(function(name){
     document.getElementById("view-" + name).style.display = (name === v ? "" : "none");
     document.getElementById("tab-" + name).classList.toggle("active", name === v);
   });
   if (v === "preview") renderDoc();
   if (v === "saved") renderSaved();
+  if (v === "history") renderHistoryList();
   window.scrollTo(0,0);
 }
 

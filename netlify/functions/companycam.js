@@ -1,16 +1,72 @@
-// Read-only proxy to the CompanyCam API. The token is read from the
+// Proxy to the CompanyCam API. The token is read from the
 // COMPANYCAM_TOKEN environment variable in Netlify settings and never
-// reaches the browser.
+// reaches the browser. Mostly read-only; the one write path is
+// action=upload_document (POST), used to save a generated work order
+// PDF back into the CompanyCam project it came from.
+//
+// Known API limitation (see DEV_NOTES.md): CompanyCam's v2 API exposes
+// Projects and Photos/Documents, but not a general "activity log" or
+// full historical audit trail. History sync in this app is therefore
+// limited to project metadata + photo/document metadata (ids, URLs,
+// timestamps) — it cannot pull things like who-changed-what or deleted
+// items.
 function resp(code, obj) {
   return { statusCode: code, headers: { "Content-Type": "application/json" }, body: JSON.stringify(obj) };
+}
+function mapProject(pr) {
+  return {
+    id: String(pr.id),
+    name: pr.name || "(unnamed project)",
+    address: [
+      pr.address && pr.address.street_address_1,
+      pr.address && pr.address.city,
+      pr.address && pr.address.state
+    ].filter(Boolean).join(", "),
+    status: pr.status || "",
+    created_at: pr.created_at || null
+  };
 }
 exports.handler = async function (event) {
   const token = process.env.COMPANYCAM_TOKEN;
   if (!token) {
     return resp(500, { error: "COMPANYCAM_TOKEN is not set. Add it in Netlify > Project configuration > Environment variables, then redeploy." });
   }
-  const p = event.queryStringParameters || {};
   const H = { "Authorization": "Bearer " + token, "Accept": "application/json" };
+
+  if (event.httpMethod === "POST") {
+    let body;
+    try { body = JSON.parse(event.body || "{}"); }
+    catch (e) { return resp(400, { error: "Bad request" }); }
+    try {
+      if (body.action === "upload_document") {
+        const id = String(body.project_id || "").replace(/[^A-Za-z0-9_-]/g, "");
+        if (!id) return resp(400, { error: "Missing project_id" });
+        const name = String(body.name || "WorkOrder.pdf").slice(0, 150);
+        const attachment = String(body.attachment || "");
+        if (!attachment) return resp(400, { error: "Missing attachment" });
+        if (attachment.length > 42000000) return resp(413, { error: "PDF too large for CompanyCam upload (limit ~30MB)" });
+        const docHeaders = Object.assign({}, H, { "Content-Type": "application/json" });
+        if (process.env.COMPANYCAM_USER_EMAIL) docHeaders["X-CompanyCam-User"] = process.env.COMPANYCAM_USER_EMAIL;
+        const url = "https://api.companycam.com/v2/projects/" + id + "/documents";
+        const r = await fetch(url, {
+          method: "POST",
+          headers: docHeaders,
+          body: JSON.stringify({ document: { name: name, attachment: attachment } })
+        });
+        const t = await r.text();
+        if (!r.ok) {
+          return resp(502, { error: "CompanyCam rejected the document: " + r.status + " " + t.slice(0, 300) });
+        }
+        let out = null; try { out = JSON.parse(t); } catch (e) {}
+        return resp(200, { ok: true, document: out });
+      }
+      return resp(400, { error: "Unknown action" });
+    } catch (e) {
+      return resp(500, { error: "Server error: " + (e && e.message ? e.message : "unknown") });
+    }
+  }
+
+  const p = event.queryStringParameters || {};
   try {
     if (p.action === "projects") {
       const q = String(p.q || "").slice(0, 100);
@@ -22,16 +78,21 @@ exports.handler = async function (event) {
         return resp(502, { error: "CompanyCam said: " + r.status + " " + t });
       }
       const arr = await r.json();
-      const projects = (Array.isArray(arr) ? arr : []).map(pr => ({
-        id: String(pr.id),
-        name: pr.name || "(unnamed project)",
-        address: [
-          pr.address && pr.address.street_address_1,
-          pr.address && pr.address.city,
-          pr.address && pr.address.state
-        ].filter(Boolean).join(", ")
-      }));
+      const projects = (Array.isArray(arr) ? arr : []).map(mapProject);
       return resp(200, { projects });
+    }
+
+    if (p.action === "project_detail") {
+      const id = String(p.project_id || "").replace(/[^A-Za-z0-9_-]/g, "");
+      if (!id) return resp(400, { error: "Missing project_id" });
+      const url = "https://api.companycam.com/v2/projects/" + id;
+      const r = await fetch(url, { headers: H });
+      if (!r.ok) {
+        const t = (await r.text()).slice(0, 200);
+        return resp(502, { error: "CompanyCam said: " + r.status + " " + t });
+      }
+      const pr = await r.json();
+      return resp(200, { project: mapProject(pr) });
     }
 
     if (p.action === "photos") {
