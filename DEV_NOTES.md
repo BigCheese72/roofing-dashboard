@@ -150,7 +150,8 @@ to extend.
 After a successful **Send Email Now**, if the work order has a linked CompanyCam
 project, the generated PDF is base64-encoded and POSTed to CompanyCam's
 `/v2/projects/{id}/documents` endpoint (confirmed against CompanyCam's own API
-reference — JSON body `{document:{name, attachment}}`, base64, ~30MB limit). Success
+reference — JSON body `{document:{name, attachment}}`, base64, ~30MB limit), using
+`COMPANYCAM_WRITE_TOKEN` if set (falls back to `COMPANYCAM_TOKEN` otherwise). Success
 and failure both produce a distinct toast. If the CompanyCam upload fails for any
 reason (network, permissions, endpoint changes), the PDF is **not lost** — it was
 already written to Firebase Storage moments earlier by `logReportAndHistoryEvent()`,
@@ -167,7 +168,8 @@ project).
 
 | Variable | Used by | Required |
 |---|---|---|
-| `COMPANYCAM_TOKEN` | `companycam.js` | yes |
+| `COMPANYCAM_TOKEN` | `companycam.js` — read actions (projects, project_detail, photos, image) | yes |
+| `COMPANYCAM_WRITE_TOKEN` | `companycam.js` — write action only (`upload_document`, PDF-back-to-CompanyCam). Falls back to `COMPANYCAM_TOKEN` if unset. | optional, recommended if your CompanyCam token setup separates read/write scopes |
 | `COMPANYCAM_USER_EMAIL` | `companycam.js` (document upload attribution) | optional |
 | `RESEND_API_KEY` | `send-workorder.js` | yes |
 | `FROM_EMAIL` | `send-workorder.js` | optional (has a default) |

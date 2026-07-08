@@ -27,11 +27,14 @@ function mapProject(pr) {
   };
 }
 exports.handler = async function (event) {
-  const token = process.env.COMPANYCAM_TOKEN;
-  if (!token) {
-    return resp(500, { error: "COMPANYCAM_TOKEN is not set. Add it in Netlify > Project configuration > Environment variables, then redeploy." });
-  }
-  const H = { "Authorization": "Bearer " + token, "Accept": "application/json" };
+  // Two possible tokens: COMPANYCAM_TOKEN is the read-only token used for
+  // search/list/photo actions. COMPANYCAM_WRITE_TOKEN is an optional,
+  // separately-scoped token for the one write action (upload_document) —
+  // set it if your CompanyCam token setup keeps read and write scopes
+  // separate. If COMPANYCAM_WRITE_TOKEN isn't set, uploads fall back to
+  // COMPANYCAM_TOKEN so a single-token setup keeps working.
+  const readToken = process.env.COMPANYCAM_TOKEN;
+  const writeToken = process.env.COMPANYCAM_WRITE_TOKEN || readToken;
 
   if (event.httpMethod === "POST") {
     let body;
@@ -39,13 +42,16 @@ exports.handler = async function (event) {
     catch (e) { return resp(400, { error: "Bad request" }); }
     try {
       if (body.action === "upload_document") {
+        if (!writeToken) {
+          return resp(500, { error: "COMPANYCAM_WRITE_TOKEN (or COMPANYCAM_TOKEN) is not set. Add it in Netlify > Project configuration > Environment variables, then redeploy." });
+        }
         const id = String(body.project_id || "").replace(/[^A-Za-z0-9_-]/g, "");
         if (!id) return resp(400, { error: "Missing project_id" });
         const name = String(body.name || "WorkOrder.pdf").slice(0, 150);
         const attachment = String(body.attachment || "");
         if (!attachment) return resp(400, { error: "Missing attachment" });
         if (attachment.length > 42000000) return resp(413, { error: "PDF too large for CompanyCam upload (limit ~30MB)" });
-        const docHeaders = Object.assign({}, H, { "Content-Type": "application/json" });
+        const docHeaders = { "Authorization": "Bearer " + writeToken, "Accept": "application/json", "Content-Type": "application/json" };
         if (process.env.COMPANYCAM_USER_EMAIL) docHeaders["X-CompanyCam-User"] = process.env.COMPANYCAM_USER_EMAIL;
         const url = "https://api.companycam.com/v2/projects/" + id + "/documents";
         const r = await fetch(url, {
@@ -66,6 +72,10 @@ exports.handler = async function (event) {
     }
   }
 
+  if (!readToken) {
+    return resp(500, { error: "COMPANYCAM_TOKEN is not set. Add it in Netlify > Project configuration > Environment variables, then redeploy." });
+  }
+  const H = { "Authorization": "Bearer " + readToken, "Accept": "application/json" };
   const p = event.queryStringParameters || {};
   try {
     if (p.action === "projects") {
