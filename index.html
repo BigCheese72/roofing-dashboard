@@ -2784,7 +2784,7 @@ async function sendEmailNow(){
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ to: addrs, subject: subject, body: body,
-        filename: pdfFileName(), pdfBase64: pdfBase64 })
+        filename: pdfFileName(), pdfBase64: pdfBase64, jobNo: o.jobNo || "" })
     });
     var out = null;
     try{ out = await resp.json(); }catch(e){}
