@@ -660,7 +660,30 @@ async function geocodeAddress(text){
 function findingById(id){
   return findings.find(function(f){ return f.id === id; });
 }
-var pinMap = null, pinMarker = null, pinModalFindingId = null, pinInitialSource = null, pinInteracted = false;
+/* Read-only lookup of the prospective building for the CURRENT work order
+   (same id derivation as ensureCustomerAndBuilding) to check for a custom
+   (non-georeferenced) base map — never creates/writes anything, just
+   checks whether one already exists. */
+async function lookupProspectiveBuildingBaseMap(){
+  if (!fdb) return null;
+  var o = collect();
+  var custName = (o.billTo || "").trim();
+  var bldName = (o.jobName || "").trim();
+  if (!bldName) return null;
+  var custId = custName ? ("cust_" + slugify(custName)) : null;
+  var bldId = "bld_" + slugify((custId || "nocust") + "_" + bldName);
+  try{
+    var snap = await fdb.collection("buildings").doc(bldId).get();
+    if (!snap.exists) return null;
+    var bld = snap.data();
+    if ((bld.roof_base_map_type === "roof_plan" || bld.roof_base_map_type === "sketch") && bld.roof_base_map_url){
+      return { url: bld.roof_base_map_url, type: bld.roof_base_map_type };
+    }
+    return null;
+  }catch(e){ return null; }
+}
+var pinMap = null, pinMarker = null, pinModalFindingId = null, pinInitialSource = null,
+  pinInteracted = false, pinMapMode = "latlng", pinXYSize = null;
 async function openPinModal(findingId){
   var f = findingById(findingId);
   if (!f) return;
@@ -671,6 +694,42 @@ async function openPinModal(findingId){
   document.getElementById("pin-hint").textContent = "Locating…";
   if (pinMap){ pinMap.remove(); pinMap = null; pinMarker = null; }
 
+  var customBaseMap = await lookupProspectiveBuildingBaseMap();
+  if (customBaseMap){
+    pinMapMode = "xy";
+    document.getElementById("pin-hint").textContent = "Loading base map…";
+    var img = new Image();
+    img.onload = function(){
+      var w = img.naturalWidth, h = img.naturalHeight;
+      pinXYSize = { w: w, h: h };
+      var bounds = [[0,0],[h,w]];
+      setTimeout(function(){
+        pinMap = L.map("pin-map", { crs: L.CRS.Simple, minZoom: -5 });
+        L.imageOverlay(customBaseMap.url, bounds).addTo(pinMap);
+        pinMap.fitBounds(bounds);
+        var start = (f.pin && typeof f.pin.x === "number") ? [f.pin.y * h, f.pin.x * w] : [h/2, w/2];
+        pinMarker = L.marker(start, { draggable: true }).addTo(pinMap);
+        pinMarker.on("dragend", function(){ pinInteracted = true; });
+        pinMap.on("click", function(e){ pinMarker.setLatLng(e.latlng); pinInteracted = true; });
+        pinMap.invalidateSize();
+        setTimeout(function(){ if (pinMap) pinMap.invalidateSize(); }, 300);
+      }, 50);
+      document.getElementById("pin-hint").textContent = f.pin ?
+        "Existing pin on the " + customBaseMap.type.replace("_"," ") + " — drag to move." :
+        "Tap the " + customBaseMap.type.replace("_"," ") + " to place the pin.";
+    };
+    img.onerror = function(){
+      toast("Couldn't load the custom base map — using satellite instead.");
+      pinMapMode = "latlng";
+      openPinModalSatellite(f, findingId);
+    };
+    img.src = customBaseMap.url;
+    return;
+  }
+  pinMapMode = "latlng";
+  await openPinModalSatellite(f, findingId);
+}
+async function openPinModalSatellite(f, findingId){
   var center, zoom = 17, hint;
   if (f.pin && typeof f.pin.lat === "number"){
     center = { lat: f.pin.lat, lng: f.pin.lng };
@@ -716,14 +775,19 @@ function closePinModal(){
   document.getElementById("pin-modal").style.display = "none";
   if (pinMap){ pinMap.remove(); pinMap = null; pinMarker = null; }
   pinModalFindingId = null;
+  pinXYSize = null;
 }
 function savePinFromModal(){
   if (!pinMarker || !pinModalFindingId) return;
   var f = findingById(pinModalFindingId);
   if (!f) return;
   var ll = pinMarker.getLatLng();
-  var source = pinInitialSource === "photo_gps" ? (pinInteracted ? "gps_corrected" : "photo_gps") : pinInitialSource;
-  f.pin = { lat: ll.lat, lng: ll.lng, x: null, y: null, source: source };
+  if (pinMapMode === "xy" && pinXYSize){
+    f.pin = { lat: null, lng: null, x: ll.lng / pinXYSize.w, y: ll.lat / pinXYSize.h, source: "tech_placed" };
+  } else {
+    var source = pinInitialSource === "photo_gps" ? (pinInteracted ? "gps_corrected" : "photo_gps") : pinInitialSource;
+    f.pin = { lat: ll.lat, lng: ll.lng, x: null, y: null, source: source };
+  }
   renderFindings();
   closePinModal();
   toast("Pin saved ✓");
@@ -1190,32 +1254,55 @@ function warrantyColor(w){
   return "#F9A825"; /* Undetermined, Mixed, anything else */
 }
 var buildingMap = null;
-function renderBuildingMap(pins){
+function pinPopupHtml(p){
+  var photoNote = p.photo_ids && p.photo_ids.length ?
+    "📷 " + p.photo_ids.length + " photo" + (p.photo_ids.length === 1 ? "" : "s") + " — open the work order to view" : "";
+  return "<b>" + esc(p.eventDate || p.service_date || "") + "</b>" +
+    (p.work_order_no ? " — Job No. " + esc(p.work_order_no) : "") + "<br>" +
+    (p.condition ? esc(p.condition) + "<br>" : "") +
+    "<span style='color:" + warrantyColor(p.warranty) + ";font-weight:600'>" + esc(p.warranty || "") + "</span><br>" +
+    (photoNote ? photoNote + "<br>" : "") +
+    "<button class=\"btn\" style=\"margin-top:6px\" onclick=\"loadOrder('" + p.work_order_id + "')\">View Work Order</button>";
+}
+/* pins here are already pre-filtered to the mode matching customBld (see
+   caller) — null customBld means satellite/lat-lng mode, otherwise x/y
+   mode against that building's custom base map image. */
+function renderBuildingMap(pins, customBld){
   var el = document.getElementById("building-map");
-  if (!el) return;
+  if (!el || !pins.length) return;
   if (buildingMap){ buildingMap.remove(); buildingMap = null; }
+  if (customBld){
+    var img = new Image();
+    img.onload = function(){
+      var w = img.naturalWidth, h = img.naturalHeight;
+      var bounds = [[0,0],[h,w]];
+      setTimeout(function(){
+        buildingMap = L.map("building-map", { crs: L.CRS.Simple, minZoom: -5 });
+        L.imageOverlay(customBld.roof_base_map_url, bounds).addTo(buildingMap);
+        pins.forEach(function(p){
+          L.circleMarker([p.y * h, p.x * w], {
+            radius: 9, color: "#fff", weight: 2, fillColor: warrantyColor(p.warranty), fillOpacity: 0.95
+          }).addTo(buildingMap).bindPopup(pinPopupHtml(p));
+        });
+        buildingMap.fitBounds(bounds);
+        buildingMap.invalidateSize();
+        setTimeout(function(){ if (buildingMap) buildingMap.invalidateSize(); }, 300);
+      }, 50);
+    };
+    img.onerror = function(){ el.innerHTML = '<p class="hint">Couldn’t load the custom base map image.</p>'; };
+    img.src = customBld.roof_base_map_url;
+    return;
+  }
   setTimeout(function(){
-    var pts = pins.filter(function(p){ return typeof p.lat === "number" && typeof p.lng === "number"; });
-    if (!pts.length) return;
     buildingMap = L.map("building-map");
     L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
       maxZoom: 21, attribution: "Tiles &copy; Esri"
     }).addTo(buildingMap);
     var bounds = [];
-    pts.forEach(function(p){
-      var marker = L.circleMarker([p.lat, p.lng], {
+    pins.forEach(function(p){
+      L.circleMarker([p.lat, p.lng], {
         radius: 9, color: "#fff", weight: 2, fillColor: warrantyColor(p.warranty), fillOpacity: 0.95
-      }).addTo(buildingMap);
-      var photoNote = p.photo_ids && p.photo_ids.length ?
-        "📷 " + p.photo_ids.length + " photo" + (p.photo_ids.length === 1 ? "" : "s") + " — open the work order to view" : "";
-      marker.bindPopup(
-        "<b>" + esc(p.eventDate || p.service_date || "") + "</b>" +
-        (p.work_order_no ? " — Job No. " + esc(p.work_order_no) : "") + "<br>" +
-        (p.condition ? esc(p.condition) + "<br>" : "") +
-        "<span style='color:" + warrantyColor(p.warranty) + ";font-weight:600'>" + esc(p.warranty || "") + "</span><br>" +
-        (photoNote ? photoNote + "<br>" : "") +
-        "<button class=\"btn\" style=\"margin-top:6px\" onclick=\"loadOrder('" + p.work_order_id + "')\">View Work Order</button>"
-      );
+      }).addTo(buildingMap).bindPopup(pinPopupHtml(p));
       bounds.push([p.lat, p.lng]);
     });
     if (bounds.length === 1) buildingMap.setView(bounds[0], 19);
@@ -1224,16 +1311,110 @@ function renderBuildingMap(pins){
     setTimeout(function(){ if (buildingMap) buildingMap.invalidateSize(); }, 300);
   }, 50);
 }
+/* ================= custom base maps (Phase 4, admin-only) =================
+   A building's base map is shared/building-wide (affects every future
+   report's pin placement and the history map), not per-work-order draft
+   data, so both setting and clearing it go through the same admin-gated,
+   server-enforced path as the delete actions — see set_building_roof_map
+   in netlify/functions/admin.js. Images are stored as CompanyCam project
+   documents (per DEV_NOTES.md — no Firebase Storage), so this requires
+   the building to already have a linked CompanyCam project. */
+function renderBaseMapAdminCard(buildingId, bld){
+  var hasMap = bld.roof_base_map_type && bld.roof_base_map_url;
+  var hasProject = !!bld.companyCamProjectId;
+  var safeId = buildingId.replace(/[^A-Za-z0-9_-]/g, "");
+  return '<div class="card"><h2 class="cond">Roof Base Map (admin)</h2>' +
+    (hasMap ?
+      '<p class="hint">Current: ' + esc(bld.roof_base_map_type.replace("_"," ")) +
+        ' — <a href="' + esc(bld.roof_base_map_url) + '" target="_blank" rel="noopener">view image</a></p>' +
+      '<div class="btnrow"><button class="btn danger" onclick="clearRoofBaseMap(\'' + buildingId + '\')">Clear Base Map</button></div>'
+      : '<p class="hint">No custom base map set — pins default to satellite.</p>') +
+    (hasProject ?
+      '<input type="file" id="basemap-file-' + safeId + '" accept="image/*" style="display:none" ' +
+        'onchange="uploadRoofBaseMap(\'' + buildingId + '\', this.files); this.value=\'\';">' +
+      '<div class="btnrow">' +
+        '<select id="basemap-type-' + safeId + '"><option value="roof_plan">Roof Plan</option><option value="sketch">Sketch</option></select>' +
+        '<button class="btn" onclick="document.getElementById(\'basemap-file-' + safeId + '\').click()">Upload Roof Plan / Sketch</button>' +
+      '</div>'
+      : '<p class="hint">Link a CompanyCam project to this building first (import photos from a project on a work order for it) before uploading a custom base map — it’s stored as a CompanyCam document.</p>') +
+    '</div>';
+}
+function resizeImageFile(file, maxDim, quality){
+  return new Promise(function(res, rej){
+    var reader = new FileReader();
+    reader.onload = function(){
+      var img = new Image();
+      img.onload = function(){
+        var w = img.width, h = img.height;
+        if (w > maxDim || h > maxDim){
+          if (w >= h){ h = Math.round(h * maxDim / w); w = maxDim; }
+          else { w = Math.round(w * maxDim / h); h = maxDim; }
+        }
+        var c = document.createElement("canvas");
+        c.width = w; c.height = h;
+        c.getContext("2d").drawImage(img, 0, 0, w, h);
+        res(c.toDataURL("image/jpeg", quality));
+      };
+      img.onerror = function(){ rej(new Error("Couldn't read the image")); };
+      img.src = reader.result;
+    };
+    reader.onerror = function(){ rej(new Error("Couldn't read the file")); };
+    reader.readAsDataURL(file);
+  });
+}
+async function uploadRoofBaseMap(buildingId, files){
+  if (!isAdmin){ toast("Admin mode required."); return; }
+  var f = files && files[0];
+  if (!f) return;
+  var safeId = buildingId.replace(/[^A-Za-z0-9_-]/g, "");
+  var typeSel = document.getElementById("basemap-type-" + safeId);
+  var type = typeSel ? typeSel.value : "roof_plan";
+  toast("Uploading base map…");
+  try{
+    var bldSnap = await fdb.collection("buildings").doc(buildingId).get();
+    var bld = bldSnap.exists ? bldSnap.data() : {};
+    if (!bld.companyCamProjectId) throw new Error("no CompanyCam project linked to this building");
+    var dataUrl = await resizeImageFile(f, 2000, 0.85);
+    var base64 = dataUrl.split("base64,")[1];
+    if (!base64) throw new Error("couldn't encode the image");
+    var out = await ccApiPost({ action: "upload_document", project_id: bld.companyCamProjectId,
+      name: (f.name || "roof-base-map") + ".jpg", attachment: base64 });
+    var url = out.document && out.document.url;
+    if (!url) throw new Error("CompanyCam didn't return a URL for the uploaded file");
+    await callAdminApi({ action: "set_building_roof_map", buildingId: buildingId,
+      roof_base_map_type: type, roof_base_map_url: url });
+    toast("Base map saved ✓");
+    openBuildingHistory(buildingId);
+  }catch(e){
+    toast("Base map upload failed: " + e.message);
+  }
+}
+async function clearRoofBaseMap(buildingId){
+  if (!isAdmin){ toast("Admin mode required."); return; }
+  if (!confirm("Clear this building's custom base map? Pins will fall back to satellite.")) return;
+  toast("Clearing…");
+  try{
+    await callAdminApi({ action: "set_building_roof_map", buildingId: buildingId,
+      roof_base_map_type: null, roof_base_map_url: null });
+    toast("Base map cleared ✓");
+    openBuildingHistory(buildingId);
+  }catch(e){
+    toast("Failed: " + e.message);
+  }
+}
 async function openBuildingHistory(buildingId){
   var detail = document.getElementById("history-detail");
   detail.innerHTML = '<p class="hint">Loading timeline\u2026</p>';
   try{
+    var bldSnap = await fdb.collection("buildings").doc(buildingId).get();
+    var bld = bldSnap.exists ? bldSnap.data() : {};
+    var baseMapCardHtml = isAdmin ? renderBaseMapAdminCard(buildingId, bld) : "";
     var qs = await fdb.collection("building_history_events")
       .where("buildingId", "==", buildingId).orderBy("createdAt", "desc").limit(50).get();
     var events = [];
     qs.forEach(function(d){ events.push(Object.assign({ _id: d.id }, d.data())); });
     if (!events.length){
-      detail.innerHTML = '<div class="card"><h2 class="cond">Timeline</h2>' +
+      detail.innerHTML = baseMapCardHtml + '<div class="card"><h2 class="cond">Timeline</h2>' +
         '<div class="empty">No reports logged for this building yet.</div></div>';
       return;
     }
@@ -1241,11 +1422,21 @@ async function openBuildingHistory(buildingId){
     var dupCount = events.filter(function(e){ return e._dup; }).length;
     var allPins = [];
     events.forEach(function(e){ (e.pins || []).forEach(function(p){ allPins.push(Object.assign({ eventDate: e.date }, p)); }); });
-    var mapCardHtml = allPins.length ?
+    /* A building shows ONE map — either satellite (lat/lng pins) or its
+       custom base map (x/y pins), not a mix, since those are two different
+       coordinate systems that can't be merged onto one Leaflet CRS without
+       the manual anchoring the spec explicitly says not to build. Pins
+       placed before a custom base map existed (lat/lng) won't appear once
+       one is set — a known, documented tradeoff, not a bug. */
+    var hasCustomBaseMap = !!((bld.roof_base_map_type === "roof_plan" || bld.roof_base_map_type === "sketch") && bld.roof_base_map_url);
+    var mapPins = hasCustomBaseMap ?
+      allPins.filter(function(p){ return typeof p.x === "number" && typeof p.y === "number"; }) :
+      allPins.filter(function(p){ return typeof p.lat === "number" && typeof p.lng === "number"; });
+    var mapCardHtml = mapPins.length ?
       '<div class="card"><h2 class="cond">Roof Map</h2>' +
       '<p class="hint">Every pinned finding across every report for this building. Tap a pin for details.</p>' +
       '<div id="building-map" style="height:min(50vh,420px);border-radius:6px;overflow:hidden"></div></div>' : '';
-    detail.innerHTML = mapCardHtml +
+    detail.innerHTML = baseMapCardHtml + mapCardHtml +
       '<div class="card"><h2 class="cond">Timeline (' + events.length + ')</h2>' +
       (dupCount ? '<p class="hint">\u26a0 ' + dupCount + ' possible duplicate' + (dupCount === 1 ? "" : "s") +
         ' flagged below (same work order + report type within 5 minutes of another entry).</p>' : '') +
@@ -1266,7 +1457,7 @@ async function openBuildingHistory(buildingId){
           (e.pdfRef && e.pdfRef.url ? '<div class="evt-row"><a href="' + esc(e.pdfRef.url) + '" target="_blank" rel="noopener">View saved PDF</a></div>' : '') +
           '</div>';
       }).join("") + '</div>';
-    if (allPins.length) renderBuildingMap(allPins);
+    if (mapPins.length) renderBuildingMap(mapPins, hasCustomBaseMap ? bld : null);
   }catch(e){
     detail.innerHTML = '<div class="card"><div class="empty">Couldn\u2019t load timeline: ' + esc(e.message) + '</div></div>';
   }

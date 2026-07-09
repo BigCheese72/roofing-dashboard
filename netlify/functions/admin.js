@@ -76,6 +76,27 @@ exports.handler = async function (event) {
       return resp(200, { ok: true });
     }
 
+    if (body.action === "set_building_roof_map") {
+      // Setting AND clearing a building's base map both go through here —
+      // it's a shared, building-wide setting (affects every future report's
+      // history map), not per-work-order draft data, so it gets the same
+      // admin-only treatment as the delete actions above rather than being
+      // left to a client-side-only check.
+      const buildingId = String(body.buildingId || "");
+      if (!buildingId) return resp(400, { error: "Missing buildingId" });
+      const type = body.roof_base_map_type ? String(body.roof_base_map_type) : null;
+      const url = body.roof_base_map_url ? String(body.roof_base_map_url) : null;
+      if (type && ["drone_ortho", "satellite", "roof_plan", "sketch"].indexOf(type) === -1) {
+        return resp(400, { error: "Invalid roof_base_map_type" });
+      }
+      await db.collection("buildings").doc(buildingId).set({
+        roof_base_map_type: type,
+        roof_base_map_url: url,
+        roof_base_map_updated_at: Date.now()
+      }, { merge: true });
+      return resp(200, { ok: true });
+    }
+
     return resp(400, { error: "Unknown action" });
   } catch (e) {
     return resp(500, { error: "Server error: " + (e && e.message ? e.message : "unknown") });
