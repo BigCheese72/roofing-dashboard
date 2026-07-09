@@ -126,6 +126,22 @@ never both, depending on which kind of base map it was placed on.
 **Photo shape adds**: `finding_id` (link, see above) and `gps` (`{lat,lng}` or absent —
 only present on CompanyCam-imported photos that had GPS; see `companycam.js` below).
 
+**Fixed 2026-07-09**: `cloudSaveOrder()`/`cloudFetchOrder()` were silently dropping
+`finding_id`, `ccPhotoId`, and `gps` on every cloud round-trip — their `photos`
+subcollection `.set()`/reconstruction only carried `caption`/`img`/`w`/`h`. Found while
+scoping the "durable references to photo source records" roadmap item: it meant a
+photo's pin-link, its CompanyCam source id, and its GPS guess all reset to
+null/absent the moment a work order was saved to the cloud and reloaded from it (a
+different device, or the same device after this session's local-cache changes) — which
+in turn meant `companyCamPhotoIds` on `building_history_events`/`reports` (the
+existing "durable reference" mechanism for CompanyCam photos) silently went empty for
+any report generated after a cloud round-trip, undermining the very thing that roadmap
+item was asking for. Now includes all three fields on both sides — verified against an
+in-memory mock Firestore client (not real production Firestore) that
+`finding_id`/`ccPhotoId`/`gps` all survive a real `cloudSaveOrder()` → `cloudFetchOrder()`
+round trip through the actual functions. Forward-only fix — doesn't touch/backfill any
+already-saved cloud photo docs that already lost these fields.
+
 **Building doc adds**:
 ```
 roof_base_map_type: null | "roof_plan" | "sketch" | "drone_ortho",

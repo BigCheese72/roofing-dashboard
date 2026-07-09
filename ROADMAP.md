@@ -55,7 +55,24 @@ Goal: turn each building into a long-term roof record.
   query/index/schema). See "Timeline filters" in `DEV_NOTES.md`. Leak type / repair
   type filters not yet built — those aren't currently their own fields on a
   `building_history_events` doc (only free-text `conditionsSummary`/`repairsSummary`).
-- Add durable references to report PDFs and photo source records.
+- ⚠️ **Scoped, partially addressed — not fully built, and part of it is
+  deliberately blocked**:
+  - **Photo source records**: found and fixed a real bug undermining the
+    *existing* mechanism (`companyCamPhotoIds` on `building_history_events`/
+    `reports`) — `finding_id`/`ccPhotoId`/`gps` were silently dropped on every
+    cloud save/reload round-trip. Fixed forward-only. See "Photo shape adds"
+    in `DEV_NOTES.md`. Locally-uploaded (non-CompanyCam) photos still have no
+    stable per-photo id, so they can't be individually reference-tracked the
+    same way — doing that safely means restructuring the photo subcollection's
+    doc-id scheme (currently positional, `p0`/`p1`/…), which touches the core
+    save/sync path every work order goes through. Judged too risky to take on
+    as a drive-by improvement; revisit deliberately if it's ever actually needed.
+  - **Report PDFs**: still have no durable reference for work orders without a
+    linked CompanyCam project — `pdfRef` stays `null` by design. Solving this
+    means either Firebase Storage or some other persistence layer, and
+    reintroducing Storage is explicitly gated behind checking with the user
+    first (see README's ground rules) — a product decision, not a code one.
+    Not built; not attempted.
 - ✅ **Shipped**: roof maps and leak pins. Every finding can be pinned (satellite by
   default via free Esri tiles + Nominatim geocoding, photo-GPS as a corrected initial
   guess, a custom uploaded roof plan/sketch for roofs where satellite isn't legible

@@ -443,7 +443,8 @@ async function cloudSaveOrder(o){
   var ops = [];
   ph.forEach(function(p, i){
     ops.push(ref.collection("photos").doc("p" + i).set({
-      caption: p.caption || "", img: p.img || "", w: p.w || 0, h: p.h || 0, i: i
+      caption: p.caption || "", img: p.img || "", w: p.w || 0, h: p.h || 0, i: i,
+      finding_id: p.finding_id || null, ccPhotoId: p.ccPhotoId || null, gps: p.gps || null
     }));
   });
   for (var i = ph.length; i < prevCount; i++){
@@ -474,7 +475,8 @@ async function cloudFetchOrder(id){
     var ps = await ref.collection("photos").get();
     ps.forEach(function(d){
       var v = d.data();
-      photosArr[v.i] = { caption: v.caption || "", img: v.img || "", w: v.w || 0, h: v.h || 0 };
+      photosArr[v.i] = { caption: v.caption || "", img: v.img || "", w: v.w || 0, h: v.h || 0,
+        finding_id: v.finding_id || null, ccPhotoId: v.ccPhotoId || null, gps: v.gps || null };
     });
   }catch(e){}
   o.photos = photosArr.filter(Boolean);

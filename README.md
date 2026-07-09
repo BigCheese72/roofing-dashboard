@@ -67,7 +67,7 @@ tools/
 | Area | Main file(s) | Notes |
 |---|---|---|
 | Work order form and UI | `index.html` | The edit, preview, saved work orders, building history, photo documentation, and CompanyCam modal UI all live in this file. The main work order form starts in the Edit view markup. |
-| Work order state and save/load | `index.html` | Functions such as `collect()`, `saveOrder()`, `loadOrder()`, `cloudSaveOrder()`, and `cloudFetchOrder()` handle form state, local storage fallback, and Firestore sync. |
+| Work order state and save/load | `index.html` | Functions such as `collect()`, `saveOrder()`, `loadOrder()`, `cloudSaveOrder()`, and `cloudFetchOrder()` handle form state, local storage fallback, and Firestore sync. Each photo's `finding_id`/`ccPhotoId`/`gps` round-trip through the `photos` subcollection along with `caption`/`img`/`w`/`h` — see `DEV_NOTES.md` for a bug fixed here. |
 | Local storage quota safety | `index.html` | `stripPhotoBytes()`/`pruneCachedPhotoDrafts()` keep the `localStorage` offline cache (~5–10MB browser quota) from filling up — only the actively-edited draft and the 10 most-recently-saved drafts keep full photo bytes locally; merely viewing a report never caches its photos. See "Local work order cache" in `DEV_NOTES.md`. |
 | Firebase connection | `index.html` | Firebase compat scripts are loaded from CDN. `FIREBASE_CONFIG` initializes Firestore for project `watkins-service-orders`. |
 | Firebase data writes | `index.html` | Work orders write to `workorders` with a `photos` subcollection. Customer, building, report, and building history records are created by `ensureCustomerAndBuilding()` and `logReportAndHistoryEvent()`. |
