@@ -34,11 +34,14 @@ exports.handler = async function (event) {
   const jobNo = String(data.jobNo || "").replace(/[^A-Za-z0-9]/g, "").slice(0, 30);
   // WO{jobnumber}@ isn't a real mailbox — replies would otherwise hit
   // Microsoft 365 (the root domain's MX) and bounce. REPLY_TO_EMAIL lets
-  // this point at whatever inbox is actually monitored; defaults to
-  // Mark's real monitored mailbox (marks@<domain>) if unset — no env var
-  // required for the correct default to take effect.
+  // this point at whatever inbox(es) are actually monitored (comma-
+  // separated); defaults to Mark's and Charlotte's real monitored
+  // mailboxes if unset — no env var required for the correct default to
+  // take effect. Resend's reply_to accepts an array, same as `to`.
   const from = jobNo ? "Watkins Roofing Work Orders <WO" + jobNo + "@" + domain + ">" : defaultFrom;
-  const replyTo = process.env.REPLY_TO_EMAIL || ("marks@" + domain);
+  const replyTo = process.env.REPLY_TO_EMAIL
+    ? process.env.REPLY_TO_EMAIL.split(",").map(s => s.trim()).filter(Boolean)
+    : ["marks@" + domain, "charlottew@" + domain];
   const payload = {
     from: from,
     to: to,
