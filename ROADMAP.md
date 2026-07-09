@@ -29,15 +29,15 @@ Goal: preserve and harden the existing RoofOps Field / Watkins work order workfl
   instead of one fixed sender, with a Reply-To safeguard so customer replies don't
   bounce against a mailbox that doesn't exist. See "Per-job From address" in
   `DEV_NOTES.md`.
-- ⚠️ **Scoped, blocked on a confirmed hard requirement**: pushing app-added phone photos
-  to the matching CompanyCam project (currently the integration is pull-only — nothing
-  uploads a photo to CompanyCam, only PDFs). Match-by-project-name (no auto-create) and
-  dedupe-by-`ccPhotoId` are decided. **Confirmed (not just suspected) via CompanyCam's
-  own API docs**: their photo-upload endpoint requires a publicly-fetchable URL, not
-  raw bytes — this app has no way to produce one without reintroducing Firebase Storage
-  or equivalent, which is its own gated decision. Waiting on Mark's call on the hosting
-  question before any upload code gets written. See "Push app-added photos to
-  CompanyCam" in `DEV_NOTES.md`.
+- ❌ **Decided against (2026-07-09)**: pushing app-added phone photos to a matching
+  CompanyCam project. CompanyCam's photo-upload API requires a publicly-fetchable URL
+  per photo, which this app can't produce without paying for Firebase Storage or
+  equivalent hosting — Mark decided that cost isn't justified right now. **The
+  integration stays pull-only**: importing photos FROM CompanyCam into a work order
+  continues to work as-is (including the improved error messaging shipped alongside
+  this decision). Not a "someday" item — closed. See "Push app-added photos to
+  CompanyCam" in `DEV_NOTES.md` if it's ever revisited (matching-strategy preferences
+  are preserved there).
 - Review Firestore security rules for all collections currently touched by the app.
 - Add lightweight manual QA steps for field workflows: create, save, reload, import CompanyCam photos, generate PDF, send email, and verify history logging.
 - ✅ Shipped: duplicate-report detection on the building timeline (same work order +

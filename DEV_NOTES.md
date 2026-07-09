@@ -577,7 +577,36 @@ reason, the toast will say why. Verified against a live invalid-project-id reque
 (real CompanyCam 403): `{"error":"CompanyCam said: 403 {\"errors\":[\"Forbidden\"]}"}` —
 confirmed the body now comes through.
 
-### Push app-added photos to CompanyCam (scoped 2026-07-09, NOT built — pending sign-off)
+### Push app-added photos to CompanyCam — DECIDED: not doing this (2026-07-09)
+
+**Closed, not just parked.** Mark's call: not willing to pay for photo hosting at this
+time. The integration stays **pull-only** — import photos FROM CompanyCam, as it works
+today (see "Push app-added photos to CompanyCam — investigation" below for why this
+isn't a small feature and won't quietly get built as a side effect of some other
+change). Don't resurface this as an open roadmap item; if it's ever revisited, it's a
+new product decision, not a continuation of this one.
+
+**Why**: CompanyCam's photo-upload API requires a publicly-fetchable URL for every
+photo (confirmed via their own docs — see below), and this app deliberately has no
+photo hosting that produces a public URL (no Firebase Storage, by design). Making this
+feature work would mean paying for and standing up a hosting layer — Storage or
+equivalent — purely to support this one feature. Mark decided that cost isn't
+justified right now. The existing pull path (import photos FROM CompanyCam into a work
+order) already covers the common case and needs no hosting at all.
+
+**If this is ever revisited**, the matching-strategy decisions already made are still
+good and don't need re-litigating:
+- Match by CompanyCam project **name** only, never auto-create a project.
+- If no name match, skip/prompt rather than create (exact UX was flagged as needing
+  more thought — exact vs. fuzzy match, case sensitivity, what "the job's name" means
+  before a project is linked).
+- Dedupe by `ccPhotoId` — already reliable today.
+- Push at send/finalize time, not on every photo add.
+
+The rest of the original investigation (API requirements, why it's a bigger change than
+it looks) is preserved below for reference only.
+
+#### Push app-added photos to CompanyCam — investigation (superseded, scoped 2026-07-09)
 
 **Trigger**: a real field report — Mark added phone photos to a work order and expected
 them to appear in the matching CompanyCam project, but they didn't; he had to add them
@@ -628,20 +657,8 @@ carries a stable `ccPhotoId` (and, since the recent `cloudSaveOrder()`/`cloudFet
 fix, that id now reliably survives cloud round-trips). The rule is simply: only push
 photos where `ccPhotoId` is falsy. No new field needed.
 
-**Decided by Mark (2026-07-09)**: match by CompanyCam project **name** only — push only
-to a project whose name matches the job; never auto-create a project. If no name match,
-skip/prompt rather than create (exact UX still to be worked out — he flagged the
-name-matching itself needs more thought, e.g. exact vs. fuzzy match, case sensitivity,
-what "the job's name" means when the work order isn't linked to a project yet). Dedupe
-by `ccPhotoId` (see above). Push at send/finalize time, not on every photo add.
-
-**Current blocking status: the hosting question (above) is the hard blocker, confirmed,
-not just suspected.** Building the upload call itself is small; the real work is that it
-needs a public URL for every app-added photo first, and this repo doesn't have a way to
-produce one without reintroducing Firebase Storage (or an equivalent hosting layer) —
-both are explicitly gated behind checking with Mark first, same as the rest of this
-feature. **Not built. Waiting on Mark's decision on the hosting question before writing
-any upload code.**
+**Final status**: decided against, see the closed-decision summary at the top of this
+section. Not built, not planned.
 
 ### PDF-back-to-CompanyCam (`uploadPdfToCompanyCam()`)
 
