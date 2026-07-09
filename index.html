@@ -49,9 +49,14 @@
   .rowcard .rowhead{display:flex;align-items:center;margin-bottom:8px;gap:8px}
   .rowcard .rowhead b{font-size:15px;color:var(--slate)}
   .rowcard .rowhead .sp{flex:1}
-  .photo-row{display:flex;gap:8px;align-items:center;margin-bottom:8px}
+  .photo-card{border-bottom:1px solid var(--card-line);margin-bottom:10px;padding-bottom:10px}
+  .photo-row{display:flex;gap:8px;align-items:center;margin-bottom:6px}
   .photo-row b{min-width:60px;font-size:13px;color:var(--slate)}
   .photo-row img.thumb{height:54px;width:72px;object-fit:cover;border:1px solid var(--line);border-radius:4px;flex:none}
+  .photo-finding-row{display:flex;gap:8px;align-items:center;padding-left:80px}
+  .photo-finding-row label{font-size:12px;color:var(--muted);white-space:nowrap;margin:0}
+  .photo-finding-row select{flex:1;max-width:320px;padding:6px 8px;font-size:13px}
+  @media (max-width:480px){ .photo-finding-row{padding-left:0} }
 
   /* CompanyCam picker */
   .cc-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:8px;margin-top:10px}
@@ -554,15 +559,26 @@ function setVal(id,v){
 }
 
 /* ================= dynamic rows ================= */
+function genId(prefix){
+  return prefix + "_" + Date.now().toString(36) + Math.random().toString(36).slice(2,7);
+}
 function addFinding(data){
-  /* leak_location_label / leak_latitude / leak_longitude are foundation
-     fields for the future roof map feature — no UI yet, but every finding
-     carries the keys so a leak can be pinned to a map without a data migration. */
-  findings.push(data || {condition:"",location:"",warranty:"Warrantable",
-    leak_location_label:null, leak_latitude:null, leak_longitude:null});
+  /* pin is the roof-map location for this finding — null until placed on a
+     map (see placePin()). Every finding gets a stable id so a photo can
+     reference it (photo.finding_id) independent of array order. */
+  findings.push(data || {id: genId("fnd"), condition:"",location:"",warranty:"Warrantable", pin:null});
+  renderFindings();
+  renderPhotos(); /* new finding should be immediately selectable in each photo's dropdown */
+}
+function removeFinding(i){
+  var removedId = findings[i] && findings[i].id;
+  findings.splice(i,1);
+  if (removedId){
+    photos.forEach(function(p){ if (p.finding_id === removedId) p.finding_id = null; });
+    renderPhotos();
+  }
   renderFindings();
 }
-function removeFinding(i){ findings.splice(i,1); renderFindings(); }
 function renderFindings(){
   var host = document.getElementById("findings-list");
   host.innerHTML = "";
@@ -659,7 +675,7 @@ function addPhotosFromFiles(files){
         var c = document.createElement("canvas");
         c.width = w; c.height = h;
         c.getContext("2d").drawImage(img, 0, 0, w, h);
-        results[idx] = { caption:"", img: c.toDataURL("image/jpeg", preset.q), w: w, h: h };
+        results[idx] = { caption:"", img: c.toDataURL("image/jpeg", preset.q), w: w, h: h, finding_id: null };
         done();
       };
       img.onerror = function(){ toast("Couldn't read one of the photos"); done(); };
@@ -677,18 +693,32 @@ function renderPhotos(){
     host.innerHTML = '<p class="hint">No photos added yet.</p>';
     return;
   }
+  var findingOptions = findings.map(function(f,fi){
+    var label = "Finding #" + (fi+1) + (f.condition ? ": " + f.condition.slice(0,40) : "");
+    return { id: f.id, label: label };
+  }).filter(function(o){ return o.id; });
   photos.forEach(function(p,i){
     var d = document.createElement("div");
-    d.className = "photo-row";
+    d.className = "photo-card";
     d.innerHTML =
-      '<b>Photo ' + (i+1) + '</b>' +
+      '<div class="photo-row"><b>Photo ' + (i+1) + '</b>' +
       (p.img ? '<img class="thumb" src="' + p.img + '">' : '') +
       '<input type="text" style="flex:1" placeholder="Caption" data-i="' + i + '" value="' + esc(p.caption) + '">' +
-      '<button class="btn danger" onclick="removePhoto(' + i + ')">✕</button>';
+      '<button class="btn danger" onclick="removePhoto(' + i + ')">✕</button></div>' +
+      '<div class="photo-finding-row"><label>Finding:</label>' +
+      '<select data-photo-finding="' + i + '">' +
+        '<option value="">General / no specific finding</option>' +
+        findingOptions.map(function(o){
+          return '<option value="' + esc(o.id) + '"' + (p.finding_id === o.id ? " selected" : "") + '>' + esc(o.label) + '</option>';
+        }).join("") +
+      '</select></div>';
     host.appendChild(d);
   });
   host.querySelectorAll("input[data-i]").forEach(function(el){
     el.addEventListener("input", function(){ photos[+el.dataset.i].caption = el.value; });
+  });
+  host.querySelectorAll("select[data-photo-finding]").forEach(function(el){
+    el.addEventListener("change", function(){ photos[+el.dataset.photoFinding].finding_id = el.value || null; });
   });
 }
 
@@ -710,8 +740,17 @@ function fill(o){
   currentId = o.id;
   FIELD_IDS.forEach(function(k){ setVal(k, o[k]); });
   findings = (o.findings || []).slice(); if (!findings.length) findings = [{condition:"",location:"",warranty:"Warrantable"}];
+  /* Self-heals findings/photos saved before ids and pins existed — never
+     fabricates a pin location for old data, just ensures every finding has
+     a stable id going forward (see spec: don't backfill pins, but a missing
+     id isn't a pin, it's plumbing). */
+  findings.forEach(function(f){
+    if (!f.id) f.id = genId("fnd");
+    if (f.pin === undefined) f.pin = null;
+  });
   repairs = (o.repairs || []).slice(); if (!repairs.length) repairs = [{repair:"",location:""}];
   photos = (o.photos || []).slice();
+  photos.forEach(function(p){ if (p.finding_id === undefined) p.finding_id = null; });
   ccLinkedProjectId = o.companyCamProjectId || null;
   ccLinkedProjectName = o.companyCamProjectName || "";
   renderFindings(); renderRepairs(); renderPhotos(); renderCCLinkInfo();
@@ -1747,7 +1786,7 @@ function ccCompress(dataUrl){
       var c = document.createElement("canvas");
       c.width = w; c.height = h;
       c.getContext("2d").drawImage(img, 0, 0, w, h);
-      res({ caption:"", img: c.toDataURL("image/jpeg", preset.q), w: w, h: h });
+      res({ caption:"", img: c.toDataURL("image/jpeg", preset.q), w: w, h: h, finding_id: null });
     };
     img.onerror = function(){ rej(new Error("bad image")); };
     img.src = dataUrl;
