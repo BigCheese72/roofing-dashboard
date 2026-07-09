@@ -35,9 +35,10 @@ exports.handler = async function (event) {
   // WO{jobnumber}@ isn't a real mailbox — replies would otherwise hit
   // Microsoft 365 (the root domain's MX) and bounce. REPLY_TO_EMAIL lets
   // this point at whatever inbox is actually monitored; defaults to
-  // workorders@<domain> if unset.
+  // Mark's real monitored mailbox (marks@<domain>) if unset — no env var
+  // required for the correct default to take effect.
   const from = jobNo ? "Watkins Roofing Work Orders <WO" + jobNo + "@" + domain + ">" : defaultFrom;
-  const replyTo = process.env.REPLY_TO_EMAIL || ("workorders@" + domain);
+  const replyTo = process.env.REPLY_TO_EMAIL || ("marks@" + domain);
   const payload = {
     from: from,
     to: to,
