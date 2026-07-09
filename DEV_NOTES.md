@@ -399,14 +399,85 @@ was never read by anything until now — this is that first read.
 - **A report with no linked building** (`buildingId` missing/null) renders as
   "(unknown building)" and tapping it toasts instead of navigating, rather than
   throwing — found this exact case in production while testing (see below).
-- **Known pre-existing data inconsistency, found (not caused) by building this**:
-  live production `reports` currently has entries whose matching
-  `building_history_events` doc doesn't exist at all, even though
-  `logReportAndHistoryEvent()` is supposed to write both with the same doc id in one
-  batch. Whatever caused that predates this feature — this view just makes it visible
-  for the first time, since nothing previously read `reports` directly. Not
-  investigated or touched (would require writes, out of scope for this read-only
-  feature); worth a look before this view sees real use as a trust signal.
+- **Known pre-existing data inconsistency, found (not caused) by building this** — see
+  the dedicated writeup below ("`reports`/`building_history_events` ID-mismatch,
+  investigated").
+
+### `reports`/`building_history_events` ID-mismatch (investigated, read-only — root cause found, not fixed)
+
+Investigated 2026-07-09, read-only (no writes made). Full production state at the time:
+**4 docs in `reports`, 2 docs in `building_history_events`** (the entire collection —
+confirmed by fetching it unfiltered, not just querying by a specific id/workOrderId).
+
+**Root cause, high confidence — a since-fixed ID bug, not an ongoing one.** The very
+first version of `logReportAndHistoryEvent()` (commit `04166dd`, 2026-07-08 18:42)
+called `fdb.collection("reports").doc()` and
+`fdb.collection("building_history_events").doc()` **separately**, each generating its
+own independent random Firestore auto-id. Both docs were still written together in one
+atomic `batch.commit()` (so no partial-write data loss from this alone), but under
+**different, unrelated ids** — meaning "look up the history event by the report's id"
+silently returns nothing for anything written this way, even when the sibling exists.
+Commit `0928b51` (2026-07-09 04:17, "Flag duplicate timeline entries and let admin
+delete individual ones") fixed this — it generates **one** id
+(`fdb.collection("reports").doc().id`) and reuses it for both `.set()` calls — but only
+because the new per-entry admin-delete feature needed a shared id to delete both sides
+together. Nothing about the bug itself had been noticed before that.
+
+**Confirmed against the real timestamps** — every one of the 4 real `reports` docs was
+created within the same ~16-hour window this whole feature was first being built and
+iterated on (2026-07-08 18:42 → 2026-07-09 04:17 → later that morning):
+
+| Report | `reportType` | `createdAt` (local) | Relative to the 04:17 fix | Sibling in `building_history_events`? |
+|---|---|---|---|---|
+| `QHfSr0Gy…` | PDF Downloaded | 7/9 10:47 | **after** | ✅ same id (`QHfSr0Gy…`) — correctly paired |
+| `wHALC1qZ…` | PDF Shared | 7/8 20:13 | before | ✅ found under a **different** id (`dox2XWfDW…`) — same `reportType`, same exact `createdAt`, same (null) `buildingId`. Data intact, just unjoinable by id. |
+| `RP2XlBAO…` | PDF Shared | 7/8 20:16 | before | ❌ none anywhere in the collection |
+| `ePEKp4cE…` | PDF Shared | 7/8 20:22 | before | ❌ none anywhere in the collection |
+
+The one post-fix report is correctly paired. Of the three pre-fix reports, one has its
+true sibling sitting under an unrelated id (exactly what the bug predicts), but two have
+**no** sibling anywhere — confirmed by dumping the entire (2-doc) collection, not just a
+targeted query, so this isn't a query/join artifact.
+
+**That last part doesn't fully resolve on code history alone.** Firestore's
+`batch.commit()` is atomic — if the bug alone were the whole story, every pre-fix report
+should have *a* sibling somewhere (mismatched id, but present), the way `wHALC1qZ…` does.
+Two reports having *no* sibling at all is a step further than the id-mismatch bug
+explains by itself. Best working hypothesis: those two were most likely produced during
+the same evening's active development/testing of this brand-new feature (both are
+Westminster "PDF Shared" actions six minutes apart, right in the middle of the commits
+that touched this exact function — `b67fd15` at 19:00, `879fa14` at 19:27) rather than
+routine field use — e.g. manual testing against production while iterating on the
+feature, possibly under a locally-modified/uncommitted state of the code at that moment.
+Couldn't be confirmed further without either error logs from that session or asking
+whoever was driving it.
+
+**Is it still happening? No** — high confidence. `logReportAndHistoryEvent()` is the
+*only* place in `index.html` that writes to either collection (confirmed by search), it's
+the only version that's ever run in production since the 04:17 fix, and the one report
+created after that fix is correctly paired. Every new report going forward should pair
+correctly.
+
+**Blast radius, right now: small.** Only 4 report docs exist in all of production (this
+feature is about a day old). Practical effect: Westminster's Building History timeline
+currently shows 1 event where `reports` shows 3 separate report-generation actions for
+the same work order — the timeline/roof-map/duplicate-detection features are all quietly
+under-counting for that one building until this is addressed. No evidence of a wider or
+ongoing problem.
+
+**Recommended fix (not implemented — would write to live data, needs sign-off)**:
+1. Nothing needed for new reports going forward — already fixed.
+2. For the id-mismatched-but-intact pair: either leave as-is (the only thing it actually
+   breaks today is the per-entry admin delete silently no-op'ing on the `reports` side
+   for that one legacy pair — low-risk) or re-key it under a shared id.
+3. For the two genuinely orphaned reports: their `reports` doc already has the complete
+   payload (`reports` and `building_history_events` are supposed to be identical
+   payloads) — recreating the missing `building_history_events` sibling from the
+   existing `reports` doc's own data is a mechanical, low-risk backfill.
+4. Given the volume (2 affected docs, one still-new feature), a one-time reviewed backfill
+   script run once by a human — matching this repo's existing `tools/` pattern
+   (standalone, not part of the deployed app) — fits better than new in-app logic for a
+   problem this small and this unlikely to recur.
 
 ### ⚠️ Firestore security rules
 
