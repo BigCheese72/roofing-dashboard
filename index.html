@@ -316,6 +316,7 @@
     <div style="padding:12px 16px">
       <p class="hint" id="pin-hint" style="margin:0 0 10px"></p>
       <div class="btnrow" style="margin:0">
+        <button class="btn" id="pin-mylocation-btn" onclick="useMyLocationForPin()" style="display:none">📍 Use My Location</button>
         <button class="btn primary" onclick="savePinFromModal()">Save Pin</button>
         <button class="btn danger" id="pin-clear-btn" onclick="clearPinFromModal()" style="display:none">Clear Pin</button>
         <button class="btn" onclick="closePinModal()">Cancel</button>
@@ -685,14 +686,16 @@ function boundsToLatLngBounds(b){
   return [[b.south, b.west], [b.north, b.east]];
 }
 var pinMap = null, pinMarker = null, pinModalFindingId = null, pinInitialSource = null,
-  pinInteracted = false, pinMapMode = "latlng", pinXYSize = null;
+  pinInteracted = false, pinMapMode = "latlng", pinXYSize = null, pinDeviceGpsUsed = false;
 async function openPinModal(findingId){
   var f = findingById(findingId);
   if (!f) return;
   pinModalFindingId = findingId;
   pinInteracted = false;
+  pinDeviceGpsUsed = false;
   document.getElementById("pin-modal").style.display = "";
   document.getElementById("pin-clear-btn").style.display = f.pin ? "" : "none";
+  document.getElementById("pin-mylocation-btn").style.display = "none"; /* re-shown in openPinModalSatellite — device GPS doesn't map onto a custom base map's pixel coords */
   document.getElementById("pin-hint").textContent = "Locating…";
   if (pinMap){ pinMap.remove(); pinMap = null; pinMarker = null; }
 
@@ -740,6 +743,7 @@ async function openPinModal(findingId){
   await openPinModalSatellite(f, findingId);
 }
 async function openPinModalSatellite(f, findingId, orthoOverlay){
+  document.getElementById("pin-mylocation-btn").style.display = navigator.geolocation ? "" : "none";
   var center, zoom = 17, hint, fitOrthoBounds = false;
   if (f.pin && typeof f.pin.lat === "number"){
     center = { lat: f.pin.lat, lng: f.pin.lng };
@@ -799,6 +803,29 @@ function closePinModal(){
   pinModalFindingId = null;
   pinXYSize = null;
 }
+/* Lets a tech standing at the actual spot drop a precise pin from the
+   device's own GPS, instead of relying on an old photo's GPS or a
+   geocoded street address. Only offered in satellite/lat-lng mode — a
+   custom base map (roof plan/sketch) has no real-world coordinate system
+   for device GPS to land on. */
+function useMyLocationForPin(){
+  if (!navigator.geolocation){ toast("Location isn't available on this device/browser."); return; }
+  var btn = document.getElementById("pin-mylocation-btn");
+  btn.disabled = true; btn.textContent = "Locating…";
+  navigator.geolocation.getCurrentPosition(function(pos){
+    btn.disabled = false; btn.textContent = "📍 Use My Location";
+    if (!pinMarker || !pinMap) return;
+    var lat = pos.coords.latitude, lng = pos.coords.longitude, acc = Math.round(pos.coords.accuracy || 0);
+    pinMarker.setLatLng([lat, lng]);
+    pinMap.setView([lat, lng], 20);
+    pinInteracted = true;
+    pinDeviceGpsUsed = true;
+    document.getElementById("pin-hint").textContent = "Placed from your current location (±" + acc + "m) — drag to correct if needed.";
+  }, function(err){
+    btn.disabled = false; btn.textContent = "📍 Use My Location";
+    toast("Couldn't get your location: " + (err.message || "permission denied"));
+  }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
+}
 function savePinFromModal(){
   if (!pinMarker || !pinModalFindingId) return;
   var f = findingById(pinModalFindingId);
@@ -807,7 +834,8 @@ function savePinFromModal(){
   if (pinMapMode === "xy" && pinXYSize){
     f.pin = { lat: null, lng: null, x: ll.lng / pinXYSize.w, y: ll.lat / pinXYSize.h, source: "tech_placed" };
   } else {
-    var source = pinInitialSource === "photo_gps" ? (pinInteracted ? "gps_corrected" : "photo_gps") : pinInitialSource;
+    var source = pinDeviceGpsUsed ? "device_gps" :
+      (pinInitialSource === "photo_gps" ? (pinInteracted ? "gps_corrected" : "photo_gps") : pinInitialSource);
     f.pin = { lat: ll.lat, lng: ll.lng, x: null, y: null, source: source };
   }
   renderFindings();

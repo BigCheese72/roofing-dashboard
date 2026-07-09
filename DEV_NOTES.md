@@ -96,7 +96,10 @@ Built from a written spec (see git history / PR description around the commits t
 3. **GPS is an initial guess, never trusted blind.** A pin's `source` field records
    provenance: `"tech_placed"` (no GPS available), `"photo_gps"` (seeded from a linked
    CompanyCam photo's GPS, saved untouched), `"gps_corrected"` (seeded from photo GPS,
-   then dragged). Reopening an already-corrected pin never downgrades its source.
+   then dragged), `"device_gps"` (tech tapped "Use My Location" in the pin modal —
+   `navigator.geolocation`, satellite mode only, not offered on a custom base map since
+   x/y pixel coords have no real-world position for device GPS to land on). Reopening an
+   already-corrected pin never downgrades its source.
 4. **A pin is never final — dragging is always available.** Once a finding has a pin,
    its "Place on Map" button becomes "📍 Pinned — move" and reopens the same modal with
    the existing location, draggable/tappable to correct. A correction only reaches the
