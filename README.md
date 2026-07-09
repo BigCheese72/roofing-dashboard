@@ -57,7 +57,9 @@ netlify/
     send-workorder.js
     admin.js
 tools/
-  geotiff_to_webmap.py  # standalone — NOT part of the deployed app
+  geotiff_to_webmap.py    # standalone — NOT part of the deployed app
+  update_roof_base_map.py # interactive wrapper around --upload, also standalone
+  Update Roof Base Map.bat # double-click launcher for the above
 ```
 
 ## Main Responsibility Map

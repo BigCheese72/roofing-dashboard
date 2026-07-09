@@ -197,6 +197,21 @@ Verified against a real 293MB production orthomosaic (OpenDroneMap output, UTM z
 15N) — computed coordinates matched independent verification, and the extracted
 preview was a correct, undistorted crop of the real roof.
 
+`--upload` mode does the conversion **and** the upload/set-base-map in one command
+(needs `--building-id`, `--company-cam-project-id`, `--pin`), for buildings flown
+regularly (weekly, say) where retyping coordinates by hand every time doesn't scale.
+
+**`tools/update_roof_base_map.py`** + **`tools/Update Roof Base Map.bat`** — an
+interactive wrapper around `--upload` for exactly that repeat-use case: double-click
+the `.bat` (or drag a `.tif` onto it), pick a building from a remembered list or add a
+new one inline, optionally save the PIN, done. Not tied to any specific building —
+`buildings_config.json` (gitignored — it holds the PIN) grows as buildings get added.
+Uses plain `input()` for the PIN rather than `getpass.getpass()` deliberately:
+`getpass` reads directly from the Windows console regardless of stdin redirection and
+hangs instead of failing in some environments (found this via testing); the PIN is a
+shared admin convenience gate, not a real secret, so losing the input masking isn't a
+meaningful tradeoff for a wizard that reliably works everywhere.
+
 Supported coordinate systems: WGS84 UTM (any zone/hemisphere) and plain geographic.
 Anything else — a different projection entirely — prints a clear error rather than
 silently computing wrong coordinates.
