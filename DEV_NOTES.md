@@ -560,6 +560,23 @@ who changed what, deleted items, or comments/annotations. If CompanyCam later ex
 an activity/webhooks API, `syncCompanyCamHistory()` and `companycam.js` are the places
 to extend.
 
+**"No photos load when importing" investigation (2026-07-09)** — a real field report
+(clicking "St. Mary's Hospital - St. Louis" showed zero photos). Investigated
+extensively: called the `photos` action for **all 25 real projects** in the account, on
+both `dev` and `main` — every one returned photos correctly, including the specific
+project Mark named (30 photos, both branches). Ruled out a token/scope problem, a
+CompanyCam response-shape change, and a dev-vs-production config difference. Along the
+way, checked a suspected HTML-escaping typo in `ccLoadProjects()` — turned out to be a
+misread during that investigation, not a real bug (git blame confirms that line has
+always been correct). **Conclusion: not a reproducible bug** — most likely a transient
+network hiccup on the reporting device at that moment. One real, small gap fixed
+regardless: the `photos` action's error handling now matches `projects`/
+`project_detail` — includes CompanyCam's actual response body on a non-2xx response
+instead of just the bare status code, so if this ever does happen again for a real
+reason, the toast will say why. Verified against a live invalid-project-id request
+(real CompanyCam 403): `{"error":"CompanyCam said: 403 {\"errors\":[\"Forbidden\"]}"}` —
+confirmed the body now comes through.
+
 ### Push app-added photos to CompanyCam (scoped 2026-07-09, NOT built — pending sign-off)
 
 **Trigger**: a real field report — Mark added phone photos to a work order and expected
