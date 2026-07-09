@@ -130,7 +130,6 @@
 </style>
 <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-storage-compat.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
 </head>
@@ -315,12 +314,10 @@ var FIREBASE_CONFIG = {
   appId: "1:806263881954:web:16fb8f9cfac591dce25ebb"
 };
 var fdb = null;
-var fstorage = null;
 try{
   if (window.firebase && firebase.initializeApp){
     firebase.initializeApp(FIREBASE_CONFIG);
     fdb = firebase.firestore();
-    try{ fstorage = firebase.storage(); }catch(e){ fstorage = null; }
   }
 }catch(e){ fdb = null; }
 var cloudIndexCache = [];
@@ -1252,32 +1249,11 @@ async function generatePdf(){
   }
   return doc;
 }
-/* ================= building history logging + Storage/CompanyCam PDF persistence ================= */
-function withTimeout(promise, ms){
-  return Promise.race([
-    promise,
-    new Promise(function(_, rej){ setTimeout(function(){ rej(new Error("timed out")); }, ms); })
-  ]);
-}
-/* Capped at 15s: if Firebase Storage isn't enabled/reachable, the SDK's own
-   retry/backoff can otherwise hang far longer than that, which would stall
-   logReportAndHistoryEvent() (it awaits this before writing the history
-   event) well past the point of being useful. A timeout here just means no
-   pdfRef on the history event — everything else still gets logged. */
-async function uploadPdfToStorage(doc, o){
-  if (!fstorage) return null;
-  try{
-    var blob = doc.output("blob");
-    var path = "workorder-pdfs/" + o.id + "/" + Date.now() + "_" + pdfFileName();
-    var ref = fstorage.ref().child(path);
-    await withTimeout(ref.put(blob), 15000);
-    var url = await withTimeout(ref.getDownloadURL(), 15000);
-    return { path: path, url: url };
-  }catch(e){
-    console.warn("PDF storage upload failed", e);
-    return null;
-  }
-}
+/* ================= building history logging + CompanyCam PDF persistence =================
+   PDF persistence intentionally does NOT use Firebase Storage — CompanyCam
+   (via uploadPdfToCompanyCam below) is the system of record for saved PDFs.
+   pdfRef on a history event is therefore always null; it's kept in the
+   schema in case that changes later. */
 /* CompanyCam's v2 API has no direct "attach to project" for arbitrary
    generated files other than its Documents endpoint (base64, ~30MB limit,
    see netlify/functions/companycam.js). If that ever changes shape, this
@@ -1303,11 +1279,11 @@ function summarizeRows(rows, keyA, keyB){
    report) and `building_history_events` (per-building timeline) so a
    future building/roof history view can query either. Never blocks or
    fails the user-facing PDF action \u2014 logging errors are swallowed. */
-async function logReportAndHistoryEvent(o, doc, kind, emailInfo){
+async function logReportAndHistoryEvent(o, kind, emailInfo){
   if (!fdb) return;
   try{
     var ids = await ensureCustomerAndBuilding(o);
-    var pdfRef = doc ? await uploadPdfToStorage(doc, o) : null;
+    var pdfRef = null; /* no Firebase Storage — see comment above */
     var payload = {
       buildingId: ids.buildingId, buildingName: o.jobName || "",
       customerId: ids.customerId, customerName: o.billTo || "",
@@ -1337,7 +1313,7 @@ async function downloadPdf(){
   if (!d) return;
   d.save(pdfFileName());
   toast("PDF downloaded \u2014 attach it to your email.");
-  logReportAndHistoryEvent(collect(), d, "PDF Downloaded", null);
+  logReportAndHistoryEvent(collect(), "PDF Downloaded", null);
 }
 async function sendEmailNow(){
   var addrs = val("emailTo").split(",").map(function(s){ return s.trim(); }).filter(Boolean);
@@ -1372,7 +1348,7 @@ async function sendEmailNow(){
     try{ out = await resp.json(); }catch(e){}
     if (resp.ok && out && out.ok){
       toast("Email sent \u2713 to " + addrs.join(", "));
-      logReportAndHistoryEvent(o, d, "PDF Emailed", { sent: true, to: addrs });
+      logReportAndHistoryEvent(o, "PDF Emailed", { sent: true, to: addrs });
       if (o.companyCamProjectId){
         uploadPdfToCompanyCam(d, o).then(function(ccUp){
           if (ccUp.ok) toast("Email sent \u2713 \u2014 PDF also saved to CompanyCam project \u2713");
@@ -1417,19 +1393,19 @@ async function sharePdf(){
       var file = new File([blob], fname, { type: "application/pdf" });
       if (navigator.canShare && navigator.share && navigator.canShare({ files: [file] })){
         await navigator.share({ files: [file], title: fname });
-        logReportAndHistoryEvent(o, d, "PDF Shared", null);
+        logReportAndHistoryEvent(o, "PDF Shared", null);
         return;
       }
     }catch(e){
       if (e && e.name === "AbortError") return; /* user closed the share sheet */
     }
     d.save(fname);
-    logReportAndHistoryEvent(o, d, "PDF Shared", null);
+    logReportAndHistoryEvent(o, "PDF Shared", null);
     toast("Sharing isn't supported on this device \u2014 PDF downloaded instead. Attach it to your email.");
     return;
   }
   d.save(fname);
-  logReportAndHistoryEvent(o, d, "PDF Shared", null);
+  logReportAndHistoryEvent(o, "PDF Shared", null);
   toast("PDF downloaded \u2014 drag it from Downloads into the email that just opened, then send.");
 }
 

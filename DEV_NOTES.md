@@ -24,9 +24,11 @@ re-discovering it.
 - **Database**: Firebase Firestore (project `watkins-service-orders`), initialized
   client-side with the public web config in `index.html` (safe to expose — access is
   controlled by Firestore security rules, not by hiding the config).
-- **File storage**: Firebase Storage (same Firebase project) — added in this phase to
-  persist generated PDFs (`workorder-pdfs/{workOrderId}/...`).
 - **PDF generation**: jsPDF + jsPDF-AutoTable, entirely client-side.
+- **PDF persistence**: intentionally *not* Firebase Storage — CompanyCam (via
+  `uploadPdfToCompanyCam()`, when a project is linked) is the system of record for
+  saved PDFs. `pdfRef` on a history event is therefore always `null`; it's kept in the
+  schema in case that changes later.
 
 ## Firestore collections
 
@@ -62,7 +64,7 @@ customer/building picker UI is added, wire it into the same function.
   warrantyStatus,                   // "Warrantable" | "Non-warrantable" | "Mixed" | "Undetermined"
   companyCamProjectId,
   companyCamPhotoIds: [...],        // CompanyCam photo ids actually used in this report
-  pdfRef: { path, url } | null,     // Firebase Storage ref for the generated PDF, if upload succeeded
+  pdfRef: null,                     // reserved — currently always null, PDFs live in CompanyCam instead
   emailSent: bool,
   emailRecipients: [...],
   createdAt
@@ -88,15 +90,16 @@ Every **finding** (roof investigation entry) also carries `leak_location_label`,
 data migration. No input UI exists for any of these yet, by design (see task spec:
 "prepare the data structure for it," not the feature itself).
 
-### ⚠️ Firestore/Storage security rules
+### ⚠️ Firestore security rules
 
 New collections (`customers`, `buildings`, `reports`, `building_history_events`,
-`companycam_projects`) and Firebase Storage both need rules that allow the app's
-reads/writes, the same way `workorders` already does. If rules aren't updated, writes
-to the new collections will fail *silently from the user's perspective* — history
-logging is deliberately non-blocking (wrapped in try/catch, never interrupts the PDF
-action) so a rules problem won't break the core workflow, but history also won't be
-recorded until fixed. Check Firebase Console → Firestore/Storage → Rules.
+`companycam_projects`) need rules that allow the app's reads/writes, the same way
+`workorders` already does. If rules aren't updated, writes to the new collections will
+fail *silently from the user's perspective* — history logging is deliberately
+non-blocking (wrapped in try/catch, never interrupts the PDF action) so a rules
+problem won't break the core workflow, but history also won't be recorded until
+fixed. Check Firebase Console → Firestore → Rules. (Confirmed working against the
+production `watkins-service-orders` project as of this writing.)
 
 ### ⚠️ Firestore composite index
 
@@ -152,10 +155,10 @@ project, the generated PDF is base64-encoded and POSTed to CompanyCam's
 `/v2/projects/{id}/documents` endpoint (confirmed against CompanyCam's own API
 reference — JSON body `{document:{name, attachment}}`, base64, ~30MB limit), using
 `COMPANYCAM_WRITE_TOKEN` if set (falls back to `COMPANYCAM_TOKEN` otherwise). Success
-and failure both produce a distinct toast. If the CompanyCam upload fails for any
-reason (network, permissions, endpoint changes), the PDF is **not lost** — it was
-already written to Firebase Storage moments earlier by `logReportAndHistoryEvent()`,
-independent of the CompanyCam call.
+and failure both produce a distinct toast. If the CompanyCam upload fails (network,
+permissions, endpoint changes), the user still has the PDF from "Send Email Now" and
+can retry — there's no separate app-side backup copy, by design (see "PDF
+persistence" above).
 
 CompanyCam's document endpoint accepts an optional `X-CompanyCam-User` header
 (email of the user to attribute the upload to). Set the `COMPANYCAM_USER_EMAIL`
