@@ -964,6 +964,23 @@ async function deleteBuildingAdmin(buildingId, buildingName){
     toast("Delete failed: " + e.message);
   }
 }
+/* Flags events as likely duplicates when the same work order logged the
+   same report type within a few minutes of another entry \u2014 the common
+   case is a double-click or a retried Send/Share/Download, not two
+   genuinely separate reports. Doesn't touch the data, just marks it for
+   the admin delete control below. */
+var DUP_WINDOW_MS = 5 * 60 * 1000;
+function flagDuplicateEvents(events){
+  var seen = [];
+  events.forEach(function(e){
+    e._dup = seen.some(function(s){
+      return s.workOrderId === e.workOrderId && s.reportType === e.reportType &&
+        Math.abs((s.createdAt || 0) - (e.createdAt || 0)) < DUP_WINDOW_MS;
+    });
+    seen.push(e);
+  });
+  return events;
+}
 async function openBuildingHistory(buildingId){
   var detail = document.getElementById("history-detail");
   detail.innerHTML = '<p class="hint">Loading timeline\u2026</p>';
@@ -971,19 +988,25 @@ async function openBuildingHistory(buildingId){
     var qs = await fdb.collection("building_history_events")
       .where("buildingId", "==", buildingId).orderBy("createdAt", "desc").limit(50).get();
     var events = [];
-    qs.forEach(function(d){ events.push(d.data()); });
+    qs.forEach(function(d){ events.push(Object.assign({ _id: d.id }, d.data())); });
     if (!events.length){
       detail.innerHTML = '<div class="card"><h2 class="cond">Timeline</h2>' +
         '<div class="empty">No reports logged for this building yet.</div></div>';
       return;
     }
+    flagDuplicateEvents(events);
+    var dupCount = events.filter(function(e){ return e._dup; }).length;
     detail.innerHTML = '<div class="card"><h2 class="cond">Timeline (' + events.length + ')</h2>' +
+      (dupCount ? '<p class="hint">\u26a0 ' + dupCount + ' possible duplicate' + (dupCount === 1 ? "" : "s") +
+        ' flagged below (same work order + report type within 5 minutes of another entry).</p>' : '') +
       events.map(function(e){
-        return '<div class="evt-item"><div class="evt-head">' +
+        return '<div class="evt-item"' + (e._dup ? ' style="border-left-color:#D64545"' : '') + '><div class="evt-head">' +
           '<span class="evt-date">' + esc(e.date || fmtTs(e.createdAt)) + '</span>' +
           '<span class="evt-tag">' + esc(e.reportType || "") + '</span>' +
           '<span class="evt-tag">' + esc(e.warrantyStatus || "") + '</span>' +
           (e.emailSent ? '<span class="evt-tag">Emailed \u2713</span>' : '') +
+          (e._dup ? '<span class="evt-tag" style="background:#FBE2E2;color:#D64545">Possible duplicate</span>' : '') +
+          (isAdmin ? '<span class="sp"></span><button class="btn danger" onclick="deleteHistoryEventAdmin(\'' + e._id + '\', \'' + buildingId + '\')">Delete (admin)</button>' : '') +
           '</div>' +
           (e.workOrderNo ? '<div class="evt-row">Job No. ' + esc(e.workOrderNo) + '</div>' : '') +
           (e.technician ? '<div class="evt-row">Technician: ' + esc(e.technician) + '</div>' : '') +
@@ -995,6 +1018,21 @@ async function openBuildingHistory(buildingId){
       }).join("") + '</div>';
   }catch(e){
     detail.innerHTML = '<div class="card"><div class="empty">Couldn\u2019t load timeline: ' + esc(e.message) + '</div></div>';
+  }
+}
+async function deleteHistoryEventAdmin(eventId, buildingId){
+  if (!isAdmin){ toast("Admin mode required to delete."); return; }
+  if (!confirm("Delete this timeline entry? This can't be undone.")) return;
+  toast("Deleting\u2026");
+  try{
+    var batch = fdb.batch();
+    batch.delete(fdb.collection("building_history_events").doc(eventId));
+    batch.delete(fdb.collection("reports").doc(eventId)); /* same id \u2014 see logReportAndHistoryEvent */
+    await batch.commit();
+    toast("Deleted \u2713");
+    openBuildingHistory(buildingId);
+  }catch(e){
+    toast("Delete failed: " + e.message);
   }
 }
 
@@ -1382,9 +1420,10 @@ async function logReportAndHistoryEvent(o, kind, emailInfo){
       emailRecipients: (emailInfo && emailInfo.to) || [],
       createdAt: Date.now()
     };
+    var sharedId = fdb.collection("reports").doc().id; /* same id in both collections so a delete can clean up the pair */
     var batch = fdb.batch();
-    batch.set(fdb.collection("reports").doc(), payload);
-    batch.set(fdb.collection("building_history_events").doc(), payload);
+    batch.set(fdb.collection("reports").doc(sharedId), payload);
+    batch.set(fdb.collection("building_history_events").doc(sharedId), payload);
     await batch.commit();
   }catch(e){ console.warn("history log failed", e); }
 }

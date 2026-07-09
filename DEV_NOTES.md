@@ -188,6 +188,16 @@ and, once unlocked for the session (`sessionStorage`), reveals:
 - **Delete (admin)** per building in the Building History tab (`deleteBuildingAdmin()`)
   — removes the building doc plus its `reports`/`building_history_events`, but does
   **not** touch the underlying `workorders`.
+- **Delete (admin)** per timeline entry (`deleteHistoryEventAdmin()`) inside a
+  building's "View Timeline" panel. `reports` and `building_history_events` docs for
+  the same report share one Firestore id (set in `logReportAndHistoryEvent()`), so
+  deleting a timeline entry removes both sides of the pair in one batch.
+- **Duplicate flagging** (`flagDuplicateEvents()`, `DUP_WINDOW_MS = 5 min`): when a
+  building's timeline loads, entries with the same `workOrderId` + `reportType`
+  created within 5 minutes of another entry are marked `_dup` and shown with a red
+  "Possible duplicate" badge — this is almost always a double-click or a retried
+  Send/Share/Download, not two real reports. It's a visual flag only (nothing is
+  auto-deleted); admin uses the per-entry Delete button to clean them up.
 
 **This is not real security** — the PIN ships in public JS, so it only stops
 accidental clicks, not a determined reader of source. If real access control is ever
