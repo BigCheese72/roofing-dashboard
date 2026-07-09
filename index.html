@@ -677,10 +677,16 @@ async function lookupProspectiveBuildingBaseMap(){
     if (!snap.exists) return null;
     var bld = snap.data();
     if ((bld.roof_base_map_type === "roof_plan" || bld.roof_base_map_type === "sketch") && bld.roof_base_map_url){
-      return { url: bld.roof_base_map_url, type: bld.roof_base_map_type };
+      return { url: bld.roof_base_map_url, type: bld.roof_base_map_type, georeferenced: false };
+    }
+    if (bld.roof_base_map_type === "drone_ortho" && bld.roof_base_map_url && bld.roof_base_map_bounds){
+      return { url: bld.roof_base_map_url, type: "drone_ortho", georeferenced: true, bounds: bld.roof_base_map_bounds };
     }
     return null;
   }catch(e){ return null; }
+}
+function boundsToLatLngBounds(b){
+  return [[b.south, b.west], [b.north, b.east]];
 }
 var pinMap = null, pinMarker = null, pinModalFindingId = null, pinInitialSource = null,
   pinInteracted = false, pinMapMode = "latlng", pinXYSize = null;
@@ -695,6 +701,14 @@ async function openPinModal(findingId){
   if (pinMap){ pinMap.remove(); pinMap = null; pinMarker = null; }
 
   var customBaseMap = await lookupProspectiveBuildingBaseMap();
+  if (customBaseMap && customBaseMap.georeferenced){
+    // Drone orthomosaic: real coordinates, so it's just a higher-detail
+    // image layer on top of the normal lat/lng satellite map — pins still
+    // save as lat/lng like any other satellite pin, no separate x/y mode.
+    pinMapMode = "latlng";
+    await openPinModalSatellite(f, findingId, customBaseMap);
+    return;
+  }
   if (customBaseMap){
     pinMapMode = "xy";
     document.getElementById("pin-hint").textContent = "Loading base map…";
@@ -729,8 +743,8 @@ async function openPinModal(findingId){
   pinMapMode = "latlng";
   await openPinModalSatellite(f, findingId);
 }
-async function openPinModalSatellite(f, findingId){
-  var center, zoom = 17, hint;
+async function openPinModalSatellite(f, findingId, orthoOverlay){
+  var center, zoom = 17, hint, fitOrthoBounds = false;
   if (f.pin && typeof f.pin.lat === "number"){
     center = { lat: f.pin.lat, lng: f.pin.lng };
     pinInitialSource = f.pin.source || "tech_placed";
@@ -743,6 +757,13 @@ async function openPinModalSatellite(f, findingId){
       pinInitialSource = "photo_gps";
       zoom = 19;
       hint = "Placed from photo GPS — drag to correct if it's not quite right.";
+    } else if (orthoOverlay){
+      // No need to geocode — we already know exactly where this building is.
+      pinInitialSource = "tech_placed";
+      var b = orthoOverlay.bounds;
+      center = { lat: (b.north + b.south) / 2, lng: (b.east + b.west) / 2 };
+      fitOrthoBounds = true;
+      hint = "Tap the orthomosaic to place the pin.";
     } else {
       pinInitialSource = "tech_placed";
       var addr = val("location") || val("jobName") || "";
@@ -757,6 +778,7 @@ async function openPinModalSatellite(f, findingId){
       }
     }
   }
+  if (orthoOverlay && !fitOrthoBounds) hint += " (drone orthomosaic loaded for extra detail)";
   document.getElementById("pin-hint").textContent = hint;
 
   setTimeout(function(){
@@ -764,6 +786,10 @@ async function openPinModalSatellite(f, findingId){
     L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
       maxZoom: 21, attribution: "Tiles &copy; Esri"
     }).addTo(pinMap);
+    if (orthoOverlay){
+      L.imageOverlay(orthoOverlay.url, boundsToLatLngBounds(orthoOverlay.bounds)).addTo(pinMap);
+      if (fitOrthoBounds) pinMap.fitBounds(boundsToLatLngBounds(orthoOverlay.bounds));
+    }
     pinMarker = L.marker([center.lat, center.lng], { draggable: true }).addTo(pinMap);
     pinMarker.on("dragend", function(){ pinInteracted = true; });
     pinMap.on("click", function(e){ pinMarker.setLatLng(e.latlng); pinInteracted = true; });
@@ -1271,7 +1297,7 @@ function pinPopupHtml(p){
    thing you can look at, not something that only appears once a pin
    exists. bldAddress centers satellite mode when there's nothing else
    to derive a center from. */
-function renderBuildingMap(pins, customBld, bldAddress){
+function renderBuildingMap(pins, customBld, bldAddress, orthoOverlay){
   var el = document.getElementById("building-map");
   if (!el) return;
   if (buildingMap){ buildingMap.remove(); buildingMap = null; }
@@ -1302,14 +1328,20 @@ function renderBuildingMap(pins, customBld, bldAddress){
     pins.forEach(function(p){ bounds.push([p.lat, p.lng]); });
     var center = null, zoom = 18;
     if (!bounds.length){
-      center = await geocodeAddress(bldAddress || "");
-      if (!center){ center = { lat: 39.8283, lng: -98.5795 }; zoom = 4; }
+      if (orthoOverlay){
+        var ob = orthoOverlay.bounds;
+        center = { lat: (ob.north + ob.south) / 2, lng: (ob.east + ob.west) / 2 };
+      } else {
+        center = await geocodeAddress(bldAddress || "");
+        if (!center){ center = { lat: 39.8283, lng: -98.5795 }; zoom = 4; }
+      }
     }
     setTimeout(function(){
       buildingMap = center ? L.map("building-map").setView([center.lat, center.lng], zoom) : L.map("building-map");
       L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
         maxZoom: 21, attribution: "Tiles &copy; Esri"
       }).addTo(buildingMap);
+      if (orthoOverlay) L.imageOverlay(orthoOverlay.url, boundsToLatLngBounds(orthoOverlay.bounds)).addTo(buildingMap);
       pins.forEach(function(p){
         L.circleMarker([p.lat, p.lng], {
           radius: 9, color: "#fff", weight: 2, fillColor: warrantyColor(p.warranty), fillOpacity: 0.95
@@ -1317,6 +1349,7 @@ function renderBuildingMap(pins, customBld, bldAddress){
       });
       if (bounds.length === 1) buildingMap.setView(bounds[0], 19);
       else if (bounds.length > 1) buildingMap.fitBounds(bounds, { padding: [30, 30] });
+      else if (orthoOverlay) buildingMap.fitBounds(boundsToLatLngBounds(orthoOverlay.bounds));
       buildingMap.invalidateSize();
       setTimeout(function(){ if (buildingMap) buildingMap.invalidateSize(); }, 300);
     }, 50);
@@ -1334,21 +1367,42 @@ function renderBaseMapAdminCard(buildingId, bld){
   var hasMap = bld.roof_base_map_type && bld.roof_base_map_url;
   var hasProject = !!bld.companyCamProjectId;
   var safeId = buildingId.replace(/[^A-Za-z0-9_-]/g, "");
+  var b = bld.roof_base_map_bounds;
   return '<div class="card"><h2 class="cond">Roof Base Map (admin)</h2>' +
     (hasMap ?
       '<p class="hint">Current: ' + esc(bld.roof_base_map_type.replace("_"," ")) +
-        ' — <a href="' + esc(bld.roof_base_map_url) + '" target="_blank" rel="noopener">view image</a></p>' +
+        ' — <a href="' + esc(bld.roof_base_map_url) + '" target="_blank" rel="noopener">view image</a>' +
+        (b ? ' (bounds: N ' + b.north.toFixed(5) + ', S ' + b.south.toFixed(5) + ', E ' + b.east.toFixed(5) + ', W ' + b.west.toFixed(5) + ')' : '') +
+        '</p>' +
       '<div class="btnrow"><button class="btn danger" onclick="clearRoofBaseMap(\'' + buildingId + '\')">Clear Base Map</button></div>'
       : '<p class="hint">No custom base map set — pins default to satellite.</p>') +
     (hasProject ?
       '<input type="file" id="basemap-file-' + safeId + '" accept="image/*" style="display:none" ' +
         'onchange="uploadRoofBaseMap(\'' + buildingId + '\', this.files); this.value=\'\';">' +
+      '<div class="fld" style="max-width:260px">' +
+        '<select id="basemap-type-' + safeId + '" onchange="toggleBaseMapBoundsFields(\'' + safeId + '\')">' +
+          '<option value="roof_plan">Roof Plan</option>' +
+          '<option value="sketch">Sketch</option>' +
+          '<option value="drone_ortho">Drone Orthomosaic</option>' +
+        '</select></div>' +
+      '<div id="basemap-bounds-' + safeId + '" style="display:none">' +
+        '<p class="hint">Paste the bounds printed by <code>tools/geotiff_to_webmap.py</code>:</p>' +
+        '<div class="grid">' +
+          '<div class="fld"><label>North</label><input type="text" id="basemap-north-' + safeId + '"></div>' +
+          '<div class="fld"><label>South</label><input type="text" id="basemap-south-' + safeId + '"></div>' +
+          '<div class="fld"><label>East</label><input type="text" id="basemap-east-' + safeId + '"></div>' +
+          '<div class="fld"><label>West</label><input type="text" id="basemap-west-' + safeId + '"></div>' +
+        '</div></div>' +
       '<div class="btnrow">' +
-        '<select id="basemap-type-' + safeId + '"><option value="roof_plan">Roof Plan</option><option value="sketch">Sketch</option></select>' +
-        '<button class="btn" onclick="document.getElementById(\'basemap-file-' + safeId + '\').click()">Upload Roof Plan / Sketch</button>' +
+        '<button class="btn" onclick="document.getElementById(\'basemap-file-' + safeId + '\').click()">Upload Base Map</button>' +
       '</div>'
-      : '<p class="hint">Link a CompanyCam project to this building first (import photos from a project on a work order for it) before uploading a custom base map — it’s stored as a CompanyCam document.</p>') +
+      : '<p class="hint">Link a CompanyCam project to this building first (import photos from a work order for it) before uploading a custom base map — it’s stored as a CompanyCam document.</p>') +
     '</div>';
+}
+function toggleBaseMapBoundsFields(safeId){
+  var typeSel = document.getElementById("basemap-type-" + safeId);
+  var boundsDiv = document.getElementById("basemap-bounds-" + safeId);
+  if (boundsDiv) boundsDiv.style.display = (typeSel && typeSel.value === "drone_ortho") ? "" : "none";
 }
 function resizeImageFile(file, maxDim, quality){
   return new Promise(function(res, rej){
@@ -1380,6 +1434,18 @@ async function uploadRoofBaseMap(buildingId, files){
   var safeId = buildingId.replace(/[^A-Za-z0-9_-]/g, "");
   var typeSel = document.getElementById("basemap-type-" + safeId);
   var type = typeSel ? typeSel.value : "roof_plan";
+  var bounds = null;
+  if (type === "drone_ortho"){
+    var n = parseFloat(val("basemap-north-" + safeId));
+    var s = parseFloat(val("basemap-south-" + safeId));
+    var e = parseFloat(val("basemap-east-" + safeId));
+    var w = parseFloat(val("basemap-west-" + safeId));
+    if (![n,s,e,w].every(function(x){ return isFinite(x); }) || n <= s || e <= w){
+      toast("Enter valid North/South/East/West bounds first (from tools/geotiff_to_webmap.py's output).");
+      return;
+    }
+    bounds = { north: n, south: s, east: e, west: w };
+  }
   toast("Uploading base map…");
   try{
     var bldSnap = await fdb.collection("buildings").doc(buildingId).get();
@@ -1392,8 +1458,10 @@ async function uploadRoofBaseMap(buildingId, files){
       name: (f.name || "roof-base-map") + ".jpg", attachment: base64 });
     var url = out.document && out.document.url;
     if (!url) throw new Error("CompanyCam didn't return a URL for the uploaded file");
-    await callAdminApi({ action: "set_building_roof_map", buildingId: buildingId,
-      roof_base_map_type: type, roof_base_map_url: url });
+    var apiBody = { action: "set_building_roof_map", buildingId: buildingId,
+      roof_base_map_type: type, roof_base_map_url: url };
+    if (bounds) apiBody.roof_base_map_bounds = bounds;
+    await callAdminApi(apiBody);
     toast("Base map saved ✓");
     openBuildingHistory(buildingId);
   }catch(e){
@@ -1421,6 +1489,8 @@ async function openBuildingHistory(buildingId){
     var bld = bldSnap.exists ? bldSnap.data() : {};
     var baseMapCardHtml = isAdmin ? renderBaseMapAdminCard(buildingId, bld) : "";
     var hasCustomBaseMap = !!((bld.roof_base_map_type === "roof_plan" || bld.roof_base_map_type === "sketch") && bld.roof_base_map_url);
+    var orthoOverlay = (bld.roof_base_map_type === "drone_ortho" && bld.roof_base_map_url && bld.roof_base_map_bounds) ?
+      { url: bld.roof_base_map_url, bounds: bld.roof_base_map_bounds } : null;
     var emptyMapCardHtml = '<div class="card"><h2 class="cond">Roof Map</h2>' +
       '<p class="hint">No pins placed yet — they’ll show up here as findings get pinned on future reports.</p>' +
       '<div id="building-map" style="height:min(50vh,420px);border-radius:6px;overflow:hidden"></div></div>';
@@ -1431,7 +1501,7 @@ async function openBuildingHistory(buildingId){
     if (!events.length){
       detail.innerHTML = baseMapCardHtml + emptyMapCardHtml + '<div class="card"><h2 class="cond">Timeline</h2>' +
         '<div class="empty">No reports logged for this building yet.</div></div>';
-      renderBuildingMap([], hasCustomBaseMap ? bld : null, bld.location);
+      renderBuildingMap([], hasCustomBaseMap ? bld : null, bld.location, orthoOverlay);
       return;
     }
     flagDuplicateEvents(events);
@@ -1476,7 +1546,7 @@ async function openBuildingHistory(buildingId){
           (e.pdfRef && e.pdfRef.url ? '<div class="evt-row"><a href="' + esc(e.pdfRef.url) + '" target="_blank" rel="noopener">View saved PDF</a></div>' : '') +
           '</div>';
       }).join("") + '</div>';
-    renderBuildingMap(mapPins, hasCustomBaseMap ? bld : null, bld.location);
+    renderBuildingMap(mapPins, hasCustomBaseMap ? bld : null, bld.location, orthoOverlay);
   }catch(e){
     detail.innerHTML = '<div class="card"><div class="empty">Couldn\u2019t load timeline: ' + esc(e.message) + '</div></div>';
   }

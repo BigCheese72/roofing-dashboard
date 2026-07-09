@@ -89,9 +89,21 @@ exports.handler = async function (event) {
       if (type && ["drone_ortho", "satellite", "roof_plan", "sketch"].indexOf(type) === -1) {
         return resp(400, { error: "Invalid roof_base_map_type" });
       }
+      let bounds = null;
+      if (type === "drone_ortho") {
+        const b = body.roof_base_map_bounds || {};
+        const n = Number(b.north), s = Number(b.south), e = Number(b.east), w = Number(b.west);
+        const valid = [n, s, e, w].every(v => Number.isFinite(v)) &&
+          n > s && n <= 90 && s >= -90 && e > w && e <= 180 && w >= -180;
+        if (!valid) {
+          return resp(400, { error: "roof_base_map_bounds must have valid north/south/east/west (north>south, east>west, in range)" });
+        }
+        bounds = { north: n, south: s, east: e, west: w };
+      }
       await db.collection("buildings").doc(buildingId).set({
         roof_base_map_type: type,
         roof_base_map_url: url,
+        roof_base_map_bounds: bounds,
         roof_base_map_updated_at: Date.now()
       }, { merge: true });
       return resp(200, { ok: true });
