@@ -2,3 +2,11 @@
   command = "npm install"
   publish = "."
   functions = "netlify/functions"
+
+[functions]
+  # firebase-admin pulls in Google Cloud SDK packages with dynamic requires
+  # that Netlify's esbuild-based function bundler is known to choke on.
+  # Marking it external tells the bundler to leave it in node_modules and
+  # resolve it at runtime instead of trying to inline it — the documented
+  # fix for this exact class of build failure.
+  external_node_modules = ["firebase-admin"]
