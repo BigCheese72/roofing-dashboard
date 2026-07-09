@@ -1,0 +1,60 @@
+# RoofOps Roadmap
+
+This roadmap is intentionally phased so the current working field app remains stable while the product grows into a broader roof history and operations platform.
+
+## Phase 1: Stabilize Current Field App
+
+Goal: preserve and harden the existing RoofOps Field / Watkins work order workflow.
+
+- Keep the current work order form, Firebase sync, CompanyCam import, PDF generation, and email/report sending working.
+- Document the current architecture and environment variables.
+- Avoid major UI redesigns until the data model and workflow are stable.
+- Improve reliability around save/load, report logging, and failure messages.
+- Review Firestore security rules for all collections currently touched by the app.
+- Add lightweight manual QA steps for field workflows: create, save, reload, import CompanyCam photos, generate PDF, send email, and verify history logging.
+
+## Phase 2: Building/Site History Foundation
+
+Goal: make every work order contribute to a durable customer/building record.
+
+- Formalize `customers` and `buildings` as first-class Firestore collections.
+- Keep the current derive-from-form behavior until a customer/building picker is ready.
+- Normalize building identifiers, customer relationships, addresses, roof system data, and CompanyCam project links.
+- Expand report/history logging without interrupting field users.
+- Prepare Firestore indexes for building history views and dashboard queries.
+- Decide how to handle duplicate building names, renamed customers, and multi-building sites.
+
+## Phase 3: Roof History Timeline
+
+Goal: turn each building into a long-term roof record.
+
+- Build a richer building history timeline from work orders, reports, photos, warranty decisions, and CompanyCam metadata.
+- Add filters by date, roof area, technician, warranty status, leak type, repair type, and report type.
+- Add durable references to report PDFs and photo source records.
+- Introduce roof area or roof section labels before full map/pin tooling.
+- Prepare for future roof maps, drone imagery, satellite imagery, plans, sketches, and leak pins.
+
+## Phase 4: Dashboard/Admin/Users
+
+Goal: support office/admin workflows and controlled access.
+
+- Add user accounts, roles, and permissions.
+- Add an admin/dashboard experience for searching customers, buildings, work orders, reports, and history events.
+- Add account/company settings for branding, default emails, report templates, and integration settings.
+- Add user assignment, technician tracking, and audit metadata.
+- Decide whether the field app remains a single page or becomes one module in a larger app shell.
+
+## Phase 5: Future SaaS Platform
+
+Goal: evolve RoofOps into a multi-account SaaS platform.
+
+- Introduce `accounts` as the top-level tenant boundary.
+- Scope every customer, building, work order, report, photo, setting, and user permission by account.
+- Add billing/subscription support outside the field app.
+- Build repeatable onboarding for new roofing companies.
+- Add customer portal, advanced analytics, external integrations, and configurable report templates.
+- Plan data migration from the Watkins single-account structure to the multi-account structure.
+
+## Guiding Constraint
+
+Each phase should protect the working field workflow. Future modules should extend the current app through documented data contracts rather than replacing proven features prematurely.
