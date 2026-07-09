@@ -597,18 +597,17 @@ was never built.
 **API requirements, researched against CompanyCam's live API reference
 (`companycam.readme.io`)**:
 - **Add Photo**: `POST /v2/projects/{project_id}/photos`, body `{ photo: { uri,
-  captured_at, coordinates?, description?, tags? } }`. **Important**: the `uri` field
-  is a *location*, not a base64 attachment — unlike `upload_document`'s `attachment`
-  field (which does take base64 directly), this endpoint's naming and JSON-only content
-  type strongly suggest it expects a **publicly fetchable URL**, not raw image bytes.
-  This could not be fully confirmed from the rendered docs (the interactive schema
-  explorer isn't in the fetched markdown) — would need either a direct look at
-  CompanyCam's raw OpenAPI spec or a live test call to nail down for certain, and a
-  live test call is itself a real write, hence pending sign-off along with everything
-  else here.
-- **If `uri` does require a public URL**: app-added photos are stored as base64 with no
-  public URL anywhere (deliberately — no Firebase Storage, per this repo's own
-  ground rules). Pushing them to CompanyCam would first need *some* public-URL hosting
+  captured_at, coordinates?, description?, tags? } }`. **Confirmed 2026-07-09 (was a
+  hedge before, now definitive)**: CompanyCam's own changelog example for this exact
+  endpoint shows `"uri": "https://m.media-amazon.com/images/M/MV5B.../V1_.jpg"` — a
+  real, publicly-accessible external URL, not base64 or multipart. This is corroborated
+  by the sibling `upload_document` endpoint (which this app already uses successfully)
+  explicitly documenting its `attachment` field as **"Base64 encoded file contents"** —
+  a completely different field name and format from `uri`. **CompanyCam's photo API
+  requires a publicly-fetchable URL; it does not accept embedded image bytes.**
+- **This means**: app-added photos are stored as base64 with no public URL anywhere
+  (deliberately — no Firebase Storage, per this repo's own ground rules). Pushing them
+  to CompanyCam **requires** *some* public-URL hosting
   step — which either means reintroducing Storage (explicitly gated behind checking
   with the user first) or some other public-hosting mechanism. **This could turn "add
   a photo-upload API call" into "stand up a hosting layer," a materially bigger and
@@ -629,28 +628,20 @@ carries a stable `ccPhotoId` (and, since the recent `cloudSaveOrder()`/`cloudFet
 fix, that id now reliably survives cloud round-trips). The rule is simply: only push
 photos where `ccPhotoId` is falsy. No new field needed.
 
-**The bigger, genuinely product-level risk: auto-matching/creating a CompanyCam project
-by job name.** This app already has its own building/customer duplicate problem from
-free-text matching (see "Duplicate building detection" above) — the identical failure
-mode transplanted into CompanyCam would be worse, since CompanyCam is a shared system
-other people at Watkins Roofing use directly, and a wrongly-created or wrongly-matched
-project is externally visible in a way an internal duplicate building record isn't.
-**Recommended (not decided)**: only push to a project the work order is *already*
-explicitly linked to (the same `ccLinkedProjectId` the "Import from CompanyCam" flow
-already establishes) — never auto-create or fuzzy-match a project. If no project is
-linked, either do nothing or prompt to link one first. This is a materially safer,
-smaller-blast-radius design than "match or create by job name," but it does mean photos
-added *before* a project gets linked wouldn't retroactively push (would need a
-second, explicit action).
+**Decided by Mark (2026-07-09)**: match by CompanyCam project **name** only — push only
+to a project whose name matches the job; never auto-create a project. If no name match,
+skip/prompt rather than create (exact UX still to be worked out — he flagged the
+name-matching itself needs more thought, e.g. exact vs. fuzzy match, case sensitivity,
+what "the job's name" means when the work order isn't linked to a project yet). Dedupe
+by `ccPhotoId` (see above). Push at send/finalize time, not on every photo add.
 
-**Effort/risk summary**: not a small feature. Needs (1) confirming the actual `uri`
-upload mechanism (possibly a hosting-layer decision), (2) confirming token write scope,
-(3) a product decision on auto-match-vs-require-existing-link for projects, (4) a
-decision on trigger point (push on every photo add, vs. at report-generation time like
-the PDF push already does), (5) real writes to Mark's live CompanyCam account to build
-and test, which cannot happen without his sign-off given the standing no-live-writes
-rule. **Not built. Waiting on Mark's direction on the open questions above before
-starting.**
+**Current blocking status: the hosting question (above) is the hard blocker, confirmed,
+not just suspected.** Building the upload call itself is small; the real work is that it
+needs a public URL for every app-added photo first, and this repo doesn't have a way to
+produce one without reintroducing Firebase Storage (or an equivalent hosting layer) —
+both are explicitly gated behind checking with Mark first, same as the rest of this
+feature. **Not built. Waiting on Mark's decision on the hosting question before writing
+any upload code.**
 
 ### PDF-back-to-CompanyCam (`uploadPdfToCompanyCam()`)
 
