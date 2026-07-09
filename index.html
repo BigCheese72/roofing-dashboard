@@ -1253,14 +1253,25 @@ async function generatePdf(){
   return doc;
 }
 /* ================= building history logging + Storage/CompanyCam PDF persistence ================= */
+function withTimeout(promise, ms){
+  return Promise.race([
+    promise,
+    new Promise(function(_, rej){ setTimeout(function(){ rej(new Error("timed out")); }, ms); })
+  ]);
+}
+/* Capped at 15s: if Firebase Storage isn't enabled/reachable, the SDK's own
+   retry/backoff can otherwise hang far longer than that, which would stall
+   logReportAndHistoryEvent() (it awaits this before writing the history
+   event) well past the point of being useful. A timeout here just means no
+   pdfRef on the history event — everything else still gets logged. */
 async function uploadPdfToStorage(doc, o){
   if (!fstorage) return null;
   try{
     var blob = doc.output("blob");
     var path = "workorder-pdfs/" + o.id + "/" + Date.now() + "_" + pdfFileName();
     var ref = fstorage.ref().child(path);
-    await ref.put(blob);
-    var url = await ref.getDownloadURL();
+    await withTimeout(ref.put(blob), 15000);
+    var url = await withTimeout(ref.getDownloadURL(), 15000);
     return { path: path, url: url };
   }catch(e){
     console.warn("PDF storage upload failed", e);
