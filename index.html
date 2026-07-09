@@ -1093,7 +1093,8 @@ function saveOrder(opts){
   if (fdb){
     if (!opts.quiet) toast("Saving to cloud\u2026");
     return cloudSaveOrder(o).then(function(){
-      syncPinCorrectionsToHistory(o);
+      return syncPinCorrectionsToHistory(o);
+    }).then(function(){
       if (!opts.quiet) toast("Saved to cloud \u2713 \u2014 visible on all your devices");
       renderSaved();
       return true;
