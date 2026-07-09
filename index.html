@@ -458,15 +458,11 @@ async function ensureCustomerAndBuilding(o){
     if (o.companyCamProjectId) patch.companyCamProjectId = o.companyCamProjectId;
     if (!snap.exists){
       patch.createdAt = Date.now();
-      /* Roof map / leak-location foundation \u2014 Phase 1 does not build the
-         map UI yet, but every building gets these fields so a future
-         "Roof Map" feature has somewhere to read/write without a migration.
-         roof_base_map_type is one of: "drone" | "satellite" | "plan" | "sketch" | null. */
+      /* roof_base_map_type/url/bounds are set later via admin.js's
+         set_building_roof_map (see DEV_NOTES.md) \u2014 seeded null here just so
+         a fresh building doc shows the full schema shape in Firestore. */
       patch.roof_base_map_type = null;
       patch.roof_base_map_url = null;
-      patch.roof_section = null;
-      patch.map_pin_x = null;
-      patch.map_pin_y = null;
     }
     await bldRef.set(patch, { merge: true });
   }catch(e){ console.warn("customer/building sync failed", e); }
