@@ -166,6 +166,11 @@ report type logged within 5 minutes of each other, almost always a double-click 
 retried Send/Share/Download. This is a visual flag only; an admin decides whether to
 delete the flagged entry.
 
+The **building list** in Building History similarly flags **possible duplicate
+buildings** — same customer, very similar building name (a typo or a slightly
+different spelling of the same site). This is currently a visual flag only, same as
+the duplicate-entry flag above; there's no merge button yet.
+
 ## How Netlify Fits In
 
 The app is hosted on Netlify as a static site.

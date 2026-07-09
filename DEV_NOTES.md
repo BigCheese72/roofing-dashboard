@@ -340,6 +340,40 @@ just re-rendering that same in-memory array.
 - Wired via plain `onchange` handlers (no debounce needed — filtering an in-memory
   array of at most 50 events is effectively instant).
 
+### Duplicate building detection (shipped, detection only — merge is a separate decision)
+
+Phase 2 roadmap item: "decide how to handle duplicate building names." Ships the
+*detection* half now; the *merge* half (an admin action that deletes a building and
+reassigns its history) is a live-data-write capability and is being held for explicit
+product sign-off before it's built — see the note at the bottom of this section.
+
+- **`buildingsLikelyDuplicate(a, b)`**: deliberately conservative. Only flags a pair if
+  they share the exact same normalized `customerName` — different customers with
+  similar building names are out of scope (an admin can still spot those by eye); a
+  wrong flag is just an unnecessary badge, but the *merge* this is meant to lead into
+  is destructive, so false positives are worth avoiding more than false negatives.
+  Within the same customer, flags an exact normalized-name match, a substring
+  containment (`"Frontier Middle"` vs. `"Frontier Middle School"`), or a Levenshtein
+  distance ≤25% of the longer name's length (`dupLevenshtein()`, a plain DP
+  implementation — no library, matching this repo's no-build-step constraint).
+- **`flagPossibleDuplicateBuildings(list)`** runs over the same `buildings` list
+  `renderHistoryList()` already fetches (`limit(100)`, existing query, no new
+  Firestore read) — O(n²) pairwise comparison, fine at this scale.
+- Flagged buildings get a red left-border (matching the existing duplicate-*report*
+  badge convention from `flagDuplicateEvents()`) and a "Possible duplicate" badge.
+  `lastBuildingList` caches the flagged list in memory for the not-yet-built merge
+  action to reference without re-fetching.
+- **Why merge isn't in this increment**: an admin-side `merge_buildings` action
+  (reassign the loser's `reports`/`building_history_events` to the survivor, merge
+  `roof_assets`, fill in blank survivor fields from the loser, delete the loser) was
+  designed and drafted, matching the existing `delete_building`/`set_building_roof_map`
+  pattern in `admin.js`. It was intentionally **not** committed — deploying it means
+  any admin clicking it on the `dev` branch-deploy performs a real, irreversible delete
+  against the same live Firestore project production reads from (see the dev/prod
+  Firestore-sharing note earlier in this file). That crosses "write to live data,"
+  which needs explicit sign-off before shipping, not just a sound code-level call. See
+  the merge design proposal for the exact behavior once approved.
+
 ### ⚠️ Firestore security rules
 
 New collections (`customers`, `buildings`, `reports`, `building_history_events`,

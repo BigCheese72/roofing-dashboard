@@ -1603,6 +1603,52 @@ function fmtTs(ms){
   if (!ms) return "";
   try{ return new Date(ms).toLocaleString(); }catch(e){ return ""; }
 }
+/* ================= duplicate building detection =================
+   Conservative on purpose \u2014 a false positive just shows an unnecessary
+   badge, but a wrong merge is destructive and irreversible, so this only
+   flags pairs sharing the same normalized customer name (typo'd customer
+   names across different customers are out of scope; an admin can still
+   spot those by eye). Purely client-side over the buildings list that's
+   already fetched \u2014 no new query, no schema change. */
+function dupNormalize(s){
+  return String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+function dupLevenshtein(a, b){
+  var m = a.length, n = b.length;
+  if (!m) return n;
+  if (!n) return m;
+  var prev = [], cur = [];
+  for (var j = 0; j <= n; j++) prev[j] = j;
+  for (var i = 1; i <= m; i++){
+    cur[0] = i;
+    for (j = 1; j <= n; j++){
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    prev = cur.slice();
+  }
+  return prev[n];
+}
+function buildingsLikelyDuplicate(a, b){
+  var custA = dupNormalize(a.customerName), custB = dupNormalize(b.customerName);
+  if (!custA || custA !== custB) return false;
+  var nameA = dupNormalize(a.name), nameB = dupNormalize(b.name);
+  if (!nameA || !nameB || nameA === nameB) return nameA === nameB && !!nameA;
+  if (nameA.indexOf(nameB) > -1 || nameB.indexOf(nameA) > -1) return true;
+  var dist = dupLevenshtein(nameA, nameB), maxLen = Math.max(nameA.length, nameB.length);
+  return maxLen > 0 && (dist / maxLen) <= 0.25;
+}
+function flagPossibleDuplicateBuildings(list){
+  list.forEach(function(b){ b._dupWith = []; });
+  for (var i = 0; i < list.length; i++){
+    for (var j = i + 1; j < list.length; j++){
+      if (buildingsLikelyDuplicate(list[i], list[j])){
+        list[i]._dupWith.push(list[j].id);
+        list[j]._dupWith.push(list[i].id);
+      }
+    }
+  }
+}
+var lastBuildingList = [];
 async function renderHistoryList(){
   var host = document.getElementById("history-list");
   var detail = document.getElementById("history-detail");
@@ -1618,11 +1664,22 @@ async function renderHistoryList(){
     qs.forEach(function(d){ list.push(Object.assign({ id: d.id }, d.data())); });
     if (!list.length){
       host.innerHTML = '<div class="empty">No building history yet. Save a work order or send a report to start one.</div>';
+      lastBuildingList = [];
       return;
     }
-    host.innerHTML = list.map(function(b){
-      return '<div class="bld-item" onclick="openBuildingHistory(\'' + b.id + '\')"><div class="info">' +
-        '<div class="name">' + esc(b.name) + '</div>' +
+    flagPossibleDuplicateBuildings(list);
+    lastBuildingList = list;
+    var dupBuildingCount = list.filter(function(b){ return b._dupWith.length; }).length;
+    host.innerHTML =
+      (dupBuildingCount ? '<p class="hint">\u26a0 ' + dupBuildingCount + ' building(s) below look like possible duplicates ' +
+        '(same customer, very similar name) \u2014 review manually for now; merging isn\u2019t automated yet.</p>' : '') +
+      list.map(function(b){
+        return '<div class="bld-item"' + (b._dupWith.length ? ' style="border-left-color:#D64545"' : '') +
+          ' onclick="openBuildingHistory(\'' + b.id + '\')"><div class="info">' +
+          '<div class="name">' + esc(b.name) +
+          (b._dupWith.length ? ' <span style="font-size:11px;font-weight:700;text-transform:uppercase;' +
+            'letter-spacing:.04em;background:#FBE2E2;color:#D64545;border-radius:3px;padding:2px 6px;' +
+            'margin-left:6px">Possible duplicate</span>' : '') + '</div>' +
         '<div class="meta">' + esc(b.customerName || "") + (b.location ? ' \u00b7 ' + esc(b.location) : "") +
         (b.roofSystem ? ' \u00b7 ' + esc(b.roofSystem) : "") +
         (b.companyCamProjectId ? ' \u00b7 \ud83d\udd17 CompanyCam linked' : "") + '</div></div>' +

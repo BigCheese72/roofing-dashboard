@@ -29,7 +29,13 @@ Goal: make every work order contribute to a durable customer/building record.
 - Normalize building identifiers, customer relationships, addresses, roof system data, and CompanyCam project links.
 - Expand report/history logging without interrupting field users.
 - Prepare Firestore indexes for building history views and dashboard queries.
-- Decide how to handle duplicate building names, renamed customers, and multi-building sites (the picker reduces new dupes going forward; existing ones aren't merged).
+- ⚠️ **Partially shipped**: possible-duplicate buildings (same customer, very similar
+  name) are now flagged with a badge in Building History, conservatively (same
+  customer required, to avoid false positives). Merging flagged duplicates is
+  designed but intentionally not yet built — it's a destructive live-Firestore-write
+  action pending explicit product sign-off, not just a code-level call. See
+  "Duplicate building detection" in `DEV_NOTES.md`. Renamed customers and
+  multi-building sites are still undecided.
 
 ## Phase 3: Roof History Timeline
 
