@@ -552,9 +552,21 @@ project with no real name) is explicitly excluded from ever filling Job Name. On
 combined toast ("CompanyCam Job Name & Location added", or just whichever one actually
 changed) rather than two separate ones.
 
-Verified against real project data (St. Mary's Hospital - St. Louis, id `54362584`):
+**"Job Name" vs. "Building Name" — there is no separate field.** Checked explicitly
+(2026-07-09) after Mark asked for the CompanyCam name to fill "Building Name" instead of
+"Job Name": `FIELD_IDS` (the full list of editable work-order fields) has no
+`buildingName` entry — `jobName` (labeled "Job Name" in the UI) is the *only* field for
+this, and it's already the literal source of the building's identity:
+`ensureCustomerAndBuilding()` sets `buildings.name` straight from `o.jobName`. So
+filling `jobName` from the CompanyCam project's name *is* "populate the building name
+from CompanyCam" — same field, just labeled "Job Name" on screen. No field-targeting
+change was needed; strengthened the code comment in `applyCompanyCamProjectDetail()` to
+say this explicitly, so the next person reading it doesn't have to re-derive it.
+
+Verified against real project data (St. Mary's Hospital - St. Louis, id `54362584`),
+twice — once when this shipped and again after the "Building Name" clarification:
 empty fields fill correctly with the real name/address; a field already holding an
-unrelated value (e.g. "Totally Different Job") is left untouched; a field holding a
+unrelated value (e.g. "My Own Building Label") is left untouched; a field holding a
 substring of the real value (e.g. "St. Mary's") upgrades to the full value; the
 `"(unnamed project)"` fallback never lands in Job Name. Read-only against the real
 `project_detail` response — no Firestore or CompanyCam writes.

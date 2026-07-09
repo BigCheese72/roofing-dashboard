@@ -55,10 +55,12 @@ Goal: make every work order contribute to a durable customer/building record.
   derive-from-form behavior (same Firestore shape, same doc-id derivation), aimed at
   cutting down typo-created duplicate buildings/customers. See `DEV_NOTES.md`.
 - ✅ **Shipped**: opening a CompanyCam project (via Import from CompanyCam) now also
-  fills Job Name from the project's name, alongside the existing Location-from-address
-  autofill — same fill-if-empty-or-upgrade-partial rule on both fields, never clobbers
-  a different manual entry or the building picker's explicit pick. See "Linking a work
-  order to a CompanyCam project" in `DEV_NOTES.md`.
+  fills Job Name — the form's building-identity field; there's no separate "Building
+  Name" input, `jobName` is what `buildings.name` is derived from — from the project's
+  name, alongside the existing Location-from-address autofill. Same
+  fill-if-empty-or-upgrade-partial rule on both fields, never clobbers a different
+  manual entry or the building picker's explicit pick. See "Linking a work order to a
+  CompanyCam project" in `DEV_NOTES.md`.
 - Normalize building identifiers, customer relationships, addresses, roof system data, and CompanyCam project links.
 - Expand report/history logging without interrupting field users.
 - Prepare Firestore indexes for building history views and dashboard queries.

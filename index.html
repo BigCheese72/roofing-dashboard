@@ -2964,7 +2964,12 @@ async function applyCompanyCamProjectDetail(id){
       var title = document.getElementById("cc-title");
       if (title) title.textContent = project.name;
     }
-    /* Upgrades a short/partial Job Name / Location (e.g. typed before the
+    /* jobName IS the building-identity field in this form — there is no
+       separate "Building Name" input. ensureCustomerAndBuilding() sets
+       buildings.name straight from o.jobName, so filling jobName here
+       from the CompanyCam project's name is exactly "populate the
+       building name from CompanyCam," not a generic job-title fill.
+       Upgrades a short/partial Job Name / Location (e.g. typed before the
        CompanyCam project was linked, or filled in by the building picker
        from a shorter/older record) to the project's fuller name/address.
        Only overwrites when the current text is empty or is already
