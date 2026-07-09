@@ -1266,10 +1266,14 @@ function pinPopupHtml(p){
 }
 /* pins here are already pre-filtered to the mode matching customBld (see
    caller) — null customBld means satellite/lat-lng mode, otherwise x/y
-   mode against that building's custom base map image. */
-function renderBuildingMap(pins, customBld){
+   mode against that building's custom base map image. The map always
+   renders, even with zero pins — a building's roof map is a permanent
+   thing you can look at, not something that only appears once a pin
+   exists. bldAddress centers satellite mode when there's nothing else
+   to derive a center from. */
+function renderBuildingMap(pins, customBld, bldAddress){
   var el = document.getElementById("building-map");
-  if (!el || !pins.length) return;
+  if (!el) return;
   if (buildingMap){ buildingMap.remove(); buildingMap = null; }
   if (customBld){
     var img = new Image();
@@ -1293,23 +1297,30 @@ function renderBuildingMap(pins, customBld){
     img.src = customBld.roof_base_map_url;
     return;
   }
-  setTimeout(function(){
-    buildingMap = L.map("building-map");
-    L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
-      maxZoom: 21, attribution: "Tiles &copy; Esri"
-    }).addTo(buildingMap);
+  (async function(){
     var bounds = [];
-    pins.forEach(function(p){
-      L.circleMarker([p.lat, p.lng], {
-        radius: 9, color: "#fff", weight: 2, fillColor: warrantyColor(p.warranty), fillOpacity: 0.95
-      }).addTo(buildingMap).bindPopup(pinPopupHtml(p));
-      bounds.push([p.lat, p.lng]);
-    });
-    if (bounds.length === 1) buildingMap.setView(bounds[0], 19);
-    else buildingMap.fitBounds(bounds, { padding: [30, 30] });
-    buildingMap.invalidateSize();
-    setTimeout(function(){ if (buildingMap) buildingMap.invalidateSize(); }, 300);
-  }, 50);
+    pins.forEach(function(p){ bounds.push([p.lat, p.lng]); });
+    var center = null, zoom = 18;
+    if (!bounds.length){
+      center = await geocodeAddress(bldAddress || "");
+      if (!center){ center = { lat: 39.8283, lng: -98.5795 }; zoom = 4; }
+    }
+    setTimeout(function(){
+      buildingMap = center ? L.map("building-map").setView([center.lat, center.lng], zoom) : L.map("building-map");
+      L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
+        maxZoom: 21, attribution: "Tiles &copy; Esri"
+      }).addTo(buildingMap);
+      pins.forEach(function(p){
+        L.circleMarker([p.lat, p.lng], {
+          radius: 9, color: "#fff", weight: 2, fillColor: warrantyColor(p.warranty), fillOpacity: 0.95
+        }).addTo(buildingMap).bindPopup(pinPopupHtml(p));
+      });
+      if (bounds.length === 1) buildingMap.setView(bounds[0], 19);
+      else if (bounds.length > 1) buildingMap.fitBounds(bounds, { padding: [30, 30] });
+      buildingMap.invalidateSize();
+      setTimeout(function(){ if (buildingMap) buildingMap.invalidateSize(); }, 300);
+    }, 50);
+  })();
 }
 /* ================= custom base maps (Phase 4, admin-only) =================
    A building's base map is shared/building-wide (affects every future
@@ -1409,13 +1420,18 @@ async function openBuildingHistory(buildingId){
     var bldSnap = await fdb.collection("buildings").doc(buildingId).get();
     var bld = bldSnap.exists ? bldSnap.data() : {};
     var baseMapCardHtml = isAdmin ? renderBaseMapAdminCard(buildingId, bld) : "";
+    var hasCustomBaseMap = !!((bld.roof_base_map_type === "roof_plan" || bld.roof_base_map_type === "sketch") && bld.roof_base_map_url);
+    var emptyMapCardHtml = '<div class="card"><h2 class="cond">Roof Map</h2>' +
+      '<p class="hint">No pins placed yet — they’ll show up here as findings get pinned on future reports.</p>' +
+      '<div id="building-map" style="height:min(50vh,420px);border-radius:6px;overflow:hidden"></div></div>';
     var qs = await fdb.collection("building_history_events")
       .where("buildingId", "==", buildingId).orderBy("createdAt", "desc").limit(50).get();
     var events = [];
     qs.forEach(function(d){ events.push(Object.assign({ _id: d.id }, d.data())); });
     if (!events.length){
-      detail.innerHTML = baseMapCardHtml + '<div class="card"><h2 class="cond">Timeline</h2>' +
+      detail.innerHTML = baseMapCardHtml + emptyMapCardHtml + '<div class="card"><h2 class="cond">Timeline</h2>' +
         '<div class="empty">No reports logged for this building yet.</div></div>';
+      renderBuildingMap([], hasCustomBaseMap ? bld : null, bld.location);
       return;
     }
     flagDuplicateEvents(events);
@@ -1428,14 +1444,17 @@ async function openBuildingHistory(buildingId){
        the manual anchoring the spec explicitly says not to build. Pins
        placed before a custom base map existed (lat/lng) won't appear once
        one is set — a known, documented tradeoff, not a bug. */
-    var hasCustomBaseMap = !!((bld.roof_base_map_type === "roof_plan" || bld.roof_base_map_type === "sketch") && bld.roof_base_map_url);
     var mapPins = hasCustomBaseMap ?
       allPins.filter(function(p){ return typeof p.x === "number" && typeof p.y === "number"; }) :
       allPins.filter(function(p){ return typeof p.lat === "number" && typeof p.lng === "number"; });
-    var mapCardHtml = mapPins.length ?
-      '<div class="card"><h2 class="cond">Roof Map</h2>' +
-      '<p class="hint">Every pinned finding across every report for this building. Tap a pin for details.</p>' +
-      '<div id="building-map" style="height:min(50vh,420px);border-radius:6px;overflow:hidden"></div></div>' : '';
+    /* Always show the roof map, even with zero pins — it's the building's
+       satellite/base-map view, not just a pin display. Pins fill in over
+       time as reports get generated. */
+    var mapCardHtml = '<div class="card"><h2 class="cond">Roof Map</h2>' +
+      '<p class="hint">' + (mapPins.length ?
+        'Every pinned finding across every report for this building. Tap a pin for details.' :
+        'No pins placed yet — they’ll show up here as findings get pinned on future reports.') + '</p>' +
+      '<div id="building-map" style="height:min(50vh,420px);border-radius:6px;overflow:hidden"></div></div>';
     detail.innerHTML = baseMapCardHtml + mapCardHtml +
       '<div class="card"><h2 class="cond">Timeline (' + events.length + ')</h2>' +
       (dupCount ? '<p class="hint">\u26a0 ' + dupCount + ' possible duplicate' + (dupCount === 1 ? "" : "s") +
@@ -1457,7 +1476,7 @@ async function openBuildingHistory(buildingId){
           (e.pdfRef && e.pdfRef.url ? '<div class="evt-row"><a href="' + esc(e.pdfRef.url) + '" target="_blank" rel="noopener">View saved PDF</a></div>' : '') +
           '</div>';
       }).join("") + '</div>';
-    if (mapPins.length) renderBuildingMap(mapPins, hasCustomBaseMap ? bld : null);
+    renderBuildingMap(mapPins, hasCustomBaseMap ? bld : null, bld.location);
   }catch(e){
     detail.innerHTML = '<div class="card"><div class="empty">Couldn\u2019t load timeline: ' + esc(e.message) + '</div></div>';
   }
