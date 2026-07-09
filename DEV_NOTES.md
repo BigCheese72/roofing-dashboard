@@ -371,8 +371,42 @@ product sign-off before it's built — see the note at the bottom of this sectio
   any admin clicking it on the `dev` branch-deploy performs a real, irreversible delete
   against the same live Firestore project production reads from (see the dev/prod
   Firestore-sharing note earlier in this file). That crosses "write to live data,"
-  which needs explicit sign-off before shipping, not just a sound code-level call. See
-  the merge design proposal for the exact behavior once approved.
+  which needs explicit sign-off before shipping, not just a sound code-level call.
+  **Status: explicitly shelved per product decision** — do not build the merge action,
+  or any other feature that mutates/deletes existing buildings/records, without new
+  sign-off. The design above is kept only as a reference for when that sign-off happens.
+
+### All Reports view (shipped, read-only)
+
+Phase 4 "Dashboard" seed. `reports` is a flat, append-only collection that's been
+written on every report since early in this project (`logReportAndHistoryEvent()`) but
+was never read by anything until now — this is that first read.
+
+- **Single query, no composite index needed**: `fdb.collection("reports")
+  .orderBy("createdAt","desc").limit(200)` — no `.where()`, so unlike
+  `building_history_events`'s per-building query (which needs a composite index, see
+  below), this works with zero Firestore console setup. If a `.where()` clause is ever
+  added here (e.g. server-side building/customer filtering instead of the current
+  client-side text search), that's the point to revisit indexing.
+- **Filtering is entirely client-side** over that one fetch — a text search box
+  (matches `buildingName`/`customerName` substring) plus the same four
+  distinct-values-from-the-data dropdowns as the timeline filters (`rpDistinctSorted()`,
+  same pattern as `tlDistinctSorted()`) plus a date range on `createdAt`. Read-only, no
+  admin gating — same reasoning as the timeline filters.
+- **Tapping a report** (`rpJumpToBuilding()`) switches to Building History and opens
+  that report's building via the existing `openBuildingHistory()` — no new navigation
+  code, just reuses the tab-switch + detail-load that already exists.
+- **A report with no linked building** (`buildingId` missing/null) renders as
+  "(unknown building)" and tapping it toasts instead of navigating, rather than
+  throwing — found this exact case in production while testing (see below).
+- **Known pre-existing data inconsistency, found (not caused) by building this**:
+  live production `reports` currently has entries whose matching
+  `building_history_events` doc doesn't exist at all, even though
+  `logReportAndHistoryEvent()` is supposed to write both with the same doc id in one
+  batch. Whatever caused that predates this feature — this view just makes it visible
+  for the first time, since nothing previously read `reports` directly. Not
+  investigated or touched (would require writes, out of scope for this read-only
+  feature); worth a look before this view sees real use as a trust signal.
 
 ### ⚠️ Firestore security rules
 

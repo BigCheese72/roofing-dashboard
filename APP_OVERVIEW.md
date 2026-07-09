@@ -171,6 +171,13 @@ buildings** — same customer, very similar building name (a typo or a slightly
 different spelling of the same site). This is currently a visual flag only, same as
 the duplicate-entry flag above; there's no merge button yet.
 
+## All Reports Tab
+
+The **Reports** tab lists every generated report across every building, most recent
+first — read-only, no admin needed. Filter by search text (building or customer name),
+date range, roof area, technician, warranty status, or report type. Tap any report to
+jump straight to that building's full timeline in Building History.
+
 ## How Netlify Fits In
 
 The app is hosted on Netlify as a static site.

@@ -68,6 +68,12 @@ Goal: turn each building into a long-term roof record.
 
 Goal: support office/admin workflows and controlled access.
 
+- ✅ **Shipped, first Dashboard seed**: a read-only "Reports" tab — every generated
+  report across every building, most recent first, filterable by search text, date
+  range, roof area, technician, warranty status, and report type. Reads the `reports`
+  collection (written since early in the project, never read until now) — no new
+  index needed since it's a single unfiltered query with client-side filtering. Tap a
+  report to jump to its building's timeline. See "All Reports view" in `DEV_NOTES.md`.
 - ✅ Interim shipped ahead of this phase: a PIN-based "admin mode" gates
   unlink/delete controls from field techs, with the PIN check and the actual
   deletes both enforced server-side (`netlify/functions/admin.js` + Firestore

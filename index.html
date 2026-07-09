@@ -151,6 +151,7 @@
   <button class="tab cond" id="tab-preview" onclick="showView('preview')">Preview</button>
   <button class="tab cond" id="tab-saved" onclick="showView('saved')">Saved (<span id="saved-count">0</span>)</button>
   <button class="tab cond" id="tab-history" onclick="showView('history')">Building History</button>
+  <button class="tab cond" id="tab-reports" onclick="showView('reports')">Reports</button>
   <button class="tab cond" id="admin-toggle" onclick="toggleAdminMode()" style="font-size:11px">Admin</button>
 </header>
 
@@ -294,6 +295,30 @@
     </div>
     <div id="history-list"></div>
     <div id="history-detail"></div>
+  </div>
+
+  <!-- ================= ALL REPORTS VIEW (read-only, cross-building) ================= -->
+  <div id="view-reports" style="display:none">
+    <div class="card">
+      <h2 class="cond">All Reports</h2>
+      <p class="hint">Every generated report across every building, most recent first — read-only. Tap a report
+        to jump to that building's timeline.</p>
+      <div class="grid" style="margin-bottom:6px">
+        <div class="fld"><label>Search (building or customer)</label>
+          <input type="text" id="rp-search" oninput="rpRenderList()" placeholder="e.g. Westminster"></div>
+        <div class="fld"><label>From</label><input type="date" id="rp-from" onchange="rpRenderList()"></div>
+        <div class="fld"><label>To</label><input type="date" id="rp-to" onchange="rpRenderList()"></div>
+        <div class="fld"><label>Roof Area</label><select id="rp-roof" onchange="rpRenderList()"><option value="">All</option></select></div>
+        <div class="fld"><label>Technician</label><select id="rp-tech" onchange="rpRenderList()"><option value="">All</option></select></div>
+        <div class="fld"><label>Warranty Status</label><select id="rp-warranty" onchange="rpRenderList()"><option value="">All</option></select></div>
+        <div class="fld"><label>Report Type</label><select id="rp-reporttype" onchange="rpRenderList()"><option value="">All</option></select></div>
+      </div>
+      <div class="btnrow" style="margin:0 0 10px;align-items:center">
+        <button class="btn" onclick="clearReportsFilters()">Clear Filters</button>
+        <span class="hint" id="reports-count" style="margin:0"></span>
+      </div>
+    </div>
+    <div id="reports-list"></div>
   </div>
 
 </div>
@@ -2131,6 +2156,109 @@ async function deleteHistoryEventAdmin(eventId, buildingId){
   }
 }
 
+/* ================= all reports (cross-building, read-only) =================
+   Phase 4 "Dashboard" seed. reports is a flat, append-only collection
+   already written by logReportAndHistoryEvent() on every report — this is
+   the first time anything actually reads it. Single query, no where
+   clause, so no composite index is needed (unlike building_history_events'
+   per-building query). Filtering (search + date range + 4 dropdowns) is
+   entirely client-side over that one fetch, same pattern as the Building
+   History timeline filters. Read-only — no writes, no admin gating. */
+var reportsCache = [];
+function rpDistinctSorted(field){
+  var set = {};
+  reportsCache.forEach(function(r){ var v = (r[field] || "").trim(); if (v) set[v] = true; });
+  return Object.keys(set).sort();
+}
+function populateReportsFilterOptions(){
+  [["rp-roof","roofType"], ["rp-tech","technician"], ["rp-warranty","warrantyStatus"], ["rp-reporttype","reportType"]]
+    .forEach(function(spec){
+      var sel = document.getElementById(spec[0]);
+      if (!sel) return;
+      var current = sel.value;
+      sel.innerHTML = '<option value="">All</option>' + rpDistinctSorted(spec[1]).map(function(v){
+        return '<option value="' + esc(v) + '">' + esc(v) + '</option>';
+      }).join("");
+      sel.value = Array.prototype.some.call(sel.options, function(o){ return o.value === current; }) ? current : "";
+    });
+}
+function clearReportsFilters(){
+  ["rp-search","rp-from","rp-to","rp-roof","rp-tech","rp-warranty","rp-reporttype"].forEach(function(id){
+    var el = document.getElementById(id);
+    if (el) el.value = "";
+  });
+  rpRenderList();
+}
+function filterReports(){
+  var q = val("rp-search").trim().toLowerCase();
+  var from = val("rp-from"), to = val("rp-to");
+  var roof = val("rp-roof"), tech = val("rp-tech"), warranty = val("rp-warranty"), rtype = val("rp-reporttype");
+  var fromTs = from ? new Date(from + "T00:00:00").getTime() : null;
+  var toTs = to ? new Date(to + "T23:59:59").getTime() : null;
+  return reportsCache.filter(function(r){
+    if (q && (r.buildingName || "").toLowerCase().indexOf(q) === -1 &&
+      (r.customerName || "").toLowerCase().indexOf(q) === -1) return false;
+    if (fromTs !== null && (r.createdAt || 0) < fromTs) return false;
+    if (toTs !== null && (r.createdAt || 0) > toTs) return false;
+    if (roof && r.roofType !== roof) return false;
+    if (tech && r.technician !== tech) return false;
+    if (warranty && r.warrantyStatus !== warranty) return false;
+    if (rtype && r.reportType !== rtype) return false;
+    return true;
+  });
+}
+function rpReportItemHtml(r){
+  return '<div class="evt-item" style="cursor:pointer" onclick="rpJumpToBuilding(\'' + (r.buildingId || "") +
+    '\')"><div class="evt-head">' +
+    '<span class="evt-date">' + esc(r.date || fmtTs(r.createdAt)) + '</span>' +
+    '<span class="evt-tag">' + esc(r.reportType || "") + '</span>' +
+    '<span class="evt-tag">' + esc(r.warrantyStatus || "") + '</span>' +
+    (r.emailSent ? '<span class="evt-tag">Emailed ✓</span>' : '') +
+    '</div>' +
+    '<div class="evt-row"><b>' + esc(r.buildingName || "(unknown building)") + '</b>' +
+    (r.customerName ? ' — ' + esc(r.customerName) : '') + '</div>' +
+    (r.workOrderNo ? '<div class="evt-row">Job No. ' + esc(r.workOrderNo) + '</div>' : '') +
+    (r.technician ? '<div class="evt-row">Technician: ' + esc(r.technician) + '</div>' : '') +
+    (r.roofType ? '<div class="evt-row">Roof: ' + esc(r.roofType) + '</div>' : '') +
+    '</div>';
+}
+function rpRenderList(){
+  var host = document.getElementById("reports-list");
+  if (!host) return;
+  var filtered = filterReports();
+  var countEl = document.getElementById("reports-count");
+  if (countEl){
+    countEl.textContent = filtered.length === reportsCache.length ?
+      "Showing all " + reportsCache.length :
+      "Showing " + filtered.length + " of " + reportsCache.length;
+  }
+  host.innerHTML = filtered.length ?
+    filtered.map(rpReportItemHtml).join("") :
+    '<div class="empty">No reports match these filters.</div>';
+}
+function rpJumpToBuilding(buildingId){
+  if (!buildingId){ toast("No building linked to this report."); return; }
+  showView("history");
+  openBuildingHistory(buildingId);
+}
+async function renderReportsList(){
+  var host = document.getElementById("reports-list");
+  if (!fdb){
+    host.innerHTML = '<div class="empty">Reports need cloud sync (internet connection) to load.</div>';
+    return;
+  }
+  host.innerHTML = '<p class="hint">Loading reports…</p>';
+  try{
+    var qs = await fdb.collection("reports").orderBy("createdAt", "desc").limit(200).get();
+    reportsCache = [];
+    qs.forEach(function(d){ reportsCache.push(Object.assign({ _id: d.id }, d.data())); });
+    populateReportsFilterOptions();
+    rpRenderList();
+  }catch(e){
+    host.innerHTML = '<div class="empty">Couldn’t load reports: ' + esc(e.message) + '</div>';
+  }
+}
+
 /* ================= document build ================= */
 function filledFindings(){ return findings.filter(function(f){ return f.condition || f.location; }); }
 function filledRepairs(){ return repairs.filter(function(r){ return r.repair || r.location; }); }
@@ -2911,13 +3039,14 @@ function unlinkCC(){
 }
 /* ================= views ================= */
 function showView(v){
-  ["edit","preview","saved","history"].forEach(function(name){
+  ["edit","preview","saved","history","reports"].forEach(function(name){
     document.getElementById("view-" + name).style.display = (name === v ? "" : "none");
     document.getElementById("tab-" + name).classList.toggle("active", name === v);
   });
   if (v === "preview") renderDoc();
   if (v === "saved") renderSaved();
   if (v === "history") renderHistoryList();
+  if (v === "reports") renderReportsList();
   window.scrollTo(0,0);
   if (v === "edit" && pendingPinFindingId){
     var fid = pendingPinFindingId;
