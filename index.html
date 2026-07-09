@@ -1469,16 +1469,17 @@ async function ccApiPost(body){
    CompanyCam project history survives even if photos are later removed from
    the work order itself. CompanyCam's API does not expose a general activity
    log, so this is limited to project + photo/document metadata. */
-async function syncCompanyCamHistory(){
+async function syncCompanyCamHistory(opts){
+  opts = opts || {};
   if (!ccLinkedProjectId){
-    toast("No CompanyCam project linked yet — open a project and import at least one photo first.");
-    return;
+    if (!opts.quiet) toast("No CompanyCam project linked yet — open a project and import at least one photo first.");
+    return { ok: false, skipped: true };
   }
   if (!fdb){
-    toast("Cloud not available — can't sync CompanyCam history without internet.");
-    return;
+    if (!opts.quiet) toast("Cloud not available — can't sync CompanyCam history without internet.");
+    return { ok: false, skipped: true };
   }
-  toast("Syncing CompanyCam history…");
+  if (!opts.quiet) toast("Syncing CompanyCam history…");
   try{
     var detail = null;
     try{ detail = (await ccApi({ action:"project_detail", project_id: ccLinkedProjectId })).project; }catch(e){}
@@ -1508,9 +1509,11 @@ async function syncCompanyCamHistory(){
         companyCamLastSyncedAt: Date.now()
       }, { merge: true });
     }
-    toast("Synced " + allPhotos.length + " CompanyCam photo record(s) ✓");
+    if (!opts.quiet) toast("Synced " + allPhotos.length + " CompanyCam photo record(s) ✓");
+    return { ok: true, photoCount: allPhotos.length };
   }catch(e){
-    toast("CompanyCam sync failed: " + e.message);
+    if (!opts.quiet) toast("CompanyCam sync failed: " + e.message);
+    return { ok: false, error: e.message };
   }
 }
 function ccShowProjects(q){
@@ -1544,8 +1547,10 @@ async function applyCompanyCamProjectDetail(id){
       toast("CompanyCam address added to Location");
     }
     renderCCLinkInfo();
+    return project;
   }catch(e){
     console.warn("CompanyCam project detail failed", e);
+    return null;
   }
 }
 async function ccLoadProjects(q){
@@ -1579,7 +1584,6 @@ async function ccOpenProject(id, name){
     '<button class="btn" onclick="ccShowProjects(\'\')">\u2190 Back to projects</button>' +
     '<span class="hint" style="margin:0" id="cc-count">Tap photos to select</span>' +
     '<span style="flex:1"></span>' +
-    '<button class="btn" onclick="syncCompanyCamHistory()">Sync CompanyCam History</button>' +
     '<button class="btn primary" onclick="ccImport()">Import Selected</button></div>' +
     '<div class="cc-grid" id="cc-grid"></div>' +
     '<div style="margin-top:10px"><button class="btn" id="cc-more" onclick="ccLoadPhotos()">Load more</button></div>';
@@ -1653,24 +1657,33 @@ async function ccImport(){
   }
   renderPhotos();
   renderCCLinkInfo();
+  if (ok){
+    toast("Locking CompanyCam project and syncing history...");
+    await applyCompanyCamProjectDetail(ccLinkedProjectId);
+    await saveOrder({ quiet: true });
+    var syncResult = await syncCompanyCamHistory({ quiet: true });
+    var importSummary = "Imported " + ok + " photo" + (ok === 1 ? "" : "s") + " from CompanyCam" +
+      (fail ? "; " + fail + " failed" : "") + ". ";
+    if (syncResult.ok){
+      toast(importSummary + "Project locked, saved, and synced.");
+    } else if (syncResult.skipped){
+      toast(importSummary + "Project locked and saved; cloud history sync will run when cloud is available.");
+    } else {
+      toast(importSummary + "Project locked and saved; history sync failed: " + syncResult.error);
+    }
+  }
   closeCC();
-  toast("Imported " + ok + " photo" + (ok === 1 ? "" : "s") + " from CompanyCam" +
-    (fail ? " (" + fail + " failed)" : "") + " \u2014 add captions, then Save.");
+  if (!ok){
+    toast("No CompanyCam photos were imported" + (fail ? " (" + fail + " failed)" : "") + ".");
+  }
 }
 function renderCCLinkInfo(){
   var host = document.getElementById("cc-link-info");
   if (!host) return;
   if (!ccLinkedProjectId){ host.innerHTML = ""; return; }
   host.innerHTML =
-    '<div class="cc-link">\ud83d\udd17 Linked to CompanyCam project: <b>' + esc(ccLinkedProjectName || ccLinkedProjectId) + '</b>' +
-    '<span class="sp"></span>' +
-    '<button class="btn" onclick="syncCompanyCamHistory()">Sync CompanyCam History</button>' +
-    '<button class="btn danger" onclick="unlinkCC()">Unlink</button></div>';
-}
-function unlinkCC(){
-  ccLinkedProjectId = null; ccLinkedProjectName = "";
-  renderCCLinkInfo();
-  toast("Unlinked CompanyCam project from this work order");
+    '<div class="cc-link">\ud83d\udd17 Locked to CompanyCam project: <b>' + esc(ccLinkedProjectName || ccLinkedProjectId) + '</b>' +
+    '<span class="sp"></span><span class="hint" style="margin:0">Photos and history sync automatically.</span></div>';
 }
 /* ================= views ================= */
 function showView(v){
