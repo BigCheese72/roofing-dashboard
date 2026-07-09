@@ -102,11 +102,14 @@ Built from a written spec (see git history / PR description around the commits t
    already-corrected pin never downgrades its source.
 4. **A pin is never final — dragging is always available.** Once a finding has a pin,
    its "Place on Map" button becomes "📍 Pinned — move" and reopens the same modal with
-   the existing location, draggable/tappable to correct. A correction only reaches the
-   Building History map on the *next* report generated for that work order (pins are
-   denormalized onto `building_history_events` at report time, not live-linked — see
-   `buildPinsForHistoryEvent()`), so an already-published report's pin snapshot doesn't
-   silently change after the fact.
+   the existing location, draggable/tappable to correct. Pins are denormalized onto
+   `building_history_events` at report-generation time (`buildPinsForHistoryEvent()`),
+   but a plain Save also patches the *location* (lat/lng/x/y/source only) on any
+   existing report(s) that already reference that finding — `saveOrder()` calls
+   `syncPinCorrectionsToHistory()` after every successful cloud save, so a tech doesn't
+   need to re-issue a PDF just to fix a pin's GPS accuracy. It never adds a pin to a
+   report that didn't already have one for that finding, and never touches anything
+   else about a report (summary text, warranty, photo_ids) — only location moves.
 5. **The Building History roof map is read-only by design** (it's an aggregate across
    every past report, not one editable thing), but every pin's popup now has an
    "Adjust Pin" button next to "View Work Order" so that expectation doesn't dead-end.

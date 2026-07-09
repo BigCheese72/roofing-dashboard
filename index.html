@@ -1047,6 +1047,38 @@ function saveDb(db){
     return false;
   }
 }
+/* A report's pins are a frozen snapshot by design (see DEV_NOTES.md) so an
+   already-sent PDF's content never silently changes. But a pin's *location*
+   isn't part of that content \u2014 it's GPS accuracy metadata a tech should be
+   able to fix without re-issuing paperwork. So a plain Save also patches
+   the location on any existing report(s) that already reference a finding,
+   in place, leaving everything else about those reports (summary text,
+   photo_ids, warranty, etc.) exactly as originally recorded. Only touches
+   findings that already have a pin entry in a given event \u2014 never adds a
+   pin to a report that didn't have one. */
+async function syncPinCorrectionsToHistory(o){
+  if (!fdb) return;
+  try{
+    var qs = await fdb.collection("building_history_events").where("workOrderId", "==", o.id).get();
+    if (qs.empty) return;
+    var batch = fdb.batch(), any = false;
+    qs.forEach(function(doc){
+      var pins = doc.data().pins || [];
+      var changed = false;
+      var newPins = pins.map(function(p){
+        var f = (o.findings || []).find(function(x){ return x.id === p.finding_id; });
+        if (!f || !f.pin) return p;
+        if (f.pin.lat !== p.lat || f.pin.lng !== p.lng || f.pin.x !== p.x || f.pin.y !== p.y || f.pin.source !== p.source){
+          changed = true;
+          return Object.assign({}, p, { lat: f.pin.lat, lng: f.pin.lng, x: f.pin.x, y: f.pin.y, source: f.pin.source });
+        }
+        return p;
+      });
+      if (changed){ batch.update(doc.ref, { pins: newPins }); any = true; }
+    });
+    if (any) await batch.commit();
+  }catch(e){ console.warn("pin correction sync failed", e); }
+}
 function saveOrder(opts){
   opts = opts || {};
   var o = collect();
@@ -1061,6 +1093,7 @@ function saveOrder(opts){
   if (fdb){
     if (!opts.quiet) toast("Saving to cloud\u2026");
     return cloudSaveOrder(o).then(function(){
+      syncPinCorrectionsToHistory(o);
       if (!opts.quiet) toast("Saved to cloud \u2713 \u2014 visible on all your devices");
       renderSaved();
       return true;
