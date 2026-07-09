@@ -985,8 +985,26 @@ function loadOrder(id){
     });
     return;
   }
-  if (local){ fill(local); showView("edit"); toast("Work order loaded"); }
-  else toast("Could not find that work order");
+  if (local){ fill(local); showView("edit"); toast("Work order loaded"); return; }
+  if (fdb){
+    /* Not in the local cache or the (capped, most-recent-100) cloud index —
+       still worth a direct fetch by id, e.g. when opened from an older
+       building-history pin that falls outside that cache. */
+    toast("Loading from cloud…");
+    cloudFetchOrder(id).then(function(o){
+      if (o){
+        fill(o); showView("edit"); toast("Loaded from cloud ✓");
+        var db2 = loadDb();
+        db2.orders[o.id] = o;
+        db2.index = db2.index.filter(function(e){ return e.id !== o.id; });
+        db2.index.unshift({ id:o.id, jobName:o.jobName || "(untitled)", jobNo:o.jobNo,
+          location:o.location, serviceDate:o.serviceDate, savedAt:Date.now() });
+        saveDb(db2);
+      } else toast("Could not find that work order");
+    }).catch(function(){ toast("Couldn't load — check your internet connection"); });
+    return;
+  }
+  toast("Could not find that work order");
 }
 function deleteOrder(id){
   if (!confirm("Delete this work order everywhere? This can't be undone.")) return;
@@ -1166,6 +1184,46 @@ function flagDuplicateEvents(events){
   });
   return events;
 }
+function warrantyColor(w){
+  if (w === "Warrantable" || w === "Warrantable condition noted") return "#2E7D32";
+  if (w === "Non-warrantable") return "#D64545";
+  return "#F9A825"; /* Undetermined, Mixed, anything else */
+}
+var buildingMap = null;
+function renderBuildingMap(pins){
+  var el = document.getElementById("building-map");
+  if (!el) return;
+  if (buildingMap){ buildingMap.remove(); buildingMap = null; }
+  setTimeout(function(){
+    var pts = pins.filter(function(p){ return typeof p.lat === "number" && typeof p.lng === "number"; });
+    if (!pts.length) return;
+    buildingMap = L.map("building-map");
+    L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
+      maxZoom: 21, attribution: "Tiles &copy; Esri"
+    }).addTo(buildingMap);
+    var bounds = [];
+    pts.forEach(function(p){
+      var marker = L.circleMarker([p.lat, p.lng], {
+        radius: 9, color: "#fff", weight: 2, fillColor: warrantyColor(p.warranty), fillOpacity: 0.95
+      }).addTo(buildingMap);
+      var photoNote = p.photo_ids && p.photo_ids.length ?
+        "📷 " + p.photo_ids.length + " photo" + (p.photo_ids.length === 1 ? "" : "s") + " — open the work order to view" : "";
+      marker.bindPopup(
+        "<b>" + esc(p.eventDate || p.service_date || "") + "</b>" +
+        (p.work_order_no ? " — Job No. " + esc(p.work_order_no) : "") + "<br>" +
+        (p.condition ? esc(p.condition) + "<br>" : "") +
+        "<span style='color:" + warrantyColor(p.warranty) + ";font-weight:600'>" + esc(p.warranty || "") + "</span><br>" +
+        (photoNote ? photoNote + "<br>" : "") +
+        "<button class=\"btn\" style=\"margin-top:6px\" onclick=\"loadOrder('" + p.work_order_id + "')\">View Work Order</button>"
+      );
+      bounds.push([p.lat, p.lng]);
+    });
+    if (bounds.length === 1) buildingMap.setView(bounds[0], 19);
+    else buildingMap.fitBounds(bounds, { padding: [30, 30] });
+    buildingMap.invalidateSize();
+    setTimeout(function(){ if (buildingMap) buildingMap.invalidateSize(); }, 300);
+  }, 50);
+}
 async function openBuildingHistory(buildingId){
   var detail = document.getElementById("history-detail");
   detail.innerHTML = '<p class="hint">Loading timeline\u2026</p>';
@@ -1181,7 +1239,14 @@ async function openBuildingHistory(buildingId){
     }
     flagDuplicateEvents(events);
     var dupCount = events.filter(function(e){ return e._dup; }).length;
-    detail.innerHTML = '<div class="card"><h2 class="cond">Timeline (' + events.length + ')</h2>' +
+    var allPins = [];
+    events.forEach(function(e){ (e.pins || []).forEach(function(p){ allPins.push(Object.assign({ eventDate: e.date }, p)); }); });
+    var mapCardHtml = allPins.length ?
+      '<div class="card"><h2 class="cond">Roof Map</h2>' +
+      '<p class="hint">Every pinned finding across every report for this building. Tap a pin for details.</p>' +
+      '<div id="building-map" style="height:min(50vh,420px);border-radius:6px;overflow:hidden"></div></div>' : '';
+    detail.innerHTML = mapCardHtml +
+      '<div class="card"><h2 class="cond">Timeline (' + events.length + ')</h2>' +
       (dupCount ? '<p class="hint">\u26a0 ' + dupCount + ' possible duplicate' + (dupCount === 1 ? "" : "s") +
         ' flagged below (same work order + report type within 5 minutes of another entry).</p>' : '') +
       events.map(function(e){
@@ -1201,6 +1266,7 @@ async function openBuildingHistory(buildingId){
           (e.pdfRef && e.pdfRef.url ? '<div class="evt-row"><a href="' + esc(e.pdfRef.url) + '" target="_blank" rel="noopener">View saved PDF</a></div>' : '') +
           '</div>';
       }).join("") + '</div>';
+    if (allPins.length) renderBuildingMap(allPins);
   }catch(e){
     detail.innerHTML = '<div class="card"><div class="empty">Couldn\u2019t load timeline: ' + esc(e.message) + '</div></div>';
   }
