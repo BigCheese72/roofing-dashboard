@@ -4,11 +4,47 @@ RoofOps Field is a lightweight commercial roofing field work order app for Watki
 
 The current app is intentionally simple: it is a single static page with Netlify Functions for server-side API calls. Do not rebuild or replace working behavior without a clear migration plan.
 
+## Start Here If You're an AI Coding Assistant
+
+This repo is developed across multiple AI coding sessions (Claude and Codex, so far) —
+you are picking up where the other left off, not starting fresh. Before making any
+change:
+
+1. Read, in order: this file, [`APP_OVERVIEW.md`](APP_OVERVIEW.md) (user-facing
+   workflow), [`DEV_NOTES.md`](DEV_NOTES.md) (implementation details, gotchas, API
+   quirks), [`ROADMAP.md`](ROADMAP.md) (what's shipped vs. planned), and
+   [`DATA_MODEL.md`](DATA_MODEL.md) (Firestore schema).
+2. Confirm your understanding of current state before proposing changes.
+
+Ground rules while working here:
+
+- This is a working field app in daily use. Preserve the existing work order
+  workflow (job info → findings → repairs → warranty → photos → PDF →
+  email/share) — never rebuild or redesign it wholesale.
+- Extend the existing single-file architecture (`index.html` + `netlify/functions/`)
+  rather than introducing a framework, build step, or new architecture, unless
+  explicitly asked.
+- Field techs should not have access to destructive actions (unlink, delete). Admin
+  mode (PIN-gated, session-scoped — see `DEV_NOTES.md`) is the current pattern for
+  that; don't bypass it or add new destructive actions outside it.
+- Firebase Storage is intentionally not used for PDFs — CompanyCam is the system of
+  record. Don't reintroduce Storage without checking with the user first.
+- Test against production Firebase/CompanyCam carefully: use clearly-labeled test
+  data (e.g. "DELETE ME" in job/customer names) and clean it up after verifying,
+  since there's no separate staging environment.
+- After any change that shifts behavior, update the relevant doc(s) above in the
+  same session — these docs are the shared handoff mechanism between tools, and
+  they go stale fast if only code changes.
+
 ## Current Structure
 
 ```text
 index.html
+README.md
+APP_OVERVIEW.md
 DEV_NOTES.md
+ROADMAP.md
+DATA_MODEL.md
 netlify.toml
 netlify/
   functions/
