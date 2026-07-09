@@ -562,6 +562,69 @@ otherwise the header is omitted and CompanyCam attributes it to the API token ow
 (exact behavior depends on your CompanyCam account setup — verify once in a test
 project).
 
+## Local work order cache (localStorage) — quota fix (shipped)
+
+`loadDb()`/`saveDb()` (`index.html`) keep a local offline fallback of saved work
+orders in `localStorage` under `STORE_KEY`, separate from — and in addition to —
+the Firestore `workorders` collection. `localStorage` has a hard **~5–10MB
+per-origin quota** with no tier/upgrade; `saveDb()` catches `QuotaExceededError`
+and shows "Storage is full — delete some old saved work orders…".
+
+**Root cause (found 2026-07-09, from a real user report on production `main`)**:
+every locally-cached work order embedded its photos as base64 **directly** in the
+cached JSON blob (`photos[].img`), and — critically — `loadOrder()`'s cloud-fetch
+paths wrote the **full** fetched order (photos included) back into `localStorage`
+purely from *opening/viewing* a report, not just from an explicit Save. A single
+real photo-heavy work order can be ~3MB of base64 by itself (confirmed against
+production: Westminster's 10-photo report is ~3MB) — so simply opening a couple of
+old reports on a device that already has some local history was enough to blow
+past the quota, exactly matching the reported repro (opening an old report, not
+saving one, triggered the error).
+
+**Fix, both pieces pure client-side — no Firestore/data-model change, no live-data
+writes**:
+1. **Viewing ≠ caching.** `loadOrder()`'s two cloud-fetch branches now cache via
+   `stripPhotoBytes(o)` instead of the raw fetched order — every field is kept
+   (job info, findings, repairs, photo captions/finding links) *except*
+   `photos[].img`. The lightweight `db.index` entry (used by the Saved-tab list)
+   is still updated normally. Only an explicit **Save** on the order currently
+   open in the Edit tab (`saveOrder()`) caches full photo bytes — that path is
+   deliberately untouched, so offline editing of the *active* draft still works
+   exactly as before.
+2. **Bounded safety net.** `pruneCachedPhotoDrafts()`, called from `saveOrder()`
+   right before `saveDb()`, keeps only the `MAX_CACHED_PHOTO_DRAFTS` (10)
+   most-recently-saved drafts with their photo bytes intact; older ones get
+   `stripPhotoBytes()`'d automatically. The draft currently open (`currentId`) is
+   always excluded from pruning regardless of its save age, so a long active
+   editing session never loses its own photos out from under it. Nothing is
+   lost — Firestore always has the full photos (in the `photos` subcollection,
+   already scoped small per `cloudSaveOrder()`); this only bounds what's
+   available for offline re-editing *without* a network round-trip.
+
+**Deliberately left untouched**: `exportOrder()`'s cache write still caches full
+photo bytes when fetching from cloud. It's a rare, explicit "give me the full
+file" user action (not passive viewing), and needs the full data to produce a
+valid export anyway — out of scope for this fix.
+
+**Known tradeoff**: a report that was only *viewed* (not saved) now shows without
+its thumbnails if reopened later while fully offline (no network to re-fetch) —
+job info, findings, repairs, and captions still display correctly, just not the
+images themselves, until back online. This is the intended tradeoff — it's what
+stops the quota problem — not a bug.
+
+**Verified against production data (read-only Firestore reads; zero writes)**:
+using the real 10-photo/~3MB Westminster report, with `localStorage`
+pre-filled to ~4.5MB to simulate a realistic near-full device: opening it via
+`loadOrder()` completed with "Loaded from cloud ✓" (no quota error), all 10
+photo entries cached with `img` stripped but captions/other fields intact, and
+the on-screen/in-memory photos remained fully visible (10/10 thumbnails
+rendered) — only the local cache write was affected. `saveOrder()`'s full-photo
+local caching (with `fdb` temporarily nulled out to guarantee zero risk of a
+Firestore write during the test) was confirmed unchanged. `pruneCachedPhotoDrafts()`
+was verified directly against synthetic in-memory data (15 fake drafts → correctly
+keeps the 10 most recent, strips the rest, always protects the currently-open
+draft regardless of age). Zero console errors throughout.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |

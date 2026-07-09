@@ -10,6 +10,14 @@ Goal: preserve and harden the existing RoofOps Field / Watkins work order workfl
 - Document the current architecture and environment variables.
 - Avoid major UI redesigns until the data model and workflow are stable.
 - Improve reliability around save/load, report logging, and failure messages.
+- ✅ **Shipped**: fixed a real production "Storage is full" failure — merely
+  *opening* an old photo-heavy report was silently caching its full photo bytes
+  into the local `localStorage` fallback, filling its ~5–10MB quota. Viewing a
+  report no longer caches its photos locally (everything else still does);
+  only the actively-edited draft keeps full photo bytes, and a bounded cap
+  (10 most-recent) auto-prunes older cached drafts as a safety net. Pure
+  client-side fix, no data model change. See "Local work order cache" in
+  `DEV_NOTES.md`.
 - Review Firestore security rules for all collections currently touched by the app.
 - Add lightweight manual QA steps for field workflows: create, save, reload, import CompanyCam photos, generate PDF, send email, and verify history logging.
 - ✅ Shipped: duplicate-report detection on the building timeline (same work order +

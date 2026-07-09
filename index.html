@@ -1375,6 +1375,47 @@ function newOrder(){
 }
 
 /* ================= storage ================= */
+/* localStorage has a hard ~5-10MB per-origin quota, and every locally-cached
+   work order embeds its photos as base64 directly in the cached JSON blob —
+   that's what actually fills it up (see saveDb()'s QuotaExceededError catch
+   below). Two safeguards keep that from happening just from normal use:
+   1. Merely opening/viewing a report never caches its photo bytes locally —
+      only an explicit Save (the order actively open in the Edit tab) does.
+      See loadOrder() below; it still caches everything else (job info,
+      findings, repairs, captions) via stripPhotoBytes(), just not the big
+      base64 image data, so offline re-opening a previously-viewed report
+      still shows everything except thumbnails.
+   2. Even among actively-saved drafts, only the MAX_CACHED_PHOTO_DRAFTS most
+      recently saved keep their photo bytes locally — older ones get
+      stripped on the next save (pruneCachedPhotoDrafts(), called from
+      saveOrder()). Nothing is lost: the cloud copy (Firestore) always has
+      the full photos; this only affects what's available for offline
+      editing on this device without a network round-trip. exportOrder()'s
+      cache write is deliberately left untouched — it's a rare, explicit
+      "give me the full file" action, not passive viewing. */
+var MAX_CACHED_PHOTO_DRAFTS = 10;
+function stripPhotoBytes(o){
+  var copy = Object.assign({}, o);
+  copy.photos = (o.photos || []).map(function(p){
+    var p2 = Object.assign({}, p);
+    delete p2.img;
+    return p2;
+  });
+  return copy;
+}
+function orderHasCachedPhotoBytes(o){
+  return !!(o && o.photos && o.photos.some(function(p){ return p && p.img; }));
+}
+function pruneCachedPhotoDrafts(db){
+  var withPhotos = db.index.filter(function(e){
+    return e.id !== currentId && orderHasCachedPhotoBytes(db.orders[e.id]);
+  }).sort(function(a, b){ return (b.savedAt || 0) - (a.savedAt || 0); });
+  if (withPhotos.length <= MAX_CACHED_PHOTO_DRAFTS) return false;
+  withPhotos.slice(MAX_CACHED_PHOTO_DRAFTS).forEach(function(e){
+    if (db.orders[e.id]) db.orders[e.id] = stripPhotoBytes(db.orders[e.id]);
+  });
+  return true;
+}
 function loadDb(){
   try{
     var raw = localStorage.getItem(STORE_KEY);
@@ -1436,6 +1477,7 @@ function saveOrder(opts){
   db.index = db.index.filter(function(e){ return e.id !== o.id; });
   db.index.unshift({ id:o.id, jobName:o.jobName || "(untitled)", jobNo:o.jobNo,
     location:o.location, serviceDate:o.serviceDate, savedAt:Date.now() });
+  pruneCachedPhotoDrafts(db);
   var localOk = saveDb(db);
   if (localOk) drawSaved();
   if (fdb){
@@ -1477,8 +1519,11 @@ function loadOrder(id){
     cloudFetchOrder(id).then(function(o){
       if (o){
         fill(o); showView("edit"); toast("Loaded from cloud \u2713");
+        /* Viewing \u2260 caching: keep everything but the photo bytes locally
+           (see the "storage" section above) so this doesn't silently refill
+           localStorage from just opening old reports. */
         var db2 = loadDb();
-        db2.orders[o.id] = o;
+        db2.orders[o.id] = stripPhotoBytes(o);
         db2.index = db2.index.filter(function(e){ return e.id !== o.id; });
         db2.index.unshift({ id:o.id, jobName:o.jobName || "(untitled)", jobNo:o.jobNo,
           location:o.location, serviceDate:o.serviceDate, savedAt:(cloudEntry.savedAt || Date.now()) });
@@ -1501,7 +1546,7 @@ function loadOrder(id){
       if (o){
         fill(o); showView("edit"); toast("Loaded from cloud ✓");
         var db2 = loadDb();
-        db2.orders[o.id] = o;
+        db2.orders[o.id] = stripPhotoBytes(o);
         db2.index = db2.index.filter(function(e){ return e.id !== o.id; });
         db2.index.unshift({ id:o.id, jobName:o.jobName || "(untitled)", jobNo:o.jobNo,
           location:o.location, serviceDate:o.serviceDate, savedAt:Date.now() });

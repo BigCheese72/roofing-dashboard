@@ -133,7 +133,7 @@ The app uses Firestore for:
 - building history events;
 - CompanyCam project/photo metadata.
 
-The app also saves locally in the browser as a fallback, so work is not immediately lost if cloud sync is unavailable.
+The app also saves locally in the browser as a fallback, so work is not immediately lost if cloud sync is unavailable. That local fallback has a small storage limit (a browser thing, not a Firebase one), so it only keeps full offline photo copies for **the work order you're actively editing** and a handful of your most recently saved ones — just *opening* an old report to look at it no longer uses up that space, though its photos won't show if you reopen it later with no internet at all.
 
 ## How PDFs And Email Work
 
