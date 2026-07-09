@@ -13,15 +13,25 @@
 function resp(code, obj) {
   return { statusCode: code, headers: { "Content-Type": "application/json" }, body: JSON.stringify(obj) };
 }
+function formatAddress(address) {
+  if (!address) return "";
+  if (typeof address === "string") return address;
+  if (address.formatted_address) return String(address.formatted_address);
+  const line1 = [
+    address.street_address_1,
+    address.street_address_2
+  ].filter(Boolean).join(" ");
+  const line2 = [
+    address.city,
+    [address.state, address.postal_code || address.zip].filter(Boolean).join(" ")
+  ].filter(Boolean).join(", ");
+  return [line1, line2].filter(Boolean).join(", ");
+}
 function mapProject(pr) {
   return {
     id: String(pr.id),
     name: pr.name || "(unnamed project)",
-    address: [
-      pr.address && pr.address.street_address_1,
-      pr.address && pr.address.city,
-      pr.address && pr.address.state
-    ].filter(Boolean).join(", "),
+    address: formatAddress(pr.address),
     status: pr.status || "",
     created_at: pr.created_at || null
   };

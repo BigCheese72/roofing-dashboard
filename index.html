@@ -694,7 +694,8 @@ function saveDb(db){
     return false;
   }
 }
-function saveOrder(){
+function saveOrder(opts){
+  opts = opts || {};
   var o = collect();
   currentId = o.id;
   var db = loadDb();
@@ -705,16 +706,27 @@ function saveOrder(){
   var localOk = saveDb(db);
   if (localOk) drawSaved();
   if (fdb){
-    toast("Saving to cloud\u2026");
-    cloudSaveOrder(o).then(function(){
-      toast("Saved to cloud \u2713 \u2014 visible on all your devices");
+    if (!opts.quiet) toast("Saving to cloud\u2026");
+    return cloudSaveOrder(o).then(function(){
+      if (!opts.quiet) toast("Saved to cloud \u2713 \u2014 visible on all your devices");
       renderSaved();
+      return true;
     }).catch(function(e){
-      toast(cloudErrMsg(e));
+      if (!opts.quiet) toast(cloudErrMsg(e));
+      return localOk;
     });
   } else if (localOk){
-    toast("Saved on this device \u2713 (cloud not loaded \u2014 check internet)");
+    if (!opts.quiet) toast("Saved on this device \u2713 (cloud not loaded \u2014 check internet)");
   }
+  return Promise.resolve(localOk);
+}
+async function autoSaveBeforeReport(actionLabel){
+  var ok = await saveOrder({ quiet: true });
+  if (!ok){
+    toast("Couldn't auto-save before " + actionLabel + ". Fix the save issue, then try again.");
+    return false;
+  }
+  return true;
 }
 function loadOrder(id){
   var db = loadDb();
@@ -1049,7 +1061,9 @@ function pickRecipient(){
   box.value = list.join(", ");
   sel.value = "";
 }
-function emailDoc(){
+async function emailDoc(){
+  toast("Saving work order\u2026");
+  if (!(await autoSaveBeforeReport("opening email"))) return;
   var o = collect();
   var subject = "Leak Work Order — " + (o.jobName || "Job") +
     (o.jobNo ? " #" + o.jobNo : "") + (o.location ? " (" + o.location + ")" : "");
@@ -1270,6 +1284,14 @@ async function uploadPdfToCompanyCam(doc, o){
     return { ok: false, error: e.message };
   }
 }
+async function uploadLinkedPdfToCompanyCam(doc, o, doneLabel){
+  if (!o.companyCamProjectId) return { skipped: true };
+  toast(doneLabel + ". Saving PDF to CompanyCam\u2026");
+  var ccUp = await uploadPdfToCompanyCam(doc, o);
+  if (ccUp.ok) toast(doneLabel + " \u2014 PDF saved to CompanyCam project \u2713");
+  else if (!ccUp.skipped) toast(doneLabel + " \u2014 CompanyCam PDF upload failed: " + ccUp.error);
+  return ccUp;
+}
 function summarizeRows(rows, keyA, keyB){
   return rows.filter(function(r){ return r[keyA] || r[keyB]; })
     .map(function(r){ return r[keyA] + (r[keyB] ? " \u2014 " + r[keyB] : ""); })
@@ -1321,6 +1343,8 @@ async function sendEmailNow(){
     toast("Pick someone from the Send to list (or type an email) first.");
     return;
   }
+  toast("Saving work order\u2026");
+  if (!(await autoSaveBeforeReport("sending email"))) return;
   toast("Building PDF\u2026");
   var d = await generatePdf();
   if (!d) return;
@@ -1347,13 +1371,11 @@ async function sendEmailNow(){
     var out = null;
     try{ out = await resp.json(); }catch(e){}
     if (resp.ok && out && out.ok){
-      toast("Email sent \u2713 to " + addrs.join(", "));
-      logReportAndHistoryEvent(o, "PDF Emailed", { sent: true, to: addrs });
+      await logReportAndHistoryEvent(o, "PDF Emailed", { sent: true, to: addrs });
       if (o.companyCamProjectId){
-        uploadPdfToCompanyCam(d, o).then(function(ccUp){
-          if (ccUp.ok) toast("Email sent \u2713 \u2014 PDF also saved to CompanyCam project \u2713");
-          else if (!ccUp.skipped) toast("Email sent \u2713 \u2014 but saving the PDF to CompanyCam failed: " + ccUp.error + " (the PDF is still saved in this app's history).");
-        });
+        await uploadLinkedPdfToCompanyCam(d, o, "Email sent \u2713");
+      } else {
+        toast("Email sent \u2713 to " + addrs.join(", "));
       }
     } else {
       toast("Send failed: " + ((out && out.error) || ("server error " + resp.status)));
@@ -1363,11 +1385,12 @@ async function sendEmailNow(){
   }
 }
 async function sharePdf(){
+  toast("Saving work order\u2026");
+  if (!(await autoSaveBeforeReport("sharing email"))) return;
   var isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
     (navigator.userAgentData && navigator.userAgentData.mobile);
   if (!isMobile){
-    /* Open the email IMMEDIATELY on the click (browsers block it if we wait for the PDF),
-       addressed to whoever is in the recipient box. */
+    /* Open the email app before building the PDF so desktop browsers do not block it. */
     var o = collect();
     var subject = "Leak Work Order \u2014 " + (o.jobName || "Job") +
       (o.jobNo ? " #" + o.jobNo : "") + (o.location ? " (" + o.location + ")" : "");
@@ -1393,20 +1416,23 @@ async function sharePdf(){
       var file = new File([blob], fname, { type: "application/pdf" });
       if (navigator.canShare && navigator.share && navigator.canShare({ files: [file] })){
         await navigator.share({ files: [file], title: fname });
-        logReportAndHistoryEvent(o, "PDF Shared", null);
+        await logReportAndHistoryEvent(o, "PDF Shared", null);
+        await uploadLinkedPdfToCompanyCam(d, o, "PDF shared");
         return;
       }
     }catch(e){
       if (e && e.name === "AbortError") return; /* user closed the share sheet */
     }
     d.save(fname);
-    logReportAndHistoryEvent(o, "PDF Shared", null);
-    toast("Sharing isn't supported on this device \u2014 PDF downloaded instead. Attach it to your email.");
+    await logReportAndHistoryEvent(o, "PDF Shared", null);
+    await uploadLinkedPdfToCompanyCam(d, o, "PDF downloaded");
+    if (!o.companyCamProjectId) toast("Sharing isn't supported on this device \u2014 PDF downloaded instead. Attach it to your email.");
     return;
   }
   d.save(fname);
-  logReportAndHistoryEvent(o, "PDF Shared", null);
-  toast("PDF downloaded \u2014 drag it from Downloads into the email that just opened, then send.");
+  await logReportAndHistoryEvent(o, "PDF Shared", null);
+  await uploadLinkedPdfToCompanyCam(d, o, "PDF downloaded");
+  if (!o.companyCamProjectId) toast("PDF downloaded \u2014 drag it from Downloads into the email that just opened, then send.");
 }
 
 /* ================= CompanyCam import ================= */
@@ -1503,6 +1529,25 @@ function ccDoSearch(){
   var q = document.getElementById("cc-search") ? document.getElementById("cc-search").value : "";
   ccLoadProjects(q);
 }
+async function applyCompanyCamProjectDetail(id){
+  try{
+    var out = await ccApi({ action:"project_detail", project_id: id });
+    var project = out.project || {};
+    if (ccLinkedProjectId !== id) return;
+    if (project.name){
+      ccLinkedProjectName = project.name;
+      var title = document.getElementById("cc-title");
+      if (title) title.textContent = project.name;
+    }
+    if (project.address && !val("location")){
+      setVal("location", project.address);
+      toast("CompanyCam address added to Location");
+    }
+    renderCCLinkInfo();
+  }catch(e){
+    console.warn("CompanyCam project detail failed", e);
+  }
+}
 async function ccLoadProjects(q){
   var list = document.getElementById("cc-list");
   list.className = "hint";
@@ -1527,6 +1572,7 @@ async function ccOpenProject(id, name){
   ccProjId = id; ccPage = 1; ccPhotos = []; ccSelected = {};
   ccLinkedProjectId = id; ccLinkedProjectName = name || "";
   document.getElementById("cc-title").textContent = name || "Project photos";
+  applyCompanyCamProjectDetail(id);
   var b = document.getElementById("cc-body");
   b.innerHTML =
     '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
