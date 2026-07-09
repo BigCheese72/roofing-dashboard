@@ -147,15 +147,17 @@ leak was" and "where the roof drain has always been."
 
 ```js
 {
-  id,           // genId("rmo")
-  ring,         // [{lat,lng}, ...] closed polygon (first point repeated last)
-  center,       // {lat,lng} centroid
+  id,             // genId("rmo")
+  ring,           // [{lat,lng}, ...] closed polygon (first point repeated last)
+  center,         // {lat,lng} centroid
   areaSqFt,
   perimeterFt,
-  source,       // "osm" (Phase 1 — always OpenStreetMap/Overpass)
-  osmId,        // e.g. "way/12345"
-  osmType,      // "way" | "relation"
-  tags,         // raw OSM tags at capture time (name, building, addr:*, ...)
+  source,         // "osm" (Phase 1 — always OpenStreetMap/Overpass)
+  osmId,          // e.g. "way/12345"
+  osmType,        // "way" | "relation"
+  tags,           // raw OSM tags at capture time (name, building, addr:*, ...)
+  isSiteBoundary, // true if this was a fallback property/site polygon, not a
+                  // real building footprint — see "RoofMapper" in DEV_NOTES.md
   createdAt
 }
 ```

@@ -129,7 +129,13 @@ Goal: turn each building into a long-term roof record.
   because its OSM footprint is tagged `amenity=hospital` with no `building` tag at
   all. Radius ladder is now 150/300/500m (accuracy-aware starting point, "Search
   Wider" to expand) and the query also matches amenity/healthcare/shop/office/leisure
-  tags. See "RoofMapper" in `DEV_NOTES.md`.
+  tags. **Second fix, same field test**: the broadened query then surfaced the
+  hospital's own polygon, but it's a whole-campus property boundary (~969,000 sq ft,
+  no `building=*` tag at all in OSM) — not a roof. RoofMapper now classifies
+  untagged, oversized polygons as a "site boundary," prefers real building
+  footprints whenever any exist nearby, and only offers a site polygon as a
+  clearly-labeled, confirm-gated fallback when nothing better was found. See
+  "RoofMapper" in `DEV_NOTES.md`.
 - Not yet built: manual anchoring for non-georeferenced (roof plan/sketch) maps
   (deliberately excluded by the spec), roof-section labels/filters.
 

@@ -364,6 +364,52 @@ same order, right before `/* ================= init ================= */`:
       widen. Confirmed the White House test case from Phase 1's original
       verification still returns results with the broadened query (53 vs. 8
       before — expected, not a regression, since more tag types now match).
+  - **Site/campus polygons vs. real building footprints (second field test, same
+    location)**: the radius+query fix above found a footprint at St. Joseph
+    Hospital, but a screenshot from the field showed the generated "roof outline"
+    tracing the *entire hospital campus* — parking lots, grounds, a waterfront inlet
+    — at ~969,000 sq ft. Investigated directly against Overpass at the exact
+    coordinates (38.8029745, -90.7755764):
+    - A pure `way["building"]`/`way["building:part"]` query within 500m returns only
+      two unrelated small businesses (a Hardee's and a gas station canopy, 380–440m
+      away) — **zero** building-tagged footprints anywhere near the hospital itself.
+    - A query for *any* tagged way (building/amenity/healthcare/leisure/shop/office)
+      within 200m returns exactly **one** element: the hospital's own
+      `amenity=hospital`/`healthcare=hospital` polygon, 79–98m away — confirming
+      OpenStreetMap genuinely has no individual building footprint mapped for this
+      site at all, only the property-level polygon. (What Mark saw as "building
+      rectangles" on the tile was almost certainly this one polygon's own
+      right-angled corners, rendered at a zoom level where they read as separate
+      structures — the polygon has 25 vertices wrapping several wings of the
+      campus.) This is a real, common OSM data gap (no bulk building-footprint
+      import for this parcel), not a bug in the query — but the app still needs to
+      not hand a tech a "roof" that's actually the whole property.
+    - **Fix — classify, don't just fetch.** `rmParseOverpassElements()` now flags
+      each footprint `isSite: true` when it has **no** `building`/`building:part` tag
+      **and** its area exceeds 200,000 sq ft (~4.6 acres) — generous enough to not
+      misflag a real huge building (a big-box store, an airport terminal) that *is*
+      tagged `building=*`, but catches exactly this campus-polygon case.
+      `rmSearchBuildings()` then prefers real (non-site) footprints whenever any
+      exist, and only falls back to showing site-classified ones when nothing else
+      was found nearby — the tech should never have to choose between "the roof"
+      and "the whole property" if a real footprint exists at all.
+    - **When there's genuinely nothing better** (this exact case): the site polygon
+      is still shown — an approximate reference beats nothing — but visibly
+      different at every step: dashed amber outline on the map instead of solid
+      gray, a warning line in the footprint info panel, the "Generate Roof Outline"
+      button relabels to "⚠️ Use Site Boundary Anyway (Not a Roof)" (danger-styled,
+      not primary), the outline panel gets a persistent warning banner, the
+      exported/saved title is prefixed "⚠ Site Boundary — ", and saving (to a
+      building or locally) requires confirming a `confirm()` prompt that repeats the
+      warning. `roof_outlines[]` entries carry the `isSiteBoundary` flag (see
+      `DATA_MODEL.md`) so it also surfaces later in the Building History popup via
+      `rmOutlineTitle()`.
+    - **Re-verified against the field-test coordinates after the fix**: search
+      correctly returns the hospital's site polygon flagged `isSite: true` (no real
+      building footprint exists to prefer instead) with the full warning UI; the
+      White House case (which does have real `building=*` footprints) returns 53
+      real buildings, 0 sites, no warnings, normal save behavior — confirms the
+      classifier doesn't misfire on the happy path.
 - **`services/exportService` → `rmExport*()`**: fully client-side, no paid rendering
   service. `rmBuildOutlineSvg()` projects the lat/lng ring to local feet and draws an
   SVG with a title, area/perimeter, and a scale bar — this SVG is the source of truth.

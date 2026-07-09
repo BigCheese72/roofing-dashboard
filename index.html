@@ -369,12 +369,13 @@
       <h2 class="cond">Selected Building</h2>
       <div class="rm-footprint-info" id="rm-footprint-info"></div>
       <div class="rm-actions">
-        <button class="btn primary rm-bigbtn" onclick="rmGenerateOutline()">✏️ Generate Roof Outline</button>
+        <button class="btn primary rm-bigbtn" id="rm-generate-btn" onclick="rmGenerateOutline()">✏️ Generate Roof Outline</button>
       </div>
     </div>
 
     <div class="card" id="rm-outline-panel" style="display:none">
       <h2 class="cond">Roof Outline</h2>
+      <div id="rm-outline-warning"></div>
       <div class="rm-outline-stats" id="rm-outline-stats"></div>
       <div class="rm-actions">
         <button class="btn primary rm-bigbtn" onclick="openRmSaveModal()">💾 Save Outline to Building</button>
@@ -3413,12 +3414,30 @@ function rmParseOverpassElements(elements){
     if (!ring) return;
     ring = rmGeomCleanRing(ring);
     if (ring.length < 4) return;
+    var tags = el.tags || {};
+    var hasBuildingTag = !!(tags.building || tags["building:part"]);
+    var areaSqFt = rmGeomPolygonAreaSqMeters(ring) * 10.7639;
+    /* A polygon with no building tag (building= or building:part=) that's
+       bigger than ~4.6 acres is almost certainly a property/site boundary
+       (hospital campus, school grounds, shopping center parcel) rather
+       than a single roof — real-world field test found a hospital mapped
+       only as amenity=hospital/healthcare=hospital with NO building tag
+       at all, and its polygon traced the whole ~22-acre site (parking,
+       grounds, waterfront) since OSM had zero individual building
+       footprints for it. 200,000 sq ft is generous enough not to misflag
+       a genuinely huge single building (e.g. a big-box store) that IS
+       tagged with a building key — this only catches the
+       untagged-as-a-building case. */
+    var isSite = !hasBuildingTag && areaSqFt > 200000;
     footprints.push({
       id: el.type + "/" + el.id,
       osmType: el.type,
       ring: ring,
       center: rmGeomRingCentroid(ring),
-      tags: el.tags || {}
+      tags: tags,
+      hasBuildingTag: hasBuildingTag,
+      areaSqFt: areaSqFt,
+      isSite: isSite
     });
   });
   return footprints;
@@ -3473,7 +3492,8 @@ function rmExportFilenameBase(){
 function rmOutlineTitle(outline){
   var tags = outline.tags || {};
   var addr = [tags["addr:housenumber"], tags["addr:street"]].filter(Boolean).join(" ");
-  return tags.name || addr || "Roof Outline";
+  var base = tags.name || addr || "Roof Outline";
+  return outline.isSiteBoundary ? "⚠ Site Boundary — " + base : base;
 }
 function rmBuildOutlineSvg(outline){
   var pts = rmExportProjectFeet(outline.ring);
@@ -3674,21 +3694,39 @@ async function rmSearchBuildings(){
       rmUpdateWidenButton();
       return;
     }
-    rmState.footprints = results;
+    /* Prioritize real building footprints over large untagged site/campus
+       polygons (see rmParseOverpassElements's isSite classification) — a
+       tech should never have to pick between "the actual roof" and "the
+       whole property" if a real building footprint exists at all. Only
+       fall back to showing the site polygon when nothing else was found. */
+    var realBuildings = results.filter(function(f){ return !f.isSite; });
+    var sitesOnly = results.filter(function(f){ return f.isSite; });
+    var toShow = realBuildings.length ? realBuildings : sitesOnly;
+    rmState.footprints = toShow;
     rmRenderFootprints();
-    rmSetStatus(results.length + " building" + (results.length === 1 ? "" : "s") + " found within " + radius + "m — tap the correct outline on the map.");
+    if (!realBuildings.length){
+      rmSetStatus("No individual building footprints within " + radius + "m — OpenStreetMap only has an approximate property/site boundary here. Showing " +
+        toShow.length + " site boundar" + (toShow.length === 1 ? "y" : "ies") + " instead; treat it as a rough reference, not an exact roof.", "warn");
+    } else {
+      rmSetStatus(toShow.length + " building" + (toShow.length === 1 ? "" : "s") + " found within " + radius + "m — tap the correct outline on the map.");
+    }
     rmUpdateWidenButton();
   }catch(e){
     rmSetStatus("Couldn't reach OpenStreetMap (Overpass) — check your connection and tap Re-locate & Search Again. (" + e.message + ")", "error");
     rmUpdateWidenButton();
   }
 }
+function rmFootprintStyle(fp, isSel){
+  if (isSel) return { color: "#E8600A", weight: 3, dashArray: fp.isSite ? "6,6" : null, fillColor: "#E8600A", fillOpacity: 0.3 };
+  if (fp.isSite) return { color: "#B45309", weight: 2, dashArray: "6,6", fillColor: "#FBBF24", fillOpacity: 0.15 };
+  return { color: "#37474F", weight: 2, dashArray: null, fillColor: "#90A4AE", fillOpacity: 0.35 };
+}
 function rmRenderFootprints(){
   var map = rmEnsureMap();
   var bounds = [[rmState.lat, rmState.lng]];
   rmState.footprints.forEach(function(fp){
     var latlngs = fp.ring.map(function(p){ return [p.lat, p.lng]; });
-    var layer = L.polygon(latlngs, { color: "#37474F", weight: 2, fillColor: "#90A4AE", fillOpacity: 0.35 });
+    var layer = L.polygon(latlngs, rmFootprintStyle(fp, false));
     layer.on("click", function(){ rmSelectFootprint(fp.id); });
     layer.addTo(map);
     rmState.footprintLayers[fp.id] = layer;
@@ -3702,9 +3740,8 @@ function rmSelectFootprint(id){
   if (!fp) return;
   rmState.selectedId = id;
   Object.keys(rmState.footprintLayers).forEach(function(fid){
-    var layer = rmState.footprintLayers[fid];
-    var isSel = fid === id;
-    layer.setStyle({ color: isSel ? "#E8600A" : "#37474F", weight: isSel ? 3 : 2, fillColor: isSel ? "#E8600A" : "#90A4AE", fillOpacity: isSel ? 0.3 : 0.35 });
+    var f = rmState.footprints.find(function(x){ return x.id === fid; });
+    rmState.footprintLayers[fid].setStyle(rmFootprintStyle(f, fid === id));
   });
   var tags = fp.tags || {};
   var addrParts = [tags["addr:housenumber"], tags["addr:street"]].filter(Boolean).join(" ");
@@ -3713,13 +3750,26 @@ function rmSelectFootprint(id){
   var typeLabel = (tags.building && tags.building !== "yes" && tags.building) ||
     tags.healthcare || tags.amenity || tags.shop || tags.office || tags.leisure || null;
   if (typeLabel) infoHtml += "<br>Type: " + esc(typeLabel.replace(/_/g, " "));
-  infoHtml += "<br><span style='color:var(--muted);font-size:12px'>OSM " + esc(fp.osmType) + "/" + esc(fp.id.split("/")[1]) + "</span>";
+  infoHtml += "<br><span style='color:var(--muted);font-size:12px'>OSM " + esc(fp.osmType) + "/" + esc(fp.id.split("/")[1]) +
+    " · ~" + Math.round(fp.areaSqFt).toLocaleString() + " sq ft</span>";
+  if (fp.isSite){
+    infoHtml += '<br><span style="color:#B45309;font-weight:700">⚠️ This looks like the overall property/site ' +
+      'boundary, not a single building roof — OpenStreetMap has no individual building footprint here yet.</span>';
+  }
   document.getElementById("rm-footprint-info").innerHTML = infoHtml;
+  var genBtn = document.getElementById("rm-generate-btn");
+  genBtn.textContent = fp.isSite ? "⚠️ Use Site Boundary Anyway (Not a Roof)" : "✏️ Generate Roof Outline";
+  genBtn.classList.toggle("primary", !fp.isSite);
+  genBtn.classList.toggle("danger", !!fp.isSite);
   document.getElementById("rm-footprint-panel").style.display = "";
   document.getElementById("rm-outline-panel").style.display = "none";
   document.getElementById("rm-footprint-panel").scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 function rmRenderOutlineStats(outline){
+  document.getElementById("rm-outline-warning").innerHTML = outline.isSiteBoundary ?
+    '<p class="rm-status warn" style="margin:0 0 10px">⚠️ This traces the property/site boundary from ' +
+    'OpenStreetMap, not a single roof — the numbers below cover the whole site. Use only as a rough reference; ' +
+    'trace or measure the actual roof separately.</p>' : '';
   document.getElementById("rm-outline-stats").innerHTML =
     '<div class="stat"><b>' + outline.areaSqFt.toFixed(0) + '</b><span>Sq Ft</span></div>' +
     '<div class="stat"><b>' + outline.perimeterFt.toFixed(0) + '</b><span>Perimeter Ft</span></div>' +
@@ -3739,17 +3789,18 @@ function rmGenerateOutline(){
     osmId: fp.id,
     osmType: fp.osmType,
     tags: fp.tags || {},
+    isSiteBoundary: !!fp.isSite,
     createdAt: Date.now()
   };
   rmState.outline = outline;
   var map = rmEnsureMap();
   if (rmState.outlineLayer) map.removeLayer(rmState.outlineLayer);
   rmState.outlineLayer = L.polygon(ring.map(function(p){ return [p.lat, p.lng]; }), {
-    color: "#E8600A", weight: 3, fillColor: "#E8600A", fillOpacity: 0.15
+    color: "#E8600A", weight: 3, dashArray: outline.isSiteBoundary ? "6,6" : null, fillColor: "#E8600A", fillOpacity: 0.15
   }).addTo(map);
   rmRenderOutlineStats(outline);
   document.getElementById("rm-outline-panel").scrollIntoView({ behavior: "smooth", block: "nearest" });
-  toast("Roof outline generated ✓");
+  toast(outline.isSiteBoundary ? "Site boundary captured — not a single roof, see warning below ⚠️" : "Roof outline generated ✓");
 }
 
 /* ---- save to building (existing or new) ---- */
@@ -3798,8 +3849,14 @@ function rmBpRender(list){
       '<button class="btn">Save Here</button></div>';
   }).join("");
 }
+function rmConfirmSiteBoundarySave(){
+  if (!rmState.outline || !rmState.outline.isSiteBoundary) return true;
+  return confirm("This outline is the property/site boundary, not an individual building roof — " +
+    "OpenStreetMap doesn't have a building footprint here yet. Save it anyway as a rough placeholder?");
+}
 async function rmSaveOutlineToBuilding(buildingId){
   if (!rmState.outline){ toast("Generate a roof outline first."); return; }
+  if (!rmConfirmSiteBoundarySave()) return;
   toast("Saving…");
   try{
     var ref = fdb.collection("buildings").doc(buildingId);
@@ -3836,6 +3893,7 @@ function rmSaveLocalOutlines(list){
 }
 function rmSaveLocally(){
   if (!rmState.outline){ toast("Generate a roof outline first."); return; }
+  if (!rmConfirmSiteBoundarySave()) return;
   var list = rmLoadLocalOutlines();
   list.unshift(Object.assign({}, rmState.outline, { id: genId("rmo_local") }));
   rmSaveLocalOutlines(list.slice(0, 50));
