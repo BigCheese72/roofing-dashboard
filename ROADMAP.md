@@ -124,6 +124,12 @@ Goal: turn each building into a long-term roof record.
   features, dimensions/measurements beyond area & perimeter, CompanyCam photo
   attachment to an outline, drone orthomosaic overlays for outline capture, and
   outline history/versioning beyond "array is append-only, newest is current."
+  **Fixed after a real field test**: search radius was too tight (60–150m) and the
+  Overpass query only matched `building=*`-tagged footprints — missed a real hospital
+  because its OSM footprint is tagged `amenity=hospital` with no `building` tag at
+  all. Radius ladder is now 150/300/500m (accuracy-aware starting point, "Search
+  Wider" to expand) and the query also matches amenity/healthcare/shop/office/leisure
+  tags. See "RoofMapper" in `DEV_NOTES.md`.
 - Not yet built: manual anchoring for non-georeferenced (roof plan/sketch) maps
   (deliberately excluded by the spec), roof-section labels/filters.
 

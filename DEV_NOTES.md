@@ -325,14 +325,45 @@ same order, right before `/* ================= init ================= */`:
   same underlying browser API as the existing "Use My Location" pin feature, kept as
   a separate function since RoofMapper's caller/UI is unrelated to the pin modal.
 - **`services/overpassService` → `rmFetchNearbyBuildings()`**: POSTs an Overpass QL
-  query (`way["building"]`/`relation["building"]` within an accuracy-scaled radius,
-  60–150m) to the public `overpass-api.de` endpoint, falling back to the
+  query to the public `overpass-api.de` endpoint, falling back to the
   `overpass.kumi.systems` mirror on failure. Free, no API key, matches the "no paid
   add-ons" constraint. Relations are handled naively — every `outer`-role member's
   geometry is concatenated into one ring, correct for the common single-outer-way
   case; complex multi-outer relations may render approximately. Not a real bug for
   Phase 1 (single commercial buildings are almost always a plain `way`), just a known
   limitation if it's ever revisited.
+  - **Search radius (fixed after a real field test)**: the first shipped version
+    fixed the radius at 60–150m and queried `way["building"]`/`relation["building"]`
+    only. A field test at St. Joseph Hospital (Lake Saint Louis, MO) returned "no
+    buildings found" standing in the parking lot. Root-caused to **two** separate
+    problems, not just radius:
+    1. **Radius too tight.** A hospital campus building can be 100m+ from where a
+       tech parks. Fixed with `RM_RADIUS_STEPS = [150, 300, 500]` (meters — roughly
+       500ft/1000ft/1600ft) plus `rmPickInitialRadiusIndex()`, which picks the first
+       step that already covers the GPS fix's own accuracy radius (`accuracy * 2.2`)
+       so a poor fix doesn't produce a false empty result. A **"🔎 Search Wider"**
+       button steps through the ladder without re-requesting GPS, showing the radius
+       actually used in the status text either way.
+    2. **Query too narrow — the real cause of this specific case.** The hospital's
+       actual OSM footprint (`way/590977492`) has **no `building=*` tag at all** —
+       only `amenity=hospital`/`healthcare=hospital`. A building-only filter misses
+       it at *any* radius. This is a common OSM pattern: a mapper tags a structure by
+       what it *is* rather than adding a redundant `building=*` on top. Fixed by
+       broadening `rmOverpassQuery()` to also match `way["amenity"]` (excluding
+       ground-level amenity values that aren't a roof — `parking`, `parking_space`,
+       `bicycle_parking`, etc.), `way["healthcare"]`, `way["shop"]`, `way["office"]`,
+       and `way["leisure"]` (excluding `park`/`pitch`/`garden`/etc.), plus the
+       `relation` equivalent for `amenity`. `rmSelectFootprint()`'s "Type:" line
+       falls back through `building → healthcare → amenity → shop → office →
+       leisure` so the tech still sees what kind of structure they picked.
+    - **Verified against the real failure case** (not just in theory): queried
+      Overpass directly at 38.8029745, -90.7755764 (the field-test coordinates) —
+      0 results at 150m/300m with the old building-only query; 1 result (the
+      hospital itself, 98m away) at 150m with the broadened query — found on the
+      very first radius step once the query was fixed, without even needing to
+      widen. Confirmed the White House test case from Phase 1's original
+      verification still returns results with the broadened query (53 vs. 8
+      before — expected, not a regression, since more tag types now match).
 - **`services/exportService` → `rmExport*()`**: fully client-side, no paid rendering
   service. `rmBuildOutlineSvg()` projects the lat/lng ring to local feet and draws an
   SVG with a title, area/perimeter, and a scale bar — this SVG is the source of truth.

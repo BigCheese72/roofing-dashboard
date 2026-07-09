@@ -360,6 +360,7 @@
       <p class="rm-status" id="rm-status"></p>
       <div id="rm-map" style="height:min(55vh,460px);border-radius:6px;overflow:hidden;margin-bottom:12px;display:none"></div>
       <div class="rm-actions" id="rm-search-again-wrap" style="display:none">
+        <button class="btn primary rm-bigbtn" id="rm-widen-btn" style="display:none" onclick="rmWidenSearch()">🔎 Search Wider</button>
         <button class="btn rm-bigbtn" id="rm-search-again-btn" onclick="rmUseMyLocation()">🔄 Re-locate & Search Again</button>
       </div>
     </div>
@@ -3370,8 +3371,27 @@ var RM_OVERPASS_ENDPOINTS = [
   "https://overpass.kumi.systems/api/interpreter"
 ];
 function rmOverpassQuery(lat, lng, radiusMeters){
-  return "[out:json][timeout:25];(way[\"building\"](around:" + radiusMeters + "," + lat + "," + lng +
-    ");relation[\"building\"](around:" + radiusMeters + "," + lat + "," + lng + "););out body geom;";
+  /* Field test at a hospital campus (St. Joseph Hospital, Lake Saint Louis MO)
+     found the real footprint has NO building=* tag at all — only
+     amenity=hospital/healthcare=hospital. Very common OSM pattern: a mapper
+     tags a structure by what it *is* (hospital, school, shop, office) and
+     never adds a redundant building=* tag on top. A building-only filter
+     silently misses these no matter how large the radius. Broadened to also
+     match structure-by-use tags, excluding amenity/leisure values that are
+     open ground (parking lots, parks, pitches) rather than an actual roof. */
+  var around = "(around:" + radiusMeters + "," + lat + "," + lng + ")";
+  var nonBuildingAmenity = "^(parking|parking_space|parking_entrance|bicycle_parking|motorcycle_parking|fountain|bench|waste_basket|charging_station)$";
+  var nonBuildingLeisure = "^(park|pitch|garden|nature_reserve|playground|golf_course|track)$";
+  return "[out:json][timeout:25];(" +
+    "way[\"building\"]" + around + ";" +
+    "relation[\"building\"]" + around + ";" +
+    "way[\"amenity\"][\"amenity\"!~\"" + nonBuildingAmenity + "\"]" + around + ";" +
+    "relation[\"amenity\"][\"amenity\"!~\"" + nonBuildingAmenity + "\"]" + around + ";" +
+    "way[\"healthcare\"]" + around + ";" +
+    "way[\"shop\"]" + around + ";" +
+    "way[\"office\"]" + around + ";" +
+    "way[\"leisure\"][\"leisure\"!~\"" + nonBuildingLeisure + "\"]" + around + ";" +
+  ");out body geom;";
 }
 function rmParseOverpassElements(elements){
   var footprints = [];
@@ -3552,9 +3572,33 @@ var rmState = {
   map: null, userMarker: null, accuracyCircle: null,
   lat: null, lng: null, accuracy: null,
   footprints: [], footprintLayers: {}, outlineLayer: null,
-  selectedId: null, outline: null
+  selectedId: null, outline: null, radiusIndex: 0
 };
 var RM_LOCAL_KEY = "roofmapper-local-outlines-v1";
+/* A commercial building — especially a hospital/medical campus — can easily
+   be 100m+ from where a tech parks. 500ft-to-a-quarter-mile per the spec;
+   "Search Wider" steps through this ladder without re-requesting GPS. */
+var RM_RADIUS_STEPS = [150, 300, 500];
+function rmPickInitialRadiusIndex(accuracy){
+  /* Poor GPS accuracy shouldn't produce a false "nothing found" — start at
+     whichever step already covers the reported error radius. */
+  var needed = Math.max(150, (accuracy || 0) * 2.2);
+  for (var i = 0; i < RM_RADIUS_STEPS.length; i++){
+    if (RM_RADIUS_STEPS[i] >= needed) return i;
+  }
+  return RM_RADIUS_STEPS.length - 1;
+}
+function rmUpdateWidenButton(){
+  var btn = document.getElementById("rm-widen-btn");
+  if (!btn) return;
+  var hasMore = rmState.radiusIndex < RM_RADIUS_STEPS.length - 1;
+  btn.style.display = hasMore ? "" : "none";
+  if (hasMore) btn.textContent = "🔎 Search Wider (" + RM_RADIUS_STEPS[rmState.radiusIndex + 1] + "m)";
+}
+function rmWidenSearch(){
+  if (rmState.radiusIndex < RM_RADIUS_STEPS.length - 1) rmState.radiusIndex++;
+  rmSearchBuildings();
+}
 
 function rmOnShow(){
   if (rmState.map) setTimeout(function(){ rmState.map.invalidateSize(); }, 60);
@@ -3583,6 +3627,7 @@ function rmUseMyLocation(){
     btn.disabled = false; btn.textContent = "📍 Use My Location";
     var lat = pos.coords.latitude, lng = pos.coords.longitude, acc = pos.coords.accuracy || 0;
     rmState.lat = lat; rmState.lng = lng; rmState.accuracy = acc;
+    rmState.radiusIndex = rmPickInitialRadiusIndex(acc);
     var map = rmEnsureMap();
     if (rmState.userMarker) map.removeLayer(rmState.userMarker);
     if (rmState.accuracyCircle) map.removeLayer(rmState.accuracyCircle);
@@ -3616,20 +3661,26 @@ function rmClearFootprintLayers(){
 }
 async function rmSearchBuildings(){
   if (rmState.lat == null){ toast("Get your location first."); return; }
-  rmSetStatus("Searching nearby building footprints…");
+  var radius = RM_RADIUS_STEPS[rmState.radiusIndex];
+  rmSetStatus("Searching within " + radius + "m for building footprints…");
   rmClearFootprintLayers();
-  var radius = Math.min(150, Math.max(60, (rmState.accuracy || 30) * 2.2));
+  document.getElementById("rm-search-again-wrap").style.display = "";
   try{
     var results = await rmFetchNearbyBuildings(rmState.lat, rmState.lng, radius);
+    var hasMore = rmState.radiusIndex < RM_RADIUS_STEPS.length - 1;
     if (!results.length){
-      rmSetStatus("No building footprints found within " + Math.round(radius) + "m. Move closer, or tap Re-locate & Search Again.", "warn");
+      rmSetStatus("No building footprints found within " + radius + "m." +
+        (hasMore ? " Tap Search Wider to expand, or move closer." : " Try moving closer, or Re-locate & Search Again."), "warn");
+      rmUpdateWidenButton();
       return;
     }
     rmState.footprints = results;
     rmRenderFootprints();
-    rmSetStatus(results.length + " building" + (results.length === 1 ? "" : "s") + " found — tap the correct outline on the map.");
+    rmSetStatus(results.length + " building" + (results.length === 1 ? "" : "s") + " found within " + radius + "m — tap the correct outline on the map.");
+    rmUpdateWidenButton();
   }catch(e){
     rmSetStatus("Couldn't reach OpenStreetMap (Overpass) — check your connection and tap Re-locate & Search Again. (" + e.message + ")", "error");
+    rmUpdateWidenButton();
   }
 }
 function rmRenderFootprints(){
@@ -3659,7 +3710,9 @@ function rmSelectFootprint(id){
   var addrParts = [tags["addr:housenumber"], tags["addr:street"]].filter(Boolean).join(" ");
   var infoHtml = "<b>" + esc(tags.name || (fp.osmType === "way" ? "Unnamed building" : "Unnamed building group")) + "</b>";
   if (addrParts) infoHtml += "<br>" + esc(addrParts);
-  if (tags.building && tags.building !== "yes") infoHtml += "<br>Type: " + esc(tags.building);
+  var typeLabel = (tags.building && tags.building !== "yes" && tags.building) ||
+    tags.healthcare || tags.amenity || tags.shop || tags.office || tags.leisure || null;
+  if (typeLabel) infoHtml += "<br>Type: " + esc(typeLabel.replace(/_/g, " "));
   infoHtml += "<br><span style='color:var(--muted);font-size:12px'>OSM " + esc(fp.osmType) + "/" + esc(fp.id.split("/")[1]) + "</span>";
   document.getElementById("rm-footprint-info").innerHTML = infoHtml;
   document.getElementById("rm-footprint-panel").style.display = "";
