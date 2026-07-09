@@ -107,8 +107,9 @@ only present on CompanyCam-imported photos that had GPS; see `companycam.js` bel
 
 **Building doc adds**:
 ```
-roof_base_map_type: null | "roof_plan" | "sketch",  // "drone_ortho" reserved, not built
+roof_base_map_type: null | "roof_plan" | "sketch" | "drone_ortho",
 roof_base_map_url:  null | string,   // a CompanyCam document URL — see below
+roof_base_map_bounds: null | { north, south, east, west },  // drone_ortho only
 roof_base_map_updated_at: number | null
 ```
 (The older placeholder fields this replaced — `leak_location_label`, `leak_latitude`,
@@ -140,33 +141,69 @@ mapped once at the source so nothing downstream has to remember the discrepancy.
 aggregates `pins[]` from every `building_history_events` doc for a building onto one
 map — denormalized at report-generation time (`buildPinsForHistoryEvent()`) so this
 reads from the events already being fetched for the timeline, no extra query. Color:
-green = warrantable, red = non-warrantable, amber = undetermined/mixed. A building
-shows **one** map — satellite (lat/lng pins) or its custom base map (x/y pins), never
-both, since two different coordinate systems can't merge onto one Leaflet CRS without
-the manual anchoring the spec explicitly excludes from this phase. Pins placed before a
-custom base map existed simply won't show up on it once one is set — a known, accepted
-tradeoff, not a bug.
+green = warrantable, red = non-warrantable, amber = undetermined/mixed. Always
+renders, even with zero pins — satellite geocoded to the building's address (or a
+generic fallback center) by default, so the map exists as soon as a building does, not
+only once something's been pinned.
 
-**Custom base maps (`roof_plan`/`sketch`) — admin-only, needs a linked CompanyCam
-project**: uploaded via CompanyCam's existing `upload_document` action (same one used
-for PDF-back-to-CompanyCam) rather than Firebase Storage, per this repo's storage
-policy. CompanyCam's document-creation response includes a `url` field ("the URL where
-the document can be downloaded/viewed from" — confirmed against their API docs) that's
-stored as `roof_base_map_url` and used directly as a Leaflet `imageOverlay` source.
-Setting **and clearing** a base map both go through `netlify/functions/admin.js`'s
-`set_building_roof_map` action (real PIN + Admin SDK, same pattern as the delete
-actions) rather than a plain client-side Firestore `update` — it's a shared,
-building-wide setting that affects every future report's pin placement and the
-history map, not per-work-order draft data, so it gets the same treatment as the
-destructive admin actions even though Firestore rules would technically allow any
-client to `update` a building doc. If a building has no linked CompanyCam project yet,
-the upload UI is replaced with guidance to link one first (import photos from a
-project on a work order for that building).
+**Two kinds of custom base map — admin-only, needs a linked CompanyCam project either
+way**, uploaded via CompanyCam's existing `upload_document` action (same one used for
+PDF-back-to-CompanyCam) rather than Firebase Storage, per this repo's storage policy.
+CompanyCam's document-creation response includes a `url` field ("the URL where the
+document can be downloaded/viewed from" — confirmed against their API docs) stored as
+`roof_base_map_url`.
 
-**What's still template-only from the original spec**: `drone_ortho` as a base map
-type (no upload path built — same CompanyCam-document mechanism would work, just
-wasn't wired up), 3-point manual anchoring for non-georeferenced maps (explicitly
-excluded per the spec), and roof-section labels/filters on the history map.
+1. **`roof_plan` / `sketch`** — no real-world coordinates. Uses `L.CRS.Simple` +
+   `L.imageOverlay` with a virtual coordinate space matching the uploaded image's
+   actual pixel dimensions (fetched via a plain `Image()` preload at pin-placement
+   time — not stored anywhere, so it's always correct even if the image is replaced).
+   Pins are normalized `x`/`y` (0..1).
+2. **`drone_ortho`** — real georeferenced coordinates (`roof_base_map_bounds`). Treated
+   as a higher-detail image layer drawn on top of the normal lat/lng satellite map
+   (Esri tiles underneath, the ortho overlaid within its bounds) rather than a separate
+   coordinate mode — pins on it are plain lat/lng, exactly like a satellite pin, so no
+   new pin-source logic was needed for this case. Getting the bounds is the hard part —
+   see `tools/geotiff_to_webmap.py` below.
+
+A building shows **one map** overall — either the satellite/drone_ortho lat/lng view,
+or a roof_plan/sketch x/y view, never both, since x/y and lat/lng can't merge onto one
+Leaflet CRS without the manual anchoring the spec explicitly excludes from this phase.
+Pins placed on satellite before a roof_plan/sketch base map existed won't show up once
+one is set (drone_ortho doesn't have this problem — it uses the same lat/lng pins as
+satellite, so switching between "no custom map" and "drone_ortho" never loses pins).
+
+Setting **and clearing** a base map (either kind) both go through
+`netlify/functions/admin.js`'s `set_building_roof_map` action (real PIN + Admin SDK,
+same pattern as the delete actions) rather than a plain client-side Firestore
+`update` — it's a shared, building-wide setting that affects every future report's pin
+placement and the history map, not per-work-order draft data, so it gets the same
+treatment as the destructive admin actions even though Firestore rules would
+technically allow any client to `update` a building doc. If a building has no linked
+CompanyCam project yet, the upload UI is replaced with guidance to link one first.
+
+**`tools/geotiff_to_webmap.py`** — a standalone script, deliberately *not* part of the
+app. Drone orthomosaic GeoTIFFs are typically hundreds of MB and use a projected
+coordinate system (almost always WGS84 UTM, auto-selected by the photogrammetry
+software based on GPS location) — parsing that reliably in a phone browser would be a
+much bigger, riskier undertaking than anything else in this feature, for a case that's
+inherently rare (most work orders have no drone flight). Instead: run this script
+locally, once per orthomosaic, and it outputs (a) a small JPG well under CompanyCam's
+~30MB limit, extracted from one of the GeoTIFF's own pre-baked pyramid overview levels
+rather than downscaling the full image, and (b) the four corner GPS coordinates
+(North/South/East/West), computed via standard UTM inverse formulas — paste both into
+the admin "Drone Orthomosaic" upload form. Requires ExifTool (reads the GeoTIFF's
+georeferencing tags — more reliable than hand-parsing the TIFF spec) and Pillow.
+Verified against a real 293MB production orthomosaic (OpenDroneMap output, UTM zone
+15N) — computed coordinates matched independent verification, and the extracted
+preview was a correct, undistorted crop of the real roof.
+
+Supported coordinate systems: WGS84 UTM (any zone/hemisphere) and plain geographic.
+Anything else — a different projection entirely — prints a clear error rather than
+silently computing wrong coordinates.
+
+3-point manual anchoring for non-georeferenced maps (to recover real coordinates from
+a roof_plan/sketch after the fact) is explicitly excluded per the spec, as are
+roof-section labels/filters on the history map.
 
 ### ⚠️ Firestore security rules
 
@@ -333,8 +370,8 @@ functions" pattern already used for CompanyCam/Resend, at no additional cost.
 - **RoofOps Dashboard**: cross-building reporting, search, filters — reads from
   `buildings` / `reports` / `building_history_events` rather than `workorders`
   directly.
-- ✅ **Roof map / location pins**: shipped — see the dedicated section above. Still
-  missing: `drone_ortho` as an actual upload path (mechanism exists, not wired up),
+- ✅ **Roof map / location pins**: shipped — see the dedicated section above, including
+  georeferenced drone orthomosaics (`tools/geotiff_to_webmap.py`). Still missing:
   manual anchoring for non-georeferenced maps (excluded by spec), roof-section
   labels/filters.
 - **Explicit customer/building picker UI** in the Edit tab, replacing the current

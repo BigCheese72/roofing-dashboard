@@ -48,11 +48,16 @@ APP_OVERVIEW.md
 DEV_NOTES.md
 ROADMAP.md
 DATA_MODEL.md
+package.json         # firebase-admin, for admin.js
+firestore.rules       # reference only — apply manually in Firebase Console
 netlify.toml
 netlify/
   functions/
     companycam.js
     send-workorder.js
+    admin.js
+tools/
+  geotiff_to_webmap.py  # standalone — NOT part of the deployed app
 ```
 
 ## Main Responsibility Map
@@ -71,7 +76,7 @@ netlify/
 | Email/report sending | `index.html`, `netlify/functions/send-workorder.js` | `sendEmailNow()` generates the PDF, posts it to `send-workorder`, and the Netlify Function sends through Resend. |
 | PDF save-back to CompanyCam | `index.html`, `netlify/functions/companycam.js` | `uploadLinkedPdfToCompanyCam()` uploads the PDF as a CompanyCam project document whenever a project is linked — after Send Email Now, Share, or Download, not just email. |
 | Admin mode | `index.html`, `netlify/functions/admin.js`, `firestore.rules` | `toggleAdminMode()` verifies the PIN server-side (`ADMIN_PIN` env var, never shipped to the browser). Unlocks `unlinkCC()` on the CompanyCam banner, per-building/per-event delete, and roof base-map upload/clear in Building History; all of those run through `admin.js` using the Firebase Admin SDK. `firestore.rules` blocks client-side deletes on the affected collections entirely — see DEV_NOTES.md for required manual setup. |
-| Roof map / location pins | `index.html`, `netlify/functions/companycam.js`, `netlify/functions/admin.js` | Leaflet (CDN) + free Esri satellite tiles + free Nominatim geocoding. `openPinModal()` places a pin per finding (satellite/lat-lng by default, or x/y on a building's custom base map if one is set). `renderBuildingMap()` shows every pin for a building at once in the Building History tab. See "Roof map" in `DEV_NOTES.md` for the full design. |
+| Roof map / location pins | `index.html`, `netlify/functions/companycam.js`, `netlify/functions/admin.js`, `tools/geotiff_to_webmap.py` | Leaflet (CDN) + free Esri satellite tiles + free Nominatim geocoding. `openPinModal()` places a pin per finding — satellite/lat-lng by default, x/y on a roof-plan/sketch base map, or lat-lng with a georeferenced drone-orthomosaic overlay. `renderBuildingMap()` shows every pin for a building at once in the Building History tab, always visible even with zero pins. `tools/geotiff_to_webmap.py` is a standalone script (not deployed) that converts a raw drone GeoTIFF into what the orthomosaic upload needs. See "Roof map" in `DEV_NOTES.md` for the full design. |
 | Duplicate report detection | `index.html` | `flagDuplicateEvents()` flags timeline entries with the same work order + report type created within 5 minutes of each other (double-click/retry protection), shown with a badge; admin can delete flagged entries. |
 | Netlify functions | `netlify/functions/companycam.js`, `netlify/functions/send-workorder.js` | Serverless API boundary for CompanyCam and Resend credentials. |
 | Netlify deployment | `netlify.toml` | Publishes the repo root and points Netlify Functions at `netlify/functions`. |

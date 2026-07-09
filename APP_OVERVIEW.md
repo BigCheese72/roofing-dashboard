@@ -49,10 +49,17 @@ from every past report at once, color-coded by warranty status (green = warranta
 red = non-warrantable, amber = undetermined). Tap a pin to see the date, work order
 number, condition, and warranty status, and jump straight to that work order.
 
-**Custom base maps** (admin-only): a building can use an uploaded roof plan or sketch
-instead of satellite — useful when satellite imagery isn't detailed enough (heavy
-rooftop equipment, complex multi-section roofs). Requires the building to already have
-a CompanyCam project linked. Set from the Building History tab, in admin mode.
+**Custom base maps** (admin-only): a building can use something other than satellite.
+Requires the building to already have a CompanyCam project linked. Set from the
+Building History tab, in admin mode.
+
+- **Roof plan or sketch** — useful when satellite imagery isn't detailed enough
+  (heavy rooftop equipment, complex multi-section roofs). Just an image upload.
+- **Drone orthomosaic** — for full GPS accuracy. Drone orthomosaic files are too large
+  and specialized for the app to process directly, so there's a companion script
+  (`tools/geotiff_to_webmap.py`) that converts the raw file into a small image plus
+  the exact GPS coordinates of its corners, which get pasted into the upload form
+  alongside the image.
 
 ## How CompanyCam Works
 

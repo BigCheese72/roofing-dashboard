@@ -111,8 +111,9 @@ Example fields:
   roofSystem,
   companyCamProjectId,
   companyCamProjectName,
-  roof_base_map_type: null, // "roof_plan" | "sketch" today; "drone_ortho" reserved, not built
+  roof_base_map_type: null, // "roof_plan" | "sketch" | "drone_ortho"
   roof_base_map_url: null,  // a CompanyCam document URL when set — see DEV_NOTES.md
+  roof_base_map_bounds: null, // { north, south, east, west } — drone_ortho only
   roof_base_map_updated_at: null,
   createdAt,
   updatedAt
@@ -123,14 +124,18 @@ Notes:
 
 - Current app derives buildings from Job Name and Bill To.
 - The building should become the anchor for long-term roof history.
-- `roof_base_map_type`/`roof_base_map_url` are implemented, not just proposed — see
+- `roof_base_map_type`/`url`/`bounds` are implemented, not just proposed — see
   "Roof map: base maps + location pins" in `DEV_NOTES.md` for the full design (pin
-  schema, satellite default via Leaflet + Esri tiles, x/y mode for non-georeferenced
-  maps). Setting/clearing goes through `netlify/functions/admin.js`, not a plain
-  client write — it's shared/building-wide, not per-work-order draft data.
+  schema, satellite default via Leaflet + Esri tiles, x/y mode for `roof_plan`/
+  `sketch`, real lat/lng mode for `drone_ortho`). Setting/clearing goes through
+  `netlify/functions/admin.js`, not a plain client write — it's shared/building-wide,
+  not per-work-order draft data.
 - Satellite is the default and requires no base map fields at all (Esri tiles + a
-  geocoded address); `roof_base_map_type`/`url` only exist for the `roof_plan`/
-  `sketch` exception case.
+  geocoded address); `roof_base_map_type`/`url`/`bounds` only exist for the
+  `roof_plan`/`sketch`/`drone_ortho` exception cases.
+- `roof_base_map_bounds` requires a companion offline tool
+  (`tools/geotiff_to_webmap.py`) to produce — extracting real-world coordinates from a
+  drone orthomosaic isn't something the app itself does. See `DEV_NOTES.md`.
 
 ### `work_orders`
 

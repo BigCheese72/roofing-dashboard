@@ -36,12 +36,14 @@ Goal: turn each building into a long-term roof record.
 - Add durable references to report PDFs and photo source records.
 - ✅ **Shipped**: roof maps and leak pins. Every finding can be pinned (satellite by
   default via free Esri tiles + Nominatim geocoding, photo-GPS as a corrected initial
-  guess, or a custom uploaded roof plan/sketch for roofs where satellite isn't legible
-  enough). Every building has a history map aggregating every pin from every past
-  report, color-coded by warranty status. See `DEV_NOTES.md` for the full design.
-- Not yet built: drone orthomosaic upload (mechanism exists via the same CompanyCam
-  document path as roof plans, just not wired up), manual anchoring for
-  non-georeferenced maps (deliberately excluded), roof-section labels/filters.
+  guess, a custom uploaded roof plan/sketch for roofs where satellite isn't legible
+  enough, or a real georeferenced drone orthomosaic for full accuracy). Every building
+  has a history map aggregating every pin from every past report, color-coded by
+  warranty status. See `DEV_NOTES.md` for the full design, including
+  `tools/geotiff_to_webmap.py`, the companion script that converts a drone GeoTIFF
+  into what the app needs.
+- Not yet built: manual anchoring for non-georeferenced (roof plan/sketch) maps
+  (deliberately excluded by the spec), roof-section labels/filters.
 
 ## Phase 4: Dashboard/Admin/Users
 
