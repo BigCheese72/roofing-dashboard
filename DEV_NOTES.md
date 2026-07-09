@@ -97,6 +97,13 @@ Built from a written spec (see git history / PR description around the commits t
    provenance: `"tech_placed"` (no GPS available), `"photo_gps"` (seeded from a linked
    CompanyCam photo's GPS, saved untouched), `"gps_corrected"` (seeded from photo GPS,
    then dragged). Reopening an already-corrected pin never downgrades its source.
+4. **A pin is never final — dragging is always available.** Once a finding has a pin,
+   its "Place on Map" button becomes "📍 Pinned — move" and reopens the same modal with
+   the existing location, draggable/tappable to correct. A correction only reaches the
+   Building History map on the *next* report generated for that work order (pins are
+   denormalized onto `building_history_events` at report time, not live-linked — see
+   `buildPinsForHistoryEvent()`), so an already-published report's pin snapshot doesn't
+   silently change after the fact.
 
 **Finding shape**: `{ id, condition, location, warranty, pin }`. `pin` is `null` or
 `{ lat, lng, x, y, source }` — exactly one of `{lat,lng}` or `{x,y}` is populated,
@@ -262,6 +269,12 @@ the work order (`companyCamProjectId`/`companyCamProjectName`) and shown/undoabl
 the green link banner under Photo Documentation. Photos imported from CompanyCam are
 tagged with `ccPhotoId` so `building_history_events.companyCamPhotoIds` can record
 exactly which CompanyCam photos ended up in a given report.
+
+`applyCompanyCamProjectDetail()` also pulls the linked project's real street address
+into the Location field — but only when Location is empty or is already a substring of
+the fuller CompanyCam address (e.g. a tech typed just "Fulton" before linking the
+project). It deliberately never overwrites a Location that doesn't match, so a
+technician's own, possibly-more-correct manual entry is never clobbered.
 
 ### "Sync CompanyCam History" (`syncCompanyCamHistory()`)
 

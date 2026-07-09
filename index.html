@@ -2196,7 +2196,13 @@ async function applyCompanyCamProjectDetail(id){
       var title = document.getElementById("cc-title");
       if (title) title.textContent = project.name;
     }
-    if (project.address && !val("location")){
+    var curLoc = (val("location") || "").trim();
+    /* Upgrades a short/partial location (e.g. just a town, typed before
+       the CompanyCam project was linked) to the project's full street
+       address. Only overwrites when the current text is empty or is
+       already contained in the fuller address, so a technician's
+       deliberately different manual entry is never clobbered. */
+    if (project.address && (!curLoc || project.address.toLowerCase().indexOf(curLoc.toLowerCase()) !== -1)){
       setVal("location", project.address);
       toast("CompanyCam address added to Location");
     }
