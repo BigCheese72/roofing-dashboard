@@ -1365,6 +1365,9 @@ function renderBaseMapAdminCard(buildingId, bld){
   var safeId = buildingId.replace(/[^A-Za-z0-9_-]/g, "");
   var b = bld.roof_base_map_bounds;
   return '<div class="card"><h2 class="cond">Roof Base Map (admin)</h2>' +
+    '<p class="hint">Building ID (for <code>tools/geotiff_to_webmap.py --upload</code>): ' +
+      '<code>' + esc(buildingId) + '</code> ' +
+      '<button class="btn" style="padding:2px 8px;font-size:11px" onclick="copyBuildingId(\'' + buildingId + '\')">Copy</button></p>' +
     (hasMap ?
       '<p class="hint">Current: ' + esc(bld.roof_base_map_type.replace("_"," ")) +
         ' — <a href="' + esc(bld.roof_base_map_url) + '" target="_blank" rel="noopener">view image</a>' +
@@ -1399,6 +1402,19 @@ function toggleBaseMapBoundsFields(safeId){
   var typeSel = document.getElementById("basemap-type-" + safeId);
   var boundsDiv = document.getElementById("basemap-bounds-" + safeId);
   if (boundsDiv) boundsDiv.style.display = (typeSel && typeSel.value === "drone_ortho") ? "" : "none";
+}
+function copyBuildingId(id){
+  function fallback(){
+    var ta = document.createElement("textarea");
+    ta.value = id; document.body.appendChild(ta);
+    ta.select();
+    try{ document.execCommand("copy"); toast("Building ID copied ✓"); }
+    catch(e){ toast("Copy failed — select the ID text manually"); }
+    document.body.removeChild(ta);
+  }
+  if (navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(id).then(function(){ toast("Building ID copied ✓"); }, fallback);
+  } else fallback();
 }
 function resizeImageFile(file, maxDim, quality){
   return new Promise(function(res, rej){

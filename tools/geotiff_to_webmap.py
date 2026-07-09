@@ -22,15 +22,33 @@ Requirements:
     bundled there; otherwise download the free Windows executable from
     exiftool.org and pass its path with --exiftool.
 
-Usage:
+Usage (convert only — paste the printed bounds into the app's upload form yourself):
   python geotiff_to_webmap.py "C:\\path\\to\\orthophoto.tif" "C:\\path\\to\\output.jpg"
   python geotiff_to_webmap.py input.tif output.jpg --max-dim 3000 --exiftool "C:\\path\\to\\exiftool.exe"
 
+Usage (convert AND upload in one step — for a building you fly regularly,
+e.g. weekly, so you never have to open the app or retype coordinates):
+  python geotiff_to_webmap.py input.tif output.jpg --upload \
+      --building-id bld_xxxxx --company-cam-project-id 99347721 --pin 1234
+
+  Get --building-id from the app: Building History -> admin mode -> open
+  the building -> "Roof Base Map (admin)" card shows it with a Copy
+  button. It never changes for a given building, so grab it once. Same
+  for --company-cam-project-id (visible in CompanyCam's own project URL).
+
+  Tip: since those don't change week to week, save your own wrapper
+  script (a .bat file, a shell alias, whatever) with your specific
+  --building-id/--company-cam-project-id/--pin baked in, so your actual
+  weekly action is just running one command with the new file.
+
 Output:
   - Writes the JPG.
-  - Prints the four corner bounds (north/south/east/west, decimal degrees)
-    — copy these into the app's "Drone Orthomosaic" base-map upload form
-    alongside the JPG.
+  - Prints the four corner bounds (north/south/east/west, decimal degrees).
+  - Without --upload: paste those into the app's "Drone Orthomosaic"
+    upload form alongside the JPG.
+  - With --upload: uploads the JPG to the linked CompanyCam project and
+    sets it as the building's base map automatically — nothing left to
+    do in the app.
 
 Supported coordinate systems: WGS84 UTM (any zone, either hemisphere) and
 plain geographic (lat/lon) GeoTIFFs. Anything else prints a clear error
@@ -38,6 +56,8 @@ instead of silently producing wrong coordinates.
 """
 
 import argparse
+import urllib.request
+import urllib.error
 import json
 import math
 import shutil
@@ -213,14 +233,79 @@ def pick_best_frame(img, max_dim):
     return best
 
 
+def call_app_api(app_url, function_name, body):
+    """POST JSON to one of the app's Netlify functions using only the
+    standard library — no extra dependency (requests) needed for a script
+    that mostly just needs to run occasionally on someone's laptop."""
+    url = app_url.rstrip("/") + "/.netlify/functions/" + function_name
+    data = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        try:
+            err_body = json.loads(e.read().decode("utf-8"))
+            raise RuntimeError(err_body.get("error", str(e)))
+        except (ValueError, KeyError):
+            raise RuntimeError(f"{function_name} returned HTTP {e.code}")
+
+
+def upload_and_set_base_map(app_url, project_id, building_id, pin, image_path, bounds):
+    import base64
+
+    print(f"Uploading {image_path.name} to CompanyCam project {project_id}...")
+    with open(image_path, "rb") as f:
+        b64 = base64.b64encode(f.read()).decode("ascii")
+    upload_result = call_app_api(app_url, "companycam", {
+        "action": "upload_document",
+        "project_id": project_id,
+        "name": image_path.name,
+        "attachment": b64,
+    })
+    url = (upload_result.get("document") or {}).get("url")
+    if not url:
+        raise RuntimeError("CompanyCam upload succeeded but returned no document URL — can't continue.")
+    print(f"  uploaded: {url}")
+
+    print(f"Setting it as the base map for building {building_id}...")
+    call_app_api(app_url, "admin", {
+        "action": "set_building_roof_map",
+        "pin": pin,
+        "buildingId": building_id,
+        "roof_base_map_type": "drone_ortho",
+        "roof_base_map_url": url,
+        "roof_base_map_bounds": bounds,
+    })
+    print("  done — the building's roof map is updated.")
+
+
 def main():
+    # Windows' default console encoding (cp1252) mangles the em-dashes used
+    # in this script's output; UTF-8 output is safe everywhere Python 3.7+ runs.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
+
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("input", help="Path to the orthomosaic GeoTIFF")
     ap.add_argument("output", help="Path to write the web-ready JPG")
     ap.add_argument("--max-dim", type=int, default=3000, help="Max width/height in pixels (default 3000)")
     ap.add_argument("--quality", type=int, default=85, help="JPEG quality 1-95 (default 85)")
     ap.add_argument("--exiftool", default=None, help="Path to exiftool.exe if not on PATH")
+    ap.add_argument("--upload", action="store_true",
+                     help="Also upload to CompanyCam and set as the building's base map (needs --building-id, "
+                          "--company-cam-project-id, --pin)")
+    ap.add_argument("--building-id", default=None, help="Building ID, from the app's admin Roof Base Map card")
+    ap.add_argument("--company-cam-project-id", default=None, help="CompanyCam project ID linked to that building")
+    ap.add_argument("--pin", default=None, help="The app's admin PIN")
+    ap.add_argument("--app-url", default="https://leak-work-orders.netlify.app",
+                     help="App base URL (default: production). Use the dev--... URL to test first.")
     args = ap.parse_args()
+
+    if args.upload and not (args.building_id and args.company_cam_project_id and args.pin):
+        print("--upload requires --building-id, --company-cam-project-id, and --pin.", file=sys.stderr)
+        sys.exit(1)
 
     exiftool_path = find_exiftool(args.exiftool)
     if not exiftool_path:
@@ -272,11 +357,27 @@ def main():
     if size_mb > 25:
         print("WARNING: this is close to CompanyCam's ~30MB upload limit — consider a lower --max-dim.")
     print()
-    print("Paste these into the app's 'Drone Orthomosaic' upload form:")
-    print(f"  North: {bounds['north']:.7f}")
-    print(f"  South: {bounds['south']:.7f}")
-    print(f"  East:  {bounds['east']:.7f}")
-    print(f"  West:  {bounds['west']:.7f}")
+
+    if args.upload:
+        print(f"Uploading and setting as base map (app: {args.app_url})...")
+        try:
+            upload_and_set_base_map(
+                args.app_url, args.company_cam_project_id, args.building_id, args.pin, out_path, bounds
+            )
+        except Exception as e:
+            print(f"Upload failed: {e}", file=sys.stderr)
+            print(
+                "The JPG and bounds above are still valid — you can paste them into the app's "
+                "upload form by hand instead.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+    else:
+        print("Paste these into the app's 'Drone Orthomosaic' upload form:")
+        print(f"  North: {bounds['north']:.7f}")
+        print(f"  South: {bounds['south']:.7f}")
+        print(f"  East:  {bounds['east']:.7f}")
+        print(f"  West:  {bounds['west']:.7f}")
 
 
 if __name__ == "__main__":
