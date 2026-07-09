@@ -107,6 +107,14 @@ Built from a written spec (see git history / PR description around the commits t
    denormalized onto `building_history_events` at report time, not live-linked — see
    `buildPinsForHistoryEvent()`), so an already-published report's pin snapshot doesn't
    silently change after the fact.
+5. **The Building History roof map is read-only by design** (it's an aggregate across
+   every past report, not one editable thing), but every pin's popup now has an
+   "Adjust Pin" button next to "View Work Order" so that expectation doesn't dead-end.
+   `jumpToAdjustPin(workOrderId, findingId)` sets `pendingPinFindingId` and calls
+   `loadOrder()`; `showView()` checks that flag once the edit view is showing and
+   auto-opens `openPinModal()` for that finding. Kept as a `showView()` hook rather than
+   threading a callback through `loadOrder()`'s several async branches, since every one
+   of them already ends in `fill(o); showView("edit")`.
 
 **Finding shape**: `{ id, condition, location, warranty, pin }`. `pin` is `null` or
 `{ lat, lng, x, y, source }` — exactly one of `{lat,lng}` or `{x,y}` is populated,

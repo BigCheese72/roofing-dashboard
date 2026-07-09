@@ -686,7 +686,17 @@ function boundsToLatLngBounds(b){
   return [[b.south, b.west], [b.north, b.east]];
 }
 var pinMap = null, pinMarker = null, pinModalFindingId = null, pinInitialSource = null,
-  pinInteracted = false, pinMapMode = "latlng", pinXYSize = null, pinDeviceGpsUsed = false;
+  pinInteracted = false, pinMapMode = "latlng", pinXYSize = null, pinDeviceGpsUsed = false,
+  pendingPinFindingId = null;
+/* The Building History roof map is a read-only aggregate across every
+   report for a building — pins there were never draggable, by design (see
+   DEV_NOTES.md). This is the bridge from that map to the actual editable
+   pin: load the owning work order, then auto-open that finding's pin
+   modal once the edit view is showing (see the showView hook below). */
+function jumpToAdjustPin(workOrderId, findingId){
+  pendingPinFindingId = findingId;
+  loadOrder(workOrderId);
+}
 async function openPinModal(findingId){
   var f = findingById(findingId);
   if (!f) return;
@@ -1312,7 +1322,10 @@ function pinPopupHtml(p){
     (p.condition ? esc(p.condition) + "<br>" : "") +
     "<span style='color:" + warrantyColor(p.warranty) + ";font-weight:600'>" + esc(p.warranty || "") + "</span><br>" +
     (photoNote ? photoNote + "<br>" : "") +
-    "<button class=\"btn\" style=\"margin-top:6px\" onclick=\"loadOrder('" + p.work_order_id + "')\">View Work Order</button>";
+    "<div style=\"display:flex;gap:6px;margin-top:6px;flex-wrap:wrap\">" +
+    "<button class=\"btn\" onclick=\"loadOrder('" + p.work_order_id + "')\">View Work Order</button>" +
+    (p.finding_id ? "<button class=\"btn\" onclick=\"jumpToAdjustPin('" + p.work_order_id + "','" + p.finding_id + "')\">Adjust Pin</button>" : "") +
+    "</div>";
 }
 /* pins here are already pre-filtered to the mode matching customBld (see
    caller) — null customBld means satellite/lat-lng mode, otherwise x/y
@@ -2392,6 +2405,11 @@ function showView(v){
   if (v === "saved") renderSaved();
   if (v === "history") renderHistoryList();
   window.scrollTo(0,0);
+  if (v === "edit" && pendingPinFindingId){
+    var fid = pendingPinFindingId;
+    pendingPinFindingId = null;
+    openPinModal(fid);
+  }
 }
 
 /* ================= init ================= */
