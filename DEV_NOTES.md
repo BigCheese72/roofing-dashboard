@@ -79,24 +79,94 @@ customer/building picker UI is added, wire it into the same function.
 }
 ```
 
-### Building document — roof map / leak location foundation (Phase 1, no UI yet)
+### Roof map: base maps + location pins (shipped)
 
-Per the future roof-map feature, every building doc is seeded once (on first
-creation) with:
+Built from a written spec (see git history / PR description around the commits titled
+"Roof map Phase 1–4"). Three design decisions worth knowing before touching this code:
 
+1. **Lat/lng is authoritative; x/y is a fallback for non-georeferenced maps.** A pin
+   survives a future base-map swap (e.g. a drone orthomosaic replacing satellite)
+   because it's stored as real coordinates, not a position on an image. x/y (normalized
+   0..1) only applies to `roof_plan`/`sketch` base maps, which have no real-world
+   coordinate system.
+2. **Pins attach to findings, not photos.** `findings[]` and `photos[]` used to be
+   unrelated arrays. Every finding now has a stable `id` (`genId("fnd")`, survives
+   reordering/removal); every photo has a `finding_id` (`null` = general/context photo).
+   A dropdown under each photo's caption sets the link.
+3. **GPS is an initial guess, never trusted blind.** A pin's `source` field records
+   provenance: `"tech_placed"` (no GPS available), `"photo_gps"` (seeded from a linked
+   CompanyCam photo's GPS, saved untouched), `"gps_corrected"` (seeded from photo GPS,
+   then dragged). Reopening an already-corrected pin never downgrades its source.
+
+**Finding shape**: `{ id, condition, location, warranty, pin }`. `pin` is `null` or
+`{ lat, lng, x, y, source }` — exactly one of `{lat,lng}` or `{x,y}` is populated,
+never both, depending on which kind of base map it was placed on.
+
+**Photo shape adds**: `finding_id` (link, see above) and `gps` (`{lat,lng}` or absent —
+only present on CompanyCam-imported photos that had GPS; see `companycam.js` below).
+
+**Building doc adds**:
 ```
-roof_base_map_type: null,   // will become "drone" | "satellite" | "plan" | "sketch"
-roof_base_map_url:  null,
-roof_section:        null,
-map_pin_x:           null,
-map_pin_y:           null,
+roof_base_map_type: null | "roof_plan" | "sketch",  // "drone_ortho" reserved, not built
+roof_base_map_url:  null | string,   // a CompanyCam document URL — see below
+roof_base_map_updated_at: number | null
 ```
+(The older placeholder fields this replaced — `leak_location_label`, `leak_latitude`,
+`leak_longitude` on findings, `map_pin_x`/`map_pin_y` on buildings — were always `null`
+with no UI ever built, so they were removed outright rather than kept alongside the
+real schema. `roof_section` was also dropped; nothing uses it.)
 
-Every **finding** (roof investigation entry) also carries `leak_location_label`,
-`leak_latitude`, `leak_longitude` (all `null` today). These are placeholders only —
-`addFinding()` in `index.html` sets the keys so a future map feature never needs a
-data migration. No input UI exists for any of these yet, by design (see task spec:
-"prepare the data structure for it," not the feature itself).
+**Map rendering**: Leaflet (CDN, `unpkg.com/leaflet@1.9.4`, no build step) + Esri World
+Imagery tiles (`server.arcgisonline.com/.../World_Imagery/...`, free, no API key) for
+satellite. Non-georeferenced base maps use `L.CRS.Simple` + `L.imageOverlay` with a
+virtual coordinate space matching the uploaded image's actual pixel dimensions (fetched
+via a plain `Image()` preload at pin-placement time — not stored anywhere, so it's
+always correct even if the underlying image is replaced).
+
+**Geocoding**: Nominatim (OpenStreetMap, free, no API key) geocodes the job address to
+center the satellite map. Results are cached in-memory per session
+(`geocodeCache`) — not persisted to Firestore, so it re-geocodes each new session. That
+was a deliberate scope cut: persisting it would mean writing to a building doc during
+plain editing (before `ensureCustomerAndBuilding()` would otherwise run), which changes
+when customer/building records get created. Fine to revisit if Nominatim call volume
+ever becomes a real concern (it won't, at this usage scale).
+
+**Photo GPS from CompanyCam**: `companycam.js`'s `photos` action passes through
+CompanyCam's `coordinates.lat`/`coordinates.lon` as `gps: {lat, lng}` on each photo —
+note CompanyCam uses `lon`, everything else in this app (and Leaflet) uses `lng`;
+mapped once at the source so nothing downstream has to remember the discrepancy.
+
+**Building-wide history map** (`renderBuildingMap()`, in the Building History tab):
+aggregates `pins[]` from every `building_history_events` doc for a building onto one
+map — denormalized at report-generation time (`buildPinsForHistoryEvent()`) so this
+reads from the events already being fetched for the timeline, no extra query. Color:
+green = warrantable, red = non-warrantable, amber = undetermined/mixed. A building
+shows **one** map — satellite (lat/lng pins) or its custom base map (x/y pins), never
+both, since two different coordinate systems can't merge onto one Leaflet CRS without
+the manual anchoring the spec explicitly excludes from this phase. Pins placed before a
+custom base map existed simply won't show up on it once one is set — a known, accepted
+tradeoff, not a bug.
+
+**Custom base maps (`roof_plan`/`sketch`) — admin-only, needs a linked CompanyCam
+project**: uploaded via CompanyCam's existing `upload_document` action (same one used
+for PDF-back-to-CompanyCam) rather than Firebase Storage, per this repo's storage
+policy. CompanyCam's document-creation response includes a `url` field ("the URL where
+the document can be downloaded/viewed from" — confirmed against their API docs) that's
+stored as `roof_base_map_url` and used directly as a Leaflet `imageOverlay` source.
+Setting **and clearing** a base map both go through `netlify/functions/admin.js`'s
+`set_building_roof_map` action (real PIN + Admin SDK, same pattern as the delete
+actions) rather than a plain client-side Firestore `update` — it's a shared,
+building-wide setting that affects every future report's pin placement and the
+history map, not per-work-order draft data, so it gets the same treatment as the
+destructive admin actions even though Firestore rules would technically allow any
+client to `update` a building doc. If a building has no linked CompanyCam project yet,
+the upload UI is replaced with guidance to link one first (import photos from a
+project on a work order for that building).
+
+**What's still template-only from the original spec**: `drone_ortho` as a base map
+type (no upload path built — same CompanyCam-document mechanism would work, just
+wasn't wired up), 3-point manual anchoring for non-georeferenced maps (explicitly
+excluded per the spec), and roof-section labels/filters on the history map.
 
 ### ⚠️ Firestore security rules
 
@@ -263,9 +333,10 @@ functions" pattern already used for CompanyCam/Resend, at no additional cost.
 - **RoofOps Dashboard**: cross-building reporting, search, filters — reads from
   `buildings` / `reports` / `building_history_events` rather than `workorders`
   directly.
-- **Roof map**: render `roof_base_map_type`/`roof_base_map_url` (drone orthomosaic >
-  Google satellite > uploaded plan > manual sketch, in that preference order) with
-  pins from `map_pin_x`/`map_pin_y` and per-finding `leak_latitude`/`leak_longitude`.
+- ✅ **Roof map / location pins**: shipped — see the dedicated section above. Still
+  missing: `drone_ortho` as an actual upload path (mechanism exists, not wired up),
+  manual anchoring for non-georeferenced maps (excluded by spec), roof-section
+  labels/filters.
 - **Explicit customer/building picker UI** in the Edit tab, replacing the current
   implicit derive-from-text-fields approach, while keeping the same Firestore shape.
 - **CompanyCam activity/webhooks**, if CompanyCam's API adds them, to enrich building

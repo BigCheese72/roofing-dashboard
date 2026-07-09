@@ -111,11 +111,9 @@ Example fields:
   roofSystem,
   companyCamProjectId,
   companyCamProjectName,
-  roof_base_map_type: null, // drone | satellite | plan | sketch
-  roof_base_map_url: null,
-  roof_section: null,
-  map_pin_x: null,
-  map_pin_y: null,
+  roof_base_map_type: null, // "roof_plan" | "sketch" today; "drone_ortho" reserved, not built
+  roof_base_map_url: null,  // a CompanyCam document URL when set — see DEV_NOTES.md
+  roof_base_map_updated_at: null,
   createdAt,
   updatedAt
 }
@@ -125,6 +123,14 @@ Notes:
 
 - Current app derives buildings from Job Name and Bill To.
 - The building should become the anchor for long-term roof history.
+- `roof_base_map_type`/`roof_base_map_url` are implemented, not just proposed — see
+  "Roof map: base maps + location pins" in `DEV_NOTES.md` for the full design (pin
+  schema, satellite default via Leaflet + Esri tiles, x/y mode for non-georeferenced
+  maps). Setting/clearing goes through `netlify/functions/admin.js`, not a plain
+  client write — it's shared/building-wide, not per-work-order draft data.
+- Satellite is the default and requires no base map fields at all (Esri tiles + a
+  geocoded address); `roof_base_map_type`/`url` only exist for the `roof_plan`/
+  `sketch` exception case.
 
 ### `work_orders`
 
@@ -145,7 +151,7 @@ Example fields:
   siteContact,
   roofSystem,
   reportedArea,
-  findings: [],
+  findings: [], // each: { id, condition, location, warranty, pin } — see DEV_NOTES.md
   repairs: [],
   warrantable,
   nonWarrantable,
@@ -260,6 +266,7 @@ Example fields:
   warrantyStatus,
   companyCamProjectId,
   companyCamPhotoIds: [],
+  pins: [], // denormalized from findings with a pin — see DEV_NOTES.md
   pdfRef: null,
   emailSent: false,
   emailRecipients: [],
@@ -269,8 +276,15 @@ Example fields:
 
 Notes:
 
-- This should power the roof history timeline.
+- This should power the roof history timeline. Implemented — see the Building History
+  tab, `renderBuildingMap()` in `index.html`.
 - Keep this append-only where practical so the building history remains auditable.
+- `pins[]` (implemented, not just proposed) is built by `buildPinsForHistoryEvent()`
+  each time a report is generated — one entry per finding that has a pin, shaped
+  `{ finding_id, condition, warranty, lat, lng, x, y, source, work_order_id,
+  work_order_no, service_date, photo_ids }`. Denormalized here specifically so the
+  building-wide history map reads from one query across every report instead of
+  walking every work order to find its findings' pins.
 
 ### `settings`
 
