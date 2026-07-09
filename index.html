@@ -144,6 +144,7 @@
   <button class="tab cond" id="tab-preview" onclick="showView('preview')">Preview</button>
   <button class="tab cond" id="tab-saved" onclick="showView('saved')">Saved (<span id="saved-count">0</span>)</button>
   <button class="tab cond" id="tab-history" onclick="showView('history')">Building History</button>
+  <button class="tab cond" id="admin-toggle" onclick="toggleAdminMode()" style="font-size:11px">Admin</button>
 </header>
 
 <div class="wrap">
@@ -466,6 +467,43 @@ var photos = [];
 var ccLinkedProjectId = null;
 var ccLinkedProjectName = "";
 var toastTimer = null;
+
+/* ================= admin mode =================
+   A soft gate, not real security — the PIN ships in this public JS file,
+   so anyone who reads source can find it. The point isn't to stop a
+   determined attacker, it's to keep field techs out of destructive
+   controls (unlink CompanyCam, delete a building's history) by default so
+   they aren't clicking those by accident. Change ADMIN_PIN to whatever
+   your team wants; there's no server-side check. */
+var ADMIN_PIN = "1935";
+var isAdmin = false;
+try{ isAdmin = sessionStorage.getItem("roofops-admin") === "1"; }catch(e){}
+function toggleAdminMode(){
+  if (isAdmin){
+    isAdmin = false;
+    try{ sessionStorage.removeItem("roofops-admin"); }catch(e){}
+    toast("Admin mode off");
+  } else {
+    var pin = prompt("Enter admin PIN:");
+    if (pin === null) return;
+    if (pin !== ADMIN_PIN){ toast("Wrong PIN"); return; }
+    isAdmin = true;
+    try{ sessionStorage.setItem("roofops-admin", "1"); }catch(e){}
+    toast("Admin mode on — unlink/delete controls unlocked");
+  }
+  updateAdminUI();
+}
+function updateAdminUI(){
+  var btn = document.getElementById("admin-toggle");
+  if (btn){
+    btn.classList.toggle("active", isAdmin);
+    btn.textContent = isAdmin ? "Admin: ON" : "Admin";
+  }
+  renderCCLinkInfo();
+  if (document.getElementById("view-history") && document.getElementById("view-history").style.display !== "none"){
+    renderHistoryList();
+  }
+}
 
 function esc(s){
   return String(s == null ? "" : s)
@@ -898,10 +936,32 @@ async function renderHistoryList(){
         '<div class="meta">' + esc(b.customerName || "") + (b.location ? ' \u00b7 ' + esc(b.location) : "") +
         (b.roofSystem ? ' \u00b7 ' + esc(b.roofSystem) : "") +
         (b.companyCamProjectId ? ' \u00b7 \ud83d\udd17 CompanyCam linked' : "") + '</div></div>' +
-        '<button class="btn">View Timeline</button></div>';
+        '<button class="btn">View Timeline</button>' +
+        (isAdmin ? '<button class="btn danger" onclick="event.stopPropagation(); deleteBuildingAdmin(\'' + b.id + '\', \'' + esc(b.name).replace(/'/g,"&#39;") + '\')">Delete (admin)</button>' : '') +
+        '</div>';
     }).join("");
   }catch(e){
     host.innerHTML = '<div class="empty">Couldn\u2019t load building history: ' + esc(e.message) + '</div>';
+  }
+}
+async function deleteBuildingAdmin(buildingId, buildingName){
+  if (!isAdmin){ toast("Admin mode required to delete."); return; }
+  if (!confirm('Delete "' + buildingName + '" and its entire history? This removes the building, customer link, ' +
+    "and every logged report event for it. Work orders themselves are not deleted \u2014 only the building/history record. " +
+    "This can't be undone.")) return;
+  toast("Deleting building history\u2026");
+  try{
+    var evtQs = await fdb.collection("building_history_events").where("buildingId", "==", buildingId).get();
+    var repQs = await fdb.collection("reports").where("buildingId", "==", buildingId).get();
+    var batch = fdb.batch();
+    evtQs.forEach(function(d){ batch.delete(d.ref); });
+    repQs.forEach(function(d){ batch.delete(d.ref); });
+    batch.delete(fdb.collection("buildings").doc(buildingId));
+    await batch.commit();
+    toast("Deleted \u2713");
+    renderHistoryList();
+  }catch(e){
+    toast("Delete failed: " + e.message);
   }
 }
 async function openBuildingHistory(buildingId){
@@ -1683,7 +1743,15 @@ function renderCCLinkInfo(){
   if (!ccLinkedProjectId){ host.innerHTML = ""; return; }
   host.innerHTML =
     '<div class="cc-link">\ud83d\udd17 Locked to CompanyCam project: <b>' + esc(ccLinkedProjectName || ccLinkedProjectId) + '</b>' +
-    '<span class="sp"></span><span class="hint" style="margin:0">Photos and history sync automatically.</span></div>';
+    '<span class="sp"></span><span class="hint" style="margin:0">Photos and history sync automatically.</span>' +
+    (isAdmin ? '<button class="btn danger" onclick="unlinkCC()">Unlink (admin)</button>' : '') +
+    '</div>';
+}
+function unlinkCC(){
+  if (!isAdmin){ toast("Admin mode required to unlink."); return; }
+  ccLinkedProjectId = null; ccLinkedProjectName = "";
+  renderCCLinkInfo();
+  toast("Unlinked CompanyCam project from this work order");
 }
 /* ================= views ================= */
 function showView(v){
@@ -1702,6 +1770,7 @@ document.getElementById("hdr-logo").src = LOGO;
 try{ document.getElementById("photoSize").value = localStorage.getItem("photo-size-pref") || "small"; }catch(e){}
 newOrder();
 renderSaved();
+updateAdminUI();
 </script>
 </body>
 </html>

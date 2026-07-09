@@ -177,6 +177,23 @@ project).
 | `RESEND_API_KEY` | `send-workorder.js` | yes |
 | `FROM_EMAIL` | `send-workorder.js` | optional (has a default) |
 
+## Admin mode (lightweight, client-side only)
+
+Field techs should not casually unlink a CompanyCam project or delete a building's
+history — but a real admin/role system is bigger than this repo warrants right now.
+As a bridge: a small "Admin" toggle in the header (`toggleAdminMode()` in `index.html`)
+prompts for `ADMIN_PIN` (a plain constant near the top of the script, default `"1935"`)
+and, once unlocked for the session (`sessionStorage`), reveals:
+- **Unlink** on the CompanyCam link banner (`unlinkCC()`)
+- **Delete (admin)** per building in the Building History tab (`deleteBuildingAdmin()`)
+  — removes the building doc plus its `reports`/`building_history_events`, but does
+  **not** touch the underlying `workorders`.
+
+**This is not real security** — the PIN ships in public JS, so it only stops
+accidental clicks, not a determined reader of source. If real access control is ever
+needed (e.g. a RoofOps Admin module with logins), replace this with actual auth
+rather than extending the PIN approach.
+
 ## Roadmap (not built yet, foundation only)
 
 - **RoofOps Dashboard**: cross-building reporting, search, filters — reads from
