@@ -75,6 +75,7 @@ customer/building picker UI is added, wire it into the same function.
   pdfRef: null,                     // reserved — currently always null, PDFs live in CompanyCam instead
   emailSent: bool,
   emailRecipients: [...],
+  emailSubject,                     // added — see "Visible email-sent record" below
   createdAt
 }
 ```
@@ -640,6 +641,59 @@ Firestore write during the test) was confirmed unchanged. `pruneCachedPhotoDraft
 was verified directly against synthetic in-memory data (15 fake drafts → correctly
 keeps the 10 most recent, strips the rest, always protects the currently-open
 draft regardless of age). Zero console errors throughout.
+
+### Visible email-sent record (shipped)
+
+**The problem this fixes**: `sendEmailNow()` always did log a durable record on success
+(`logReportAndHistoryEvent(o, "PDF Emailed", {sent:true, to:addrs})`, written to both
+`reports` and `building_history_events`) — but that record was easy to miss. The only
+way to see it was Building History → the right building → scroll the timeline → spot a
+small "Emailed ✓" tag among several others. Confirmed via a real production incident
+(2026-07-09): a real send (to `charlottew@watkinsroofing.net`, for the "Planet fitness"
+work order) **had** logged correctly end-to-end — `reports` doc, paired
+`building_history_events` doc, `buildings` doc, all present and correct — but neither
+the office nor the tech who sent it could find any record of it. Not a data-loss bug;
+a pure discoverability gap. (Also added `emailSubject` to the logged payload while here
+— it wasn't being captured at all before.)
+
+**Fix, two complementary pieces, both additive — no restructuring of `reports` /
+`building_history_events` / `workorders`:**
+1. **`markWorkOrderEmailed(workOrderId, addrs)`** — called from `sendEmailNow()` right
+   after a successful send (fire-and-forget, never blocks the send confirmation, a
+   failure here doesn't mean the email didn't send — `logReportAndHistoryEvent`'s
+   history entry is still the record of record either way). Merge-patches
+   `lastEmailedAt`/`lastEmailedTo` directly onto the `workorders/{id}` doc (`.set(...,
+   {merge:true})` — every other field on that doc is untouched), and mirrors the same
+   two fields onto the local `db.index` entry and `cloudIndexCache` entry so the Saved
+   tab updates immediately without a refetch. `cloudFetchIndex()` now also selects
+   these two fields, so a fresh load (a different device, or after a reload) shows it
+   too.
+2. **Surfaced in the two places someone would actually be looking:**
+   - **Saved tab** (`drawSaved()`): "📧 Emailed *[timestamp]*" appended to a work
+     order's meta line whenever `lastEmailedAt` is set — this is the list both office
+     and techs already use to find a work order, so it's the most discoverable
+     location, no digging into Building History required.
+   - **Building History timeline** (`timelineEventHtml()`) and the **Reports tab**
+     (`rpReportItemHtml()`): upgraded the existing small "Emailed ✓" tag with a
+     dedicated `"📧 Emailed to <recipients>"` row, so it's an explicit, readable
+     confirmation with *who* it went to, not just a checkmark.
+
+**Design choice, not asked back to the user**: surfaced in both places (Saved list +
+existing timeline/reports views) rather than picking one exclusively, since neither
+forecloses anything — no new collection, no new view, nothing that would need
+undoing if a dedicated "sent emails" log is ever wanted later.
+
+**Verified against an in-memory mock Firestore client (never touched real production
+Firestore)**: `logReportAndHistoryEvent()` with a subject correctly wrote
+`emailSubject`; `markWorkOrderEmailed()` correctly merge-patched `lastEmailedAt`/
+`lastEmailedTo` onto a pre-existing mock `workorders` doc without touching its other
+fields (`jobName`/`billTo`/`savedAt` all survived unchanged); the local-only path (`fdb`
+nulled) correctly patched `db.index` and rendered the "📧 Emailed …" marker into the
+Saved tab DOM; `timelineEventHtml()`/`rpReportItemHtml()` both render the new recipient
+row with correct HTML-escaping (tested with a deliberately hostile email string
+containing `<s>`, confirmed no injection leak). Zero console errors. Real end-to-end
+verification (an actual send through the deployed dev app) is for Mark to run himself,
+per the standing testing discipline.
 
 ## Netlify environment variables
 

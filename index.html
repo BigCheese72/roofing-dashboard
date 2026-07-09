@@ -459,7 +459,8 @@ async function cloudFetchIndex(){
   qs.forEach(function(d){
     var v = d.data();
     arr.push({ id: d.id, jobName: v.jobName || "(untitled)", jobNo: v.jobNo || "",
-      location: v.location || "", serviceDate: v.serviceDate || "", savedAt: v.savedAt || 0, cloud: true });
+      location: v.location || "", serviceDate: v.serviceDate || "", savedAt: v.savedAt || 0, cloud: true,
+      lastEmailedAt: v.lastEmailedAt || null, lastEmailedTo: v.lastEmailedTo || [] });
   });
   return arr;
 }
@@ -1648,7 +1649,8 @@ function drawSaved(){
     return '<div class="saved-item"><div class="info">' +
       '<div class="name">' + esc(e.jobName) + (e.jobNo ? ' <span>#' + esc(e.jobNo) + '</span>' : '') + '</div>' +
       '<div class="meta">' + esc(e.location || "") + (e.serviceDate ? ' \u00B7 ' + esc(e.serviceDate) : '') +
-      (e.cloud ? ' \u00B7 \u2601' : '') + '</div></div>' +
+      (e.cloud ? ' \u00B7 \u2601' : '') +
+      (e.lastEmailedAt ? ' \u00B7 \uD83D\uDCE7 Emailed ' + fmtTs(e.lastEmailedAt) : '') + '</div></div>' +
       '<button class="btn" onclick="loadOrder(\'' + e.id + '\')">Open</button>' +
       '<button class="btn" onclick="exportOrder(\'' + e.id + '\')">Export</button>' +
       '<button class="btn danger" onclick="deleteOrder(\'' + e.id + '\')">Delete</button></div>';
@@ -2105,6 +2107,8 @@ function timelineEventHtml(e, buildingId){
     (e.workOrderNo ? '<div class="evt-row">Job No. ' + esc(e.workOrderNo) + '</div>' : '') +
     (e.technician ? '<div class="evt-row">Technician: ' + esc(e.technician) + '</div>' : '') +
     (e.roofType ? '<div class="evt-row">Roof: ' + esc(e.roofType) + '</div>' : '') +
+    (e.emailSent && (e.emailRecipients || []).length ?
+      '<div class="evt-row">📧 Emailed to ' + esc(e.emailRecipients.join(", ")) + '</div>' : '') +
     (e.conditionsSummary ? '<div class="evt-row">Findings: ' + esc(e.conditionsSummary) + '</div>' : '') +
     (e.repairsSummary ? '<div class="evt-row">Repairs: ' + esc(e.repairsSummary) + '</div>' : '') +
     (e.pdfRef && e.pdfRef.url ? '<div class="evt-row"><a href="' + esc(e.pdfRef.url) + '" target="_blank" rel="noopener">View saved PDF</a></div>' : '') +
@@ -2267,6 +2271,8 @@ function rpReportItemHtml(r){
     (r.workOrderNo ? '<div class="evt-row">Job No. ' + esc(r.workOrderNo) + '</div>' : '') +
     (r.technician ? '<div class="evt-row">Technician: ' + esc(r.technician) + '</div>' : '') +
     (r.roofType ? '<div class="evt-row">Roof: ' + esc(r.roofType) + '</div>' : '') +
+    (r.emailSent && (r.emailRecipients || []).length ?
+      '<div class="evt-row">📧 Emailed to ' + esc(r.emailRecipients.join(", ")) + '</div>' : '') +
     '</div>';
 }
 function rpRenderList(){
@@ -2703,6 +2709,7 @@ async function logReportAndHistoryEvent(o, kind, emailInfo){
       pdfRef: pdfRef,
       emailSent: !!(emailInfo && emailInfo.sent),
       emailRecipients: (emailInfo && emailInfo.to) || [],
+      emailSubject: (emailInfo && emailInfo.subject) || "",
       createdAt: Date.now()
     };
     var sharedId = fdb.collection("reports").doc().id; /* same id in both collections so a delete can clean up the pair */
@@ -2711,6 +2718,33 @@ async function logReportAndHistoryEvent(o, kind, emailInfo){
     batch.set(fdb.collection("building_history_events").doc(sharedId), payload);
     await batch.commit();
   }catch(e){ console.warn("history log failed", e); }
+}
+
+/* Durable, VISIBLE "email sent" marker on the work order itself — separate
+   from logReportAndHistoryEvent()'s history-timeline entry, which is real
+   and durable but easy to miss unless you already know to open Building
+   History -> the right building -> scroll the timeline. This is a small
+   merge-only patch on the workorders doc (lastEmailedAt/lastEmailedTo) so
+   the Saved tab list — the page both office and techs already use to find
+   a work order — shows it directly, no digging required. Fire-and-forget
+   from sendEmailNow(): never blocks the send confirmation, and a failure
+   here doesn't mean the email didn't send (logReportAndHistoryEvent's
+   history entry above is the durable record of record either way). */
+async function markWorkOrderEmailed(workOrderId, addrs){
+  var when = Date.now();
+  try{
+    var db = loadDb();
+    var entry = db.index.find(function(e){ return e.id === workOrderId; });
+    if (entry){ entry.lastEmailedAt = when; entry.lastEmailedTo = addrs; saveDb(db); }
+    var cloudEntry = cloudIndexCache.find(function(e){ return e.id === workOrderId; });
+    if (cloudEntry){ cloudEntry.lastEmailedAt = when; cloudEntry.lastEmailedTo = addrs; }
+    drawSaved();
+  }catch(e){ console.warn("local emailed-marker update failed", e); }
+  if (!fdb) return;
+  try{
+    await fdb.collection("workorders").doc(workOrderId).set(
+      { lastEmailedAt: when, lastEmailedTo: addrs }, { merge: true });
+  }catch(e){ console.warn("cloud emailed-marker update failed", e); }
 }
 
 async function downloadPdf(){
@@ -2755,7 +2789,8 @@ async function sendEmailNow(){
     var out = null;
     try{ out = await resp.json(); }catch(e){}
     if (resp.ok && out && out.ok){
-      await logReportAndHistoryEvent(o, "PDF Emailed", { sent: true, to: addrs });
+      await logReportAndHistoryEvent(o, "PDF Emailed", { sent: true, to: addrs, subject: subject });
+      markWorkOrderEmailed(o.id, addrs);
       if (o.companyCamProjectId){
         await uploadLinkedPdfToCompanyCam(d, o, "Email sent \u2713");
       } else {

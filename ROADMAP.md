@@ -18,6 +18,13 @@ Goal: preserve and harden the existing RoofOps Field / Watkins work order workfl
   (10 most-recent) auto-prunes older cached drafts as a safety net. Pure
   client-side fix, no data model change. See "Local work order cache" in
   `DEV_NOTES.md`.
+- ✅ **Shipped**: emailing a work order now leaves a genuinely *visible* record, not
+  just a technically-durable one — a real 2026-07-09 field send had logged correctly
+  end-to-end but neither the office nor the tech could find any trace of it. Now shows
+  as "📧 Emailed …" directly on the work order in the Saved tab (most discoverable
+  spot), plus an explicit "Emailed to &lt;recipients&gt;" line (not just a checkmark)
+  on the Building History timeline and Reports tab. See "Visible email-sent record" in
+  `DEV_NOTES.md`.
 - Review Firestore security rules for all collections currently touched by the app.
 - Add lightweight manual QA steps for field workflows: create, save, reload, import CompanyCam photos, generate PDF, send email, and verify history logging.
 - ✅ Shipped: duplicate-report detection on the building timeline (same work order +

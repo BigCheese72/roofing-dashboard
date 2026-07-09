@@ -149,6 +149,13 @@ When the user sends or shares a report:
 
 This means the user should not have to remember to manually save before sending.
 
+After **Send Email Now** succeeds, that work order shows **"📧 Emailed [date/time]"**
+right on its card in the **Saved** tab — so anyone (office or tech) can tell at a
+glance whether a report actually went out, without having to dig through Building
+History. The full detail (exact recipients, subject, which report) is also recorded on
+that building's timeline and in the **Reports** tab, shown as an explicit
+"Emailed to …" line.
+
 ## Admin Mode
 
 Field techs should not be able to unlink a CompanyCam project or delete building
