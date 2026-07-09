@@ -2964,16 +2964,30 @@ async function applyCompanyCamProjectDetail(id){
       var title = document.getElementById("cc-title");
       if (title) title.textContent = project.name;
     }
+    /* Upgrades a short/partial Job Name / Location (e.g. typed before the
+       CompanyCam project was linked, or filled in by the building picker
+       from a shorter/older record) to the project's fuller name/address.
+       Only overwrites when the current text is empty or is already
+       contained in the fuller CompanyCam value, so a technician's — or
+       the building picker's — deliberately different entry is never
+       silently clobbered. Same rule on both fields, and the same rule
+       openBuildingPicker() relies on to avoid a later CompanyCam link
+       fighting an explicit building pick. "(unnamed project)" is
+       mapProject()'s own fallback for a nameless CompanyCam project —
+       never worth filling Job Name with that literal string. */
+    var filled = [];
+    var curJobName = (val("jobName") || "").trim();
+    if (project.name && project.name !== "(unnamed project)" &&
+      (!curJobName || project.name.toLowerCase().indexOf(curJobName.toLowerCase()) !== -1)){
+      setVal("jobName", project.name);
+      filled.push("Job Name");
+    }
     var curLoc = (val("location") || "").trim();
-    /* Upgrades a short/partial location (e.g. just a town, typed before
-       the CompanyCam project was linked) to the project's full street
-       address. Only overwrites when the current text is empty or is
-       already contained in the fuller address, so a technician's
-       deliberately different manual entry is never clobbered. */
     if (project.address && (!curLoc || project.address.toLowerCase().indexOf(curLoc.toLowerCase()) !== -1)){
       setVal("location", project.address);
-      toast("CompanyCam address added to Location");
+      filled.push("Location");
     }
+    if (filled.length) toast("CompanyCam " + filled.join(" & ") + " added");
     renderCCLinkInfo();
     return project;
   }catch(e){

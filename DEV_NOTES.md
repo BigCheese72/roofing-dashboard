@@ -539,11 +539,25 @@ the green link banner under Photo Documentation. Photos imported from CompanyCam
 tagged with `ccPhotoId` so `building_history_events.companyCamPhotoIds` can record
 exactly which CompanyCam photos ended up in a given report.
 
-`applyCompanyCamProjectDetail()` also pulls the linked project's real street address
-into the Location field — but only when Location is empty or is already a substring of
-the fuller CompanyCam address (e.g. a tech typed just "Fulton" before linking the
-project). It deliberately never overwrites a Location that doesn't match, so a
-technician's own, possibly-more-correct manual entry is never clobbered.
+`applyCompanyCamProjectDetail()` also pulls the linked project's real name and street
+address into **Job Name** and **Location** (shipped 2026-07-09, extending what was
+originally Location-only) — but only when the field is empty or its current value is
+already a substring of the fuller CompanyCam value (e.g. a tech typed just "Fulton"
+before linking the project, or the building picker filled in a shorter name from an
+older record). Both fields use the identical rule, and it deliberately never overwrites
+a Job Name/Location that doesn't match, so a technician's own manual entry — or the
+building picker's explicit pick — is never silently clobbered by opening a CompanyCam
+project afterward. `mapProject()`'s own `"(unnamed project)"` fallback (for a CompanyCam
+project with no real name) is explicitly excluded from ever filling Job Name. One
+combined toast ("CompanyCam Job Name & Location added", or just whichever one actually
+changed) rather than two separate ones.
+
+Verified against real project data (St. Mary's Hospital - St. Louis, id `54362584`):
+empty fields fill correctly with the real name/address; a field already holding an
+unrelated value (e.g. "Totally Different Job") is left untouched; a field holding a
+substring of the real value (e.g. "St. Mary's") upgrades to the full value; the
+`"(unnamed project)"` fallback never lands in Job Name. Read-only against the real
+`project_detail` response — no Firestore or CompanyCam writes.
 
 ### "Sync CompanyCam History" (`syncCompanyCamHistory()`)
 

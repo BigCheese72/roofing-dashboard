@@ -112,7 +112,7 @@ When the user clicks **Import from CompanyCam**:
 3. The app loads that project's photos.
 4. The user selects photos to import.
 5. The app automatically locks the work order to that CompanyCam project.
-6. The app pulls the CompanyCam project address into the Location field if Location is blank.
+6. The app pulls the CompanyCam project's name and address into Job Name and Location — filling them in if blank, or upgrading a shorter/partial entry to the fuller CompanyCam value. It never overwrites a Job Name or Location that's already something different.
 7. The app imports selected photos into the work order.
 8. The app automatically saves the work order.
 9. The app automatically syncs CompanyCam project/photo history metadata to Firebase.
