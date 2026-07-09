@@ -241,6 +241,47 @@ silently computing wrong coordinates.
 a roof_plan/sketch after the fact) is explicitly excluded per the spec, as are
 roof-section labels/filters on the history map.
 
+### Roof assets: permanent roof features (shipped)
+
+A finding `pin` and a roof asset marker look similar on the map but mean opposite
+things: a pin is **historical** — tied to one report, frozen-but-fixable (see the pin
+correction section above). A roof asset is **permanent** — a physical feature of the
+roof itself (drain, HVAC unit, hatch, skylight, safety hazard, etc.) that exists
+independent of any work order, and is expected to be added/moved/removed over time as
+the roof itself changes, not as reports get generated. This is the vision's "living
+blueprint of the building" — the roof's own inventory, not its repair history.
+
+- **Data**: `roof_assets[]` array directly on the building doc (see `DATA_MODEL.md`).
+  No admin gating on create/update/reposition — `firestore.rules` already allows any
+  client to `update` a building doc (only `delete` on the whole doc is blocked), and
+  unlike the base map (a shared setting that affects every future report), an asset
+  marker is closer in spirit to a finding pin: something any tech should be able to
+  place or nudge without needing the admin PIN. Removing an asset is implemented as an
+  `update` with a filtered array, not a Firestore `delete`, so it doesn't need
+  `admin.js` either.
+- **UI**: `openAssetModal(buildingId, assetId)` — a dedicated modal (`#asset-modal`),
+  deliberately not sharing state with the finding-pin modal (`#pin-modal`) even though
+  the map setup logic (satellite vs. `L.CRS.Simple` custom base map, draggable marker,
+  click-to-place) closely mirrors `openPinModal()`'s. Kept separate rather than
+  unifying to avoid entangling two features with different persistence targets
+  (building doc vs. finding) and different gating rules — a shared abstraction here
+  would have made both harder to reason about for a modest amount of duplication.
+- **Icons**: `ROOF_ASSET_TYPES` maps each of the 14 types (drain, scupper, hvac,
+  pipe_flashing, vent, hatch, expansion_joint, skylight, curb, penetration, core_cut,
+  test_cut, safety_hazard, other) to an emoji + color, rendered as an `L.divIcon`
+  (rounded square) so asset markers are visually distinct at a glance from finding pins
+  (circular, colored by warranty status via `warrantyColor()`).
+- **Rendering**: `renderBuildingMap()` takes `assets`/`buildingId` params and draws
+  asset markers on the same map as finding pins, in whichever coordinate mode the
+  building is already in (lat/lng satellite/drone_ortho, or x/y roof_plan/sketch) —
+  same one-map-per-building constraint as pins, for the same CRS-mixing reason.
+  `openAssetModal()` also shows other existing assets as faint (opacity 0.55) reference
+  markers while placing/editing one, for spatial context (e.g. "where's the nearest
+  drain relative to this hatch").
+- **Not built**: leak/repair locations are deliberately *not* an asset type — those are
+  already findings with pins, tracked per-report on purpose. Adding them here would
+  create two competing representations of the same kind of location.
+
 ### ⚠️ Firestore security rules
 
 New collections (`customers`, `buildings`, `reports`, `building_history_events`,

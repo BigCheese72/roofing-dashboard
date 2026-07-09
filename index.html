@@ -325,6 +325,39 @@
   </div>
 </div>
 
+<div id="asset-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:40" onclick="if(event.target===this)closeAssetModal()">
+  <div style="background:#fff;max-width:760px;margin:3vh auto;border-radius:8px;max-height:94vh;display:flex;flex-direction:column;overflow:hidden;width:96%">
+    <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
+      <b class="cond" style="font-size:17px" id="asset-modal-title">Add Roof Feature</b>
+      <span style="flex:1"></span>
+      <button class="btn" onclick="closeAssetModal()">Close</button>
+    </div>
+    <div id="asset-map" style="height:min(45vh,380px);width:100%;background:#ECEFF1"></div>
+    <div style="padding:12px 16px">
+      <p class="hint" id="asset-hint" style="margin:0 0 10px"></p>
+      <div class="grid">
+        <div class="fld">
+          <label>Type</label>
+          <select id="asset-type"></select>
+        </div>
+        <div class="fld">
+          <label>Label (optional)</label>
+          <input type="text" id="asset-label" placeholder="e.g. Drain #3, RTU-2">
+        </div>
+      </div>
+      <div class="fld">
+        <label>Notes (optional)</label>
+        <textarea id="asset-notes" rows="2"></textarea>
+      </div>
+      <div class="btnrow" style="margin:0">
+        <button class="btn primary" onclick="saveAssetFromModal()">Save Feature</button>
+        <button class="btn danger" id="asset-delete-btn" onclick="deleteAssetFromModal()" style="display:none">Delete</button>
+        <button class="btn" onclick="closeAssetModal()">Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -861,6 +894,207 @@ function clearPinFromModal(){
   toast("Pin cleared");
 }
 
+/* ================= roof assets (permanent roof features) =================
+   Distinct from finding pins: a finding pin is historical (tied to one
+   report, denormalized onto building_history_events, frozen-but-fixable
+   per the sync above). A roof asset is the opposite — a permanent feature
+   of the roof itself (drain, HVAC unit, hatch, skylight, safety hazard,
+   etc.) that exists independent of any single work order or report, and
+   is expected to be added/moved/removed as the roof itself changes.
+   Stored directly on the building doc as roof_assets[]; buildings allow
+   open client create/update per firestore.rules (only delete is blocked),
+   so this needs no admin gating — any tech can maintain the roof's living
+   blueprint, same as they can place a finding pin. */
+var ROOF_ASSET_TYPES = {
+  drain: { label: "Drain", emoji: "💧", color: "#1565C0" },
+  scupper: { label: "Scupper", emoji: "🌊", color: "#0277BD" },
+  hvac: { label: "HVAC Unit", emoji: "❄️", color: "#00838F" },
+  pipe_flashing: { label: "Pipe Flashing", emoji: "🔧", color: "#6D4C41" },
+  vent: { label: "Vent", emoji: "🌀", color: "#546E7A" },
+  hatch: { label: "Roof Hatch", emoji: "🚪", color: "#5D4037" },
+  expansion_joint: { label: "Expansion Joint", emoji: "➰", color: "#8D6E63" },
+  skylight: { label: "Skylight", emoji: "🔲", color: "#0288D1" },
+  curb: { label: "Curb", emoji: "▬", color: "#795548" },
+  penetration: { label: "Penetration", emoji: "⚠️", color: "#EF6C00" },
+  core_cut: { label: "Core Cut", emoji: "✂️", color: "#AD1457" },
+  test_cut: { label: "Test Cut", emoji: "🔬", color: "#6A1B9A" },
+  safety_hazard: { label: "Safety Hazard", emoji: "☠️", color: "#C62828" },
+  other: { label: "Other", emoji: "📌", color: "#455A64" }
+};
+function assetIcon(type){
+  var t = ROOF_ASSET_TYPES[type] || ROOF_ASSET_TYPES.other;
+  return L.divIcon({
+    className: "", iconSize: [26,26], iconAnchor: [13,13], popupAnchor: [0,-15],
+    html: '<div style="background:' + t.color + ';color:#fff;width:26px;height:26px;border-radius:6px;' +
+      'display:flex;align-items:center;justify-content:center;font-size:14px;border:2px solid #fff;' +
+      'box-shadow:0 1px 3px rgba(0,0,0,.4)">' + t.emoji + '</div>'
+  });
+}
+function assetPopupHtml(buildingId, a){
+  var t = ROOF_ASSET_TYPES[a.type] || ROOF_ASSET_TYPES.other;
+  return "<b>" + t.emoji + " " + esc(t.label) + "</b>" + (a.label ? " — " + esc(a.label) : "") + "<br>" +
+    (a.notes ? esc(a.notes) + "<br>" : "") +
+    "<button class=\"btn\" style=\"margin-top:6px\" onclick=\"openAssetModal('" + buildingId + "','" + a.id + "')\">Edit</button>";
+}
+var assetMap = null, assetMarker = null, assetModalBuildingId = null, assetModalAssetId = null,
+  assetMapMode = "latlng", assetXYSize = null;
+function populateAssetTypeSelect(){
+  var sel = document.getElementById("asset-type");
+  if (sel.options.length) return;
+  Object.keys(ROOF_ASSET_TYPES).forEach(function(k){
+    var opt = document.createElement("option");
+    opt.value = k; opt.textContent = ROOF_ASSET_TYPES[k].emoji + " " + ROOF_ASSET_TYPES[k].label;
+    sel.appendChild(opt);
+  });
+}
+async function openAssetModal(buildingId, assetId){
+  populateAssetTypeSelect();
+  assetModalBuildingId = buildingId;
+  assetModalAssetId = assetId || null;
+  document.getElementById("asset-modal-title").textContent = assetId ? "Edit Roof Feature" : "Add Roof Feature";
+  document.getElementById("asset-delete-btn").style.display = assetId ? "" : "none";
+  document.getElementById("asset-hint").textContent = "Loading…";
+  document.getElementById("asset-modal").style.display = "";
+  if (assetMap){ assetMap.remove(); assetMap = null; assetMarker = null; }
+
+  var bldSnap = await fdb.collection("buildings").doc(buildingId).get();
+  var bld = bldSnap.exists ? bldSnap.data() : {};
+  var assets = bld.roof_assets || [];
+  var existing = assetId ? assets.find(function(a){ return a.id === assetId; }) : null;
+  document.getElementById("asset-type").value = existing ? existing.type : "drain";
+  document.getElementById("asset-label").value = existing ? (existing.label || "") : "";
+  document.getElementById("asset-notes").value = existing ? (existing.notes || "") : "";
+
+  var hasCustomBaseMap = !!((bld.roof_base_map_type === "roof_plan" || bld.roof_base_map_type === "sketch") && bld.roof_base_map_url);
+  var orthoOverlay = (bld.roof_base_map_type === "drone_ortho" && bld.roof_base_map_url && bld.roof_base_map_bounds) ?
+    { url: bld.roof_base_map_url, bounds: bld.roof_base_map_bounds } : null;
+
+  if (hasCustomBaseMap){
+    assetMapMode = "xy";
+    var img = new Image();
+    img.onload = function(){
+      var w = img.naturalWidth, h = img.naturalHeight;
+      assetXYSize = { w: w, h: h };
+      var bounds = [[0,0],[h,w]];
+      setTimeout(function(){
+        assetMap = L.map("asset-map", { crs: L.CRS.Simple, minZoom: -5 });
+        L.imageOverlay(bld.roof_base_map_url, bounds).addTo(assetMap);
+        assets.forEach(function(a){
+          if (a.id === assetId || typeof a.x !== "number") return;
+          L.marker([a.y * h, a.x * w], { icon: assetIcon(a.type), opacity: 0.55 }).addTo(assetMap);
+        });
+        assetMap.fitBounds(bounds);
+        var start = existing && typeof existing.x === "number" ? [existing.y * h, existing.x * w] : [h/2, w/2];
+        assetMarker = L.marker(start, { draggable: true, icon: assetIcon(document.getElementById("asset-type").value) }).addTo(assetMap);
+        assetMap.on("click", function(e){ assetMarker.setLatLng(e.latlng); });
+        assetMap.invalidateSize();
+        setTimeout(function(){ if (assetMap) assetMap.invalidateSize(); }, 300);
+      }, 50);
+      document.getElementById("asset-hint").textContent = "Tap the base map to place this feature.";
+    };
+    img.onerror = function(){
+      toast("Couldn't load the custom base map — using satellite instead.");
+      assetMapMode = "latlng";
+      openAssetModalSatellite(bld, assets, existing, orthoOverlay);
+    };
+    img.src = bld.roof_base_map_url;
+    return;
+  }
+  assetMapMode = "latlng";
+  await openAssetModalSatellite(bld, assets, existing, orthoOverlay);
+}
+async function openAssetModalSatellite(bld, assets, existing, orthoOverlay){
+  var center, zoom = 18;
+  if (existing && typeof existing.lat === "number"){
+    center = { lat: existing.lat, lng: existing.lng };
+    zoom = 19;
+  } else {
+    var withCoords = assets.filter(function(a){ return typeof a.lat === "number"; });
+    if (withCoords.length){
+      center = { lat: withCoords[0].lat, lng: withCoords[0].lng };
+      zoom = 19;
+    } else if (orthoOverlay){
+      var b = orthoOverlay.bounds;
+      center = { lat: (b.north + b.south) / 2, lng: (b.east + b.west) / 2 };
+    } else {
+      center = await geocodeAddress(bld.location || bld.name || "");
+      if (!center){ center = { lat: 39.8283, lng: -98.5795 }; zoom = 4; }
+    }
+  }
+  document.getElementById("asset-hint").textContent = "Tap the map to place this feature, or drag it into position.";
+  setTimeout(function(){
+    assetMap = L.map("asset-map").setView([center.lat, center.lng], zoom);
+    L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
+      maxZoom: 21, attribution: "Tiles &copy; Esri"
+    }).addTo(assetMap);
+    if (orthoOverlay) L.imageOverlay(orthoOverlay.url, boundsToLatLngBounds(orthoOverlay.bounds)).addTo(assetMap);
+    assets.forEach(function(a){
+      if ((existing && a.id === existing.id) || typeof a.lat !== "number") return;
+      L.marker([a.lat, a.lng], { icon: assetIcon(a.type), opacity: 0.55 }).addTo(assetMap);
+    });
+    assetMarker = L.marker([center.lat, center.lng], { draggable: true, icon: assetIcon(document.getElementById("asset-type").value) }).addTo(assetMap);
+    assetMap.on("click", function(e){ assetMarker.setLatLng(e.latlng); });
+    assetMap.invalidateSize();
+    setTimeout(function(){ if (assetMap) assetMap.invalidateSize(); }, 300);
+  }, 50);
+}
+document.getElementById("asset-type") && document.getElementById("asset-type").addEventListener("change", function(){
+  if (assetMarker) assetMarker.setIcon(assetIcon(this.value));
+});
+function closeAssetModal(){
+  document.getElementById("asset-modal").style.display = "none";
+  if (assetMap){ assetMap.remove(); assetMap = null; assetMarker = null; }
+  assetModalBuildingId = null;
+  assetModalAssetId = null;
+  assetXYSize = null;
+}
+async function saveAssetFromModal(){
+  if (!assetMarker || !assetModalBuildingId) return;
+  var ll = assetMarker.getLatLng();
+  var asset = {
+    id: assetModalAssetId || genId("ast"),
+    type: document.getElementById("asset-type").value,
+    label: document.getElementById("asset-label").value.trim(),
+    notes: document.getElementById("asset-notes").value.trim(),
+    lat: null, lng: null, x: null, y: null,
+    updatedAt: Date.now()
+  };
+  if (assetMapMode === "xy" && assetXYSize){
+    asset.x = ll.lng / assetXYSize.w;
+    asset.y = ll.lat / assetXYSize.h;
+  } else {
+    asset.lat = ll.lat;
+    asset.lng = ll.lng;
+  }
+  var buildingId = assetModalBuildingId;
+  try{
+    var ref = fdb.collection("buildings").doc(buildingId);
+    var snap = await ref.get();
+    var assets = (snap.exists && snap.data().roof_assets) || [];
+    var idx = assets.findIndex(function(a){ return a.id === asset.id; });
+    if (idx >= 0){ asset.createdAt = assets[idx].createdAt || Date.now(); assets[idx] = asset; }
+    else { asset.createdAt = Date.now(); assets.push(asset); }
+    await ref.update({ roof_assets: assets });
+    toast("Roof feature saved ✓");
+    closeAssetModal();
+    openBuildingHistory(buildingId);
+  }catch(e){ toast("Couldn't save: " + e.message); }
+}
+async function deleteAssetFromModal(){
+  if (!assetModalBuildingId || !assetModalAssetId) return;
+  if (!confirm("Remove this roof feature?")) return;
+  var buildingId = assetModalBuildingId, assetId = assetModalAssetId;
+  try{
+    var ref = fdb.collection("buildings").doc(buildingId);
+    var snap = await ref.get();
+    var assets = ((snap.exists && snap.data().roof_assets) || []).filter(function(a){ return a.id !== assetId; });
+    await ref.update({ roof_assets: assets });
+    toast("Roof feature removed");
+    closeAssetModal();
+    openBuildingHistory(buildingId);
+  }catch(e){ toast("Couldn't remove: " + e.message); }
+}
+
 function addRepair(data){
   repairs.push(data || {repair:"",location:""});
   renderRepairs();
@@ -1368,7 +1602,8 @@ function pinPopupHtml(p){
    thing you can look at, not something that only appears once a pin
    exists. bldAddress centers satellite mode when there's nothing else
    to derive a center from. */
-function renderBuildingMap(pins, customBld, bldAddress, orthoOverlay){
+function renderBuildingMap(pins, customBld, bldAddress, orthoOverlay, assets, buildingId){
+  assets = assets || [];
   var el = document.getElementById("building-map");
   if (!el) return;
   if (buildingMap){ buildingMap.remove(); buildingMap = null; }
@@ -1385,6 +1620,10 @@ function renderBuildingMap(pins, customBld, bldAddress, orthoOverlay){
             radius: 9, color: "#fff", weight: 2, fillColor: warrantyColor(p.warranty), fillOpacity: 0.95
           }).addTo(buildingMap).bindPopup(pinPopupHtml(p));
         });
+        assets.forEach(function(a){
+          if (typeof a.x !== "number") return;
+          L.marker([a.y * h, a.x * w], { icon: assetIcon(a.type) }).addTo(buildingMap).bindPopup(assetPopupHtml(buildingId, a));
+        });
         buildingMap.fitBounds(bounds);
         buildingMap.invalidateSize();
         setTimeout(function(){ if (buildingMap) buildingMap.invalidateSize(); }, 300);
@@ -1397,6 +1636,7 @@ function renderBuildingMap(pins, customBld, bldAddress, orthoOverlay){
   (async function(){
     var bounds = [];
     pins.forEach(function(p){ bounds.push([p.lat, p.lng]); });
+    assets.forEach(function(a){ if (typeof a.lat === "number") bounds.push([a.lat, a.lng]); });
     var center = null, zoom = 18;
     if (!bounds.length){
       if (orthoOverlay){
@@ -1417,6 +1657,10 @@ function renderBuildingMap(pins, customBld, bldAddress, orthoOverlay){
         L.circleMarker([p.lat, p.lng], {
           radius: 9, color: "#fff", weight: 2, fillColor: warrantyColor(p.warranty), fillOpacity: 0.95
         }).addTo(buildingMap).bindPopup(pinPopupHtml(p));
+      });
+      assets.forEach(function(a){
+        if (typeof a.lat !== "number") return;
+        L.marker([a.lat, a.lng], { icon: assetIcon(a.type) }).addTo(buildingMap).bindPopup(assetPopupHtml(buildingId, a));
       });
       if (bounds.length === 1) buildingMap.setView(bounds[0], 19);
       else if (bounds.length > 1) buildingMap.fitBounds(bounds, { padding: [30, 30] });
@@ -1578,9 +1822,13 @@ async function openBuildingHistory(buildingId){
     var hasCustomBaseMap = !!((bld.roof_base_map_type === "roof_plan" || bld.roof_base_map_type === "sketch") && bld.roof_base_map_url);
     var orthoOverlay = (bld.roof_base_map_type === "drone_ortho" && bld.roof_base_map_url && bld.roof_base_map_bounds) ?
       { url: bld.roof_base_map_url, bounds: bld.roof_base_map_bounds } : null;
+    var roofAssets = bld.roof_assets || [];
+    var addFeatureBtnHtml = '<button class="btn" onclick="openAssetModal(\'' + buildingId + '\')">+ Add Roof Feature</button>';
     var emptyMapCardHtml = '<div class="card"><h2 class="cond">Roof Map</h2>' +
-      '<p class="hint">No pins placed yet — they’ll show up here as findings get pinned on future reports.</p>' +
-      '<div id="building-map" style="height:min(50vh,420px);border-radius:6px;overflow:hidden"></div></div>';
+      '<p class="hint">No pins placed yet — they’ll show up here as findings get pinned on future reports. ' +
+      'Permanent features (drains, HVAC units, hatches, etc.) can be added any time.</p>' +
+      '<div id="building-map" style="height:min(50vh,420px);border-radius:6px;overflow:hidden;margin-bottom:10px"></div>' +
+      addFeatureBtnHtml + '</div>';
     var qs = await fdb.collection("building_history_events")
       .where("buildingId", "==", buildingId).orderBy("createdAt", "desc").limit(50).get();
     var events = [];
@@ -1588,7 +1836,7 @@ async function openBuildingHistory(buildingId){
     if (!events.length){
       detail.innerHTML = baseMapCardHtml + emptyMapCardHtml + '<div class="card"><h2 class="cond">Timeline</h2>' +
         '<div class="empty">No reports logged for this building yet.</div></div>';
-      renderBuildingMap([], hasCustomBaseMap ? bld : null, bld.location, orthoOverlay);
+      renderBuildingMap([], hasCustomBaseMap ? bld : null, bld.location, orthoOverlay, roofAssets, buildingId);
       return;
     }
     flagDuplicateEvents(events);
@@ -1609,9 +1857,10 @@ async function openBuildingHistory(buildingId){
        time as reports get generated. */
     var mapCardHtml = '<div class="card"><h2 class="cond">Roof Map</h2>' +
       '<p class="hint">' + (mapPins.length ?
-        'Every pinned finding across every report for this building. Tap a pin for details.' :
+        'Every pinned finding across every report for this building, plus any permanent roof features below. Tap a pin for details.' :
         'No pins placed yet — they’ll show up here as findings get pinned on future reports.') + '</p>' +
-      '<div id="building-map" style="height:min(50vh,420px);border-radius:6px;overflow:hidden"></div></div>';
+      '<div id="building-map" style="height:min(50vh,420px);border-radius:6px;overflow:hidden;margin-bottom:10px"></div>' +
+      addFeatureBtnHtml + '</div>';
     detail.innerHTML = baseMapCardHtml + mapCardHtml +
       '<div class="card"><h2 class="cond">Timeline (' + events.length + ')</h2>' +
       (dupCount ? '<p class="hint">\u26a0 ' + dupCount + ' possible duplicate' + (dupCount === 1 ? "" : "s") +
@@ -1633,7 +1882,7 @@ async function openBuildingHistory(buildingId){
           (e.pdfRef && e.pdfRef.url ? '<div class="evt-row"><a href="' + esc(e.pdfRef.url) + '" target="_blank" rel="noopener">View saved PDF</a></div>' : '') +
           '</div>';
       }).join("") + '</div>';
-    renderBuildingMap(mapPins, hasCustomBaseMap ? bld : null, bld.location, orthoOverlay);
+    renderBuildingMap(mapPins, hasCustomBaseMap ? bld : null, bld.location, orthoOverlay, roofAssets, buildingId);
   }catch(e){
     detail.innerHTML = '<div class="card"><div class="empty">Couldn\u2019t load timeline: ' + esc(e.message) + '</div></div>';
   }

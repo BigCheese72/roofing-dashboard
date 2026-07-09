@@ -115,10 +115,32 @@ Example fields:
   roof_base_map_url: null,  // a CompanyCam document URL when set — see DEV_NOTES.md
   roof_base_map_bounds: null, // { north, south, east, west } — drone_ortho only
   roof_base_map_updated_at: null,
+  roof_assets: [], // permanent roof features (drains, HVAC units, hatches, etc.) — see below
   createdAt,
   updatedAt
 }
 ```
+
+**`roof_assets[]` item shape** (implemented, not just proposed — see "Roof assets" in
+`DEV_NOTES.md`):
+
+```js
+{
+  id,       // genId("ast")
+  type,     // "drain" | "scupper" | "hvac" | "pipe_flashing" | "vent" | "hatch" |
+            // "expansion_joint" | "skylight" | "curb" | "penetration" | "core_cut" |
+            // "test_cut" | "safety_hazard" | "other"
+  label,    // optional free text, e.g. "RTU-2"
+  notes,    // optional free text
+  lat, lng, x, y, // exactly one of {lat,lng} or {x,y}, same convention as finding pins
+  createdAt, updatedAt
+}
+```
+
+Distinct from a finding's `pin` (see `work_orders` below): a pin is historical, tied to
+one report; a roof asset is permanent, independent of any work order, and is expected
+to be added/moved/removed as the roof itself changes — the difference between "where a
+leak was" and "where the roof drain has always been."
 
 Notes:
 

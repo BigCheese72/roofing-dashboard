@@ -42,6 +42,11 @@ Goal: turn each building into a long-term roof record.
   warranty status. See `DEV_NOTES.md` for the full design, including
   `tools/geotiff_to_webmap.py`, the companion script that converts a drone GeoTIFF
   into what the app needs.
+- ✅ **Shipped**: permanent roof asset markers (drains, scuppers, HVAC units, pipe
+  flashings, vents, hatches, expansion joints, skylights, curbs, penetrations, core
+  cuts, test cuts, safety hazards) on the same Roof Map — distinct from finding pins
+  (permanent/independent of any report vs. historical/tied to one), any tech can
+  add/move/remove them, no admin gating. See "Roof assets" in `DEV_NOTES.md`.
 - Not yet built: manual anchoring for non-georeferenced (roof plan/sketch) maps
   (deliberately excluded by the spec), roof-section labels/filters.
 

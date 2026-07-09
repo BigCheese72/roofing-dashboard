@@ -41,13 +41,36 @@ Map"** on a finding to open a map:
 - **If a linked CompanyCam photo has GPS data**, the pin starts there instead — still
   drag it to correct if the phone's GPS wasn't precise (roofs are small; GPS often
   isn't accurate enough on its own).
+- **"📍 Use My Location"** drops the pin from your device's own GPS instead — best
+  option if you're standing at the spot right now.
 - **If a building has a custom roof plan or sketch uploaded** (an admin-only setting,
   see below), pins go on that image instead of satellite.
+
+Already have a pin? The button becomes **"📍 Pinned — move"** — reopens the same map,
+drag/tap to correct it, then Save. A correction updates immediately, including on any
+past report that already showed that finding — no need to re-download or re-send a PDF
+just to fix a pin's location.
 
 Every building also has a **Roof Map** in the Building History tab showing every pin
 from every past report at once, color-coded by warranty status (green = warrantable,
 red = non-warrantable, amber = undetermined). Tap a pin to see the date, work order
-number, condition, and warranty status, and jump straight to that work order.
+number, condition, and warranty status — **"View Work Order"** jumps to the full work
+order, or **"Adjust Pin"** jumps straight into that finding's editable pin map in one
+tap (the Roof Map itself is a read-only summary across every report, so this is the
+shortcut to actually move something you see on it).
+
+## Roof Features (permanent roof assets)
+
+Separate from finding pins, the Roof Map also shows **permanent features of the roof
+itself** — drains, scuppers, HVAC units, pipe flashings, vents, hatches, expansion
+joints, skylights, curbs, penetrations, core cuts, test cuts, safety hazards. Unlike a
+finding pin (tied to one report, historical), these exist independent of any work
+order and are meant to be kept current as the roof itself changes.
+
+Tap **"+ Add Roof Feature"** on a building's Roof Map, pick a type, optionally add a
+label and notes, and place it — no admin PIN needed, any tech can add, move, or remove
+one. Each type gets its own icon/color so they're easy to tell apart from finding pins
+at a glance. Tap an existing feature's marker to edit or remove it.
 
 **Custom base maps** (admin-only): a building can use something other than satellite.
 Requires the building to already have a CompanyCam project linked. Set from the
