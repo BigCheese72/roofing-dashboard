@@ -574,6 +574,23 @@ project).
 | `ADMIN_PIN` | `admin.js` | yes, for admin mode to work | The real PIN check — not present anywhere in `index.html` anymore. |
 | `FIREBASE_SERVICE_ACCOUNT` | `admin.js` | yes, for admin mode to work | Entire JSON contents of a Firebase service account key. Full project access — treat as a secret, never commit it. |
 
+### Email (Resend) — designated test recipient, and known blocker
+
+**Designated test recipient for any "Send Email Now" testing: `marks@watkinsroofing.net`.**
+Use this address for all email-sending test attempts — don't send test work order emails
+to real customer/office addresses from the `emailPick` list.
+
+**Known blocker (investigated 2026-07-09, read-only — see git history for the full
+diagnosis)**: `send-workorder.js`'s code path is correct, but `watkinsroofing.net`'s DNS
+does not currently authorize Resend to send as that domain — the SPF record only
+includes Microsoft 365 and ends in a hard fail (`-all`), and no Resend DKIM record was
+found. Until Resend's domain verification is completed (Netlify's `RESEND_API_KEY` env
+var + Resend dashboard + DNS records — all outside this repo), real send attempts are
+expected to fail with "Send failed: Email service rejected it: …" regardless of what the
+app code does. **Do not attempt live send-email testing until DNS/Resend verification is
+confirmed done** — that's a config change on Mark's side, not something to test around
+in code.
+
 ## Admin mode
 
 Field techs should not be able to unlink a CompanyCam project or delete a building's
