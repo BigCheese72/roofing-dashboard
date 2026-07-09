@@ -12,6 +12,9 @@ Goal: preserve and harden the existing RoofOps Field / Watkins work order workfl
 - Improve reliability around save/load, report logging, and failure messages.
 - Review Firestore security rules for all collections currently touched by the app.
 - Add lightweight manual QA steps for field workflows: create, save, reload, import CompanyCam photos, generate PDF, send email, and verify history logging.
+- ✅ Shipped: duplicate-report detection on the building timeline (same work order +
+  report type within 5 minutes flags a "possible duplicate" badge) as a safety net
+  around report/history logging.
 
 ## Phase 2: Building/Site History Foundation
 
@@ -38,6 +41,9 @@ Goal: turn each building into a long-term roof record.
 
 Goal: support office/admin workflows and controlled access.
 
+- ✅ Interim shipped ahead of this phase: a lightweight, client-side-only "admin
+  mode" (PIN prompt, session-scoped, not real auth) gates unlink/delete controls
+  from field techs. Replace with real accounts/roles below rather than extending it.
 - Add user accounts, roles, and permissions.
 - Add an admin/dashboard experience for searching customers, buildings, work orders, reports, and history events.
 - Add account/company settings for branding, default emails, report templates, and integration settings.

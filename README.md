@@ -30,7 +30,9 @@ netlify/
 | PDF generation | `index.html` | `generatePdf()` uses jsPDF and jsPDF-AutoTable from CDN to build the work order PDF in the browser. |
 | PDF download/share | `index.html` | `downloadPdf()` and `sharePdf()` generate, save, share, and log report events. |
 | Email/report sending | `index.html`, `netlify/functions/send-workorder.js` | `sendEmailNow()` generates the PDF, posts it to `send-workorder`, and the Netlify Function sends through Resend. |
-| PDF save-back to CompanyCam | `index.html`, `netlify/functions/companycam.js` | After successful direct email, `uploadPdfToCompanyCam()` can upload the PDF as a CompanyCam project document when a project is linked. |
+| PDF save-back to CompanyCam | `index.html`, `netlify/functions/companycam.js` | `uploadLinkedPdfToCompanyCam()` uploads the PDF as a CompanyCam project document whenever a project is linked — after Send Email Now, Share, or Download, not just email. |
+| Admin mode | `index.html` | `toggleAdminMode()` gates a PIN prompt (`ADMIN_PIN` constant, session-scoped). Unlocks `unlinkCC()` on the CompanyCam banner and per-building/per-event delete in Building History. Not real security — see DEV_NOTES.md. |
+| Duplicate report detection | `index.html` | `flagDuplicateEvents()` flags timeline entries with the same work order + report type created within 5 minutes of each other (double-click/retry protection), shown with a badge; admin can delete flagged entries. |
 | Netlify functions | `netlify/functions/companycam.js`, `netlify/functions/send-workorder.js` | Serverless API boundary for CompanyCam and Resend credentials. |
 | Netlify deployment | `netlify.toml` | Publishes the repo root and points Netlify Functions at `netlify/functions`. |
 
@@ -118,6 +120,14 @@ Opening `index.html` directly can show the UI, but direct email and CompanyCam c
 
 ## Documentation
 
-- `DEV_NOTES.md` contains implementation notes for the current architecture.
+- `APP_OVERVIEW.md` walks through the main user-facing workflow end to end.
+- `DEV_NOTES.md` contains implementation notes for the current architecture, including
+  things that aren't obvious from reading the code (API quirks, known limitations,
+  what's intentionally *not* built yet).
 - `ROADMAP.md` lays out phased product direction.
 - `DATA_MODEL.md` proposes future Firebase collections for the broader RoofOps platform.
+
+These five docs (including this one) are maintained by whichever tool (Claude or
+Codex) is working in this repo at the time — when you make a change that shifts
+behavior, update the relevant doc(s) in the same session rather than letting them
+drift, since the other tool relies on them for context in its next session.

@@ -10,6 +10,14 @@ map data, all tied to one building over its lifetime. Later modules (not yet sta
 This file documents the current architecture so future work extends it instead of
 re-discovering it.
 
+**Other docs in this repo** (kept in sync by whichever tool — Claude or Codex — is
+working here): [`README.md`](README.md) (file/responsibility map), [`APP_OVERVIEW.md`](APP_OVERVIEW.md)
+(user-facing workflow walkthrough), [`ROADMAP.md`](ROADMAP.md) (phased product
+direction), [`DATA_MODEL.md`](DATA_MODEL.md) (proposed future Firestore shape). This
+file is the one for implementation-level detail and gotchas; the others cover
+structure, workflow, and direction. Update the relevant doc(s) in the same session as
+any change that shifts behavior.
+
 ## Architecture at a glance
 
 - **Single-page app**: everything is in [`index.html`](index.html) — vanilla JS, no

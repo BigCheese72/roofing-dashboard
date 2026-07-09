@@ -43,7 +43,7 @@ When the user clicks **Import from CompanyCam**:
 8. The app automatically saves the work order.
 9. The app automatically syncs CompanyCam project/photo history metadata to Firebase.
 
-There is no manual sync button now. Importing CompanyCam photos is the action that links and syncs the project.
+There is no manual sync button now. Importing CompanyCam photos is the action that links and syncs the project. An admin (see "Admin Mode" below) can unlink a project from the CompanyCam banner if it was linked by mistake — field users cannot.
 
 ## How Firebase Works
 
@@ -74,6 +74,22 @@ When the user sends or shares a report:
 5. If the work order is linked to a CompanyCam project, the PDF is uploaded back to CompanyCam as a project document.
 
 This means the user should not have to remember to manually save before sending.
+
+## Admin Mode
+
+Field techs should not be able to unlink a CompanyCam project or delete building
+history by accident. A small "Admin" button in the header prompts for a PIN
+(session-scoped, not real auth — see DEV_NOTES.md); once unlocked it reveals:
+
+- **Unlink** on the CompanyCam banner.
+- **Delete (admin)** per building in Building History (removes the building and its
+  report/history records; leaves the underlying work orders alone).
+- **Delete (admin)** per timeline entry inside a building's "View Timeline" panel.
+
+The timeline also auto-flags **possible duplicate entries** — same work order + same
+report type logged within 5 minutes of each other, almost always a double-click or a
+retried Send/Share/Download. This is a visual flag only; an admin decides whether to
+delete the flagged entry.
 
 ## How Netlify Fits In
 
@@ -118,7 +134,8 @@ The current app is intentionally simple and mostly working. Future development s
 - automatic CompanyCam project locking/sync;
 - PDF generation;
 - email sending;
-- PDF upload back to CompanyCam;
+- PDF upload back to CompanyCam (fires on Send Email Now, Share, and Download alike);
+- admin-gated unlink/delete controls staying hidden from field techs by default;
 - Netlify deployment.
 
 Major redesigns or new modules should be added carefully after the current field workflow is stable.

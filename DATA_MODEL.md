@@ -58,6 +58,12 @@ Notes:
 
 - Authentication provider details can live here or in a related auth profile.
 - Role names should map to Firestore security rules.
+- **Interim state**: the current app does not have real user accounts yet. It ships a
+  lightweight, client-side "admin mode" (a PIN prompt, `ADMIN_PIN` constant in
+  `index.html`, session-scoped via `sessionStorage`) that gates a few destructive
+  actions (unlink CompanyCam, delete building/timeline records) from field techs. This
+  is explicitly not real security — the PIN is visible in public JS — and should be
+  replaced by this `users`/`role` model rather than extended, once real auth exists.
 
 ### `customers`
 
@@ -186,6 +192,12 @@ Notes:
 
 - Current app writes a flat `reports` log.
 - `pdfRef` is reserved. Current PDF persistence uses CompanyCam documents rather than Firebase Storage.
+- Current implementation detail worth preserving in any future migration: the current
+  app writes the `reports` doc and the matching `building_history_events` doc with the
+  **same Firestore document id** (one id generated per report, reused across both
+  collections). This lets a single delete-by-id clean up both sides of the pair. If
+  this collection is ever restructured, keep some equivalent way to delete a report
+  and its timeline entry together.
 
 ### `photos`
 
