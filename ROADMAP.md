@@ -113,6 +113,17 @@ Goal: turn each building into a long-term roof record.
   cuts, test cuts, safety hazards) on the same Roof Map — distinct from finding pins
   (permanent/independent of any report vs. historical/tied to one), any tech can
   add/move/remove them, no admin gating. See "Roof assets" in `DEV_NOTES.md`.
+- ✅ **Shipped**: RoofMapper (Phase 1) — a new tab that GPS-locates the tech, searches
+  free OpenStreetMap/Overpass building footprint data nearby, lets the tech tap the
+  correct footprint, generates a clean roof outline (area/perimeter), and saves it to
+  a building's `roof_outlines[]` (or locally if offline/unlinked) and/or exports
+  SVG/PNG/PDF — all client-side, no paid services. Outlines also render on the
+  existing building-wide Roof Map. See "RoofMapper" in `DEV_NOTES.md`. Explicitly out
+  of scope for Phase 1 (future expansion, same additive array-on-building-doc
+  pattern as roof assets): drains/HVAC/scuppers/pipe penetrations as outline-linked
+  features, dimensions/measurements beyond area & perimeter, CompanyCam photo
+  attachment to an outline, drone orthomosaic overlays for outline capture, and
+  outline history/versioning beyond "array is append-only, newest is current."
 - Not yet built: manual anchoring for non-georeferenced (roof plan/sketch) maps
   (deliberately excluded by the spec), roof-section labels/filters.
 

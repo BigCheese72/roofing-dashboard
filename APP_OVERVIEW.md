@@ -89,6 +89,35 @@ Building History tab, in admin mode.
   the exact GPS coordinates of its corners, which get pasted into the upload form
   alongside the image.
 
+## How RoofMapper Works
+
+RoofMapper (a tab in the header, alongside Edit/Preview/Saved/Building History/Reports)
+helps a tech capture a clean roof outline for a building on the spot:
+
+1. Open the **RoofMapper** tab and tap **"📍 Use My Location"** — the app requests
+   high-accuracy GPS and shows your current location and its accuracy on a map.
+2. The app automatically searches free OpenStreetMap data for building footprints near
+   you.
+3. Tap the correct building's outline on the map — its name/address/type (if OSM has
+   them) show below.
+4. Tap **"✏️ Generate Roof Outline"** — the app cleans up that footprint into a roof
+   outline and shows its area and perimeter.
+5. Save it — **"💾 Save Outline to Building"** links it to an existing building (search
+   by name) or creates a new one on the spot, or **"📱 Save on This Device Only"** if
+   there's no signal or the building isn't in RoofOps yet (link it later from the
+   "Saved On This Device" list).
+6. Export **SVG**, **PNG**, or **PDF** any time — all generated on the device, no
+   internet required once the outline exists.
+
+Saved outlines also show up on that building's existing **Roof Map** in Building
+History, alongside finding pins and permanent roof features. If GPS accuracy is poor,
+no buildings are found nearby, or OpenStreetMap can't be reached, RoofMapper shows a
+plain-language message and a way to try again rather than failing silently.
+
+RoofMapper is Phase 1 — see `ROADMAP.md` for what's planned next (drains, HVAC,
+scuppers, pipe penetrations, dimensions, CompanyCam photos, drone orthomosaic overlays,
+roof history over time).
+
 ## Timeline Filters
 
 The Timeline on a building's Building History page can be filtered by **date range,
@@ -238,6 +267,8 @@ The current app is intentionally simple and mostly working. Future development s
 - admin-gated unlink/delete controls staying hidden from field techs by default;
 - roof map pin placement (satellite default, photo-GPS guess, custom base maps) and
   the building-wide history map;
+- RoofMapper (GPS locate, Overpass building-footprint search, outline generation,
+  save-to-building/local, SVG/PNG/PDF export);
 - Netlify deployment.
 
 Major redesigns or new modules should be added carefully after the current field workflow is stable.

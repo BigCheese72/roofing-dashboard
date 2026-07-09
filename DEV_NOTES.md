@@ -299,6 +299,100 @@ blueprint of the building" — the roof's own inventory, not its repair history.
   already findings with pins, tracked per-report on purpose. Adding them here would
   create two competing representations of the same kind of location.
 
+### RoofMapper: GPS + Overpass roof outline capture (Phase 1, shipped)
+
+A new top-level tab (`showView('roofmapper')`, `#view-roofmapper`) letting a tech stand
+at a building, find its footprint from GPS, tap the correct outline, then save it to
+that building's record or export it. Built as a genuinely new RoofOps module, not a
+separate app — same tab-bar/`showView()` pattern, same `.card`/`.btn`/CSS variables,
+same Firestore instance (`fdb`), same `esc()`/`toast()`/`genId()`/`ensureCustomerAndBuilding()`
+helpers everything else in the file already uses.
+
+The task that specced this asked for a component/hook/service folder layout
+(`components/RoofMapper`, `hooks/useGeolocation`, `services/overpassService`,
+`services/exportService`, `types/roofMapperTypes`, `utils/geometry`) — this app has no
+build step or framework, so that structure was adapted into clearly delimited comment
+sections inside `index.html`'s single `<script>` block instead of real files, in the
+same order, right before `/* ================= init ================= */`:
+
+- **`utils/geometry` → `rmGeom*`**: haversine distance, a flat-earth local
+  meters projection (fine at building scale), shoelace polygon area, perimeter, and
+  `rmGeomCleanRing()` (dedupes near-duplicate Overpass nodes, force-closes the ring).
+- **`hooks/useGeolocation` → `rmGeoRequest()`**: thin wrapper around
+  `navigator.geolocation.getCurrentPosition` (high accuracy, 20s timeout), mapping
+  each `GeolocationPositionError` code to a friendly message (denied / no signal /
+  timeout) rather than reusing `useMyLocationForPin()`'s pin-modal-specific code —
+  same underlying browser API as the existing "Use My Location" pin feature, kept as
+  a separate function since RoofMapper's caller/UI is unrelated to the pin modal.
+- **`services/overpassService` → `rmFetchNearbyBuildings()`**: POSTs an Overpass QL
+  query (`way["building"]`/`relation["building"]` within an accuracy-scaled radius,
+  60–150m) to the public `overpass-api.de` endpoint, falling back to the
+  `overpass.kumi.systems` mirror on failure. Free, no API key, matches the "no paid
+  add-ons" constraint. Relations are handled naively — every `outer`-role member's
+  geometry is concatenated into one ring, correct for the common single-outer-way
+  case; complex multi-outer relations may render approximately. Not a real bug for
+  Phase 1 (single commercial buildings are almost always a plain `way`), just a known
+  limitation if it's ever revisited.
+- **`services/exportService` → `rmExport*()`**: fully client-side, no paid rendering
+  service. `rmBuildOutlineSvg()` projects the lat/lng ring to local feet and draws an
+  SVG with a title, area/perimeter, and a scale bar — this SVG is the source of truth.
+  PNG rasterizes that same SVG via an offscreen `<canvas>` so the two always match.
+  PDF uses the jsPDF instance already loaded for work-order PDFs (`window.jspdf.jsPDF`,
+  same access pattern as `generatePdf()`), drawing the polygon with `doc.lines()`.
+- **`components/RoofMapper` → `rm*` state/view functions**: `rmState` holds the map,
+  GPS fix, candidate footprints, and the currently generated outline. The map itself
+  uses real **OpenStreetMap tiles** (`tile.openstreetmap.org`), deliberately different
+  from the Esri satellite tiles the rest of the app uses for pins/assets — the task
+  spec called for OSM tiles specifically for this Phase 1 flow, and Overpass data is
+  naturally OSM-flavored (tags like `addr:housenumber`, `building=*`) so it reads
+  consistently paired with OSM basemap tiles.
+
+**Flow**: `rmUseMyLocation()` → `rmSearchBuildings()` (Overpass) → tap a footprint
+polygon (`rmSelectFootprint()`) → `rmGenerateOutline()` cleans the selected footprint's
+ring and computes area/perimeter → save and/or export.
+
+**Save target — additive, non-admin-gated, same pattern as roof assets**: generated
+outlines write into `roof_outlines[]` on the `buildings` Firestore doc (see
+`DATA_MODEL.md`), via `.set({ roof_outlines: [...] }, { merge: true })` so it works
+whether or not the building doc already exists. Any tech can save one — no PIN, no
+`admin.js` round-trip — same reasoning as roof assets: `firestore.rules` already allows
+client `update` on a building doc, and this is closer in spirit to a finding pin/asset
+marker (anyone should be able to add one) than to the shared, admin-gated base map
+setting. Two save paths from `#rm-save-modal`:
+  - **Link to an existing building** — reuses the same building-list fetch pattern as
+    `openBuildingPicker()` (kept as a separate `rmBpCache`/`rmBpRender()` rather than
+    sharing `bpCache`, since that picker's click handler fills the Edit form's text
+    fields — a different job than saving an outline).
+  - **Create a new building** — calls the existing `ensureCustomerAndBuilding()`
+    directly with just Job Name/Bill To, so a RoofMapper-created building lands on the
+    exact same slugified customer/building id a work order for the same
+    name/customer would later derive — no duplicate-building risk, no new id scheme.
+- **Local-only fallback**: `rmSaveLocally()` pushes into a `localStorage` array
+  (`roofmapper-local-outlines-v1`, capped at 50) for the no-signal/no-building-yet
+  case — mirrors the app's existing local work-order cache philosophy (cloud is
+  preferred, local is a safety net, never the only copy by choice). The "Saved On This
+  Device" panel lists these with Load/Delete; Load re-draws the outline and re-opens
+  the save/export actions so a locally-saved outline can be linked to a building later
+  once there's a connection.
+
+**Building History integration**: `renderBuildingMap()` gained an `outlines` parameter
+(both call sites in `openBuildingHistory()` now pass `bld.roof_outlines`) and draws any
+saved outline as an orange polygon alongside existing pins/assets — additive only,
+the existing pin/asset code paths are untouched. Same one-map-per-building,
+lat/lng-only tradeoff as pins/assets: an outline won't appear on a building that's
+switched to a custom `roof_plan`/`sketch` base map, since there's no coordinate system
+to convert real lat/lng into that image's pixel space (documented, not a bug — see
+"Roof map: base maps + location pins" above for the identical tradeoff on pins).
+
+**Not built (Phase 1 scope, intentionally)**: editing/adjusting a generated outline's
+vertices by hand (it's exactly what Overpass returned, cleaned of duplicate nodes,
+nothing more); merging multiple `roof_outlines[]` entries into one "current" outline
+(newest-first is left to whoever reads the array); anything from the "future
+expansion" list in the task spec (drains/HVAC/scuppers/pipe penetrations/dimensions/
+CompanyCam photos/drone orthomosaic overlays) — deliberately out of scope, but
+`roof_outlines[]`'s shape (a plain array on the building doc, same convention as
+`roof_assets[]`) is meant to extend the same way roof assets did, not be replaced.
+
 ### Building picker (explicit selection, shipped)
 
 The Phase 2 roadmap item "explicit customer/building picker UI in the Edit tab" is a

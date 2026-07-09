@@ -132,6 +132,29 @@
     .wrap{padding:0;max-width:none}
     .doc{box-shadow:none;border:none;padding:0}
   }
+
+  /* ================= RoofMapper ================= */
+  .rm-actions{display:flex;flex-direction:column;gap:10px;margin-bottom:14px}
+  .rm-bigbtn{min-height:52px;font-size:16px;padding:14px 18px;width:100%;border-radius:8px}
+  .rm-status{font-size:14px;color:var(--muted);margin:0 0 12px;min-height:1.2em}
+  .rm-status.warn{color:#B45309;font-weight:600}
+  .rm-status.error{color:#D64545;font-weight:600}
+  .rm-accuracy{display:inline-block;font-size:12px;font-weight:700;padding:2px 8px;border-radius:10px;margin-left:6px}
+  .rm-accuracy.good{background:#E3F3E1;color:#2E7D32}
+  .rm-accuracy.ok{background:#FFF3D6;color:#B45309}
+  .rm-accuracy.poor{background:#FBE1E1;color:#D64545}
+  .rm-footprint-info{background:#F1F6F0;border:1px solid #C8DDC3;border-radius:6px;padding:10px 12px;margin-bottom:12px;font-size:14px}
+  .rm-outline-stats{display:flex;gap:18px;flex-wrap:wrap;margin-bottom:12px}
+  .rm-outline-stats .stat{background:#FAFBFC;border:1px solid var(--card-line);border-radius:6px;padding:8px 14px;text-align:center}
+  .rm-outline-stats .stat b{display:block;font-size:18px;color:var(--slate)}
+  .rm-outline-stats .stat span{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+  .rm-local-item{background:#fff;border:1px solid var(--card-line);border-left:4px solid #546E7A;border-radius:6px;
+    padding:10px 12px;margin-bottom:8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .rm-local-item .info{flex:1;min-width:160px;font-size:13px}
+  .rm-local-item .info b{display:block;font-size:14px;color:var(--slate)}
+  @media (max-width:480px){
+    .rm-bigbtn{font-size:15px}
+  }
 </style>
 <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore-compat.js"></script>
@@ -152,6 +175,7 @@
   <button class="tab cond" id="tab-saved" onclick="showView('saved')">Saved (<span id="saved-count">0</span>)</button>
   <button class="tab cond" id="tab-history" onclick="showView('history')">Building History</button>
   <button class="tab cond" id="tab-reports" onclick="showView('reports')">Reports</button>
+  <button class="tab cond" id="tab-roofmapper" onclick="showView('roofmapper')">🗺️ RoofMapper</button>
   <button class="tab cond" id="admin-toggle" onclick="toggleAdminMode()" style="font-size:11px">Admin</button>
 </header>
 
@@ -324,6 +348,52 @@
     <div id="reports-list"></div>
   </div>
 
+  <!-- ================= ROOFMAPPER VIEW (Phase 1) ================= -->
+  <div id="view-roofmapper" style="display:none">
+    <div class="card">
+      <h2 class="cond">RoofMapper</h2>
+      <p class="hint">Stand at the building, find its footprint from GPS, tap the correct outline, then save it to
+        this building's record or export it.</p>
+      <div class="rm-actions">
+        <button class="btn primary rm-bigbtn" id="rm-locate-btn" onclick="rmUseMyLocation()">📍 Use My Location</button>
+      </div>
+      <p class="rm-status" id="rm-status"></p>
+      <div id="rm-map" style="height:min(55vh,460px);border-radius:6px;overflow:hidden;margin-bottom:12px;display:none"></div>
+      <div class="rm-actions" id="rm-search-again-wrap" style="display:none">
+        <button class="btn rm-bigbtn" id="rm-search-again-btn" onclick="rmUseMyLocation()">🔄 Re-locate & Search Again</button>
+      </div>
+    </div>
+
+    <div class="card" id="rm-footprint-panel" style="display:none">
+      <h2 class="cond">Selected Building</h2>
+      <div class="rm-footprint-info" id="rm-footprint-info"></div>
+      <div class="rm-actions">
+        <button class="btn primary rm-bigbtn" onclick="rmGenerateOutline()">✏️ Generate Roof Outline</button>
+      </div>
+    </div>
+
+    <div class="card" id="rm-outline-panel" style="display:none">
+      <h2 class="cond">Roof Outline</h2>
+      <div class="rm-outline-stats" id="rm-outline-stats"></div>
+      <div class="rm-actions">
+        <button class="btn primary rm-bigbtn" onclick="openRmSaveModal()">💾 Save Outline to Building</button>
+        <button class="btn rm-bigbtn" onclick="rmSaveLocally()">📱 Save on This Device Only</button>
+      </div>
+      <div class="btnrow">
+        <button class="btn" onclick="rmExportSVG()">Export SVG</button>
+        <button class="btn" onclick="rmExportPNG()">Export PNG</button>
+        <button class="btn" onclick="rmExportPDF()">Export PDF</button>
+      </div>
+    </div>
+
+    <div class="card" id="rm-local-panel" style="display:none">
+      <h2 class="cond">Saved On This Device</h2>
+      <p class="hint">Outlines saved locally (no building link, or saved while offline). Link one to a building any
+        time from here.</p>
+      <div id="rm-local-list"></div>
+    </div>
+  </div>
+
 </div>
 
 <div id="cc-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:40" onclick="if(event.target===this)closeCC()">
@@ -400,6 +470,29 @@
     <div style="padding:14px 16px;overflow:auto">
       <input type="text" id="bp-search" placeholder="Search by building, customer, or address…" style="width:100%;margin-bottom:10px;box-sizing:border-box" oninput="bpFilter()">
       <div id="bp-list" class="hint">Loading…</div>
+    </div>
+  </div>
+</div>
+
+<div id="rm-save-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:40" onclick="if(event.target===this)closeRmSaveModal()">
+  <div style="background:#fff;max-width:640px;margin:4vh auto;border-radius:8px;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;width:94%">
+    <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
+      <b class="cond" style="font-size:17px">Save Roof Outline to Building</b>
+      <span style="flex:1"></span>
+      <button class="btn" onclick="closeRmSaveModal()">Close</button>
+    </div>
+    <div style="padding:14px 16px;overflow:auto">
+      <h2 class="cond" style="font-size:15px;margin:0 0 8px">Link to Existing Building</h2>
+      <input type="text" id="rm-bp-search" placeholder="Search by building, customer, or address…" style="width:100%;margin-bottom:10px;box-sizing:border-box" oninput="rmBpFilter()">
+      <div id="rm-bp-list" class="hint">Loading…</div>
+      <h2 class="cond" style="font-size:15px;margin:18px 0 8px">Or Create a New Building</h2>
+      <div class="grid">
+        <div class="fld"><label>Job Name / Building</label><input type="text" id="rm-new-jobname" placeholder="e.g. Westminster Plaza"></div>
+        <div class="fld"><label>Bill To / Customer</label><input type="text" id="rm-new-billto" placeholder="e.g. ACME Property Group"></div>
+      </div>
+      <div class="btnrow">
+        <button class="btn primary" onclick="rmCreateBuildingAndSave()">Create Building & Save Outline</button>
+      </div>
     </div>
   </div>
 </div>
@@ -1818,6 +1911,12 @@ function pinPopupHtml(p){
     (p.finding_id ? "<button class=\"btn\" onclick=\"jumpToAdjustPin('" + p.work_order_id + "','" + p.finding_id + "')\">Adjust Pin</button>" : "") +
     "</div>";
 }
+function outlinePopupHtml(o){
+  return "<b>🗺️ " + esc(rmOutlineTitle(o)) + "</b><br>" +
+    (o.areaSqFt ? Math.round(o.areaSqFt) + " sq ft · " + Math.round(o.perimeterFt || 0) + " ft perimeter<br>" : "") +
+    "<span style='color:var(--muted);font-size:12px'>Saved from RoofMapper" +
+    (o.createdAt ? " — " + new Date(o.createdAt).toLocaleDateString() : "") + "</span>";
+}
 /* pins here are already pre-filtered to the mode matching customBld (see
    caller) — null customBld means satellite/lat-lng mode, otherwise x/y
    mode against that building's custom base map image. The map always
@@ -1825,8 +1924,13 @@ function pinPopupHtml(p){
    thing you can look at, not something that only appears once a pin
    exists. bldAddress centers satellite mode when there's nothing else
    to derive a center from. */
-function renderBuildingMap(pins, customBld, bldAddress, orthoOverlay, assets, buildingId){
+function renderBuildingMap(pins, customBld, bldAddress, orthoOverlay, assets, buildingId, outlines){
   assets = assets || [];
+  /* outlines (roof_outlines[] from RoofMapper) are always real lat/lng —
+     only drawn in satellite/drone_ortho mode, same tradeoff already
+     documented above for pins/assets vs. a custom roof_plan/sketch base
+     map (no coordinate system to convert lat/lng into there). */
+  outlines = outlines || [];
   var el = document.getElementById("building-map");
   if (!el) return;
   if (buildingMap){ buildingMap.remove(); buildingMap = null; }
@@ -1860,6 +1964,7 @@ function renderBuildingMap(pins, customBld, bldAddress, orthoOverlay, assets, bu
     var bounds = [];
     pins.forEach(function(p){ bounds.push([p.lat, p.lng]); });
     assets.forEach(function(a){ if (typeof a.lat === "number") bounds.push([a.lat, a.lng]); });
+    outlines.forEach(function(o){ (o.ring || []).forEach(function(p){ bounds.push([p.lat, p.lng]); }); });
     var center = null, zoom = 18;
     if (!bounds.length){
       if (orthoOverlay){
@@ -1876,6 +1981,12 @@ function renderBuildingMap(pins, customBld, bldAddress, orthoOverlay, assets, bu
         maxZoom: 21, attribution: "Tiles &copy; Esri"
       }).addTo(buildingMap);
       if (orthoOverlay) L.imageOverlay(orthoOverlay.url, boundsToLatLngBounds(orthoOverlay.bounds)).addTo(buildingMap);
+      outlines.forEach(function(o){
+        if (!o.ring || o.ring.length < 3) return;
+        L.polygon(o.ring.map(function(p){ return [p.lat, p.lng]; }), {
+          color: "#E8600A", weight: 2, fillColor: "#E8600A", fillOpacity: 0.1
+        }).addTo(buildingMap).bindPopup(outlinePopupHtml(o));
+      });
       pins.forEach(function(p){
         L.circleMarker([p.lat, p.lng], {
           radius: 9, color: "#fff", weight: 2, fillColor: warrantyColor(p.warranty), fillOpacity: 0.95
@@ -2157,7 +2268,7 @@ async function openBuildingHistory(buildingId){
       historyBuildingId = buildingId;
       detail.innerHTML = baseMapCardHtml + emptyMapCardHtml + '<div class="card"><h2 class="cond">Timeline</h2>' +
         '<div class="empty">No reports logged for this building yet.</div></div>';
-      renderBuildingMap([], hasCustomBaseMap ? bld : null, bld.location, orthoOverlay, roofAssets, buildingId);
+      renderBuildingMap([], hasCustomBaseMap ? bld : null, bld.location, orthoOverlay, roofAssets, buildingId, bld.roof_outlines);
       return;
     }
     flagDuplicateEvents(events);
@@ -2192,7 +2303,7 @@ async function openBuildingHistory(buildingId){
       '<div id="timeline-list"></div></div>';
     populateTimelineFilterOptions();
     renderTimelineList();
-    renderBuildingMap(mapPins, hasCustomBaseMap ? bld : null, bld.location, orthoOverlay, roofAssets, buildingId);
+    renderBuildingMap(mapPins, hasCustomBaseMap ? bld : null, bld.location, orthoOverlay, roofAssets, buildingId, bld.roof_outlines);
   }catch(e){
     detail.innerHTML = '<div class="card"><div class="empty">Couldn\u2019t load timeline: ' + esc(e.message) + '</div></div>';
   }
@@ -3143,7 +3254,7 @@ function unlinkCC(){
 }
 /* ================= views ================= */
 function showView(v){
-  ["edit","preview","saved","history","reports"].forEach(function(name){
+  ["edit","preview","saved","history","reports","roofmapper"].forEach(function(name){
     document.getElementById("view-" + name).style.display = (name === v ? "" : "none");
     document.getElementById("tab-" + name).classList.toggle("active", name === v);
   });
@@ -3151,12 +3262,563 @@ function showView(v){
   if (v === "saved") renderSaved();
   if (v === "history") renderHistoryList();
   if (v === "reports") renderReportsList();
+  if (v === "roofmapper") rmOnShow();
   window.scrollTo(0,0);
   if (v === "edit" && pendingPinFindingId){
     var fid = pendingPinFindingId;
     pendingPinFindingId = null;
     openPinModal(fid);
   }
+}
+
+/* ================= RoofMapper (Phase 1) =================
+   Adapted from a component/hook/service folder structure to this app's
+   single-file architecture. Each section below stands in for what would
+   otherwise be a separate module file:
+     types/roofMapperTypes    -> plain comment block just below (no TS build step here)
+     utils/geometry           -> rmGeom* functions
+     hooks/useGeolocation      -> rmGeoRequest()
+     services/overpassService  -> rmFetchNearbyBuildings() + rmParseOverpassElements()
+     services/exportService    -> rmExport*() / rmBuildOutlineSvg()
+     components/RoofMapper     -> rm* state + view/render functions
+
+   Shapes used throughout (documented here since there's no TS compiler):
+     RmLatLng    = { lat, lng }
+     RmFootprint = { id, osmType: "way"|"relation", ring: RmLatLng[], center: RmLatLng, tags }
+     RmOutline   = { id?, ring: RmLatLng[], center, areaSqFt, perimeterFt,
+                     source: "osm", osmId, osmType, tags, createdAt }
+
+   Saved outlines live in `roof_outlines[]` directly on the `buildings`
+   Firestore doc (see DATA_MODEL.md) — same additive, non-admin-gated
+   pattern already used for `roof_assets[]` (drains/HVAC/etc): any tech can
+   add one, `firestore.rules` already allows client `update` on a building
+   doc, and nothing here ever deletes or rewrites unrelated building fields. */
+
+/* ---- utils/geometry ---- */
+function rmGeomHaversineMeters(a, b){
+  var R = 6371000, toRad = Math.PI / 180;
+  var dLat = (b.lat - a.lat) * toRad, dLng = (b.lng - a.lng) * toRad;
+  var la1 = a.lat * toRad, la2 = b.lat * toRad;
+  var h = Math.sin(dLat/2)*Math.sin(dLat/2) + Math.cos(la1)*Math.cos(la2)*Math.sin(dLng/2)*Math.sin(dLng/2);
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+function rmGeomToLocalXY(point, origin){
+  /* Flat-earth approximation, meters east/north of origin — fine at
+     building scale, not meant for anything larger. */
+  var mPerDegLat = 111320;
+  var mPerDegLng = 111320 * Math.cos(origin.lat * Math.PI / 180);
+  return { x: (point.lng - origin.lng) * mPerDegLng, y: (point.lat - origin.lat) * mPerDegLat };
+}
+function rmGeomRingCentroid(ring){
+  var lat = 0, lng = 0, n = ring.length;
+  ring.forEach(function(p){ lat += p.lat; lng += p.lng; });
+  return { lat: lat / n, lng: lng / n };
+}
+function rmGeomPolygonAreaSqMeters(ring){
+  var origin = rmGeomRingCentroid(ring);
+  var pts = ring.map(function(p){ return rmGeomToLocalXY(p, origin); });
+  var area = 0;
+  for (var i = 0; i < pts.length; i++){
+    var a = pts[i], b = pts[(i + 1) % pts.length];
+    area += a.x * b.y - b.x * a.y;
+  }
+  return Math.abs(area) / 2;
+}
+function rmGeomPolygonPerimeterMeters(ring){
+  var total = 0;
+  for (var i = 0; i < ring.length - 1; i++) total += rmGeomHaversineMeters(ring[i], ring[i + 1]);
+  return total;
+}
+function rmGeomCleanRing(ring){
+  /* Overpass geometry sometimes repeats/near-duplicates nodes; drop points
+     under ~15cm apart and make sure the ring is explicitly closed. */
+  var out = [];
+  ring.forEach(function(p){
+    var prev = out[out.length - 1];
+    if (!prev || rmGeomHaversineMeters(prev, p) > 0.15) out.push(p);
+  });
+  if (out.length > 1){
+    var first = out[0], last = out[out.length - 1];
+    if (rmGeomHaversineMeters(first, last) > 0.15) out.push(first);
+    else out[out.length - 1] = first;
+  }
+  return out;
+}
+
+/* ---- hooks/useGeolocation ---- */
+function rmGeoRequest(onSuccess, onError){
+  if (!navigator.geolocation){
+    onError({ friendly: "Location isn't available on this device/browser." });
+    return;
+  }
+  navigator.geolocation.getCurrentPosition(onSuccess, function(err){
+    var friendly;
+    if (err.code === 1) friendly = "Location access was denied. Enable location for this site in your browser/phone settings and try again.";
+    else if (err.code === 2) friendly = "Couldn't determine your location (no GPS signal). Try again outdoors or near a window.";
+    else if (err.code === 3) friendly = "Location request timed out — try again, this can happen with a weak GPS signal.";
+    else friendly = "Couldn't get your location: " + (err.message || "unknown error");
+    err.friendly = friendly;
+    onError(err);
+  }, { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 });
+}
+
+/* ---- services/overpassService ----
+   Public, free, no API key. Two endpoints so a single mirror outage
+   doesn't block the whole feature. */
+var RM_OVERPASS_ENDPOINTS = [
+  "https://overpass-api.de/api/interpreter",
+  "https://overpass.kumi.systems/api/interpreter"
+];
+function rmOverpassQuery(lat, lng, radiusMeters){
+  return "[out:json][timeout:25];(way[\"building\"](around:" + radiusMeters + "," + lat + "," + lng +
+    ");relation[\"building\"](around:" + radiusMeters + "," + lat + "," + lng + "););out body geom;";
+}
+function rmParseOverpassElements(elements){
+  var footprints = [];
+  elements.forEach(function(el){
+    var ring = null;
+    if (el.type === "way" && el.geometry && el.geometry.length > 2){
+      ring = el.geometry.map(function(g){ return { lat: g.lat, lng: g.lon }; });
+    } else if (el.type === "relation" && el.members){
+      /* Naive multipolygon handling: concatenate every "outer" member's
+         geometry into one ring. Correct for the common single-outer-way
+         case; complex multi-outer relations (rare for a single building)
+         may render approximately. Documented limitation, not a bug. */
+      var pts = [];
+      el.members.forEach(function(m){
+        if (m.role === "outer" && m.geometry) m.geometry.forEach(function(g){ pts.push({ lat: g.lat, lng: g.lon }); });
+      });
+      if (pts.length > 2) ring = pts;
+    }
+    if (!ring) return;
+    ring = rmGeomCleanRing(ring);
+    if (ring.length < 4) return;
+    footprints.push({
+      id: el.type + "/" + el.id,
+      osmType: el.type,
+      ring: ring,
+      center: rmGeomRingCentroid(ring),
+      tags: el.tags || {}
+    });
+  });
+  return footprints;
+}
+async function rmFetchNearbyBuildings(lat, lng, radiusMeters){
+  var query = rmOverpassQuery(lat, lng, radiusMeters);
+  var lastErr = null;
+  for (var i = 0; i < RM_OVERPASS_ENDPOINTS.length; i++){
+    try{
+      var ctrl = (typeof AbortController !== "undefined") ? new AbortController() : null;
+      var timer = ctrl ? setTimeout(function(){ ctrl.abort(); }, 25000) : null;
+      var res = await fetch(RM_OVERPASS_ENDPOINTS[i], {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: "data=" + encodeURIComponent(query),
+        signal: ctrl ? ctrl.signal : undefined
+      });
+      if (timer) clearTimeout(timer);
+      if (!res.ok) throw new Error("Overpass returned HTTP " + res.status);
+      var json = await res.json();
+      return rmParseOverpassElements(json.elements || []);
+    }catch(e){ lastErr = e; }
+  }
+  throw lastErr || new Error("Overpass request failed");
+}
+
+/* ---- services/exportService ----
+   Client-side only, no paid rendering service. SVG is the source of truth;
+   PNG is rasterized from the same SVG so the two always match. */
+function rmExportProjectFeet(ring){
+  var origin = rmGeomRingCentroid(ring);
+  return ring.map(function(p){
+    var xy = rmGeomToLocalXY(p, origin);
+    return { x: xy.x * 3.28084, y: xy.y * 3.28084 };
+  });
+}
+function rmEscXml(s){
+  return String(s == null ? "" : s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+}
+function rmDownloadBlob(filename, blob){
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement("a");
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(function(){ URL.revokeObjectURL(url); }, 2000);
+}
+function rmExportFilenameBase(){
+  var tags = (rmState.outline && rmState.outline.tags) || {};
+  var name = tags.name || tags["addr:housenumber"] || "roof-outline";
+  return "roofmapper_" + String(name).replace(/[^a-z0-9]+/gi, "_").toLowerCase() + "_" + Date.now();
+}
+function rmOutlineTitle(outline){
+  var tags = outline.tags || {};
+  var addr = [tags["addr:housenumber"], tags["addr:street"]].filter(Boolean).join(" ");
+  return tags.name || addr || "Roof Outline";
+}
+function rmBuildOutlineSvg(outline){
+  var pts = rmExportProjectFeet(outline.ring);
+  var xs = pts.map(function(p){ return p.x; }), ys = pts.map(function(p){ return p.y; });
+  var minX = Math.min.apply(null, xs), maxX = Math.max.apply(null, xs);
+  var minY = Math.min.apply(null, ys), maxY = Math.max.apply(null, ys);
+  var padFt = Math.max(6, (maxX - minX) * 0.08);
+  var w = (maxX - minX) + padFt * 2, h = (maxY - minY) + padFt * 2;
+  var scale = 20; /* px per foot */
+  var headerH = 60, footerH = 40;
+  var svgW = Math.max(240, w * scale), svgH = Math.max(240, h * scale) + headerH + footerH;
+  function toSvg(p){
+    return { x: (p.x - minX + padFt) * scale, y: headerH + (h * scale) - ((p.y - minY + padFt) * scale) };
+  }
+  var pathPts = pts.map(toSvg);
+  var pathD = "M " + pathPts.map(function(p){ return p.x.toFixed(1) + "," + p.y.toFixed(1); }).join(" L ") + " Z";
+  var title = rmOutlineTitle(outline);
+  var scaleBarFt = 20, scaleBarPx = scaleBarFt * scale;
+  var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + svgW + '" height="' + svgH + '" viewBox="0 0 ' + svgW + ' ' + svgH + '">' +
+    '<rect width="100%" height="100%" fill="#ffffff"/>' +
+    '<text x="16" y="26" font-family="Arial, sans-serif" font-size="18" font-weight="700" fill="#263238">' + rmEscXml(title) + '</text>' +
+    '<text x="16" y="44" font-family="Arial, sans-serif" font-size="12" fill="#5B6770">Area: ' + outline.areaSqFt.toFixed(0) +
+      ' sq ft &#183; Perimeter: ' + outline.perimeterFt.toFixed(0) + ' ft &#183; Source: OpenStreetMap</text>' +
+    '<path d="' + pathD + '" fill="rgba(232,96,10,0.15)" stroke="#E8600A" stroke-width="2.5" stroke-linejoin="round"/>' +
+    '<g transform="translate(16,' + (svgH - 18) + ')">' +
+      '<line x1="0" y1="0" x2="' + scaleBarPx + '" y2="0" stroke="#263238" stroke-width="2"/>' +
+      '<line x1="0" y1="-4" x2="0" y2="4" stroke="#263238" stroke-width="2"/>' +
+      '<line x1="' + scaleBarPx + '" y1="-4" x2="' + scaleBarPx + '" y2="4" stroke="#263238" stroke-width="2"/>' +
+      '<text x="' + (scaleBarPx / 2) + '" y="-8" font-family="Arial, sans-serif" font-size="11" fill="#263238" text-anchor="middle">' + scaleBarFt + ' ft</text>' +
+    '</g>' +
+  '</svg>';
+  return { svg: svg, width: svgW, height: svgH };
+}
+function rmExportSVG(){
+  if (!rmState.outline){ toast("Generate a roof outline first."); return; }
+  var built = rmBuildOutlineSvg(rmState.outline);
+  rmDownloadBlob(rmExportFilenameBase() + ".svg", new Blob([built.svg], { type: "image/svg+xml" }));
+}
+function rmExportPNG(){
+  if (!rmState.outline){ toast("Generate a roof outline first."); return; }
+  var built = rmBuildOutlineSvg(rmState.outline);
+  var img = new Image();
+  var url = URL.createObjectURL(new Blob([built.svg], { type: "image/svg+xml;charset=utf-8" }));
+  img.onload = function(){
+    var c = document.createElement("canvas");
+    c.width = built.width; c.height = built.height;
+    var ctx = c.getContext("2d");
+    ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height);
+    ctx.drawImage(img, 0, 0);
+    URL.revokeObjectURL(url);
+    c.toBlob(function(blob){ rmDownloadBlob(rmExportFilenameBase() + ".png", blob); }, "image/png");
+  };
+  img.onerror = function(){ URL.revokeObjectURL(url); toast("Couldn't render PNG export."); };
+  img.src = url;
+}
+function rmExportPDF(){
+  if (!rmState.outline){ toast("Generate a roof outline first."); return; }
+  if (!(window.jspdf && window.jspdf.jsPDF)){ toast("PDF export isn't available right now."); return; }
+  var outline = rmState.outline;
+  var JsPdf = window.jspdf.jsPDF;
+  var doc = new JsPdf({ unit: "pt", format: "letter" });
+  var pts = rmExportProjectFeet(outline.ring);
+  var xs = pts.map(function(p){ return p.x; }), ys = pts.map(function(p){ return p.y; });
+  var minX = Math.min.apply(null, xs), maxX = Math.max.apply(null, xs);
+  var minY = Math.min.apply(null, ys), maxY = Math.max.apply(null, ys);
+  var pageW = doc.internal.pageSize.getWidth(), pageH = doc.internal.pageSize.getHeight();
+  var margin = 54, top = 90;
+  var availW = pageW - margin * 2, availH = pageH - top - margin;
+  var wFt = Math.max(1, maxX - minX), hFt = Math.max(1, maxY - minY);
+  var scale = Math.min(availW / wFt, availH / hFt);
+  var offX = margin + (availW - wFt * scale) / 2;
+  var offY = top + (availH - hFt * scale) / 2;
+  function toPdf(p){ return { x: offX + (p.x - minX) * scale, y: offY + (hFt - (p.y - minY)) * scale }; }
+  doc.setFont("helvetica", "bold"); doc.setFontSize(16);
+  doc.text(rmOutlineTitle(outline), margin, 40);
+  doc.setFont("helvetica", "normal"); doc.setFontSize(10);
+  doc.text("Area: " + outline.areaSqFt.toFixed(0) + " sq ft   Perimeter: " + outline.perimeterFt.toFixed(0) + " ft   Generated " +
+    new Date(outline.createdAt || Date.now()).toLocaleDateString(), margin, 58);
+  doc.text("Source: OpenStreetMap building footprint (RoofOps RoofMapper)", margin, 72);
+  var pdfPts = pts.map(toPdf);
+  doc.setDrawColor(232, 96, 10); doc.setLineWidth(1.5);
+  var lines = pdfPts.slice(1).map(function(p, i){ return [p.x - pdfPts[i].x, p.y - pdfPts[i].y]; });
+  doc.lines(lines, pdfPts[0].x, pdfPts[0].y, [1, 1], "S", true);
+  var barFt = 20, barPx = barFt * scale, barX = margin, barY = pageH - margin + 10;
+  doc.setDrawColor(38, 42, 48); doc.setLineWidth(1);
+  doc.line(barX, barY, barX + barPx, barY);
+  doc.line(barX, barY - 4, barX, barY + 4);
+  doc.line(barX + barPx, barY - 4, barX + barPx, barY + 4);
+  doc.setFontSize(9);
+  doc.text(barFt + " ft", barX + barPx / 2, barY + 14, { align: "center" });
+  doc.save(rmExportFilenameBase() + ".pdf");
+}
+
+/* ---- components/RoofMapper (view/state) ---- */
+var rmState = {
+  map: null, userMarker: null, accuracyCircle: null,
+  lat: null, lng: null, accuracy: null,
+  footprints: [], footprintLayers: {}, outlineLayer: null,
+  selectedId: null, outline: null
+};
+var RM_LOCAL_KEY = "roofmapper-local-outlines-v1";
+
+function rmOnShow(){
+  if (rmState.map) setTimeout(function(){ rmState.map.invalidateSize(); }, 60);
+  rmRenderLocalSaves();
+}
+function rmSetStatus(msg, kind, extraHtml){
+  var el = document.getElementById("rm-status");
+  el.textContent = msg || "";
+  el.className = "rm-status" + (kind ? " " + kind : "");
+  if (extraHtml) el.innerHTML += extraHtml;
+}
+function rmEnsureMap(){
+  if (rmState.map) return rmState.map;
+  document.getElementById("rm-map").style.display = "";
+  rmState.map = L.map("rm-map");
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 20, attribution: "&copy; OpenStreetMap contributors"
+  }).addTo(rmState.map);
+  return rmState.map;
+}
+function rmUseMyLocation(){
+  var btn = document.getElementById("rm-locate-btn");
+  btn.disabled = true; btn.textContent = "Locating…";
+  rmSetStatus("Requesting GPS location — allow location access if your browser asks.");
+  rmGeoRequest(function(pos){
+    btn.disabled = false; btn.textContent = "📍 Use My Location";
+    var lat = pos.coords.latitude, lng = pos.coords.longitude, acc = pos.coords.accuracy || 0;
+    rmState.lat = lat; rmState.lng = lng; rmState.accuracy = acc;
+    var map = rmEnsureMap();
+    if (rmState.userMarker) map.removeLayer(rmState.userMarker);
+    if (rmState.accuracyCircle) map.removeLayer(rmState.accuracyCircle);
+    rmState.userMarker = L.circleMarker([lat, lng], { radius: 7, color: "#fff", weight: 2, fillColor: "#1976D2", fillOpacity: 1 }).addTo(map);
+    rmState.accuracyCircle = L.circle([lat, lng], { radius: acc, color: "#1976D2", weight: 1, fillOpacity: 0.08 }).addTo(map);
+    map.setView([lat, lng], 19);
+    setTimeout(function(){ map.invalidateSize(); }, 60);
+    var accKind = acc <= 15 ? "good" : (acc <= 35 ? "ok" : "poor");
+    var accLabel = acc <= 15 ? "Good" : (acc <= 35 ? "Fair" : "Poor");
+    rmSetStatus("Located — accuracy ±" + Math.round(acc) + "m.", accKind === "poor" ? "warn" : null,
+      ' <span class="rm-accuracy ' + accKind + '">' + accLabel + ' GPS</span>');
+    document.getElementById("rm-search-again-wrap").style.display = "";
+    if (accKind === "poor") toast("GPS accuracy is poor (±" + Math.round(acc) + "m) — searching anyway, open sky helps.");
+    rmSearchBuildings();
+  }, function(err){
+    btn.disabled = false; btn.textContent = "📍 Use My Location";
+    rmSetStatus(err.friendly || "Couldn't get your location.", "error");
+  });
+}
+function rmClearFootprintLayers(){
+  var map = rmState.map;
+  if (map){
+    Object.keys(rmState.footprintLayers).forEach(function(id){ map.removeLayer(rmState.footprintLayers[id]); });
+    if (rmState.outlineLayer){ map.removeLayer(rmState.outlineLayer); rmState.outlineLayer = null; }
+  }
+  rmState.footprintLayers = {};
+  rmState.selectedId = null;
+  rmState.outline = null;
+  document.getElementById("rm-footprint-panel").style.display = "none";
+  document.getElementById("rm-outline-panel").style.display = "none";
+}
+async function rmSearchBuildings(){
+  if (rmState.lat == null){ toast("Get your location first."); return; }
+  rmSetStatus("Searching nearby building footprints…");
+  rmClearFootprintLayers();
+  var radius = Math.min(150, Math.max(60, (rmState.accuracy || 30) * 2.2));
+  try{
+    var results = await rmFetchNearbyBuildings(rmState.lat, rmState.lng, radius);
+    if (!results.length){
+      rmSetStatus("No building footprints found within " + Math.round(radius) + "m. Move closer, or tap Re-locate & Search Again.", "warn");
+      return;
+    }
+    rmState.footprints = results;
+    rmRenderFootprints();
+    rmSetStatus(results.length + " building" + (results.length === 1 ? "" : "s") + " found — tap the correct outline on the map.");
+  }catch(e){
+    rmSetStatus("Couldn't reach OpenStreetMap (Overpass) — check your connection and tap Re-locate & Search Again. (" + e.message + ")", "error");
+  }
+}
+function rmRenderFootprints(){
+  var map = rmEnsureMap();
+  var bounds = [[rmState.lat, rmState.lng]];
+  rmState.footprints.forEach(function(fp){
+    var latlngs = fp.ring.map(function(p){ return [p.lat, p.lng]; });
+    var layer = L.polygon(latlngs, { color: "#37474F", weight: 2, fillColor: "#90A4AE", fillOpacity: 0.35 });
+    layer.on("click", function(){ rmSelectFootprint(fp.id); });
+    layer.addTo(map);
+    rmState.footprintLayers[fp.id] = layer;
+    latlngs.forEach(function(ll){ bounds.push(ll); });
+  });
+  map.fitBounds(bounds, { padding: [30, 30] });
+  setTimeout(function(){ map.invalidateSize(); }, 60);
+}
+function rmSelectFootprint(id){
+  var fp = rmState.footprints.find(function(f){ return f.id === id; });
+  if (!fp) return;
+  rmState.selectedId = id;
+  Object.keys(rmState.footprintLayers).forEach(function(fid){
+    var layer = rmState.footprintLayers[fid];
+    var isSel = fid === id;
+    layer.setStyle({ color: isSel ? "#E8600A" : "#37474F", weight: isSel ? 3 : 2, fillColor: isSel ? "#E8600A" : "#90A4AE", fillOpacity: isSel ? 0.3 : 0.35 });
+  });
+  var tags = fp.tags || {};
+  var addrParts = [tags["addr:housenumber"], tags["addr:street"]].filter(Boolean).join(" ");
+  var infoHtml = "<b>" + esc(tags.name || (fp.osmType === "way" ? "Unnamed building" : "Unnamed building group")) + "</b>";
+  if (addrParts) infoHtml += "<br>" + esc(addrParts);
+  if (tags.building && tags.building !== "yes") infoHtml += "<br>Type: " + esc(tags.building);
+  infoHtml += "<br><span style='color:var(--muted);font-size:12px'>OSM " + esc(fp.osmType) + "/" + esc(fp.id.split("/")[1]) + "</span>";
+  document.getElementById("rm-footprint-info").innerHTML = infoHtml;
+  document.getElementById("rm-footprint-panel").style.display = "";
+  document.getElementById("rm-outline-panel").style.display = "none";
+  document.getElementById("rm-footprint-panel").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+function rmRenderOutlineStats(outline){
+  document.getElementById("rm-outline-stats").innerHTML =
+    '<div class="stat"><b>' + outline.areaSqFt.toFixed(0) + '</b><span>Sq Ft</span></div>' +
+    '<div class="stat"><b>' + outline.perimeterFt.toFixed(0) + '</b><span>Perimeter Ft</span></div>' +
+    '<div class="stat"><b>' + outline.ring.length + '</b><span>Points</span></div>';
+  document.getElementById("rm-outline-panel").style.display = "";
+}
+function rmGenerateOutline(){
+  var fp = rmState.footprints.find(function(f){ return f.id === rmState.selectedId; });
+  if (!fp) return;
+  var ring = rmGeomCleanRing(fp.ring);
+  var outline = {
+    ring: ring,
+    center: fp.center,
+    areaSqFt: rmGeomPolygonAreaSqMeters(ring) * 10.7639,
+    perimeterFt: rmGeomPolygonPerimeterMeters(ring) * 3.28084,
+    source: "osm",
+    osmId: fp.id,
+    osmType: fp.osmType,
+    tags: fp.tags || {},
+    createdAt: Date.now()
+  };
+  rmState.outline = outline;
+  var map = rmEnsureMap();
+  if (rmState.outlineLayer) map.removeLayer(rmState.outlineLayer);
+  rmState.outlineLayer = L.polygon(ring.map(function(p){ return [p.lat, p.lng]; }), {
+    color: "#E8600A", weight: 3, fillColor: "#E8600A", fillOpacity: 0.15
+  }).addTo(map);
+  rmRenderOutlineStats(outline);
+  document.getElementById("rm-outline-panel").scrollIntoView({ behavior: "smooth", block: "nearest" });
+  toast("Roof outline generated ✓");
+}
+
+/* ---- save to building (existing or new) ---- */
+var rmBpCache = null;
+function openRmSaveModal(){
+  if (!rmState.outline){ toast("Generate a roof outline first."); return; }
+  document.getElementById("rm-save-modal").style.display = "";
+  document.getElementById("rm-bp-search").value = "";
+  var list = document.getElementById("rm-bp-list");
+  list.className = "hint";
+  list.textContent = "Loading buildings…";
+  if (!fdb){
+    list.textContent = "Linking to a building needs cloud sync (internet connection). You can still Save on This Device Only.";
+    return;
+  }
+  fdb.collection("buildings").orderBy("updatedAt", "desc").limit(200).get().then(function(qs){
+    rmBpCache = [];
+    qs.forEach(function(d){ rmBpCache.push(Object.assign({ id: d.id }, d.data())); });
+    rmBpRender(rmBpCache);
+  }).catch(function(e){
+    list.className = "hint";
+    list.textContent = "Couldn't load buildings: " + e.message;
+  });
+}
+function closeRmSaveModal(){
+  document.getElementById("rm-save-modal").style.display = "none";
+}
+function rmBpFilter(){
+  if (!rmBpCache) return;
+  var q = document.getElementById("rm-bp-search").value.trim().toLowerCase();
+  if (!q){ rmBpRender(rmBpCache); return; }
+  rmBpRender(rmBpCache.filter(function(b){
+    return (b.name || "").toLowerCase().indexOf(q) > -1 ||
+      (b.customerName || "").toLowerCase().indexOf(q) > -1 ||
+      (b.location || "").toLowerCase().indexOf(q) > -1;
+  }));
+}
+function rmBpRender(list){
+  var host = document.getElementById("rm-bp-list");
+  if (!list.length){ host.className = "hint"; host.textContent = "No buildings found."; return; }
+  host.className = "";
+  host.innerHTML = list.map(function(b){
+    return '<div class="bld-item" onclick="rmSaveOutlineToBuilding(\'' + b.id + '\')"><div class="info">' +
+      '<div class="name">' + esc(b.name) + '</div>' +
+      '<div class="meta">' + esc(b.customerName || "") + (b.location ? ' · ' + esc(b.location) : "") + '</div></div>' +
+      '<button class="btn">Save Here</button></div>';
+  }).join("");
+}
+async function rmSaveOutlineToBuilding(buildingId){
+  if (!rmState.outline){ toast("Generate a roof outline first."); return; }
+  toast("Saving…");
+  try{
+    var ref = fdb.collection("buildings").doc(buildingId);
+    var snap = await ref.get();
+    var outlines = (snap.exists && snap.data().roof_outlines) || [];
+    var entry = Object.assign({}, rmState.outline, { id: genId("rmo") });
+    outlines.push(entry);
+    await ref.set({ roof_outlines: outlines, updatedAt: Date.now() }, { merge: true });
+    toast("Roof outline saved to building ✓");
+    closeRmSaveModal();
+  }catch(e){ toast("Couldn't save: " + e.message); }
+}
+async function rmCreateBuildingAndSave(){
+  if (!rmState.outline){ toast("Generate a roof outline first."); return; }
+  var jobName = val("rm-new-jobname").trim();
+  if (!jobName){ toast("Enter a building/job name."); return; }
+  var billTo = val("rm-new-billto").trim();
+  var tags = rmState.outline.tags || {};
+  var addr = [tags["addr:housenumber"], tags["addr:street"]].filter(Boolean).join(" ");
+  toast("Creating building…");
+  try{
+    var ids = await ensureCustomerAndBuilding({ jobName: jobName, billTo: billTo, location: addr });
+    if (!ids.buildingId) throw new Error("couldn't create building (need internet connection)");
+    await rmSaveOutlineToBuilding(ids.buildingId);
+  }catch(e){ toast("Couldn't create building: " + e.message); }
+}
+
+/* ---- save locally (localStorage fallback — offline or not linked yet) ---- */
+function rmLoadLocalOutlines(){
+  try{ return JSON.parse(localStorage.getItem(RM_LOCAL_KEY) || "[]"); }catch(e){ return []; }
+}
+function rmSaveLocalOutlines(list){
+  try{ localStorage.setItem(RM_LOCAL_KEY, JSON.stringify(list)); }catch(e){ toast("Couldn't save locally: " + e.message); }
+}
+function rmSaveLocally(){
+  if (!rmState.outline){ toast("Generate a roof outline first."); return; }
+  var list = rmLoadLocalOutlines();
+  list.unshift(Object.assign({}, rmState.outline, { id: genId("rmo_local") }));
+  rmSaveLocalOutlines(list.slice(0, 50));
+  toast("Roof outline saved on this device ✓");
+  rmRenderLocalSaves();
+}
+function rmRenderLocalSaves(){
+  var list = rmLoadLocalOutlines();
+  var panel = document.getElementById("rm-local-panel");
+  var host = document.getElementById("rm-local-list");
+  if (!list.length){ panel.style.display = "none"; return; }
+  panel.style.display = "";
+  host.innerHTML = list.map(function(o){
+    return '<div class="rm-local-item"><div class="info"><b>' + esc(rmOutlineTitle(o)) + '</b>' +
+      o.areaSqFt.toFixed(0) + ' sq ft · ' + new Date(o.createdAt).toLocaleDateString() + '</div>' +
+      '<button class="btn" onclick="rmLoadLocalOutline(\'' + o.id + '\')">Load</button>' +
+      '<button class="btn danger" onclick="rmDeleteLocalOutline(\'' + o.id + '\')">Delete</button></div>';
+  }).join("");
+}
+function rmLoadLocalOutline(id){
+  var o = rmLoadLocalOutlines().find(function(x){ return x.id === id; });
+  if (!o) return;
+  rmState.outline = o;
+  var map = rmEnsureMap();
+  if (rmState.outlineLayer) map.removeLayer(rmState.outlineLayer);
+  rmState.outlineLayer = L.polygon(o.ring.map(function(p){ return [p.lat, p.lng]; }), {
+    color: "#E8600A", weight: 3, fillColor: "#E8600A", fillOpacity: 0.15
+  }).addTo(map);
+  map.fitBounds(rmState.outlineLayer.getBounds(), { padding: [30, 30] });
+  setTimeout(function(){ map.invalidateSize(); }, 60);
+  rmRenderOutlineStats(o);
+  toast("Loaded saved outline — ready to save to a building or export.");
+}
+function rmDeleteLocalOutline(id){
+  rmSaveLocalOutlines(rmLoadLocalOutlines().filter(function(x){ return x.id !== id; }));
+  rmRenderLocalSaves();
 }
 
 /* ================= init ================= */

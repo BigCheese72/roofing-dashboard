@@ -142,6 +142,30 @@ one report; a roof asset is permanent, independent of any work order, and is exp
 to be added/moved/removed as the roof itself changes — the difference between "where a
 leak was" and "where the roof drain has always been."
 
+**`roof_outlines[]` item shape** (implemented, not just proposed — see "RoofMapper" in
+`DEV_NOTES.md`):
+
+```js
+{
+  id,           // genId("rmo")
+  ring,         // [{lat,lng}, ...] closed polygon (first point repeated last)
+  center,       // {lat,lng} centroid
+  areaSqFt,
+  perimeterFt,
+  source,       // "osm" (Phase 1 — always OpenStreetMap/Overpass)
+  osmId,        // e.g. "way/12345"
+  osmType,      // "way" | "relation"
+  tags,         // raw OSM tags at capture time (name, building, addr:*, ...)
+  createdAt
+}
+```
+
+A building can have more than one — re-surveyed later, multiple roof sections, a
+correction — the array is append-only; the newest entry is the current one. Always
+real lat/lng (from Overpass), same as a finding pin or roof asset in satellite mode;
+not rendered on a building's custom `roof_plan`/`sketch` base map for the same
+coordinate-system reason pins/assets aren't (see `DEV_NOTES.md`).
+
 Notes:
 
 - Current app derives buildings from Job Name and Bill To.
