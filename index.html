@@ -1901,6 +1901,100 @@ async function clearRoofBaseMap(buildingId){
     toast("Failed: " + e.message);
   }
 }
+/* ================= timeline filters =================
+   Client-side only: the events for a building are already fetched in full
+   by openBuildingHistory() (single query, limit 50), so filtering is just
+   an in-memory re-render of the same array — no new Firestore reads, no
+   new indexes, no data model change. Filter dropdown options are derived
+   from whatever values actually appear on this building's own events,
+   rather than a hardcoded list, so a filter never offers a choice that
+   would return zero results. */
+var historyEvents = [];
+var historyBuildingId = null;
+function tlDistinctSorted(field){
+  var set = {};
+  historyEvents.forEach(function(e){ var v = (e[field] || "").trim(); if (v) set[v] = true; });
+  return Object.keys(set).sort();
+}
+function populateTimelineFilterOptions(){
+  [["tl-roof","roofType"], ["tl-tech","technician"], ["tl-warranty","warrantyStatus"], ["tl-reporttype","reportType"]]
+    .forEach(function(spec){
+      var sel = document.getElementById(spec[0]);
+      if (!sel) return;
+      var current = sel.value;
+      sel.innerHTML = '<option value="">All</option>' + tlDistinctSorted(spec[1]).map(function(v){
+        return '<option value="' + esc(v) + '">' + esc(v) + '</option>';
+      }).join("");
+      sel.value = Array.prototype.some.call(sel.options, function(o){ return o.value === current; }) ? current : "";
+    });
+}
+function clearTimelineFilters(){
+  ["tl-from","tl-to","tl-roof","tl-tech","tl-warranty","tl-reporttype"].forEach(function(id){
+    var el = document.getElementById(id);
+    if (el) el.value = "";
+  });
+  renderTimelineList();
+}
+function filterTimelineEvents(){
+  var from = val("tl-from"), to = val("tl-to");
+  var roof = val("tl-roof"), tech = val("tl-tech"), warranty = val("tl-warranty"), rtype = val("tl-reporttype");
+  var fromTs = from ? new Date(from + "T00:00:00").getTime() : null;
+  var toTs = to ? new Date(to + "T23:59:59").getTime() : null;
+  return historyEvents.filter(function(e){
+    if (fromTs !== null && (e.createdAt || 0) < fromTs) return false;
+    if (toTs !== null && (e.createdAt || 0) > toTs) return false;
+    if (roof && e.roofType !== roof) return false;
+    if (tech && e.technician !== tech) return false;
+    if (warranty && e.warrantyStatus !== warranty) return false;
+    if (rtype && e.reportType !== rtype) return false;
+    return true;
+  });
+}
+function timelineFiltersHtml(){
+  return '<p class="hint" style="margin:-4px 0 10px">Date filters by when the report was logged, not the typed “Date of Service.”</p>' +
+    '<div class="grid" style="margin-bottom:6px">' +
+    '<div class="fld"><label>From</label><input type="date" id="tl-from" onchange="renderTimelineList()"></div>' +
+    '<div class="fld"><label>To</label><input type="date" id="tl-to" onchange="renderTimelineList()"></div>' +
+    '<div class="fld"><label>Roof Area</label><select id="tl-roof" onchange="renderTimelineList()"><option value="">All</option></select></div>' +
+    '<div class="fld"><label>Technician</label><select id="tl-tech" onchange="renderTimelineList()"><option value="">All</option></select></div>' +
+    '<div class="fld"><label>Warranty Status</label><select id="tl-warranty" onchange="renderTimelineList()"><option value="">All</option></select></div>' +
+    '<div class="fld"><label>Report Type</label><select id="tl-reporttype" onchange="renderTimelineList()"><option value="">All</option></select></div>' +
+    '</div>' +
+    '<div class="btnrow" style="margin:0 0 10px;align-items:center">' +
+    '<button class="btn" onclick="clearTimelineFilters()">Clear Filters</button>' +
+    '<span class="hint" id="tl-count" style="margin:0"></span></div>';
+}
+function timelineEventHtml(e, buildingId){
+  return '<div class="evt-item"' + (e._dup ? ' style="border-left-color:#D64545"' : '') + '><div class="evt-head">' +
+    '<span class="evt-date">' + esc(e.date || fmtTs(e.createdAt)) + '</span>' +
+    '<span class="evt-tag">' + esc(e.reportType || "") + '</span>' +
+    '<span class="evt-tag">' + esc(e.warrantyStatus || "") + '</span>' +
+    (e.emailSent ? '<span class="evt-tag">Emailed ✓</span>' : '') +
+    (e._dup ? '<span class="evt-tag" style="background:#FBE2E2;color:#D64545">Possible duplicate</span>' : '') +
+    (isAdmin ? '<span class="sp"></span><button class="btn danger" onclick="deleteHistoryEventAdmin(\'' + e._id + '\', \'' + buildingId + '\')">Delete (admin)</button>' : '') +
+    '</div>' +
+    (e.workOrderNo ? '<div class="evt-row">Job No. ' + esc(e.workOrderNo) + '</div>' : '') +
+    (e.technician ? '<div class="evt-row">Technician: ' + esc(e.technician) + '</div>' : '') +
+    (e.roofType ? '<div class="evt-row">Roof: ' + esc(e.roofType) + '</div>' : '') +
+    (e.conditionsSummary ? '<div class="evt-row">Findings: ' + esc(e.conditionsSummary) + '</div>' : '') +
+    (e.repairsSummary ? '<div class="evt-row">Repairs: ' + esc(e.repairsSummary) + '</div>' : '') +
+    (e.pdfRef && e.pdfRef.url ? '<div class="evt-row"><a href="' + esc(e.pdfRef.url) + '" target="_blank" rel="noopener">View saved PDF</a></div>' : '') +
+    '</div>';
+}
+function renderTimelineList(){
+  var host = document.getElementById("timeline-list");
+  if (!host) return;
+  var filtered = filterTimelineEvents();
+  var countEl = document.getElementById("tl-count");
+  if (countEl){
+    countEl.textContent = filtered.length === historyEvents.length ?
+      "Showing all " + historyEvents.length :
+      "Showing " + filtered.length + " of " + historyEvents.length;
+  }
+  host.innerHTML = filtered.length ?
+    filtered.map(function(e){ return timelineEventHtml(e, historyBuildingId); }).join("") :
+    '<div class="empty">No timeline entries match these filters.</div>';
+}
 async function openBuildingHistory(buildingId){
   var detail = document.getElementById("history-detail");
   detail.innerHTML = '<p class="hint">Loading timeline\u2026</p>';
@@ -1923,6 +2017,8 @@ async function openBuildingHistory(buildingId){
     var events = [];
     qs.forEach(function(d){ events.push(Object.assign({ _id: d.id }, d.data())); });
     if (!events.length){
+      historyEvents = [];
+      historyBuildingId = buildingId;
       detail.innerHTML = baseMapCardHtml + emptyMapCardHtml + '<div class="card"><h2 class="cond">Timeline</h2>' +
         '<div class="empty">No reports logged for this building yet.</div></div>';
       renderBuildingMap([], hasCustomBaseMap ? bld : null, bld.location, orthoOverlay, roofAssets, buildingId);
@@ -1930,6 +2026,8 @@ async function openBuildingHistory(buildingId){
     }
     flagDuplicateEvents(events);
     var dupCount = events.filter(function(e){ return e._dup; }).length;
+    historyEvents = events;
+    historyBuildingId = buildingId;
     var allPins = [];
     events.forEach(function(e){ (e.pins || []).forEach(function(p){ allPins.push(Object.assign({ eventDate: e.date }, p)); }); });
     /* A building shows ONE map — either satellite (lat/lng pins) or its
@@ -1954,23 +2052,10 @@ async function openBuildingHistory(buildingId){
       '<div class="card"><h2 class="cond">Timeline (' + events.length + ')</h2>' +
       (dupCount ? '<p class="hint">\u26a0 ' + dupCount + ' possible duplicate' + (dupCount === 1 ? "" : "s") +
         ' flagged below (same work order + report type within 5 minutes of another entry).</p>' : '') +
-      events.map(function(e){
-        return '<div class="evt-item"' + (e._dup ? ' style="border-left-color:#D64545"' : '') + '><div class="evt-head">' +
-          '<span class="evt-date">' + esc(e.date || fmtTs(e.createdAt)) + '</span>' +
-          '<span class="evt-tag">' + esc(e.reportType || "") + '</span>' +
-          '<span class="evt-tag">' + esc(e.warrantyStatus || "") + '</span>' +
-          (e.emailSent ? '<span class="evt-tag">Emailed \u2713</span>' : '') +
-          (e._dup ? '<span class="evt-tag" style="background:#FBE2E2;color:#D64545">Possible duplicate</span>' : '') +
-          (isAdmin ? '<span class="sp"></span><button class="btn danger" onclick="deleteHistoryEventAdmin(\'' + e._id + '\', \'' + buildingId + '\')">Delete (admin)</button>' : '') +
-          '</div>' +
-          (e.workOrderNo ? '<div class="evt-row">Job No. ' + esc(e.workOrderNo) + '</div>' : '') +
-          (e.technician ? '<div class="evt-row">Technician: ' + esc(e.technician) + '</div>' : '') +
-          (e.roofType ? '<div class="evt-row">Roof: ' + esc(e.roofType) + '</div>' : '') +
-          (e.conditionsSummary ? '<div class="evt-row">Findings: ' + esc(e.conditionsSummary) + '</div>' : '') +
-          (e.repairsSummary ? '<div class="evt-row">Repairs: ' + esc(e.repairsSummary) + '</div>' : '') +
-          (e.pdfRef && e.pdfRef.url ? '<div class="evt-row"><a href="' + esc(e.pdfRef.url) + '" target="_blank" rel="noopener">View saved PDF</a></div>' : '') +
-          '</div>';
-      }).join("") + '</div>';
+      timelineFiltersHtml() +
+      '<div id="timeline-list"></div></div>';
+    populateTimelineFilterOptions();
+    renderTimelineList();
     renderBuildingMap(mapPins, hasCustomBaseMap ? bld : null, bld.location, orthoOverlay, roofAssets, buildingId);
   }catch(e){
     detail.innerHTML = '<div class="card"><div class="empty">Couldn\u2019t load timeline: ' + esc(e.message) + '</div></div>';

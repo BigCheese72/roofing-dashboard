@@ -311,6 +311,35 @@ doc shapes, or the doc-id derivation at all.
   `buildings` query, gated the same as everything else in the app (no admin PIN needed,
   matches `firestore.rules`' existing open `read` on `buildings`).
 
+### Timeline filters (shipped)
+
+Phase 3 roadmap item. Filters the Building History timeline by date range, roof area
+(`roofType`), technician, warranty status, and report type — **entirely client-side**,
+no new Firestore query, no new index, no data model change. `openBuildingHistory()`
+already fetches every event for a building in one query (`limit(50)`); filtering is
+just re-rendering that same in-memory array.
+
+- **`historyEvents`/`historyBuildingId`**: module-level state set by
+  `openBuildingHistory()`, read by the filter functions so they don't need the
+  building id threaded through every call.
+- **`populateTimelineFilterOptions()`** builds each dropdown (Roof Area, Technician,
+  Warranty Status, Report Type) from the *distinct values actually present* on this
+  building's own events (`tlDistinctSorted()`), not a hardcoded list — a filter option
+  never returns zero results, and a building that's only ever seen one technician
+  doesn't show a dropdown full of other buildings' names.
+- **`filterTimelineEvents()`** is a plain array `.filter()`, ANDing every active filter
+  together. **Date range filters on `createdAt`** (when the report was generated/logged),
+  *not* the `date` field — `date` is free text as typed into "Date of Service" (see the
+  `building_history_events` shape above) and isn't reliably parseable, so it can't
+  safely back a date-range comparison. This is called out directly in the UI (a hint
+  line above the filter row) since the two dates are usually close but not guaranteed
+  identical.
+- **`renderTimelineList()`** re-renders `#timeline-list` only — the Roof Map and its
+  pins/assets are untouched by timeline filters (the roadmap wording is specifically
+  about filtering the timeline, not what's on the map).
+- Wired via plain `onchange` handlers (no debounce needed — filtering an in-memory
+  array of at most 50 events is effectively instant).
+
 ### ⚠️ Firestore security rules
 
 New collections (`customers`, `buildings`, `reports`, `building_history_events`,

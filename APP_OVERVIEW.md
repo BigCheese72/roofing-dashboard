@@ -89,6 +89,18 @@ Building History tab, in admin mode.
   the exact GPS coordinates of its corners, which get pasted into the upload form
   alongside the image.
 
+## Timeline Filters
+
+The Timeline on a building's Building History page can be filtered by **date range,
+roof area, technician, warranty status, and report type**. The dropdown filters only
+ever list values that actually appear on that building's own timeline — so you won't
+see a technician's name in the filter unless they've actually logged a report for this
+building. Filters narrow instantly (no waiting on the network) and can be combined —
+e.g. one technician's non-warrantable reports from last month. **"Clear Filters"**
+resets back to the full timeline. Note the date range filters by when the report was
+generated, not the "Date of Service" typed into the work order — those are usually the
+same day but aren't guaranteed to be.
+
 ## How CompanyCam Works
 
 CompanyCam is used as the source for project photos and as the preferred place to save generated report PDFs.

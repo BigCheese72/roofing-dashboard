@@ -36,7 +36,11 @@ Goal: make every work order contribute to a durable customer/building record.
 Goal: turn each building into a long-term roof record.
 
 - Build a richer building history timeline from work orders, reports, photos, warranty decisions, and CompanyCam metadata.
-- Add filters by date, roof area, technician, warranty status, leak type, repair type, and report type.
+- ✅ **Shipped**: timeline filters — date range, roof area, technician, warranty
+  status, and report type, all client-side over the already-fetched timeline (no new
+  query/index/schema). See "Timeline filters" in `DEV_NOTES.md`. Leak type / repair
+  type filters not yet built — those aren't currently their own fields on a
+  `building_history_events` doc (only free-text `conditionsSummary`/`repairsSummary`).
 - Add durable references to report PDFs and photo source records.
 - ✅ **Shipped**: roof maps and leak pins. Every finding can be pinned (satellite by
   default via free Esri tiles + Nominatim geocoding, photo-GPS as a corrected initial
