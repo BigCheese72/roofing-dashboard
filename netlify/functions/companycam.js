@@ -121,7 +121,10 @@ exports.handler = async function (event) {
       const page = Math.max(1, parseInt(p.page || "1", 10) || 1);
       const url = "https://api.companycam.com/v2/projects/" + id + "/photos?per_page=30&page=" + page;
       const r = await fetch(url, { headers: H });
-      if (!r.ok) return resp(502, { error: "CompanyCam said: " + r.status });
+      if (!r.ok) {
+        const t = (await r.text()).slice(0, 200);
+        return resp(502, { error: "CompanyCam said: " + r.status + " " + t });
+      }
       const arr = await r.json();
       const photos = (Array.isArray(arr) ? arr : []).map(ph => {
         const uris = Array.isArray(ph.uris) ? ph.uris : [];
