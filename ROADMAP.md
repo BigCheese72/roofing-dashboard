@@ -21,11 +21,15 @@ Goal: preserve and harden the existing RoofOps Field / Watkins work order workfl
 Goal: make every work order contribute to a durable customer/building record.
 
 - Formalize `customers` and `buildings` as first-class Firestore collections.
-- Keep the current derive-from-form behavior until a customer/building picker is ready.
+- ✅ **Shipped**: an explicit "🔍 Select Existing Building" picker in the Edit tab —
+  search/pick an existing building and its Job Name/Bill To/Location/Roof System fill
+  in from the stored record instead of being re-typed. Additive alongside the existing
+  derive-from-form behavior (same Firestore shape, same doc-id derivation), aimed at
+  cutting down typo-created duplicate buildings/customers. See `DEV_NOTES.md`.
 - Normalize building identifiers, customer relationships, addresses, roof system data, and CompanyCam project links.
 - Expand report/history logging without interrupting field users.
 - Prepare Firestore indexes for building history views and dashboard queries.
-- Decide how to handle duplicate building names, renamed customers, and multi-building sites.
+- Decide how to handle duplicate building names, renamed customers, and multi-building sites (the picker reduces new dupes going forward; existing ones aren't merged).
 
 ## Phase 3: Roof History Timeline
 

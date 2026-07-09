@@ -164,6 +164,10 @@
 
     <div class="card">
       <h2 class="cond">Job Information</h2>
+      <div class="btnrow" style="margin:0 0 12px">
+        <button class="btn" onclick="openBuildingPicker()">🔍 Select Existing Building</button>
+        <span class="hint" style="margin:0">Picks an existing customer/building's info into the fields below — or just type a new one in directly.</span>
+      </div>
       <div class="grid">
         <div class="fld"><label>Job Name</label><input type="text" id="jobName"></div>
         <div class="fld"><label>Location</label><input type="text" id="location"></div>
@@ -358,6 +362,20 @@
   </div>
 </div>
 
+<div id="bp-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:40" onclick="if(event.target===this)closeBuildingPicker()">
+  <div style="background:#fff;max-width:640px;margin:4vh auto;border-radius:8px;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;width:94%">
+    <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
+      <b class="cond" style="font-size:17px">Select Existing Building</b>
+      <span style="flex:1"></span>
+      <button class="btn" onclick="closeBuildingPicker()">Close</button>
+    </div>
+    <div style="padding:14px 16px;overflow:auto">
+      <input type="text" id="bp-search" placeholder="Search by building, customer, or address…" style="width:100%;margin-bottom:10px;box-sizing:border-box" oninput="bpFilter()">
+      <div id="bp-list" class="hint">Loading…</div>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -502,6 +520,77 @@ async function ensureCustomerAndBuilding(o){
   }catch(e){ console.warn("customer/building sync failed", e); }
   return { customerId: custId, buildingId: bldId };
 }
+
+/* ================= building picker (explicit selection) =================
+   Phase 2 roadmap item: "explicit customer/building picker UI in the Edit
+   tab, replacing the current implicit derive-from-text-fields approach,
+   while keeping the same Firestore shape." Deliberately a thin UX layer,
+   not a schema change: picking a building just fills the same
+   jobName/billTo/location/roofSystem inputs ensureCustomerAndBuilding()
+   already reads, with the exact text already on that building doc — so
+   its slugified id derivation lands on the same customer/building record
+   it already would have from typing the same thing by hand. This doesn't
+   replace the text fields (typing a brand-new job/customer still works
+   exactly as before); it only cuts down on typo-created duplicate
+   buildings/customers by letting a tech pick an existing one by name. */
+var bpCache = null;
+async function openBuildingPicker(){
+  document.getElementById("bp-modal").style.display = "";
+  document.getElementById("bp-search").value = "";
+  var list = document.getElementById("bp-list");
+  list.className = "hint";
+  list.textContent = "Loading buildings…";
+  if (!fdb){
+    list.textContent = "Building picker needs cloud sync (internet connection) to load.";
+    return;
+  }
+  try{
+    var qs = await fdb.collection("buildings").orderBy("updatedAt", "desc").limit(200).get();
+    bpCache = [];
+    qs.forEach(function(d){ bpCache.push(Object.assign({ id: d.id }, d.data())); });
+    bpRender(bpCache);
+  }catch(e){
+    list.className = "hint";
+    list.textContent = "Couldn't load buildings: " + e.message;
+  }
+}
+function closeBuildingPicker(){
+  document.getElementById("bp-modal").style.display = "none";
+}
+function bpFilter(){
+  if (!bpCache) return;
+  var q = document.getElementById("bp-search").value.trim().toLowerCase();
+  if (!q){ bpRender(bpCache); return; }
+  bpRender(bpCache.filter(function(b){
+    return (b.name || "").toLowerCase().indexOf(q) > -1 ||
+      (b.customerName || "").toLowerCase().indexOf(q) > -1 ||
+      (b.location || "").toLowerCase().indexOf(q) > -1;
+  }));
+}
+function bpRender(list){
+  var host = document.getElementById("bp-list");
+  if (!list.length){ host.className = "hint"; host.textContent = "No buildings found."; return; }
+  host.className = "";
+  host.innerHTML = list.map(function(b){
+    return '<div class="bld-item" onclick="bpSelectBuilding(\'' + b.id + '\')"><div class="info">' +
+      '<div class="name">' + esc(b.name) + '</div>' +
+      '<div class="meta">' + esc(b.customerName || "") + (b.location ? ' · ' + esc(b.location) : "") +
+      (b.roofSystem ? ' · ' + esc(b.roofSystem) : "") +
+      (b.companyCamProjectId ? ' · 🔗 CompanyCam linked' : "") + '</div></div>' +
+      '<button class="btn">Select</button></div>';
+  }).join("");
+}
+function bpSelectBuilding(buildingId){
+  var b = (bpCache || []).find(function(x){ return x.id === buildingId; });
+  if (!b) return;
+  setVal("jobName", b.name || "");
+  setVal("billTo", b.customerName || "");
+  setVal("location", b.location || "");
+  setVal("roofSystem", b.roofSystem || "");
+  closeBuildingPicker();
+  toast("Loaded “" + b.name + "” — review the fields below before saving");
+}
+
 function computeWarrantyStatus(o){
   var w = (o.warrantable || "").trim(), n = (o.nonWarrantable || "").trim();
   if (w && n) return "Mixed";

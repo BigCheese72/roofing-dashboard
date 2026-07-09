@@ -9,7 +9,12 @@ The app is currently built for the Watkins Roofing workflow, but the long-term d
 ## Main Workflow
 
 1. Open the app.
-2. Fill out the work order details:
+2. Optionally tap **"🔍 Select Existing Building"** at the top of Job Information to
+   pick a building/customer that's already been worked on before — its Job Name, Bill
+   To, Location, and Roof System fill in automatically instead of being re-typed
+   (helps avoid accidentally creating a duplicate building record from a slightly
+   different spelling). Skip this and just type if it's a brand-new job/customer.
+3. Fill out the work order details:
    - job name
    - location
    - date of service
@@ -22,13 +27,13 @@ The app is currently built for the Watkins Roofing workflow, but the long-term d
    - repairs
    - warranty determination
    - summary
-3. Add photos from the device or import them from CompanyCam. Optionally link each
+4. Add photos from the device or import them from CompanyCam. Optionally link each
    photo to the specific finding it documents.
-4. Optionally place a pin on the roof map for any finding — see "How the Roof Map
+5. Optionally place a pin on the roof map for any finding — see "How the Roof Map
    Works" below.
-5. Preview the report.
-6. Send, share, or download the PDF.
-7. The app saves the work order and logs report/history information, including any
+6. Preview the report.
+7. Send, share, or download the PDF.
+8. The app saves the work order and logs report/history information, including any
    pins placed, onto that building's permanent record.
 
 ## How the Roof Map Works

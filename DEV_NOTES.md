@@ -282,6 +282,35 @@ blueprint of the building" — the roof's own inventory, not its repair history.
   already findings with pins, tracked per-report on purpose. Adding them here would
   create two competing representations of the same kind of location.
 
+### Building picker (explicit selection, shipped)
+
+The Phase 2 roadmap item "explicit customer/building picker UI in the Edit tab" is a
+thin UX layer on top of `ensureCustomerAndBuilding()`, not a schema or behavior change —
+it deliberately doesn't touch `ensureCustomerAndBuilding()`, the `customers`/`buildings`
+doc shapes, or the doc-id derivation at all.
+
+- **`openBuildingPicker()`**: a modal (`#bp-modal`) listing every building
+  (`fdb.collection("buildings").orderBy("updatedAt","desc").limit(200)`, same cap style
+  as `renderHistoryList()`), filtered client-side as you type (`bpFilter()`, matches
+  building name / customer name / location — no server round-trip, the whole list is
+  already in memory as `bpCache`).
+- **`bpSelectBuilding(buildingId)`** fills `jobName`/`billTo`/`location`/`roofSystem`
+  with the exact text already stored on that building doc. Because
+  `ensureCustomerAndBuilding()` derives `customers`/`buildings` doc ids by slugifying
+  those same two fields (`billTo`, `jobName`), filling them with a building's *own*
+  stored values reproduces that exact same doc id on save — the picker doesn't need its
+  own notion of "the selected building," it just makes sure the text fields say what
+  they already said last time, instead of relying on a tech re-typing them from memory.
+  This is also why it's safe to leave `ensureCustomerAndBuilding()` itself untouched.
+- **Additive, not a replacement**: the Job Name / Bill To / Location / Roof System
+  inputs stay exactly as they were — typing a brand-new job/customer still works
+  unchanged. The picker only exists to reduce typo-created duplicate
+  buildings/customers (e.g. "Frontier Middle" vs. "Frontier Middle School" would
+  otherwise silently become two different building docs).
+- **No new Firestore reads/writes beyond what already existed** — it's a read-only
+  `buildings` query, gated the same as everything else in the app (no admin PIN needed,
+  matches `firestore.rules`' existing open `read` on `buildings`).
+
 ### ⚠️ Firestore security rules
 
 New collections (`customers`, `buildings`, `reports`, `building_history_events`,
@@ -457,8 +486,9 @@ functions" pattern already used for CompanyCam/Resend, at no additional cost.
   georeferenced drone orthomosaics (`tools/geotiff_to_webmap.py`). Still missing:
   manual anchoring for non-georeferenced maps (excluded by spec), roof-section
   labels/filters.
-- **Explicit customer/building picker UI** in the Edit tab, replacing the current
-  implicit derive-from-text-fields approach, while keeping the same Firestore shape.
+- ✅ **Explicit customer/building picker UI**: shipped — see "Building picker" above.
+  Additive alongside the existing derive-from-text-fields approach (same Firestore
+  shape, same doc-id derivation) rather than replacing the text fields outright.
 - **CompanyCam activity/webhooks**, if CompanyCam's API adds them, to enrich building
   history beyond photos/documents.
 - **RoofOps Admin / Customer Portal**: separate modules, out of scope for this repo
