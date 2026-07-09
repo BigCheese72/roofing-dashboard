@@ -779,7 +779,7 @@ per the standing testing discipline.
 | `COMPANYCAM_USER_EMAIL` | `companycam.js` (document upload attribution) | optional |
 | `RESEND_API_KEY` | `send-workorder.js` | yes |
 | `FROM_EMAIL` | `send-workorder.js` | optional (has a default). Also the source of the sending *domain* for per-job From addresses — see below. |
-| `REPLY_TO_EMAIL` | `send-workorder.js` | optional, defaults to `marks@<domain>` (Mark's real monitored mailbox, per his decision). See "Per-job From address" below. |
+| `REPLY_TO_EMAIL` | `send-workorder.js` | optional, comma-separated. Defaults to `marks@<domain>` + `charlottew@<domain>` (Mark's and Charlotte's real monitored mailboxes, per his decision). See "Per-job From address" below. |
 | `ADMIN_PIN` | `admin.js` | yes, for admin mode to work | The real PIN check — not present anywhere in `index.html` anymore. |
 | `FIREBASE_SERVICE_ACCOUNT` | `admin.js` | yes, for admin mode to work | Entire JSON contents of a Firebase service account key. Full project access — treat as a secret, never commit it. |
 
@@ -819,16 +819,19 @@ empirically, not just by protocol theory: a live test send using `jobNo: "99999"
 
 **Deliverability nuance handled**: `WO1234@watkinsroofing.net` is not a real mailbox.
 The root domain's MX is Microsoft 365, so a customer hitting Reply would otherwise
-land on a nonexistent mailbox there and bounce. Added a `reply_to` header (Resend
-supports this natively), defaulting to **`marks@<domain>`** — Mark's real monitored
-mailbox, confirmed by him directly (2026-07-09) as where replies should land, no env
-var required for that to take effect. `REPLY_TO_EMAIL` still exists as an override if
-that ever needs to change (e.g. to a shared office inbox instead).
+land on a nonexistent mailbox there and bounce. Added a `reply_to` header — Resend's
+`reply_to` accepts an array, same as `to` — defaulting to **both**
+`marks@<domain>` and `charlottew@<domain>`, Mark's and Charlotte's real monitored
+mailboxes, confirmed by him directly (2026-07-09) as where replies should land, no
+env var required for that to take effect. `REPLY_TO_EMAIL` still exists as an
+override (parsed as a comma-separated list, so it can also carry multiple addresses)
+if that ever needs to change.
 
-**Verification**: sent one real test email (`jobNo: "99999"`, then again with
-`jobNo: "88888"` after the Reply-To default changed, both to `marks@watkinsroofing.net`
-only) against the deployed `dev` function — `200 {"ok":true}` both times, confirming
-Resend accepted the per-job From address and the `marks@` Reply-To without error.
+**Verification**: three live test sends against the deployed `dev` function, all to
+`marks@watkinsroofing.net` only — `jobNo: "99999"` (initial per-job From), `"88888"`
+(after Reply-To changed to `marks@` alone), `"77777"` (after adding `charlottew@` as a
+second Reply-To) — `200 {"ok":true}` every time, confirming Resend accepted the
+per-job From address and both single- and dual-recipient Reply-To without error.
 Visual confirmation of exactly how From/Reply-To render in an actual inbox is Mark's
 to check.
 
