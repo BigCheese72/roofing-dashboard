@@ -137,6 +137,8 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore-compat.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 </head>
 <body>
 
@@ -300,6 +302,25 @@
       <button class="btn" onclick="closeCC()">Close</button>
     </div>
     <div style="padding:14px 16px;overflow:auto" id="cc-body"></div>
+  </div>
+</div>
+
+<div id="pin-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:40" onclick="if(event.target===this)closePinModal()">
+  <div style="background:#fff;max-width:760px;margin:3vh auto;border-radius:8px;max-height:94vh;display:flex;flex-direction:column;overflow:hidden;width:96%">
+    <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
+      <b class="cond" style="font-size:17px">Place Pin on Roof Map</b>
+      <span style="flex:1"></span>
+      <button class="btn" onclick="closePinModal()">Close</button>
+    </div>
+    <div id="pin-map" style="height:min(55vh,480px);width:100%;background:#ECEFF1"></div>
+    <div style="padding:12px 16px">
+      <p class="hint" id="pin-hint" style="margin:0 0 10px"></p>
+      <div class="btnrow" style="margin:0">
+        <button class="btn primary" onclick="savePinFromModal()">Save Pin</button>
+        <button class="btn danger" id="pin-clear-btn" onclick="clearPinFromModal()" style="display:none">Clear Pin</button>
+        <button class="btn" onclick="closePinModal()">Cancel</button>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -597,7 +618,11 @@ function renderFindings(){
         ["Warrantable","Warrantable condition noted","Non-warrantable","Undetermined"].map(function(o){
           return '<option' + (f.warranty === o ? " selected" : "") + '>' + o + '</option>';
         }).join("") +
-      '</select></div>';
+      '</select></div>' +
+      '<div class="btnrow" style="margin:-4px 0 12px">' +
+        '<button class="btn" onclick="openPinModal(\'' + f.id + '\')">' +
+          (f.pin ? '📍 Pinned — move' : '📍 Place on Map') +
+        '</button></div>';
     host.appendChild(d);
   });
   host.querySelectorAll("[data-f]").forEach(function(el){
@@ -606,6 +631,110 @@ function renderFindings(){
       if (el.dataset.f === "warranty") renderFindings();
     });
   });
+}
+
+/* ================= roof map pin placement (Phase 2) =================
+   Design (see roof-map spec): lat/lng is authoritative — pins survive a
+   future base-map swap. x/y stay null here; they're only used for
+   non-georeferenced base maps (Phase 4). GPS from a linked CompanyCam
+   photo is an initial guess only, never trusted without a tech confirming
+   by dragging or tapping — see pin.source below. */
+var geocodeCache = {};
+async function geocodeAddress(text){
+  text = (text || "").trim();
+  if (!text) return null;
+  if (Object.prototype.hasOwnProperty.call(geocodeCache, text)) return geocodeCache[text];
+  try{
+    var url = "https://nominatim.openstreetmap.org/search?format=json&limit=1&q=" + encodeURIComponent(text);
+    var r = await fetch(url);
+    if (!r.ok) throw new Error("geocode failed");
+    var arr = await r.json();
+    var result = (arr && arr[0]) ? { lat: parseFloat(arr[0].lat), lng: parseFloat(arr[0].lon) } : null;
+    geocodeCache[text] = result;
+    return result;
+  }catch(e){
+    geocodeCache[text] = null;
+    return null;
+  }
+}
+function findingById(id){
+  return findings.find(function(f){ return f.id === id; });
+}
+var pinMap = null, pinMarker = null, pinModalFindingId = null, pinInitialSource = null, pinInteracted = false;
+async function openPinModal(findingId){
+  var f = findingById(findingId);
+  if (!f) return;
+  pinModalFindingId = findingId;
+  pinInteracted = false;
+  document.getElementById("pin-modal").style.display = "";
+  document.getElementById("pin-clear-btn").style.display = f.pin ? "" : "none";
+  document.getElementById("pin-hint").textContent = "Locating…";
+  if (pinMap){ pinMap.remove(); pinMap = null; pinMarker = null; }
+
+  var center, zoom = 17, hint;
+  if (f.pin && typeof f.pin.lat === "number"){
+    center = { lat: f.pin.lat, lng: f.pin.lng };
+    pinInitialSource = f.pin.source || "tech_placed";
+    zoom = 19;
+    hint = "Existing pin — drag to move, or tap Save to keep it here.";
+  } else {
+    var linkedPhoto = photos.find(function(p){ return p.finding_id === findingId && p.gps; });
+    if (linkedPhoto){
+      center = linkedPhoto.gps;
+      pinInitialSource = "photo_gps";
+      zoom = 19;
+      hint = "Placed from photo GPS — drag to correct if it's not quite right.";
+    } else {
+      pinInitialSource = "tech_placed";
+      var addr = val("location") || val("jobName") || "";
+      var geo = await geocodeAddress(addr);
+      if (geo){
+        center = geo;
+        hint = "Centered on the job address — drag the pin to the exact spot.";
+      } else {
+        center = { lat: 39.8283, lng: -98.5795 }; /* generic US center fallback */
+        zoom = 4;
+        hint = "Couldn't find that address automatically — zoom/pan and drag the pin to the right spot.";
+      }
+    }
+  }
+  document.getElementById("pin-hint").textContent = hint;
+
+  setTimeout(function(){
+    pinMap = L.map("pin-map").setView([center.lat, center.lng], zoom);
+    L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
+      maxZoom: 21, attribution: "Tiles &copy; Esri"
+    }).addTo(pinMap);
+    pinMarker = L.marker([center.lat, center.lng], { draggable: true }).addTo(pinMap);
+    pinMarker.on("dragend", function(){ pinInteracted = true; });
+    pinMap.on("click", function(e){ pinMarker.setLatLng(e.latlng); pinInteracted = true; });
+    pinMap.invalidateSize();
+    setTimeout(function(){ if (pinMap) pinMap.invalidateSize(); }, 300);
+  }, 50);
+}
+function closePinModal(){
+  document.getElementById("pin-modal").style.display = "none";
+  if (pinMap){ pinMap.remove(); pinMap = null; pinMarker = null; }
+  pinModalFindingId = null;
+}
+function savePinFromModal(){
+  if (!pinMarker || !pinModalFindingId) return;
+  var f = findingById(pinModalFindingId);
+  if (!f) return;
+  var ll = pinMarker.getLatLng();
+  var source = pinInitialSource === "photo_gps" ? (pinInteracted ? "gps_corrected" : "photo_gps") : pinInitialSource;
+  f.pin = { lat: ll.lat, lng: ll.lng, x: null, y: null, source: source };
+  renderFindings();
+  closePinModal();
+  toast("Pin saved ✓");
+}
+function clearPinFromModal(){
+  if (!pinModalFindingId) return;
+  var f = findingById(pinModalFindingId);
+  if (f) f.pin = null;
+  renderFindings();
+  closePinModal();
+  toast("Pin cleared");
 }
 
 function addRepair(data){
@@ -1452,6 +1581,20 @@ function summarizeRows(rows, keyA, keyB){
    report) and `building_history_events` (per-building timeline) so a
    future building/roof history view can query either. Never blocks or
    fails the user-facing PDF action \u2014 logging errors are swallowed. */
+/* Denormalizes pins onto the history event so the building history map
+   (Phase 3) can render from one query across all past reports instead of
+   walking every work order. Per pin schema, x/y stay null here — those
+   are only meaningful for non-georeferenced base maps (Phase 4). */
+function buildPinsForHistoryEvent(o){
+  return (o.findings || []).filter(function(f){ return f.pin && typeof f.pin.lat === "number"; }).map(function(f){
+    return {
+      finding_id: f.id, condition: f.condition || "", warranty: f.warranty || "",
+      lat: f.pin.lat, lng: f.pin.lng, x: f.pin.x, y: f.pin.y, source: f.pin.source,
+      work_order_id: o.id, work_order_no: o.jobNo || "", service_date: o.serviceDate || "",
+      photo_ids: (o.photos || []).filter(function(p){ return p.finding_id === f.id && p.ccPhotoId; }).map(function(p){ return p.ccPhotoId; })
+    };
+  });
+}
 async function logReportAndHistoryEvent(o, kind, emailInfo){
   if (!fdb) return;
   try{
@@ -1468,6 +1611,7 @@ async function logReportAndHistoryEvent(o, kind, emailInfo){
       warrantyStatus: computeWarrantyStatus(o),
       companyCamProjectId: o.companyCamProjectId || null,
       companyCamPhotoIds: (o.photos || []).filter(function(p){ return p.ccPhotoId; }).map(function(p){ return p.ccPhotoId; }),
+      pins: buildPinsForHistoryEvent(o),
       pdfRef: pdfRef,
       emailSent: !!(emailInfo && emailInfo.sent),
       emailRecipients: (emailInfo && emailInfo.to) || [],
@@ -1803,6 +1947,7 @@ async function ccImport(){
       var out = await ccApi({ action:"image", url: p.full });
       var compressed = await ccCompress(out.dataUrl);
       compressed.ccPhotoId = p.id;
+      if (p.gps) compressed.gps = p.gps; /* initial guess for pin placement — see placePin() */
       photos.push(compressed);
       ok++;
     }catch(e){ fail++; }

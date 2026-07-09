@@ -129,11 +129,18 @@ exports.handler = async function (event) {
           const u = uris.find(x => x && x.type === t);
           return u ? (u.uri || u.url || "") : "";
         };
+        // CompanyCam returns { lat, lon } (note: "lon", not "lng") when a
+        // photo has GPS data. Used as an initial guess for roof-map pin
+        // placement — never trusted as final without a tech confirming.
+        const coords = ph.coordinates && typeof ph.coordinates.lat === "number" && typeof ph.coordinates.lon === "number"
+          ? { lat: ph.coordinates.lat, lng: ph.coordinates.lon }
+          : null;
         return {
           id: String(ph.id),
           thumb: find("thumbnail") || find("web") || find("original"),
           full: find("web") || find("original") || find("thumbnail"),
-          captured_at: ph.captured_at || null
+          captured_at: ph.captured_at || null,
+          gps: coords
         };
       }).filter(x => x.full);
       return resp(200, { photos });
