@@ -156,6 +156,12 @@ History. The full detail (exact recipients, subject, which report) is also recor
 that building's timeline and in the **Reports** tab, shown as an explicit
 "Emailed to …" line.
 
+Each email now sends from a job-specific address (e.g. `WO1234@watkinsroofing.net`)
+instead of one shared sender, using the work order's Job No. — makes it obvious which
+job an email is about at a glance, even before opening it. If a customer hits Reply,
+it's routed to a real monitored inbox rather than that per-job address (which isn't a
+real mailbox).
+
 ## Admin Mode
 
 Field techs should not be able to unlink a CompanyCam project or delete building

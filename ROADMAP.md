@@ -25,6 +25,18 @@ Goal: preserve and harden the existing RoofOps Field / Watkins work order workfl
   spot), plus an explicit "Emailed to &lt;recipients&gt;" line (not just a checkmark)
   on the Building History timeline and Reports tab. See "Visible email-sent record" in
   `DEV_NOTES.md`.
+- ✅ **Shipped**: work-order emails now send from a per-job `WO<jobnumber>@` address
+  instead of one fixed sender, with a Reply-To safeguard so customer replies don't
+  bounce against a mailbox that doesn't exist. See "Per-job From address" in
+  `DEV_NOTES.md`.
+- ⚠️ **Scoped, not built**: pushing app-added phone photos to the matching CompanyCam
+  project (currently the integration is pull-only — nothing uploads a photo to
+  CompanyCam, only PDFs). Real API requirements researched; open questions (does
+  CompanyCam's photo-upload endpoint need a public URL rather than raw bytes, does the
+  current token have write scope, auto-match-or-require-existing-project-link) need
+  Mark's direction before any of this gets built, since building and testing it writes
+  real data into his live CompanyCam account. See "Push app-added photos to
+  CompanyCam" in `DEV_NOTES.md`.
 - Review Firestore security rules for all collections currently touched by the app.
 - Add lightweight manual QA steps for field workflows: create, save, reload, import CompanyCam photos, generate PDF, send email, and verify history logging.
 - ✅ Shipped: duplicate-report detection on the building timeline (same work order +

@@ -560,6 +560,81 @@ who changed what, deleted items, or comments/annotations. If CompanyCam later ex
 an activity/webhooks API, `syncCompanyCamHistory()` and `companycam.js` are the places
 to extend.
 
+### Push app-added photos to CompanyCam (scoped 2026-07-09, NOT built — pending sign-off)
+
+**Trigger**: a real field report — Mark added phone photos to a work order and expected
+them to appear in the matching CompanyCam project, but they didn't; he had to add them
+to CompanyCam manually.
+
+**Diagnosis, confirmed by reading every line of `companycam.js` and every photo-add
+code path in `index.html`**: the integration is **pull-only**, with exactly one
+exception. `companycam.js` supports `projects` / `project_detail` / `photos` / `image`
+(all reads) and `upload_document` (the one write — PDFs only, to
+`/v2/projects/{id}/documents`). There is **no code path anywhere, client or function,
+that uploads a photo to CompanyCam.** `addPhotosFromFiles()` (the "+ Add Photos"
+camera/file button) purely compresses the image client-side and pushes it into the
+local `photos` array — no CompanyCam awareness at all, regardless of whether the work
+order has a linked project. This isn't a bug in existing code; the capability simply
+was never built.
+
+**API requirements, researched against CompanyCam's live API reference
+(`companycam.readme.io`)**:
+- **Add Photo**: `POST /v2/projects/{project_id}/photos`, body `{ photo: { uri,
+  captured_at, coordinates?, description?, tags? } }`. **Important**: the `uri` field
+  is a *location*, not a base64 attachment — unlike `upload_document`'s `attachment`
+  field (which does take base64 directly), this endpoint's naming and JSON-only content
+  type strongly suggest it expects a **publicly fetchable URL**, not raw image bytes.
+  This could not be fully confirmed from the rendered docs (the interactive schema
+  explorer isn't in the fetched markdown) — would need either a direct look at
+  CompanyCam's raw OpenAPI spec or a live test call to nail down for certain, and a
+  live test call is itself a real write, hence pending sign-off along with everything
+  else here.
+- **If `uri` does require a public URL**: app-added photos are stored as base64 with no
+  public URL anywhere (deliberately — no Firebase Storage, per this repo's own
+  ground rules). Pushing them to CompanyCam would first need *some* public-URL hosting
+  step — which either means reintroducing Storage (explicitly gated behind checking
+  with the user first) or some other public-hosting mechanism. **This could turn "add
+  a photo-upload API call" into "stand up a hosting layer," a materially bigger and
+  riskier change than it first looks.**
+- **Create Project**: `POST /v2/projects`, body `{ name, address?, coordinates?,
+  primary_contact? }` — real capability, would be needed for the "or create one" half
+  of "match/create project by job name."
+- **Auth**: both are Bearer-token endpoints, same scheme as the existing
+  `upload_document` write. Whether the current `COMPANYCAM_TOKEN`/
+  `COMPANYCAM_WRITE_TOKEN` actually carries write scope for photos/projects (not just
+  documents) is **unverified** — CompanyCam tokens are typically account-wide rather
+  than narrowly scoped, so it likely does, but that's an assumption, not a confirmed
+  fact, and checking it means either a live write or looking at the token's scopes in
+  CompanyCam's own dashboard.
+
+**Dedupe strategy — already solved, low-risk**: every CompanyCam-imported photo already
+carries a stable `ccPhotoId` (and, since the recent `cloudSaveOrder()`/`cloudFetchOrder()`
+fix, that id now reliably survives cloud round-trips). The rule is simply: only push
+photos where `ccPhotoId` is falsy. No new field needed.
+
+**The bigger, genuinely product-level risk: auto-matching/creating a CompanyCam project
+by job name.** This app already has its own building/customer duplicate problem from
+free-text matching (see "Duplicate building detection" above) — the identical failure
+mode transplanted into CompanyCam would be worse, since CompanyCam is a shared system
+other people at Watkins Roofing use directly, and a wrongly-created or wrongly-matched
+project is externally visible in a way an internal duplicate building record isn't.
+**Recommended (not decided)**: only push to a project the work order is *already*
+explicitly linked to (the same `ccLinkedProjectId` the "Import from CompanyCam" flow
+already establishes) — never auto-create or fuzzy-match a project. If no project is
+linked, either do nothing or prompt to link one first. This is a materially safer,
+smaller-blast-radius design than "match or create by job name," but it does mean photos
+added *before* a project gets linked wouldn't retroactively push (would need a
+second, explicit action).
+
+**Effort/risk summary**: not a small feature. Needs (1) confirming the actual `uri`
+upload mechanism (possibly a hosting-layer decision), (2) confirming token write scope,
+(3) a product decision on auto-match-vs-require-existing-link for projects, (4) a
+decision on trigger point (push on every photo add, vs. at report-generation time like
+the PDF push already does), (5) real writes to Mark's live CompanyCam account to build
+and test, which cannot happen without his sign-off given the standing no-live-writes
+rule. **Not built. Waiting on Mark's direction on the open questions above before
+starting.**
+
 ### PDF-back-to-CompanyCam (`uploadPdfToCompanyCam()`)
 
 After a successful **Send Email Now**, if the work order has a linked CompanyCam
@@ -703,7 +778,8 @@ per the standing testing discipline.
 | `COMPANYCAM_WRITE_TOKEN` | `companycam.js` — write action only (`upload_document`, PDF-back-to-CompanyCam). Falls back to `COMPANYCAM_TOKEN` if unset. | optional, recommended if your CompanyCam token setup separates read/write scopes |
 | `COMPANYCAM_USER_EMAIL` | `companycam.js` (document upload attribution) | optional |
 | `RESEND_API_KEY` | `send-workorder.js` | yes |
-| `FROM_EMAIL` | `send-workorder.js` | optional (has a default) |
+| `FROM_EMAIL` | `send-workorder.js` | optional (has a default). Also the source of the sending *domain* for per-job From addresses — see below. |
+| `REPLY_TO_EMAIL` | `send-workorder.js` | optional, defaults to `workorders@<domain>`. Should be a real, monitored mailbox — see "Per-job From address" below. |
 | `ADMIN_PIN` | `admin.js` | yes, for admin mode to work | The real PIN check — not present anywhere in `index.html` anymore. |
 | `FIREBASE_SERVICE_ACCOUNT` | `admin.js` | yes, for admin mode to work | Entire JSON contents of a Firebase service account key. Full project access — treat as a secret, never commit it. |
 
@@ -713,16 +789,50 @@ per the standing testing discipline.
 Use this address for all email-sending test attempts — don't send test work order emails
 to real customer/office addresses from the `emailPick` list.
 
-**Known blocker (investigated 2026-07-09, read-only — see git history for the full
-diagnosis)**: `send-workorder.js`'s code path is correct, but `watkinsroofing.net`'s DNS
-does not currently authorize Resend to send as that domain — the SPF record only
-includes Microsoft 365 and ends in a hard fail (`-all`), and no Resend DKIM record was
-found. Until Resend's domain verification is completed (Netlify's `RESEND_API_KEY` env
-var + Resend dashboard + DNS records — all outside this repo), real send attempts are
-expected to fail with "Send failed: Email service rejected it: …" regardless of what the
-app code does. **Do not attempt live send-email testing until DNS/Resend verification is
-confirmed done** — that's a config change on Mark's side, not something to test around
-in code.
+**Resend domain verification: confirmed working (2026-07-09).** Originally blocked —
+`watkinsroofing.net`'s SPF only covered Microsoft 365 and had no Resend DKIM record —
+but Mark had DNS records added for the `send.watkinsroofing.net` sending subdomain
+(MX + SPF) plus a DKIM TXT record on the root domain, confirmed via live DNS lookup
+against two independent resolvers. A real test send to `marks@watkinsroofing.net`
+succeeded end-to-end (HTTP 200, Resend accepted it), and a real field send (to
+`charlottew@watkinsroofing.net`, "Planet fitness" work order) also went through
+correctly. Live send-email testing is fine now — still use the designated test
+recipient above for anything that isn't a real field send.
+
+### Per-job From address (shipped)
+
+`send-workorder.js` now sends from `WO<jobnumber>@<domain>` (e.g.
+`WO1234@watkinsroofing.net`) instead of a fixed `workorders@watkinsroofing.net`, when
+the client passes a job number — falls back to the original `FROM_EMAIL` default
+when there isn't one. `jobNo` is sanitized to alphanumeric-only (real job numbers in
+this system include characters like `#`, e.g. `"WO#10148"`, which aren't valid in an
+email local-part) and capped at 30 chars. The domain itself is extracted from
+`FROM_EMAIL` rather than hardcoded, so it follows whatever's actually configured
+there rather than needing a second place to update if it ever changes.
+
+**Feasibility, confirmed**: SPF/DKIM/DMARC authenticate at the *domain* level, not
+per mailbox — there's no Resend concept of registering individual sending addresses,
+so any address on an already-verified domain authenticates identically. Confirmed
+empirically, not just by protocol theory: a live test send using `jobNo: "99999"`
+(→ `WO99999@watkinsroofing.net`) against the deployed `dev` function returned `200
+{"ok":true}` — Resend accepted it with no rejection.
+
+**Deliverability nuance handled**: `WO1234@watkinsroofing.net` is not a real mailbox.
+The root domain's MX is Microsoft 365, so a customer hitting Reply would otherwise
+land on a nonexistent mailbox there and bounce. Added a `reply_to` header (Resend
+supports this natively) defaulting to `workorders@<domain>` — same address the From
+used to always be, so it's presumably already a reasonably sane inbox, but overridable
+via the new `REPLY_TO_EMAIL` env var if that's not actually the right monitored address.
+**This default hasn't been confirmed against Mark's actual mail setup** — worth him
+confirming `workorders@watkinsroofing.net` is a real, checked mailbox on the M365
+side, or setting `REPLY_TO_EMAIL` to whichever inbox actually is (e.g. the office
+address).
+
+**Verification**: sent one real test email (`jobNo: "99999"`, to
+`marks@watkinsroofing.net` only) against the deployed `dev` function — `200
+{"ok":true}`, confirming Resend accepted the per-job From address and the `reply_to`
+header without error. Visual confirmation of exactly how the From/Reply-To render in
+an actual inbox is Mark's to check.
 
 ## Admin mode
 
