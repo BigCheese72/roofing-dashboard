@@ -1,0 +1,62 @@
+// Firestore Security Rules for the watkins-service-orders project.
+//
+// This is a REFERENCE FILE — nothing in this repo deploys it automatically.
+// Apply it yourself in Firebase Console -> Firestore Database -> Rules
+// (paste and Publish), or via the Firebase CLI (`firebase deploy --only
+// firestore:rules`) if you set that up locally.
+//
+// What this does: keeps the app's normal read/create/update behavior wide
+// open (matching how it already works — there's no user login yet, see
+// DEV_NOTES.md and DATA_MODEL.md's proposed `users`/role model for the
+// real long-term fix), but blocks DELETE on customers, buildings, reports,
+// and building_history_events for every client, no exceptions. The only
+// way to delete those is netlify/functions/admin.js, which uses the
+// Firebase Admin SDK — Admin SDK calls are not subject to these rules at
+// all, so that server function still works even though clients can't
+// delete directly.
+//
+// workorders (+ its photos subcollection) deliberately keeps its existing
+// open behavior, including delete — that's the pre-existing, tech-facing
+// "Delete" button in the Saved tab, unchanged. Locking that down too is a
+// separate decision (it would need a different flow, since techs
+// legitimately delete their own draft work orders today) — not part of
+// this change.
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    match /workorders/{workOrderId} {
+      allow read, write: if true;
+
+      match /photos/{photoId} {
+        allow read, write: if true;
+      }
+    }
+
+    match /customers/{customerId} {
+      allow read, create, update: if true;
+      allow delete: if false;
+    }
+
+    match /buildings/{buildingId} {
+      allow read, create, update: if true;
+      allow delete: if false;
+    }
+
+    match /reports/{reportId} {
+      allow read, create, update: if true;
+      allow delete: if false;
+    }
+
+    match /building_history_events/{eventId} {
+      allow read, create, update: if true;
+      allow delete: if false;
+    }
+
+    match /companycam_projects/{projectId} {
+      allow read, create, update: if true;
+      allow delete: if false;
+    }
+  }
+}

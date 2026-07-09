@@ -184,33 +184,79 @@ project).
 | `COMPANYCAM_USER_EMAIL` | `companycam.js` (document upload attribution) | optional |
 | `RESEND_API_KEY` | `send-workorder.js` | yes |
 | `FROM_EMAIL` | `send-workorder.js` | optional (has a default) |
+| `ADMIN_PIN` | `admin.js` | yes, for admin mode to work | The real PIN check — not present anywhere in `index.html` anymore. |
+| `FIREBASE_SERVICE_ACCOUNT` | `admin.js` | yes, for admin mode to work | Entire JSON contents of a Firebase service account key. Full project access — treat as a secret, never commit it. |
 
-## Admin mode (lightweight, client-side only)
+## Admin mode
 
-Field techs should not casually unlink a CompanyCam project or delete a building's
-history — but a real admin/role system is bigger than this repo warrants right now.
-As a bridge: a small "Admin" toggle in the header (`toggleAdminMode()` in `index.html`)
-prompts for `ADMIN_PIN` (a plain constant near the top of the script, default `"1935"`)
-and, once unlocked for the session (`sessionStorage`), reveals:
-- **Unlink** on the CompanyCam link banner (`unlinkCC()`)
-- **Delete (admin)** per building in the Building History tab (`deleteBuildingAdmin()`)
-  — removes the building doc plus its `reports`/`building_history_events`, but does
-  **not** touch the underlying `workorders`.
-- **Delete (admin)** per timeline entry (`deleteHistoryEventAdmin()`) inside a
-  building's "View Timeline" panel. `reports` and `building_history_events` docs for
-  the same report share one Firestore id (set in `logReportAndHistoryEvent()`), so
-  deleting a timeline entry removes both sides of the pair in one batch.
+Field techs should not be able to unlink a CompanyCam project or delete a building's
+history. This started as a client-side-only PIN check (a UI convenience, not real
+security) — testing found that anyone could bypass it entirely by calling the
+Firestore SDK directly from devtools, since the underlying data had no protection at
+all regardless of what the UI showed. It's now a real, two-layer gate:
+
+1. **Client (UX only)**: the "Admin" toggle in the header (`toggleAdminMode()`)
+   prompts for a PIN and sends it to `netlify/functions/admin.js` for verification
+   (`action: "check_pin"`). On success, `isAdmin` flips true and the PIN is kept in
+   `sessionStorage` (not in this source file) so later admin actions don't re-prompt.
+   This layer only controls which buttons render — it enforces nothing by itself.
+2. **Server (actual enforcement)**: `netlify/functions/admin.js` checks the PIN
+   against the `ADMIN_PIN` environment variable — never shipped to the browser — and
+   only then performs the delete, using the Firebase Admin SDK (which bypasses
+   Firestore security rules entirely, by design). `firestore.rules` (repo root, a
+   reference file you must apply yourself in Firebase Console — nothing here deploys
+   it automatically) blocks `delete` on `customers`/`buildings`/`reports`/
+   `building_history_events`/`companycam_projects` for every client, no exceptions.
+   The only way to delete those documents is through this function.
+
+What's admin-gated:
+- **Unlink** on the CompanyCam link banner (`unlinkCC()`) — this one stays
+  client-only since it just clears in-memory state on the *current, unsaved* work
+  order and never issues its own Firestore write; there's nothing for the server to
+  protect.
+- **Delete (admin)** per building in the Building History tab (`deleteBuildingAdmin()`
+  → `action: "delete_building"`) — removes the building doc plus its
+  `reports`/`building_history_events`, but does **not** touch the underlying
+  `workorders`.
+- **Delete (admin)** per timeline entry (`deleteHistoryEventAdmin()` →
+  `action: "delete_history_event"`) inside a building's "View Timeline" panel.
+  `reports` and `building_history_events` docs for the same report share one
+  Firestore id (set in `logReportAndHistoryEvent()`), so one delete removes both.
 - **Duplicate flagging** (`flagDuplicateEvents()`, `DUP_WINDOW_MS = 5 min`): when a
   building's timeline loads, entries with the same `workOrderId` + `reportType`
   created within 5 minutes of another entry are marked `_dup` and shown with a red
   "Possible duplicate" badge — this is almost always a double-click or a retried
-  Send/Share/Download, not two real reports. It's a visual flag only (nothing is
-  auto-deleted); admin uses the per-entry Delete button to clean them up.
+  Send/Share/Download, not two real reports. It's a visual flag only; admin uses the
+  per-entry Delete button to act on it.
 
-**This is not real security** — the PIN ships in public JS, so it only stops
-accidental clicks, not a determined reader of source. If real access control is ever
-needed (e.g. a RoofOps Admin module with logins), replace this with actual auth
-rather than extending the PIN approach.
+**Known, separate, pre-existing gap left alone on purpose**: the "Delete" button on a
+saved work order in the Saved tab (`deleteOrder()`) is unrelated to any of this — it
+predates the admin mode work, is not PIN-gated, and every field tech can still delete
+their own saved work orders directly, same as before. Locking that down too is a
+real option but a different UX conversation (techs legitimately delete their own
+drafts today), not something folded into this change.
+
+**Manual setup required for the server-side enforcement to actually work** (nothing
+here takes effect until you do this):
+1. In Netlify, set `ADMIN_PIN` to whatever PIN techs should enter (this **replaces**
+   any PIN previously hardcoded in `index.html` — there isn't one anymore).
+2. Generate a Firebase service account key: Firebase Console → Project Settings →
+   Service Accounts → "Generate new private key". This downloads a JSON file with
+   **full admin access to your Firebase project — treat it like a master password,
+   never commit it to the repo.** In Netlify, set `FIREBASE_SERVICE_ACCOUNT` to the
+   *entire contents* of that JSON file (paste it as-is, as one env var value).
+3. In Firebase Console → Firestore Database → Rules, paste the contents of
+   `firestore.rules` (repo root) and Publish. Until you do this step, the delete
+   protection is still just the PIN — the underlying collections remain writable by
+   any client, same as before.
+4. Redeploy (Netlify needs a fresh build to pick up the new `package.json`
+   dependency and env vars).
+
+Longer-term, real fix if this ever needs actual user accounts instead of a shared
+PIN: the `users`/`role` model already sketched in `DATA_MODEL.md`, paired with
+Firebase Auth and rules keyed to `request.auth`. This PIN + server-function approach
+is a deliberately smaller step that fits the existing "keep secrets in Netlify
+functions" pattern already used for CompanyCam/Resend, at no additional cost.
 
 ## Roadmap (not built yet, foundation only)
 

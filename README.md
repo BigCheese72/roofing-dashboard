@@ -25,8 +25,11 @@ Ground rules while working here:
   rather than introducing a framework, build step, or new architecture, unless
   explicitly asked.
 - Field techs should not have access to destructive actions (unlink, delete). Admin
-  mode (PIN-gated, session-scoped — see `DEV_NOTES.md`) is the current pattern for
-  that; don't bypass it or add new destructive actions outside it.
+  mode gates these — PIN verified server-side in `netlify/functions/admin.js`, actual
+  deletes enforced by `firestore.rules` blocking client-side deletes (see
+  `DEV_NOTES.md`) — this is the current pattern for that; don't bypass it, don't add
+  a new client-side-only check, and don't add new destructive Firestore operations
+  without routing them through `admin.js` the same way.
 - Firebase Storage is intentionally not used for PDFs — CompanyCam is the system of
   record. Don't reintroduce Storage without checking with the user first.
 - Test against production Firebase/CompanyCam carefully: use clearly-labeled test
@@ -67,7 +70,7 @@ netlify/
 | PDF download/share | `index.html` | `downloadPdf()` and `sharePdf()` generate, save, share, and log report events. |
 | Email/report sending | `index.html`, `netlify/functions/send-workorder.js` | `sendEmailNow()` generates the PDF, posts it to `send-workorder`, and the Netlify Function sends through Resend. |
 | PDF save-back to CompanyCam | `index.html`, `netlify/functions/companycam.js` | `uploadLinkedPdfToCompanyCam()` uploads the PDF as a CompanyCam project document whenever a project is linked — after Send Email Now, Share, or Download, not just email. |
-| Admin mode | `index.html` | `toggleAdminMode()` gates a PIN prompt (`ADMIN_PIN` constant, session-scoped). Unlocks `unlinkCC()` on the CompanyCam banner and per-building/per-event delete in Building History. Not real security — see DEV_NOTES.md. |
+| Admin mode | `index.html`, `netlify/functions/admin.js`, `firestore.rules` | `toggleAdminMode()` verifies the PIN server-side (`ADMIN_PIN` env var, never shipped to the browser). Unlocks `unlinkCC()` on the CompanyCam banner and per-building/per-event delete in Building History; deletes run through `admin.js` using the Firebase Admin SDK. `firestore.rules` blocks client-side deletes on the affected collections entirely — see DEV_NOTES.md for required manual setup. |
 | Duplicate report detection | `index.html` | `flagDuplicateEvents()` flags timeline entries with the same work order + report type created within 5 minutes of each other (double-click/retry protection), shown with a badge; admin can delete flagged entries. |
 | Netlify functions | `netlify/functions/companycam.js`, `netlify/functions/send-workorder.js` | Serverless API boundary for CompanyCam and Resend credentials. |
 | Netlify deployment | `netlify.toml` | Publishes the repo root and points Netlify Functions at `netlify/functions`. |
@@ -141,8 +144,10 @@ Set these in Netlify project environment variables:
 | `COMPANYCAM_USER_EMAIL` | Optional | `netlify/functions/companycam.js` | Adds `X-CompanyCam-User` for document upload attribution. |
 | `RESEND_API_KEY` | Yes | `netlify/functions/send-workorder.js` | Sends direct PDF emails. |
 | `FROM_EMAIL` | Optional | `netlify/functions/send-workorder.js` | Defaults to `Watkins Roofing Work Orders <workorders@watkinsroofing.net>`. |
+| `ADMIN_PIN` | Yes, for admin mode | `netlify/functions/admin.js` | The actual admin PIN check — not present in `index.html`. |
+| `FIREBASE_SERVICE_ACCOUNT` | Yes, for admin mode | `netlify/functions/admin.js` | Entire JSON contents of a Firebase service account key (Firebase Console → Project Settings → Service Accounts). Full project access — never commit it. |
 
-Firebase web config is currently hard-coded in `index.html`. Firestore access must be controlled with Firebase security rules.
+Firebase web config is currently hard-coded in `index.html`. Firestore access is controlled with Firebase security rules — see `firestore.rules` (repo root) and DEV_NOTES.md for what's in place and what still needs to be manually applied.
 
 ## Local Development
 

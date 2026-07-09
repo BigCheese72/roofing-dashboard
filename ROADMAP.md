@@ -41,9 +41,12 @@ Goal: turn each building into a long-term roof record.
 
 Goal: support office/admin workflows and controlled access.
 
-- ✅ Interim shipped ahead of this phase: a lightweight, client-side-only "admin
-  mode" (PIN prompt, session-scoped, not real auth) gates unlink/delete controls
-  from field techs. Replace with real accounts/roles below rather than extending it.
+- ✅ Interim shipped ahead of this phase: a PIN-based "admin mode" gates
+  unlink/delete controls from field techs, with the PIN check and the actual
+  deletes both enforced server-side (`netlify/functions/admin.js` + Firestore
+  rules) rather than just hidden in the UI. Real enforcement, but one shared PIN
+  rather than per-user accounts — replace with real accounts/roles below rather
+  than extending it further.
 - Add user accounts, roles, and permissions.
 - Add an admin/dashboard experience for searching customers, buildings, work orders, reports, and history events.
 - Add account/company settings for branding, default emails, report templates, and integration settings.

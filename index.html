@@ -469,27 +469,50 @@ var ccLinkedProjectName = "";
 var toastTimer = null;
 
 /* ================= admin mode =================
-   A soft gate, not real security — the PIN ships in this public JS file,
-   so anyone who reads source can find it. The point isn't to stop a
-   determined attacker, it's to keep field techs out of destructive
-   controls (unlink CompanyCam, delete a building's history) by default so
-   they aren't clicking those by accident. Change ADMIN_PIN to whatever
-   your team wants; there's no server-side check. */
-var ADMIN_PIN = "1935";
+   The PIN is verified server-side (netlify/functions/admin.js) against the
+   ADMIN_PIN environment variable, which is never shipped to the browser.
+   Actual deletes also happen server-side via the Firebase Admin SDK, which
+   is not subject to Firestore rules — firestore.rules (repo root) blocks
+   client-side deletes on these collections entirely, so entering the
+   correct PIN here is what actually unlocks anything, not just a UI check.
+   adminPin is kept in sessionStorage (not in this source file) so a delete
+   request can include it without re-prompting every time. */
+var adminPin = "";
 var isAdmin = false;
-try{ isAdmin = sessionStorage.getItem("roofops-admin") === "1"; }catch(e){}
-function toggleAdminMode(){
+try{ adminPin = sessionStorage.getItem("roofops-admin-pin") || ""; isAdmin = !!adminPin; }catch(e){}
+async function callAdminApi(body){
+  var r = await fetch("/.netlify/functions/admin", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(Object.assign({ pin: adminPin }, body))
+  });
+  var out = null;
+  try{ out = await r.json(); }catch(e){}
+  if (!r.ok || !out) throw new Error((out && out.error) || ("server error " + r.status));
+  return out;
+}
+async function toggleAdminMode(){
   if (isAdmin){
     isAdmin = false;
-    try{ sessionStorage.removeItem("roofops-admin"); }catch(e){}
+    adminPin = "";
+    try{ sessionStorage.removeItem("roofops-admin-pin"); }catch(e){}
     toast("Admin mode off");
-  } else {
-    var pin = prompt("Enter admin PIN:");
-    if (pin === null) return;
-    if (pin !== ADMIN_PIN){ toast("Wrong PIN"); return; }
+    updateAdminUI();
+    return;
+  }
+  var pin = prompt("Enter admin PIN:");
+  if (pin === null) return;
+  toast("Checking PIN…");
+  try{
+    adminPin = pin;
+    await callAdminApi({ action: "check_pin" });
     isAdmin = true;
-    try{ sessionStorage.setItem("roofops-admin", "1"); }catch(e){}
+    try{ sessionStorage.setItem("roofops-admin-pin", pin); }catch(e){}
     toast("Admin mode on — unlink/delete controls unlocked");
+  }catch(e){
+    adminPin = "";
+    isAdmin = false;
+    toast(e.message === "Wrong admin PIN" ? "Wrong PIN" : "Couldn't verify PIN: " + e.message);
   }
   updateAdminUI();
 }
@@ -951,13 +974,7 @@ async function deleteBuildingAdmin(buildingId, buildingName){
     "This can't be undone.")) return;
   toast("Deleting building history\u2026");
   try{
-    var evtQs = await fdb.collection("building_history_events").where("buildingId", "==", buildingId).get();
-    var repQs = await fdb.collection("reports").where("buildingId", "==", buildingId).get();
-    var batch = fdb.batch();
-    evtQs.forEach(function(d){ batch.delete(d.ref); });
-    repQs.forEach(function(d){ batch.delete(d.ref); });
-    batch.delete(fdb.collection("buildings").doc(buildingId));
-    await batch.commit();
+    await callAdminApi({ action: "delete_building", buildingId: buildingId });
     toast("Deleted \u2713");
     renderHistoryList();
   }catch(e){
@@ -1025,10 +1042,7 @@ async function deleteHistoryEventAdmin(eventId, buildingId){
   if (!confirm("Delete this timeline entry? This can't be undone.")) return;
   toast("Deleting\u2026");
   try{
-    var batch = fdb.batch();
-    batch.delete(fdb.collection("building_history_events").doc(eventId));
-    batch.delete(fdb.collection("reports").doc(eventId)); /* same id \u2014 see logReportAndHistoryEvent */
-    await batch.commit();
+    await callAdminApi({ action: "delete_history_event", eventId: eventId });
     toast("Deleted \u2713");
     openBuildingHistory(buildingId);
   }catch(e){

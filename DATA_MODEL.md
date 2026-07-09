@@ -59,11 +59,15 @@ Notes:
 - Authentication provider details can live here or in a related auth profile.
 - Role names should map to Firestore security rules.
 - **Interim state**: the current app does not have real user accounts yet. It ships a
-  lightweight, client-side "admin mode" (a PIN prompt, `ADMIN_PIN` constant in
-  `index.html`, session-scoped via `sessionStorage`) that gates a few destructive
-  actions (unlink CompanyCam, delete building/timeline records) from field techs. This
-  is explicitly not real security — the PIN is visible in public JS — and should be
-  replaced by this `users`/`role` model rather than extended, once real auth exists.
+  PIN-based "admin mode" — the PIN itself is verified server-side
+  (`netlify/functions/admin.js`, `ADMIN_PIN` env var) and destructive Firestore
+  operations run through that function via the Firebase Admin SDK, with
+  `firestore.rules` blocking client-side deletes on the affected collections
+  entirely. It's real enforcement, just not real *identity* — there's one shared PIN,
+  not per-user accounts, so it can't tell techs apart or produce a real audit trail of
+  who deleted what. Replace with this `users`/`role` model (paired with Firebase Auth
+  and rules keyed to `request.auth`) rather than extending the PIN approach further,
+  once per-user accounts are worth the added complexity.
 
 ### `customers`
 

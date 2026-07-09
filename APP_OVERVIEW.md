@@ -78,8 +78,9 @@ This means the user should not have to remember to manually save before sending.
 ## Admin Mode
 
 Field techs should not be able to unlink a CompanyCam project or delete building
-history by accident. A small "Admin" button in the header prompts for a PIN
-(session-scoped, not real auth — see DEV_NOTES.md); once unlocked it reveals:
+history. A small "Admin" button in the header prompts for a PIN, which is verified
+server-side (not just checked in the browser — see DEV_NOTES.md); once unlocked it
+reveals:
 
 - **Unlink** on the CompanyCam banner.
 - **Delete (admin)** per building in Building History (removes the building and its
