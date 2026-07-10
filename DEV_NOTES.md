@@ -2862,6 +2862,113 @@ uploaded image as the RoofMapper canvas) and the two new capabilities Mark wants
 captured for later -- per-edge dimensions/measurement lines, and dividing a roof
 outline into labeled sections.
 
+### RoofMapper <-> Roof Map unification -- Phase 2: unified surface, zoom, full-roof export (shipped 2026-07-10, dev only)
+
+Mark's vision restated for this phase: "map the roof, then mark it up on that
+same roof, then export the whole blueprint" -- RoofMapper stops handing off to
+a separate screen and becomes the place all three actually happen.
+
+**1. Inline feature placement.** `rmSaveOutlineToBuilding()` no longer
+navigates to Building History after a successful save (Phase 1's behavior,
+superseded) -- it sets `rmState.linkedBuildingId`/`linkedRoofId`, reveals a new
+"Roof Features" card (`#rm-features-panel`), and draws any of that roof's
+existing features right on RoofMapper's own map (`rmLoadLinkedAssets()` ->
+`rmDrawLinkedAssets()`, a Leaflet `layerGroup` on `rmState.map`). "+ Add
+Feature" (`rmAddFeature()`) and tapping an existing marker (`rmEditFeature()`)
+both just call the existing `openAssetModal(buildingId, assetId, roofId)` --
+placement itself is 100% reused, not rebuilt. The only new plumbing is a
+`assetModalReturnTo` flag ("history" default, unchanged; "roofmapper" when
+opened from here): `closeAssetModal()` branches on it so it redraws
+RoofMapper's inline markers instead of rebuilding Building History's map
+underneath a view nobody's looking at. Building History's own Roof Map is
+completely unaffected -- it reads the same `roof_outlines[]`/`roof_assets[]`
+arrays and still works exactly as before for anyone who opens the building
+from there instead.
+- **Scope cut, flagged rather than forced**: finding pins (leak/repair
+  markup) are NOT placeable inline from RoofMapper. A pin belongs to a
+  specific work order's finding (`finding.pin`), and RoofMapper has no
+  "current work order" in its context for a pin to attach to -- forcing that
+  in would mean either inventing a pin-with-no-finding concept or dragging a
+  work order picker into RoofMapper, both bigger changes than this phase
+  should force through. Leak/repair pins still get placed the existing way
+  (from within a work order), and DO flow into the full-roof export below
+  once they exist.
+- A roof with a custom base map (roof plan/sketch, x/y pixel-placed assets)
+  can't show those assets inline here -- RoofMapper's map is always real
+  lat/lng (OSM), same limitation the outline itself already has. Documented
+  in code comments; not a regression, those assets still save and still show
+  correctly on Building History's map (which supports both coordinate
+  systems).
+
+**2. Zoom.** `#rm-map`'s height went from `min(55vh,460px)` to
+`min(70vh,640px)` -- more room to work on a big roof. `rmEnsureMap()` now
+explicitly sets `zoomControl`/`scrollWheelZoom`/`touchZoom: true` (these
+already defaulted true in Leaflet -- spelled out so it's clearly intentional,
+not incidental). The real fix for "feels small": `rmGenerateOutline()` used
+to leave the map at whatever wide view `fitBounds()` picked to show ALL
+candidate footprints from the search -- it now calls the new
+`rmZoomToOutline()` right after generating, zooming straight into the one
+roof actually chosen. A "🔍 Zoom to Roof" button in the outline panel lets
+the tech re-center any time after panning away while placing several
+features.
+
+**3. Full-roof export.** `rmExportSVG()`/`rmExportPNG()`/`rmExportPDF()` are
+now async and call the new `rmFetchExportOverlayData()` first, which (when
+the outline is linked to a building) fetches that roof's `roof_assets[]`
+plus its historical finding pins (`building_history_events[].pins[]`,
+filtered by `roofId`, same source and query Building History's own map
+already uses -- no new Firestore index needed). `rmBuildOutlineSvg(outline,
+overlay)` and the PDF builder now take that `overlay` and draw each asset as
+a colored circle + emoji (matching `ROOF_ASSET_TYPES`) and each pin as a
+circle colored by `warrantyColor()`, plus a text legend. **Backward
+compatible by construction**: `overlay` is optional -- passing `null`/
+`undefined` (an unlinked or locally-saved-only outline) produces
+byte-identical output to the pre-Phase-2 outline-only export, verified
+directly (same SVG string shape, no markers/legend, same `footerH`/layout
+math). `rmExportProjectFeet(ring)` was refactored to share its per-point
+projection logic (`rmExportProjectPoint(point, origin)`) with the new
+asset/pin projection, guaranteeing they land in the exact same coordinate
+space as the outline -- not a separate/independent calculation that could
+drift out of alignment. Assets/pins placed via a roof's custom base map
+(x/y, no georeference) are skipped in the export for the same reason they're
+skipped inline (no lat/lng to plot against a lat/lng-based outline).
+
+Also added: `rmClearLinkedFeatures()` (drops the linked-building state and
+inline markers -- called by a fresh search and by loading a different
+locally-saved outline, so a previous building's features never bleed into a
+new one) and `rmUpdateExportHint()` (a small `#rm-export-hint` line under the
+export buttons that says outright whether the next export will be
+outline-only or the full marked-up roof).
+
+Tested with `fdb` mocked (fake in-memory building/roof/history-events, no
+writes to real Firestore): outline generated -> auto-zoom confirmed ->
+saved to a fake building -> confirmed it stayed on RoofMapper (Building
+History's view never became visible, never fetched) -> features panel shown
+with the building's name -> added a feature via `rmAddFeature()` ->
+confirmed `assetModalReturnTo` was "roofmapper" -> saved it -> confirmed the
+modal closed, RoofMapper stayed active, and exactly one marker was drawn
+inline -> confirmed `rmFetchExportOverlayData()` returned that asset ->
+confirmed the SVG export included a matching circle + legend entry ->
+confirmed the PDF export ran end-to-end with no errors (draws its own
+circles via `doc.circle()`) -> confirmed passing `overlay: null` reproduces
+the original bare-outline SVG exactly (no markers, no legend, same size
+math) -> confirmed a fresh search correctly clears the linked state and
+markers -> confirmed Building History's own Roof Map still renders correctly
+and independently for the same test building -> confirmed
+`rmSaveLocally()`'s fully offline/unlinked path still works standalone. All
+test state (`window.fdb`, `rmState.*`, one locally-saved outline) removed
+before finishing; page reloaded with a clean console throughout.
+
+**Not built, explicitly deferred** (see Roadmap): merging the asset/pin
+placement UI itself INTO RoofMapper's map (still a separate modal overlay,
+just one that stays on the RoofMapper screen instead of routing away --
+Mark's Phase 2 description also mentioned "zoom inline in RoofMapper" as one
+surface, which this interprets as reusing the existing placement modal
+in-place rather than rebuilding a second placement UI directly on
+`rmState.map`); satellite/drone/uploaded imagery as RoofMapper's own capture
+canvas (Phase 3); per-edge dimensions and roof sections (documented, not
+built).
+
 ### Email Send-to recipient defaults (shipped 2026-07-10, dev only)
 
 Mark's request: drop the "Office"/"Manager" role-labeled quick-picks from the

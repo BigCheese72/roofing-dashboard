@@ -334,10 +334,34 @@ Goal: turn each building into a long-term roof record.
   inside the placement modal itself as you place the pin. Reused the existing
   roof-asset placement and multi-roof roof-scoping as-is — no rebuild. See
   "RoofMapper ↔ Roof Map unification" in `DEV_NOTES.md`.
+- ✅ **Shipped (dev only)**: RoofMapper ↔ Roof Map unification — Phase 2
+  (unified surface, zoom, full-roof export). "Map the roof, then mark it up
+  on that same roof, then export the whole blueprint." Saving an outline no
+  longer routes away to Building History (Phase 1's behavior, superseded) —
+  RoofMapper reveals a "Roof Features" card right there, draws that roof's
+  existing features on its own map, and "+ Add Feature"/tapping a marker
+  reuses the existing `openAssetModal()` placement engine unchanged, just
+  routed to stay on RoofMapper when it's done instead of rebuilding Building
+  History underneath. Map height increased (55vh/460px → 70vh/640px),
+  zoom/scroll/pinch explicitly confirmed on, and generating an outline now
+  auto-zooms into it (previously stayed at the wide multi-candidate search
+  view) — plus a manual "🔍 Zoom to Roof" button. Exports (SVG/PNG/PDF) now
+  pull in that roof's permanent features and historical finding pins and
+  draw them on the outline as one blueprint, with a legend — outline-only
+  export is preserved byte-for-byte when the outline isn't linked to a
+  building. **Flagged, not built**: finding-pin (leak/repair) placement
+  itself stays outside RoofMapper — a pin belongs to a specific work order's
+  finding, and RoofMapper has no "current work order" context to attach one
+  to; those pins still get placed the existing way and do show up in the
+  full-roof export once they exist. Assets/pins on a roof's custom base map
+  (x/y, not georeferenced) can't be shown inline or in the export — same
+  lat/lng-only limitation the outline itself already has. See "RoofMapper ↔
+  Roof Map unification -- Phase 2" in `DEV_NOTES.md`.
   Planned follow-on phases (not built yet):
-  - **Phase 2**: fold feature placement + zoom into RoofMapper itself as one
-    continuous surface, instead of RoofMapper handing off to a separate
-    Building-History screen/modal for placement.
+  - **Phase 2.5 (not yet built)**: fold the placement UI itself directly
+    onto RoofMapper's map (today it's still the same modal overlay as
+    Building History uses, just kept on-screen instead of routing away —
+    a genuinely merged single canvas is a further step).
   - **Phase 3**: let a satellite/drone/uploaded image be the RoofMapper capture
     canvas directly (today RoofMapper only captures via OSM building
     footprints; custom base maps are a separate roof-profile feature used only

@@ -264,20 +264,34 @@ helps a tech capture a clean roof outline for a building on the spot:
    by name) or creates a new one on the spot, or **"📱 Save on This Device Only"** if
    there's no signal or the building isn't in RoofOps yet (link it later from the
    "Saved On This Device" list).
-6. Export **SVG**, **PNG**, or **PDF** any time — all generated on the device, no
-   internet required once the outline exists.
+6. **Mark it up right there** — once linked to a building, a "Roof Features" card
+   appears with an **"🔧 Add Feature"** button: place drains, HVAC units, scuppers, and
+   the rest of the permanent roof fixtures directly on the map you were just looking
+   at, without leaving RoofMapper. Existing features for that roof are already drawn
+   on the map — tap one to edit it.
+7. Export **SVG**, **PNG**, or **PDF** any time — all generated on the device, no
+   internet required once the outline exists. Once linked to a building, exports
+   include everything marked up on the roof (features + any leak/repair pins from past
+   reports), not just the bare outline — a hint line under the export buttons always
+   says which you'll get.
 
 Saved outlines also show up on that building's existing **Roof Map** in Building
-History, alongside finding pins and permanent roof features. If GPS accuracy is poor,
-no buildings are found nearby, or OpenStreetMap can't be reached, RoofMapper shows a
-plain-language message and a way to try again rather than failing silently.
+History, alongside finding pins and permanent roof features — it's the same
+`roof_outlines[]`/`roof_assets[]` data either way, so anything placed from RoofMapper
+shows up there too, and vice versa. If GPS accuracy is poor, no buildings are found
+nearby, or OpenStreetMap can't be reached, RoofMapper shows a plain-language message
+and a way to try again rather than failing silently.
 
-**After saving an outline to a building, RoofMapper hands you straight into feature
-placement** — it automatically switches you to that roof's Building History Roof
-Map (outline already drawn on it), so "+ Add Roof Feature" is one tap away and the
-placement map shows the outline too, right where you're placing the drain/HVAC/etc.
-Saving on this device only (no building link) skips that hand-off — there's no roof
-to route into yet.
+**Zoom**: the map has real zoom in/out (scroll, pinch, +/- buttons) and a bigger
+default size for working on large roofs. Generating an outline zooms straight into it
+instead of staying at the wide "here's everything nearby" search view, and a
+**"🔍 Zoom to Roof"** button re-centers any time after panning away while placing
+several features.
+
+Leak/repair markup still gets pinned the existing way, from within a work order's
+finding — not from RoofMapper directly, since a pin belongs to a specific work order
+and RoofMapper isn't tied to one. Those pins do flow into the full-roof export above
+once they exist.
 
 **If GPS puts you in the wrong spot** (common on desktop — location is IP-based there,
 often miles off; happens on phones too) — pan/zoom the map by hand to the actual
@@ -287,9 +301,10 @@ old search results clear automatically so there's never overlap between an old a
 new set of outlines. This is the recovery path whenever the GPS fix doesn't land on
 a clickable building — GPS itself is unchanged, this only helps when it's wrong.
 
-RoofMapper is Phase 1 — see `ROADMAP.md` for what's planned next (drains, HVAC,
-scuppers, pipe penetrations, dimensions, CompanyCam photos, drone orthomosaic overlays,
-roof history over time).
+RoofMapper is Phase 2 of the RoofMapper ↔ Roof Map unification — see `ROADMAP.md` for
+what's planned next (folding placement directly onto RoofMapper's own map, satellite/
+drone imagery as the capture canvas, dimensions, roof sections, and — further out —
+AI-suggested feature placements from imagery).
 
 ## Logging Activities
 

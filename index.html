@@ -476,7 +476,7 @@
         <button class="btn primary rm-bigbtn" id="rm-locate-btn" onclick="rmUseMyLocation()">📍 Use My Location</button>
       </div>
       <p class="rm-status" id="rm-status"></p>
-      <div id="rm-map" style="height:min(55vh,460px);border-radius:6px;overflow:hidden;margin-bottom:12px;display:none"></div>
+      <div id="rm-map" style="height:min(70vh,640px);border-radius:6px;overflow:hidden;margin-bottom:12px;display:none"></div>
       <div class="rm-actions" id="rm-search-again-wrap" style="display:none">
         <button class="btn primary rm-bigbtn" id="rm-search-here-btn" onclick="rmSearchThisArea()">🔍 Search This Area</button>
         <button class="btn rm-bigbtn" id="rm-widen-btn" style="display:none" onclick="rmWidenSearch()">🔎 Search Wider</button>
@@ -504,9 +504,21 @@
         <button class="btn rm-bigbtn" onclick="rmSaveLocally()">📱 Save on This Device Only</button>
       </div>
       <div class="btnrow">
+        <button class="btn" onclick="rmZoomToOutline()">🔍 Zoom to Roof</button>
         <button class="btn" onclick="rmExportSVG()">Export SVG</button>
         <button class="btn" onclick="rmExportPNG()">Export PNG</button>
         <button class="btn" onclick="rmExportPDF()">Export PDF</button>
+      </div>
+      <p class="hint" id="rm-export-hint" style="margin:8px 0 0"></p>
+    </div>
+
+    <div class="card" id="rm-features-panel" style="display:none">
+      <h2 class="cond">Roof Features</h2>
+      <p class="hint" id="rm-features-hint">Tap a marker on the map above to edit it, or add a new one. These are
+        permanent roof fixtures (drains, HVAC, scuppers, etc.); leak/repair findings still get pinned from their
+        work order as before, and everything shows up together in the exports above.</p>
+      <div class="rm-actions">
+        <button class="btn primary rm-bigbtn" onclick="rmAddFeature()">🔧 Add Feature</button>
       </div>
     </div>
 
@@ -1742,6 +1754,12 @@ function assetPopupHtml(buildingId, a){
 }
 var assetMap = null, assetMarker = null, assetModalBuildingId = null, assetModalAssetId = null,
   assetModalRoofId = null, assetMapMode = "latlng", assetXYSize = null;
+/* Where closeAssetModal() should return to when it's done -- "history"
+   (default, unchanged) rebuilds Building History's map same as always;
+   "roofmapper" (set by rmAddFeature()/rmEditFeature()) instead redraws the
+   feature markers inline on RoofMapper's own map, part of the Phase 2
+   unified-surface work -- see "RoofMapper Phase 2" in DEV_NOTES.md. */
+var assetModalReturnTo = "history";
 function populateAssetTypeSelect(){
   var sel = document.getElementById("asset-type");
   if (sel.options.length) return;
@@ -1879,6 +1897,8 @@ document.getElementById("asset-type") && document.getElementById("asset-type").a
 });
 function closeAssetModal(){
   var buildingId = assetModalBuildingId;
+  var returnTo = assetModalReturnTo;
+  assetModalReturnTo = "history"; /* reset before any early branch below */
   document.getElementById("asset-modal").style.display = "none";
   unlockBodyScroll();
   if (assetMap){ assetMap.remove(); assetMap = null; assetMarker = null; }
@@ -1886,6 +1906,14 @@ function closeAssetModal(){
   assetModalAssetId = null;
   assetModalRoofId = null;
   assetXYSize = null;
+  if (returnTo === "roofmapper"){
+    /* Opened via rmAddFeature()/rmEditFeature() -- stay on RoofMapper as
+       one unified surface (Phase 2) and just redraw its own feature
+       markers, rather than rebuilding Building History's map underneath a
+       view the user isn't even looking at. */
+    rmLoadLinkedAssets();
+    return;
+  }
   /* openAssetModal() destroyed the underlying Building History map
      entirely (see the comment there) — rebuild it every time this modal
      closes, save/delete or plain Cancel/Close alike, so the page never
@@ -5436,12 +5464,54 @@ async function rmFetchNearbyBuildings(lat, lng, radiusMeters){
 /* ---- services/exportService ----
    Client-side only, no paid rendering service. SVG is the source of truth;
    PNG is rasterized from the same SVG so the two always match. */
+function rmExportProjectPoint(point, origin){
+  var xy = rmGeomToLocalXY(point, origin);
+  return { x: xy.x * 3.28084, y: xy.y * 3.28084 };
+}
 function rmExportProjectFeet(ring){
   var origin = rmGeomRingCentroid(ring);
-  return ring.map(function(p){
-    var xy = rmGeomToLocalXY(p, origin);
-    return { x: xy.x * 3.28084, y: xy.y * 3.28084 };
-  });
+  return ring.map(function(p){ return rmExportProjectPoint(p, origin); });
+}
+function rmHexToRgb(hex){
+  var m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex || "");
+  return m ? { r: parseInt(m[1],16), g: parseInt(m[2],16), b: parseInt(m[3],16) } : { r: 0, g: 0, b: 0 };
+}
+/* Full-roof export: pulls in the linked roof's permanent features
+   (roof_assets[]) and its historical finding pins (from
+   building_history_events[].pins[], same source Building History's own Roof
+   Map reads) so the export is the outline PLUS everything marked up on it,
+   not just the bare shape. Returns null (outline-only export, unchanged
+   from before Phase 2) when the outline was never saved to a building, or
+   there's no connection to fetch with. Only lat/lng-placed
+   assets/pins are included -- ones placed on a roof's custom base map
+   (x/y, no georeference) have no coordinate to plot on this lat/lng-based
+   export, same limitation as rmDrawLinkedAssets(). */
+async function rmFetchExportOverlayData(){
+  if (!rmState.linkedBuildingId || !rmState.linkedRoofId || !fdb) return null;
+  try{
+    var snap = await fdb.collection("buildings").doc(rmState.linkedBuildingId).get();
+    var bld = snap.exists ? snap.data() : {};
+    var roof = getRoofById(bld, rmState.linkedRoofId);
+    var assets = (roof.roof_assets || []).filter(function(a){
+      return typeof a.lat === "number" && typeof a.lng === "number";
+    });
+    var pins = [];
+    var qs = await fdb.collection("building_history_events")
+      .where("buildingId", "==", rmState.linkedBuildingId).orderBy("createdAt", "desc").limit(50).get();
+    qs.forEach(function(d){
+      var e = d.data();
+      (e.pins || []).forEach(function(p){
+        if ((p.roofId || "roof_default") !== rmState.linkedRoofId) return;
+        if (typeof p.lat !== "number" || typeof p.lng !== "number") return;
+        pins.push(p);
+      });
+    });
+    if (!assets.length && !pins.length) return null;
+    return { assets: assets, pins: pins };
+  }catch(e){
+    toast("Couldn't load placed features for export — exporting outline only. (" + e.message + ")");
+    return null;
+  }
 }
 function rmEscXml(s){
   return String(s == null ? "" : s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
@@ -5464,15 +5534,27 @@ function rmOutlineTitle(outline){
   var base = tags.name || addr || "Roof Outline";
   return outline.isSiteBoundary ? "⚠ Site Boundary — " + base : base;
 }
-function rmBuildOutlineSvg(outline){
-  var pts = rmExportProjectFeet(outline.ring);
-  var xs = pts.map(function(p){ return p.x; }), ys = pts.map(function(p){ return p.y; });
-  var minX = Math.min.apply(null, xs), maxX = Math.max.apply(null, xs);
-  var minY = Math.min.apply(null, ys), maxY = Math.max.apply(null, ys);
+/* overlay ({assets, pins}, from rmFetchExportOverlayData()) is optional --
+   omitting it (or passing null) produces byte-identical output to the
+   original outline-only export, so a locally-saved/unlinked outline still
+   exports exactly as it always did. */
+function rmBuildOutlineSvg(outline, overlay){
+  var origin = rmGeomRingCentroid(outline.ring);
+  var pts = outline.ring.map(function(p){ return rmExportProjectPoint(p, origin); });
+  var assetPts = ((overlay && overlay.assets) || []).map(function(a){
+    return Object.assign({}, rmExportProjectPoint(a, origin), { type: a.type });
+  });
+  var pinPts = ((overlay && overlay.pins) || []).map(function(p){
+    return Object.assign({}, rmExportProjectPoint(p, origin), { warranty: p.warranty });
+  });
+  var allXs = pts.concat(assetPts, pinPts).map(function(p){ return p.x; });
+  var allYs = pts.concat(assetPts, pinPts).map(function(p){ return p.y; });
+  var minX = Math.min.apply(null, allXs), maxX = Math.max.apply(null, allXs);
+  var minY = Math.min.apply(null, allYs), maxY = Math.max.apply(null, allYs);
   var padFt = Math.max(6, (maxX - minX) * 0.08);
   var w = (maxX - minX) + padFt * 2, h = (maxY - minY) + padFt * 2;
   var scale = 20; /* px per foot */
-  var headerH = 60, footerH = 40;
+  var headerH = 60, footerH = overlay ? 64 : 40; /* extra room for the legend line when features are included */
   var svgW = Math.max(240, w * scale), svgH = Math.max(240, h * scale) + headerH + footerH;
   function toSvg(p){
     return { x: (p.x - minX + padFt) * scale, y: headerH + (h * scale) - ((p.y - minY + padFt) * scale) };
@@ -5481,12 +5563,39 @@ function rmBuildOutlineSvg(outline){
   var pathD = "M " + pathPts.map(function(p){ return p.x.toFixed(1) + "," + p.y.toFixed(1); }).join(" L ") + " Z";
   var title = rmOutlineTitle(outline);
   var scaleBarFt = 20, scaleBarPx = scaleBarFt * scale;
+  var markersSvg = "";
+  assetPts.forEach(function(a){
+    var svgP = toSvg(a);
+    var t = ROOF_ASSET_TYPES[a.type] || ROOF_ASSET_TYPES.other;
+    markersSvg += '<circle cx="' + svgP.x.toFixed(1) + '" cy="' + svgP.y.toFixed(1) + '" r="9" fill="' + t.color +
+      '" stroke="#fff" stroke-width="2"/><text x="' + svgP.x.toFixed(1) + '" y="' + (svgP.y + 4).toFixed(1) +
+      '" font-family="Arial, sans-serif" font-size="11" text-anchor="middle">' + rmEscXml(t.emoji) + '</text>';
+  });
+  pinPts.forEach(function(p){
+    var svgP = toSvg(p);
+    markersSvg += '<circle cx="' + svgP.x.toFixed(1) + '" cy="' + svgP.y.toFixed(1) + '" r="7" fill="' +
+      warrantyColor(p.warranty) + '" stroke="#fff" stroke-width="2"/>';
+  });
+  var legendSvg = "";
+  if (overlay){
+    var typesPresent = {};
+    assetPts.forEach(function(a){ typesPresent[a.type] = true; });
+    var legendParts = Object.keys(typesPresent).map(function(k){
+      var t = ROOF_ASSET_TYPES[k] || ROOF_ASSET_TYPES.other; return t.emoji + " " + t.label;
+    });
+    if (pinPts.length) legendParts.push("● Finding pin (color = warranty status)");
+    if (legendParts.length){
+      legendSvg = '<text x="16" y="' + (svgH - footerH + 14) + '" font-family="Arial, sans-serif" font-size="11" fill="#5B6770">' +
+        rmEscXml(legendParts.join("   ·   ")) + '</text>';
+    }
+  }
   var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + svgW + '" height="' + svgH + '" viewBox="0 0 ' + svgW + ' ' + svgH + '">' +
     '<rect width="100%" height="100%" fill="#ffffff"/>' +
     '<text x="16" y="26" font-family="Arial, sans-serif" font-size="18" font-weight="700" fill="#263238">' + rmEscXml(title) + '</text>' +
     '<text x="16" y="44" font-family="Arial, sans-serif" font-size="12" fill="#5B6770">Area: ' + outline.areaSqFt.toFixed(0) +
       ' sq ft &#183; Perimeter: ' + outline.perimeterFt.toFixed(0) + ' ft &#183; Source: OpenStreetMap</text>' +
     '<path d="' + pathD + '" fill="rgba(232,96,10,0.15)" stroke="#E8600A" stroke-width="2.5" stroke-linejoin="round"/>' +
+    markersSvg + legendSvg +
     '<g transform="translate(16,' + (svgH - 18) + ')">' +
       '<line x1="0" y1="0" x2="' + scaleBarPx + '" y2="0" stroke="#263238" stroke-width="2"/>' +
       '<line x1="0" y1="-4" x2="0" y2="4" stroke="#263238" stroke-width="2"/>' +
@@ -5496,14 +5605,16 @@ function rmBuildOutlineSvg(outline){
   '</svg>';
   return { svg: svg, width: svgW, height: svgH };
 }
-function rmExportSVG(){
+async function rmExportSVG(){
   if (!rmState.outline){ toast("Generate a roof outline first."); return; }
-  var built = rmBuildOutlineSvg(rmState.outline);
+  var overlay = await rmFetchExportOverlayData();
+  var built = rmBuildOutlineSvg(rmState.outline, overlay);
   rmDownloadBlob(rmExportFilenameBase() + ".svg", new Blob([built.svg], { type: "image/svg+xml" }));
 }
-function rmExportPNG(){
+async function rmExportPNG(){
   if (!rmState.outline){ toast("Generate a roof outline first."); return; }
-  var built = rmBuildOutlineSvg(rmState.outline);
+  var overlay = await rmFetchExportOverlayData();
+  var built = rmBuildOutlineSvg(rmState.outline, overlay);
   var img = new Image();
   var url = URL.createObjectURL(new Blob([built.svg], { type: "image/svg+xml;charset=utf-8" }));
   img.onload = function(){
@@ -5518,16 +5629,25 @@ function rmExportPNG(){
   img.onerror = function(){ URL.revokeObjectURL(url); toast("Couldn't render PNG export."); };
   img.src = url;
 }
-function rmExportPDF(){
+async function rmExportPDF(){
   if (!rmState.outline){ toast("Generate a roof outline first."); return; }
   if (!(window.jspdf && window.jspdf.jsPDF)){ toast("PDF export isn't available right now."); return; }
   var outline = rmState.outline;
+  var overlay = await rmFetchExportOverlayData();
   var JsPdf = window.jspdf.jsPDF;
   var doc = new JsPdf({ unit: "pt", format: "letter" });
-  var pts = rmExportProjectFeet(outline.ring);
-  var xs = pts.map(function(p){ return p.x; }), ys = pts.map(function(p){ return p.y; });
-  var minX = Math.min.apply(null, xs), maxX = Math.max.apply(null, xs);
-  var minY = Math.min.apply(null, ys), maxY = Math.max.apply(null, ys);
+  var origin = rmGeomRingCentroid(outline.ring);
+  var pts = outline.ring.map(function(p){ return rmExportProjectPoint(p, origin); });
+  var assetPts = ((overlay && overlay.assets) || []).map(function(a){
+    return Object.assign({}, rmExportProjectPoint(a, origin), { type: a.type });
+  });
+  var pinPts = ((overlay && overlay.pins) || []).map(function(p){
+    return Object.assign({}, rmExportProjectPoint(p, origin), { warranty: p.warranty });
+  });
+  var allXs = pts.concat(assetPts, pinPts).map(function(p){ return p.x; });
+  var allYs = pts.concat(assetPts, pinPts).map(function(p){ return p.y; });
+  var minX = Math.min.apply(null, allXs), maxX = Math.max.apply(null, allXs);
+  var minY = Math.min.apply(null, allYs), maxY = Math.max.apply(null, allYs);
   var pageW = doc.internal.pageSize.getWidth(), pageH = doc.internal.pageSize.getHeight();
   var margin = 54, top = 90;
   var availW = pageW - margin * 2, availH = pageH - top - margin;
@@ -5546,6 +5666,19 @@ function rmExportPDF(){
   doc.setDrawColor(232, 96, 10); doc.setLineWidth(1.5);
   var lines = pdfPts.slice(1).map(function(p, i){ return [p.x - pdfPts[i].x, p.y - pdfPts[i].y]; });
   doc.lines(lines, pdfPts[0].x, pdfPts[0].y, [1, 1], "S", true);
+  assetPts.forEach(function(a){
+    var p = toPdf(a);
+    var t = ROOF_ASSET_TYPES[a.type] || ROOF_ASSET_TYPES.other;
+    var rgb = rmHexToRgb(t.color);
+    doc.setFillColor(rgb.r, rgb.g, rgb.b);
+    doc.circle(p.x, p.y, 5, "F");
+  });
+  pinPts.forEach(function(pn){
+    var p = toPdf(pn);
+    var rgb = rmHexToRgb(warrantyColor(pn.warranty));
+    doc.setFillColor(rgb.r, rgb.g, rgb.b);
+    doc.circle(p.x, p.y, 4, "F");
+  });
   var barFt = 20, barPx = barFt * scale, barX = margin, barY = pageH - margin + 10;
   doc.setDrawColor(38, 42, 48); doc.setLineWidth(1);
   doc.line(barX, barY, barX + barPx, barY);
@@ -5553,6 +5686,16 @@ function rmExportPDF(){
   doc.line(barX + barPx, barY - 4, barX + barPx, barY + 4);
   doc.setFontSize(9);
   doc.text(barFt + " ft", barX + barPx / 2, barY + 14, { align: "center" });
+  if (overlay){
+    var typesPresent2 = {};
+    assetPts.forEach(function(a){ typesPresent2[a.type] = true; });
+    var legendParts2 = Object.keys(typesPresent2).map(function(k){ return (ROOF_ASSET_TYPES[k] || ROOF_ASSET_TYPES.other).label; });
+    if (pinPts.length) legendParts2.push("Finding pin (color = warranty status)");
+    if (legendParts2.length){
+      doc.setFontSize(8);
+      doc.text("Legend: " + legendParts2.join("  ·  "), margin, pageH - margin - 4);
+    }
+  }
   doc.save(rmExportFilenameBase() + ".pdf");
 }
 
@@ -5561,7 +5704,12 @@ var rmState = {
   map: null, userMarker: null, accuracyCircle: null,
   lat: null, lng: null, accuracy: null,
   footprints: [], footprintLayers: {}, outlineLayer: null,
-  selectedId: null, outline: null, radiusIndex: 0
+  selectedId: null, outline: null, radiusIndex: 0,
+  /* Phase 2 (unified surface): once the outline is saved to a building,
+     these point at that building+roof so features can be placed and the
+     full-roof export can pull them in, without leaving RoofMapper.
+     assetLayerGroup holds the markers drawn inline on rmState.map. */
+  linkedBuildingId: null, linkedRoofId: null, assetLayerGroup: null
 };
 var RM_LOCAL_KEY = "roofmapper-local-outlines-v1";
 /* A commercial building — especially a hospital/medical campus — can easily
@@ -5621,11 +5769,19 @@ function rmSetStatus(msg, kind, extraHtml){
 function rmEnsureMap(){
   if (rmState.map) return rmState.map;
   document.getElementById("rm-map").style.display = "";
-  rmState.map = L.map("rm-map");
+  /* Explicit zoomControl/scrollWheelZoom/touchZoom -- these already default
+     true in Leaflet, spelled out here so it's clear real zoom in/out (mouse
+     wheel, pinch, +/- buttons) is intentionally on, not an accident of
+     defaults. See "RoofMapper Phase 2" in DEV_NOTES.md. */
+  rmState.map = L.map("rm-map", { zoomControl: true, scrollWheelZoom: true, touchZoom: true });
   L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
     maxZoom: 20, attribution: "&copy; OpenStreetMap contributors"
   }).addTo(rmState.map);
   return rmState.map;
+}
+function rmZoomToOutline(){
+  if (!rmState.map || !rmState.outlineLayer) return;
+  rmState.map.fitBounds(rmState.outlineLayer.getBounds(), { padding: [40, 40] });
 }
 function rmUseMyLocation(){
   var btn = document.getElementById("rm-locate-btn");
@@ -5656,6 +5812,25 @@ function rmUseMyLocation(){
     rmSetStatus(err.friendly || "Couldn't get your location.", "error");
   });
 }
+function rmClearLinkedFeatures(){
+  /* Drops the "linked to a building" state (and its feature markers) --
+     called whenever the outline itself is about to change (new search, or
+     loading a different local save) so stale features from a PREVIOUS
+     building never bleed into a new one. */
+  if (rmState.map && rmState.assetLayerGroup) rmState.map.removeLayer(rmState.assetLayerGroup);
+  rmState.assetLayerGroup = null;
+  rmState.linkedBuildingId = null;
+  rmState.linkedRoofId = null;
+  var panel = document.getElementById("rm-features-panel");
+  if (panel) panel.style.display = "none";
+}
+function rmUpdateExportHint(){
+  var el = document.getElementById("rm-export-hint");
+  if (!el) return;
+  el.textContent = rmState.linkedBuildingId ?
+    "Exports include the outline plus every placed feature and pinned finding on this roof." :
+    "Exports include the outline only — save to a building and add features to include them too.";
+}
 function rmClearFootprintLayers(){
   var map = rmState.map;
   if (map){
@@ -5665,6 +5840,7 @@ function rmClearFootprintLayers(){
   rmState.footprintLayers = {};
   rmState.selectedId = null;
   rmState.outline = null;
+  rmClearLinkedFeatures();
   document.getElementById("rm-footprint-panel").style.display = "none";
   document.getElementById("rm-outline-panel").style.display = "none";
 }
@@ -5783,12 +5959,19 @@ function rmGenerateOutline(){
     createdAt: Date.now()
   };
   rmState.outline = outline;
+  rmClearLinkedFeatures(); /* a freshly generated outline is never linked yet */
   var map = rmEnsureMap();
   if (rmState.outlineLayer) map.removeLayer(rmState.outlineLayer);
   rmState.outlineLayer = L.polygon(ring.map(function(p){ return [p.lat, p.lng]; }), {
     color: "#E8600A", weight: 3, dashArray: outline.isSiteBoundary ? "6,6" : null, fillColor: "#E8600A", fillOpacity: 0.15
   }).addTo(map);
+  /* Search results just left the map fit to EVERY candidate footprint --
+     zoom straight into the one actually chosen so there's real room to
+     work (Mark: "the current map feels small"), instead of leaving the
+     view zoomed out to fit buildings that no longer matter. */
+  rmZoomToOutline();
   rmRenderOutlineStats(outline);
+  rmUpdateExportHint();
   document.getElementById("rm-outline-panel").scrollIntoView({ behavior: "smooth", block: "nearest" });
   toast(outline.isSiteBoundary ? "Site boundary captured — not a single roof, see warning below ⚠️" : "Roof outline generated ✓");
 }
@@ -5880,15 +6063,22 @@ async function rmSaveOutlineToBuilding(buildingId, roofId){
     var roofIdx = roofs.findIndex(function(r){ return r.id === roof.id; });
     roofs[roofIdx] = roof;
     await saveBuildingRoofs(buildingId, roofs);
-    toast("Roof outline saved — add features to it now ✓");
+    toast("Roof outline saved — add features to it right here ✓");
     closeRmSaveModal();
-    /* Phase 1 of the RoofMapper <-> Roof Map unification: land straight on
-       this roof's Building History map (which already draws roof_outlines[]
-       as the orange polygon) instead of leaving the tech on RoofMapper with
-       nothing to do next. historySelectRoof() scopes the roof-asset picker
-       and the "+ Add Roof Feature" button to this exact roof. */
-    showView("history");
-    await historySelectRoof(buildingId, roof.id);
+    /* Phase 2 of the RoofMapper <-> Roof Map unification: RoofMapper is now
+       the unified surface, so stay right here instead of routing away to
+       Building History (Phase 1's behavior, superseded) -- map the roof,
+       then mark it up on that same roof. rmShowFeaturePanel() reveals the
+       "+ Add Feature" card and rmLoadLinkedAssets() draws any existing
+       features for this roof inline on rmState.map. Building History's own
+       Roof Map still shows the same outline/features unchanged (it reads
+       the same roof_outlines[]/roof_assets[] arrays) for anyone who opens
+       the building from there instead. */
+    rmState.linkedBuildingId = buildingId;
+    rmState.linkedRoofId = roof.id;
+    rmShowFeaturePanel(bld.name);
+    await rmLoadLinkedAssets();
+    rmUpdateExportHint();
   }catch(e){ toast("Couldn't save: " + e.message); }
 }
 async function rmCreateBuildingAndSave(){
@@ -5904,6 +6094,64 @@ async function rmCreateBuildingAndSave(){
     if (!ids.buildingId) throw new Error("couldn't create building (need internet connection)");
     await rmSaveOutlineToBuilding(ids.buildingId);
   }catch(e){ toast("Couldn't create building: " + e.message); }
+}
+
+/* ---- Phase 2: inline feature placement (drains, HVAC, scuppers, etc.) on
+   the roof once its outline is linked to a building. Reuses the existing
+   roof-asset placement engine (openAssetModal/openAssetModalSatellite) as-is
+   -- nothing about placement itself is rebuilt, only routed to stay on
+   RoofMapper instead of Building History (see closeAssetModal()'s
+   assetModalReturnTo branch). Finding pins (leak/repair markup, tied to a
+   specific work order's finding) aren't placeable from here -- there's no
+   "current work order" in RoofMapper's context for a pin to belong to --
+   they still get pinned from their work order as always, but do show up
+   pulled into the full-roof export below once they exist. See "RoofMapper
+   Phase 2" in DEV_NOTES.md. */
+function rmShowFeaturePanel(buildingName){
+  var panel = document.getElementById("rm-features-panel");
+  if (!panel) return;
+  panel.style.display = "";
+  var hint = document.getElementById("rm-features-hint");
+  if (hint){
+    hint.textContent = (buildingName ? "Linked to " + buildingName + ". " : "") +
+      "Tap a marker on the map above to edit it, or add a new one. These are permanent roof fixtures " +
+      "(drains, HVAC, scuppers, etc.); leak/repair findings still get pinned from their work order as before, " +
+      "and everything shows up together in the exports above.";
+  }
+}
+async function rmLoadLinkedAssets(){
+  if (!rmState.linkedBuildingId || !rmState.linkedRoofId || !fdb) return;
+  try{
+    var snap = await fdb.collection("buildings").doc(rmState.linkedBuildingId).get();
+    var bld = snap.exists ? snap.data() : {};
+    var roof = getRoofById(bld, rmState.linkedRoofId);
+    rmDrawLinkedAssets(roof.roof_assets || []);
+  }catch(e){ toast("Couldn't load roof features: " + e.message); }
+}
+function rmDrawLinkedAssets(assets){
+  var map = rmEnsureMap();
+  if (rmState.assetLayerGroup) map.removeLayer(rmState.assetLayerGroup);
+  rmState.assetLayerGroup = L.layerGroup().addTo(map);
+  assets.forEach(function(a){
+    /* Assets placed via a roof's custom base map (roof plan/sketch) have
+       x/y, not lat/lng -- RoofMapper's map is always real lat/lng (OSM),
+       same limitation as the outline itself, so those simply don't have a
+       spot to show here. They're still saved correctly and still show on
+       Building History's own roof map (which supports both coordinate
+       systems) -- just not inline on this screen. */
+    if (typeof a.lat !== "number" || typeof a.lng !== "number") return;
+    var m = L.marker([a.lat, a.lng], { icon: assetIcon(a.type) }).addTo(rmState.assetLayerGroup);
+    m.on("click", function(){ rmEditFeature(a.id); });
+  });
+}
+function rmAddFeature(){
+  if (!rmState.linkedBuildingId || !rmState.linkedRoofId){ toast("Save this outline to a building first."); return; }
+  assetModalReturnTo = "roofmapper";
+  openAssetModal(rmState.linkedBuildingId, null, rmState.linkedRoofId);
+}
+function rmEditFeature(assetId){
+  assetModalReturnTo = "roofmapper";
+  openAssetModal(rmState.linkedBuildingId, assetId, rmState.linkedRoofId);
 }
 
 /* ---- save locally (localStorage fallback — offline or not linked yet) ---- */
@@ -5939,6 +6187,7 @@ function rmLoadLocalOutline(id){
   var o = rmLoadLocalOutlines().find(function(x){ return x.id === id; });
   if (!o) return;
   rmState.outline = o;
+  rmClearLinkedFeatures(); /* a locally-saved outline has no building link -- clear any previous one */
   var map = rmEnsureMap();
   if (rmState.outlineLayer) map.removeLayer(rmState.outlineLayer);
   rmState.outlineLayer = L.polygon(o.ring.map(function(p){ return [p.lat, p.lng]; }), {
@@ -5947,6 +6196,7 @@ function rmLoadLocalOutline(id){
   map.fitBounds(rmState.outlineLayer.getBounds(), { padding: [30, 30] });
   setTimeout(function(){ map.invalidateSize(); }, 60);
   rmRenderOutlineStats(o);
+  rmUpdateExportHint();
   toast("Loaded saved outline — ready to save to a building or export.");
 }
 function rmDeleteLocalOutline(id){
