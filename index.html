@@ -325,6 +325,18 @@
         <textarea id="woMaterials" rows="3" placeholder="One item per line"></textarea></div>
       <div class="fld"><label>Description of Work Performed</label>
         <textarea id="woDescription" rows="4"></textarea></div>
+      <div class="fld"><label>Photos</label>
+        <p class="hint" style="margin:0 0 8px">Photos taken here are attached to this change order and print into its PDF.</p>
+        <div class="btnrow" style="margin:0">
+          <button class="btn primary" onclick="document.getElementById('coCamInput').click()">📷 Take Photo</button>
+          <button class="btn" onclick="document.getElementById('coLibInput').click()">+ Add Photos</button>
+        </div>
+        <input type="file" id="coCamInput" accept="image/*" capture="environment" style="display:none"
+          onchange="addPhotosFromCamera(this.files); this.value='';">
+        <input type="file" id="coLibInput" accept="image/*" multiple style="display:none"
+          onchange="addPhotosFromFiles(this.files); this.value='';">
+        <div id="co-photos-host"></div>
+      </div>
     </div>
 
     <div class="card">
@@ -1919,6 +1931,13 @@ function addPhotosFromCamera(files, findingId){
           if (!r) return;
           photos.push(r);
           if (findingId) maybeAutoPinFinding(r);
+          /* Change Order has no findings to hang a pin off of, so a
+             photo captured while editing a Change Order gets its own
+             pin instead (see maybeAutoPinPhoto() below) -- scoped to
+             that type only, so a Leak/Service photo added through the
+             global section (findingId not yet set) doesn't pick up a
+             pin it has no use for. */
+          else if (val("woType") === "Change Order") maybeAutoPinPhoto(r);
         });
         renderPhotos();
         if (findingId) renderFindings();
@@ -1964,6 +1983,19 @@ function maybeAutoPinFinding(photo){
   f.pin = { lat: photo.gps.lat, lng: photo.gps.lng, x: null, y: null, source: "device_gps" };
   renderFindings();
   toast("📍 Pin auto-placed on the roof map from the photo's location — drag to fine-tune if needed.");
+}
+/* Change Order equivalent of maybeAutoPinFinding() above -- a Change
+   Order has no findings, so each photo carries its own pin instead of
+   sharing one. Same shape/source convention, same never-overwrite rule.
+   photo.pin is new and additive: unused/absent for every other work
+   order type and for photos added before this shipped. Deliberately NOT
+   wired into the roof map or Building History aggregate view yet (no
+   drag-to-adjust UI either) -- scoped to "captured, auto-pinned, shown
+   on the change order and its PDF" per spec, not a full parity feature
+   with finding pins. A natural follow-up if Mark wants it. */
+function maybeAutoPinPhoto(photo){
+  if (!photo || !photo.gps || photo.pin) return;
+  photo.pin = { lat: photo.gps.lat, lng: photo.gps.lng, x: null, y: null, source: "device_gps" };
 }
 function removePhoto(i){
   var removed = photos[i];
@@ -2061,6 +2093,35 @@ function renderPhotos(){
       maybeAutoPinFinding(p);
     });
   });
+  renderChangeOrderPhotos();
+}
+/* Photo-capture rework, increment 3: Change Order's own embedded photo
+   gallery. A Change Order has no findings to group by, so unlike
+   findingPhotoGalleryHtml() this shows every photo on the work order,
+   not a filtered subset — on a Change Order, "every photo" and "this
+   change order's photos" are the same thing. Same reused-function
+   pattern as increment 2 (openPhotoLightbox(i)/removePhoto(i) by real
+   global index, one source of truth). Harmless to call for every work
+   order type (it only ever renders into #co-photos-host, which stays
+   hidden unless woType === "Change Order" — see onWoTypeChange()). */
+function renderChangeOrderPhotos(){
+  var host = document.getElementById("co-photos-host");
+  if (!host) return;
+  if (!photos.length){ host.innerHTML = '<p class="hint">No photos added yet.</p>'; return; }
+  host.innerHTML = '<div class="finding-photo-strip">' +
+    photos.map(function(p, gi){
+      var locNote = p.pin ? '<span class="hint" style="display:block;margin:2px 0 0;color:#2E7D32">📍 Located</span>' :
+        '<span class="hint" style="display:block;margin:2px 0 0">No location</span>';
+      return '<div class="finding-photo-item">' +
+        (p.img ? '<img class="thumb" src="' + p.img + '" onclick="openPhotoLightbox(' + gi + ')" title="Tap to enlarge">' : '') +
+        '<input type="text" placeholder="Caption" data-cophoto="' + gi + '" value="' + esc(p.caption) + '">' +
+        locNote +
+        '<button class="btn danger" onclick="removePhoto(' + gi + ')">✕ Remove</button>' +
+        '</div>';
+    }).join('') + '</div>';
+  host.querySelectorAll('[data-cophoto]').forEach(function(el){
+    el.addEventListener('input', function(){ photos[+el.dataset.cophoto].caption = el.value; });
+  });
 }
 
 /* ================= collect / fill ================= */
@@ -2095,6 +2156,7 @@ function populateWoTypeSelect(){
 function onWoTypeChange(){
   var el = document.getElementById("wo-changeorder-card");
   if (el) el.style.display = (val("woType") === "Change Order") ? "" : "none";
+  if (val("woType") === "Change Order") renderChangeOrderPhotos();
   var isRepair = val("woType") === "Repair";
   var rc = document.getElementById("wo-repair-card");
   if (rc) rc.style.display = isRepair ? "" : "none";

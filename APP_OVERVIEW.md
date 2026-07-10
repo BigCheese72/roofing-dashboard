@@ -62,13 +62,16 @@ order was implicitly before this existed), **Change Order**, **Inspection**,
 about the form stays the same for most types.
 
 **Change Order** reveals extra fields — Cost, Man-Hours, PO Number (optional), Date
-Completed (optional), Materials, and Description of Work Performed — and generates a
-**completely separate PDF**, styled like a real change-order/work-authorization
-document rather than the leak inspection report: "CHANGE ORDER" title in the Watkins
-red, job info, a prominent Description of Work Performed, an itemized Materials list,
-a Cost Summary with a Total, and an Approved By / Date signature line. No findings
-table or warranty section — that framing belongs to the leak report, not a change
-order.
+Completed (optional), Materials, Description of Work Performed, and its own **Photos**
+capture (📷 Take Photo / + Add Photos, right there in the Change Order card — since a
+change order has no findings, every photo added here just belongs to the change order
+itself; each gets its own auto-pin from GPS the same way a finding's photo does) — and
+generates a **completely separate PDF**, styled like a real change-order/
+work-authorization document rather than the leak inspection report: "CHANGE ORDER"
+title in the Watkins red, job info, a prominent Description of Work Performed, an
+itemized Materials list, a Cost Summary with a Total, an Approved By / Date signature
+line, and those photos as a secondary grid at the end. No findings table or warranty
+section — that framing belongs to the leak report, not a change order.
 
 **Repair** is for project/small-project work — flashing a curb, several curbs and
 boots, that kind of scope — rather than a leak diagnosis. It hides the Roof

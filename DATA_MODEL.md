@@ -341,6 +341,11 @@ Example fields:
               // (photo's own EXIF-derived location) or by in-app camera capture
               // (device GPS at the moment of capture, see captureDeviceGps() in
               // DEV_NOTES.md) — a library-picked photo has no gps key at all.
+              // pin (optional: {lat,lng,x,y,source}, same shape as finding.pin) is
+              // Change Order-only — a Change Order has no findings to hang a pin
+              // off of, so each of its photos carries its own instead, auto-set
+              // from gps by maybeAutoPinPhoto(). Absent for every other work order
+              // type. See "Photo-capture rework" in DEV_NOTES.md.
   repairs: [],
   warrantable,
   nonWarrantable,

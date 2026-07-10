@@ -104,19 +104,22 @@ Goal: preserve and harden the existing RoofOps Field / Watkins work order workfl
   clean (unbadged) production icons are generated and committed to `icons/prod/` but
   not yet wired in — that's the last step when this carries over to `main`. See
   "Home-screen app icon" in `DEV_NOTES.md` and `icons/README.md`.
-- 🚧 **In progress (dev only)**: photo-capture rework, so photos are captured in
-  context (right in a finding, or a change order's scope) instead of a separate
-  section to link up afterward. **Increment 1 shipped**: "📷 Take Photo" opens the
-  device camera directly and grabs GPS at capture time; associating that photo with a
-  finding auto-drops a pin from it (never overwrites a manual placement).
-  **Increment 2 shipped**: each finding now has its own capture buttons and photo
-  strip, right in its card — caption/finding-link/auto-pin all in one action, no
-  dropdown needed. Same underlying `photos[]` array as before (just filtered by
-  finding), so every existing work order's photos display correctly with zero
-  migration — verified against a legacy-shaped work order directly. The global Photo
-  Documentation section is unchanged, still shows everything and still controls
-  print order. Increment 3 (change-order photos, each with their own auto-pin) is
-  still to come. See "Photo-capture rework" in `DEV_NOTES.md`.
+- ✅ **Shipped (dev only)**: photo-capture rework, so photos are captured in context
+  (right in a finding, or a change order's scope) instead of a separate section to
+  link up afterward. **Increment 1**: "📷 Take Photo" opens the device camera
+  directly and grabs GPS at capture time; associating that photo with a finding
+  auto-drops a pin from it (never overwrites a manual placement). **Increment 2**:
+  each finding now has its own capture buttons and photo strip, right in its card —
+  caption/finding-link/auto-pin all in one action, no dropdown needed. Same
+  underlying `photos[]` array as before (just filtered by finding), so every
+  existing work order's photos display correctly with zero migration — verified
+  against a legacy-shaped work order directly. **Increment 3**: Change Order gets its
+  own photo capture too (it has no findings, so every photo on it just belongs to the
+  change order) — each photo gets its own auto-pin (`photo.pin`, new/additive field),
+  and photos already printed into the change-order PDF automatically since it already
+  read from the same array. The global Photo Documentation section is unchanged
+  throughout all three increments — still shows everything, still controls print
+  order. See "Photo-capture rework" in `DEV_NOTES.md`.
 - ❌ **Decided against (2026-07-09)**: pushing app-added phone photos to a matching
   CompanyCam project. CompanyCam's photo-upload API requires a publicly-fetchable URL
   per photo, which this app can't produce without paying for Firebase Storage or

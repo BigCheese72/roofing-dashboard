@@ -2317,6 +2317,59 @@ no `pin` key at all, photos with `finding_id` set and one with none, no `gps` ke
 anywhere) and confirmed it displays correctly in both the embedded and global views
 with no errors, no data loss, no duplication. Zero console errors throughout.
 
+### Photo-capture rework — Increment 3: change-order photos (shipped 2026-07-10, dev only)
+
+**Goal**: a Change Order has no findings (it's a scope of work, not a leak diagnosis),
+but photos should still be capturable right in the change-order form, each with its
+own caption and auto-pin, and show up in the change-order PDF.
+
+**New "Photos" field inside `#wo-changeorder-card`** — "📷 Take Photo" / "+ Add
+Photos" buttons plus a photo strip (`#co-photos-host`, populated by
+`renderChangeOrderPhotos()`). Unlike `findingPhotoGalleryHtml()` from increment 2,
+this shows **every** photo on the work order, not a filtered subset — a Change Order
+has no finding grouping, so on that work order type "every photo" and "this change
+order's photos" are the same set. Same reuse pattern as increment 2:
+`openPhotoLightbox(i)`/`removePhoto(i)` by real global index, one source of truth,
+no parallel photo list.
+
+**`photo.pin`** — new, additive, optional field (same shape as `finding.pin`: `{lat,
+lng, x, y, source}`). Since a Change Order has no finding to hang a pin off of, each
+photo carries its own. `maybeAutoPinPhoto(photo)` is the Change Order equivalent of
+increment 1's `maybeAutoPinFinding()` — same never-overwrite rule, same
+`source:"device_gps"` convention. Wired into `addPhotosFromCamera()`'s existing
+`done()` callback: when no `findingId` is passed (so not an increment-2 in-finding
+capture) *and* the work order's current type is "Change Order," it tries
+`maybeAutoPinPhoto()` instead of `maybeAutoPinFinding()` — scoped so a Leak/Service
+photo added through the ordinary global section doesn't pick up a pin field it has
+no use for.
+
+**Photos already printed into the Change Order PDF** — `generateChangeOrderPdf()`
+already pulled from `filledPhotos()` (the same global array) as a secondary photo
+grid, so nothing needed to change there; photos captured through the new UI just
+show up automatically, confirmed by generating the PDF and checking for the photo
+section.
+
+**Deliberately not built** (per "don't over-build," matching this session's
+established scoping discipline): no drag-to-adjust modal for a photo's pin (only
+findings get that, via the existing pin modal, which is hard-wired to
+`findingById()`), and `photo.pin` is **not** wired into the roof map or the Building
+History aggregate view — this increment is scoped to "captured, auto-pinned, shown
+on the change order and its PDF" exactly as asked, not full feature parity with
+finding pins. Each photo shows a small "📍 Located" / "No location" note instead. A
+reasonable follow-up if Mark wants more.
+
+**Verified — no real Firestore/CompanyCam writes, everything local/in-memory**:
+switched to Change Order and confirmed the empty-state gallery renders with working
+capture buttons; captured with mocked GPS and confirmed `photo.pin` was set and the
+gallery shows "📍 Located"; added a library photo and confirmed no pin and "No
+location"; confirmed both photos also appear in the (unchanged) global Photo
+Documentation section, same array; generated the actual change-order PDF and
+confirmed the photo section is present; removed a photo from the change-order
+gallery and confirmed it's gone from both views. **Backward compatibility**: loaded a
+legacy-shaped Change Order work order (a photo with no `gps`/`pin` key at all) and
+confirmed it displays correctly with "No location," no errors. Zero console errors
+throughout.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |
