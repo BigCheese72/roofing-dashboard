@@ -35,6 +35,13 @@ Goal: preserve and harden the existing RoofOps Field / Watkins work order workfl
   through the modal's dimmed backdrop mid-interaction. Body scroll is now locked
   while any full-screen modal is open. See "Old map visible behind a modal's
   placement map on mobile" in `DEV_NOTES.md`.
+- ✅ **Shipped**: Work Order Type — Leak / Service (default, unchanged behavior),
+  Change Order, Inspection, Repair, Warranty. Change Order reveals a Cost/Man-Hours/
+  Materials/Description/PO Number/Date Completed section, which prints as its own
+  labeled section in the generated PDF alongside the existing report format (not a
+  separate template yet — deliberate, noted for later). The type is also a filterable
+  dimension on the Building History timeline and the Reports tab. See "Work order
+  type" in `DEV_NOTES.md`.
 - ❌ **Decided against (2026-07-09)**: pushing app-added phone photos to a matching
   CompanyCam project. CompanyCam's photo-upload API requires a publicly-fetchable URL
   per photo, which this app can't produce without paying for Firebase Storage or

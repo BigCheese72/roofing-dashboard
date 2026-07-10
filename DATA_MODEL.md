@@ -313,6 +313,11 @@ Example fields:
   customerId,
   buildingId,
   workOrderNo,
+  woType, // "Leak / Service" (default/legacy) | "Change Order" | "Inspection" |
+          // "Repair" | "Warranty" — see WORK_ORDER_TYPES in index.html, easy to
+          // extend. Absent/undefined always reads as "Leak / Service" (collect()/
+          // fill() both fall back to WORK_ORDER_TYPES[0]) — see "Work order type"
+          // in DEV_NOTES.md.
   jobName,
   location,
   serviceDate,
@@ -328,6 +333,14 @@ Example fields:
   warrantable,
   nonWarrantable,
   summary,
+  // Change Order-only fields — blank/absent for every other type. Only
+  // rendered/editable in the form when woType === "Change Order".
+  woCost,           // free text, e.g. "1250.50" — not coerced to a number
+  woManHours,       // free text, e.g. "8.5"
+  woMaterials,      // free text, one item per line
+  woDescription,    // free text — description of work performed
+  woPONumber,       // free text, optional
+  woDateCompleted,  // free text (same "M/D/YY" convention as serviceDate), optional
   status: "draft", // draft | completed | sent | archived
   companyCamProjectId,
   createdAt,
@@ -356,6 +369,10 @@ Example fields:
   buildingId,
   workOrderId, // null for a manually logged activity — see below
   workOrderNo,
+  workOrderType, // "Leak / Service" (default/legacy) | "Change Order" | "Inspection" |
+                 // "Repair" | "Warranty" — snapshot of the work order's woType at the
+                 // time this was logged. null/absent for a manually logged activity
+                 // (activities aren't tied to a work order at all).
   roofId, // which of buildingId's roofs[] this is for — "roof_default" if predates this field
   reportType: "PDF Emailed", // or an activity type string, e.g. "Drone Flight"
   isActivity: false, // true for a manually logged activity, false for a real generated report
@@ -438,6 +455,8 @@ Example fields:
   eventType: "report_generated",
   workOrderId,
   workOrderNo,
+  workOrderType, // see "Work order type" in DEV_NOTES.md — null/absent for a
+                 // manually logged activity
   reportId,
   date,
   technician,

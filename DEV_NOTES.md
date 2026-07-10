@@ -1752,6 +1752,79 @@ buttons don't cram the row on a narrow phone screen — confirmed the row wraps 
 multiple lines at 375px width rather than squeezing the caption input unusably
 narrow. Zero console errors throughout.
 
+### Work order type (shipped 2026-07-10)
+
+**Goal (from Mark)**: let a work order be tagged with a type — Leak/Service (today's
+only implicit type), Change Order, Inspection, Repair, Warranty — with Change Order
+getting extra fields (cost, man-hours, materials, description, PO number, date
+completed), the type flowing into the timeline/filters, and into the PDF.
+
+**Types**: `WORK_ORDER_TYPES` in `index.html` — a plain array, easy to extend.
+`"Leak / Service"` is first and is the load-bearing default: `collect()`/`fill()` both
+explicitly fall back to `WORK_ORDER_TYPES[0]` rather than relying on the `<select>`'s
+own default-option behavior, which turned out not to be reliable here — setting a
+`<select>`'s `.value` to an unmatched string (e.g. `undefined` coerced to `""` for a
+work order saved before this field existed) deselects everything rather than falling
+back to the first `<option>`. The explicit fallback is what actually guarantees every
+existing work order reads as "Leak / Service" with zero behavior change.
+
+**Change Order fields** (`woCost`, `woManHours`, `woMaterials`, `woDescription`,
+`woPONumber`, `woDateCompleted`) are plain entries in `FIELD_IDS`, so they round-trip
+through `collect()`/`fill()` exactly like every other simple form field — blank/absent
+for every other type, no special handling needed there. The **`#wo-changeorder-card`**
+is a plain hidden-by-default card, shown/hidden by `onWoTypeChange()` on the type
+select's `onchange` (and re-synced by `fill()` after loading an existing work order,
+so a loaded Change Order shows its card immediately, not just after a manual type
+change). Cost/Man-Hours are `type="number"` inputs for a better mobile keyboard, but
+stored as plain strings like every other field in this app (`serviceDate` isn't
+coerced to a real date either) — no new type-handling convention introduced.
+
+**Doesn't touch the roof-scoping or dedup mechanics at all** — `woType` and the
+Change Order fields are purely new, additive fields on the work order object and on
+`logReportAndHistoryEvent()`'s payload (`workOrderType`, a snapshot of `o.woType`).
+The `evt_<workOrderId>` upsert, `roofId`/multi-roof scoping, and the report/activity
+split are all unchanged; `workOrderType` just rides along as one more field on the
+same payload.
+
+**Timeline/Reports tab**: `workOrderType` is now a full filter dimension, mirrored in
+both places exactly like `reportType`/`roofType`/etc. already are —
+`populateTimelineFilterOptions`/`filterTimelineEvents`/`timelineFiltersHtml` in
+Building History, and the parallel `populateReportsFilterOptions`/`filterReports` +
+a new `rp-wotype` field in the Reports tab. Both card renderers
+(`timelineEventHtml`/`rpReportItemHtml`) show the type as a chip — but *only* when
+it's not the default "Leak / Service," so the timeline/Reports list looks completely
+unchanged for the common case; a Change Order (or Inspection/Repair/Warranty) entry
+stands out with an amber-tinted chip instead.
+
+**PDF/preview/email text — a section, not a new template, as directed**: all three
+output paths (`buildText()` for the plain-text email body, `renderDoc()` for the
+on-screen HTML preview, and `generatePdf()` — the actual jsPDF document, which is a
+separate direct-drawing builder from the HTML preview, not html2canvas-based) now
+include "Work Order Type" in the Job Information section, and — only when
+`woType === "Change Order"` — a clearly-labeled "Change Order Details" section with
+Cost/Man-Hours/PO Number/Date Completed as a compact table, plus Materials and
+Description of Work Performed as wrapped paragraphs (matching how Summary is already
+rendered, since kvTable/kvTablePdf are built for short single-line facts, not
+multi-line text). Explicitly a small addition to the existing report format, not a
+separate Change Order template — noted per the spec, since a real template (different
+layout entirely for a Change Order) is a bigger, separate decision for later.
+
+**Verified against a mock Firestore** (no production writes): a fresh work order and
+a work order object with no `woType` field at all (simulating existing production
+data) both resolve to "Leak / Service" with the Change Order card hidden; switching
+the type select correctly shows/hides the card; a full Change Order — cost, man-hours,
+materials (multi-line), description, PO number, date completed — round-trips exactly
+through `collect()` → `fill()`; `logReportAndHistoryEvent()`'s payload carries the
+right `workOrderType` for both a Change Order and a plain work order; the timeline
+filter dropdown picks up both types from real data, filtering by "Change Order"
+correctly returns only that entry, and the chip shows for Change Order but not for the
+default type; `buildText()` and `renderDoc()` both include the type and the full
+Change Order Details section; and — generating an actual jsPDF document (not just the
+HTML preview) and inspecting its raw page content confirmed "Change Order Details,"
+"Work Order Type," and the cost value are genuinely present in the real PDF output,
+with the section correctly absent for a plain Leak/Service PDF. Zero console errors
+throughout.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |

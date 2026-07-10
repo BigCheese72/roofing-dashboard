@@ -194,6 +194,10 @@
 
     <div class="card">
       <h2 class="cond">Job Information</h2>
+      <div class="fld" style="max-width:280px">
+        <label>Work Order Type</label>
+        <select id="woType" onchange="onWoTypeChange()"></select>
+      </div>
       <div class="btnrow" style="margin:0 0 12px">
         <button class="btn" onclick="openBuildingPicker()">🔍 Select Existing Building</button>
         <span class="hint" style="margin:0">Picks an existing customer/building's info into the fields below — or just type a new one in directly.</span>
@@ -240,6 +244,20 @@
       <h2 class="cond">Work Performed</h2>
       <div id="repairs-list"></div>
       <div class="btnrow"><button class="btn" onclick="addRepair()">+ Add Repair</button></div>
+    </div>
+
+    <div class="card" id="wo-changeorder-card" style="display:none">
+      <h2 class="cond">Change Order Details</h2>
+      <div class="grid">
+        <div class="fld"><label>Cost ($)</label><input type="number" step="0.01" id="woCost"></div>
+        <div class="fld"><label>Man-Hours</label><input type="number" step="0.25" id="woManHours"></div>
+        <div class="fld"><label>PO Number (optional)</label><input type="text" id="woPONumber"></div>
+        <div class="fld"><label>Date Completed (optional)</label><input type="text" id="woDateCompleted"></div>
+      </div>
+      <div class="fld"><label>Materials</label>
+        <textarea id="woMaterials" rows="3" placeholder="One item per line"></textarea></div>
+      <div class="fld"><label>Description of Work Performed</label>
+        <textarea id="woDescription" rows="4"></textarea></div>
     </div>
 
     <div class="card">
@@ -344,6 +362,7 @@
         <div class="fld"><label>Technician</label><select id="rp-tech" onchange="rpRenderList()"><option value="">All</option></select></div>
         <div class="fld"><label>Warranty Status</label><select id="rp-warranty" onchange="rpRenderList()"><option value="">All</option></select></div>
         <div class="fld"><label>Report Type</label><select id="rp-reporttype" onchange="rpRenderList()"><option value="">All</option></select></div>
+        <div class="fld"><label>Work Order Type</label><select id="rp-wotype" onchange="rpRenderList()"><option value="">All</option></select></div>
       </div>
       <div class="btnrow" style="margin:0 0 10px;align-items:center">
         <button class="btn" onclick="clearReportsFilters()">Clear Filters</button>
@@ -1753,12 +1772,40 @@ function renderPhotos(){
 }
 
 /* ================= collect / fill ================= */
+/* Extensible on purpose — adding a new type is just adding a string here.
+   "Leak / Service" MUST stay first: it's the default for both a brand-new
+   work order and any existing one saved before this field existed (see
+   collect()/fill() below), so today's behavior never changes for the
+   common case. Only "Change Order" currently reveals extra fields
+   (#wo-changeorder-card) — the rest just get recorded, not built out
+   further yet, per spec ("don't over-build"). */
+var WORK_ORDER_TYPES = ["Leak / Service", "Change Order", "Inspection", "Repair", "Warranty"];
+function populateWoTypeSelect(){
+  var sel = document.getElementById("woType");
+  if (sel.options.length) return;
+  WORK_ORDER_TYPES.forEach(function(t){
+    var opt = document.createElement("option");
+    opt.value = t; opt.textContent = t;
+    sel.appendChild(opt);
+  });
+}
+function onWoTypeChange(){
+  var el = document.getElementById("wo-changeorder-card");
+  if (el) el.style.display = (val("woType") === "Change Order") ? "" : "none";
+}
 var FIELD_IDS = ["jobName","location","serviceDate","jobNo","billTo","billContact","billPhone",
-  "siteContact","technician","roofSystem","reportedArea","warrantable","nonWarrantable","summary"];
+  "siteContact","technician","roofSystem","reportedArea","warrantable","nonWarrantable","summary",
+  "woCost","woManHours","woMaterials","woDescription","woPONumber","woDateCompleted"];
 
 function collect(){
   var o = { id: currentId || ("wo_" + Date.now()) };
   FIELD_IDS.forEach(function(k){ o[k] = val(k); });
+  /* Not in FIELD_IDS: a SELECT's .value falls back to "" (nothing
+     selected) rather than its first option when set to an unmatched
+     value, so an explicit default here is what actually guarantees
+     "Leak / Service" for a work order that predates this field —
+     relying on option order alone isn't reliable. */
+  o.woType = val("woType") || WORK_ORDER_TYPES[0];
   o.findings = findings.slice();
   o.repairs = repairs.slice();
   o.photos = photos.slice();
@@ -1771,6 +1818,9 @@ function fill(o){
   currentId = o.id;
   currentRoofId = o.roofId || null;
   FIELD_IDS.forEach(function(k){ setVal(k, o[k]); });
+  populateWoTypeSelect();
+  setVal("woType", o.woType || WORK_ORDER_TYPES[0]);
+  onWoTypeChange();
   findings = (o.findings || []).slice(); if (!findings.length) findings = [{condition:"",location:"",warranty:"Warrantable"}];
   /* Self-heals findings/photos saved before ids and pins existed — never
      fabricates a pin location for old data, just ensures every finding has
@@ -2646,7 +2696,8 @@ function tlDistinctSorted(field){
   return Object.keys(set).sort();
 }
 function populateTimelineFilterOptions(){
-  [["tl-roof","roofType"], ["tl-tech","technician"], ["tl-warranty","warrantyStatus"], ["tl-reporttype","reportType"]]
+  [["tl-roof","roofType"], ["tl-tech","technician"], ["tl-warranty","warrantyStatus"],
+   ["tl-reporttype","reportType"], ["tl-wotype","workOrderType"]]
     .forEach(function(spec){
       var sel = document.getElementById(spec[0]);
       if (!sel) return;
@@ -2658,7 +2709,7 @@ function populateTimelineFilterOptions(){
     });
 }
 function clearTimelineFilters(){
-  ["tl-from","tl-to","tl-roof","tl-tech","tl-warranty","tl-reporttype"].forEach(function(id){
+  ["tl-from","tl-to","tl-roof","tl-tech","tl-warranty","tl-reporttype","tl-wotype"].forEach(function(id){
     var el = document.getElementById(id);
     if (el) el.value = "";
   });
@@ -2667,6 +2718,7 @@ function clearTimelineFilters(){
 function filterTimelineEvents(){
   var from = val("tl-from"), to = val("tl-to");
   var roof = val("tl-roof"), tech = val("tl-tech"), warranty = val("tl-warranty"), rtype = val("tl-reporttype");
+  var wotype = val("tl-wotype");
   var fromTs = from ? new Date(from + "T00:00:00").getTime() : null;
   var toTs = to ? new Date(to + "T23:59:59").getTime() : null;
   return historyEvents.filter(function(e){
@@ -2676,6 +2728,7 @@ function filterTimelineEvents(){
     if (tech && e.technician !== tech) return false;
     if (warranty && e.warrantyStatus !== warranty) return false;
     if (rtype && e.reportType !== rtype) return false;
+    if (wotype && e.workOrderType !== wotype) return false;
     return true;
   });
 }
@@ -2688,6 +2741,7 @@ function timelineFiltersHtml(){
     '<div class="fld"><label>Technician</label><select id="tl-tech" onchange="renderTimelineList()"><option value="">All</option></select></div>' +
     '<div class="fld"><label>Warranty Status</label><select id="tl-warranty" onchange="renderTimelineList()"><option value="">All</option></select></div>' +
     '<div class="fld"><label>Report Type</label><select id="tl-reporttype" onchange="renderTimelineList()"><option value="">All</option></select></div>' +
+    '<div class="fld"><label>Work Order Type</label><select id="tl-wotype" onchange="renderTimelineList()"><option value="">All</option></select></div>' +
     '</div>' +
     '<div class="btnrow" style="margin:0 0 10px;align-items:center">' +
     '<button class="btn" onclick="clearTimelineFilters()">Clear Filters</button>' +
@@ -2697,6 +2751,8 @@ function timelineEventHtml(e, buildingId){
   return '<div class="evt-item"' + (e._dup ? ' style="border-left-color:#D64545"' : '') + '><div class="evt-head">' +
     '<span class="evt-date">' + esc(e.date || fmtTs(e.createdAt)) + '</span>' +
     '<span class="evt-tag">' + esc(e.reportType || "") + '</span>' +
+    (e.workOrderType && e.workOrderType !== WORK_ORDER_TYPES[0] ?
+      '<span class="evt-tag" style="background:#FFF3E0;color:#8A5A00">' + esc(e.workOrderType) + '</span>' : '') +
     (e.warrantyStatus ? '<span class="evt-tag">' + esc(e.warrantyStatus) + '</span>' : '') +
     (e.emailSent ? '<span class="evt-tag">Emailed ✓</span>' : '') +
     (e._dup ? '<span class="evt-tag" style="background:#FBE2E2;color:#D64545">Possible duplicate</span>' : '') +
@@ -2883,7 +2939,8 @@ function rpDistinctSorted(field){
   return Object.keys(set).sort();
 }
 function populateReportsFilterOptions(){
-  [["rp-roof","roofType"], ["rp-tech","technician"], ["rp-warranty","warrantyStatus"], ["rp-reporttype","reportType"]]
+  [["rp-roof","roofType"], ["rp-tech","technician"], ["rp-warranty","warrantyStatus"],
+   ["rp-reporttype","reportType"], ["rp-wotype","workOrderType"]]
     .forEach(function(spec){
       var sel = document.getElementById(spec[0]);
       if (!sel) return;
@@ -2895,7 +2952,7 @@ function populateReportsFilterOptions(){
     });
 }
 function clearReportsFilters(){
-  ["rp-search","rp-from","rp-to","rp-roof","rp-tech","rp-warranty","rp-reporttype"].forEach(function(id){
+  ["rp-search","rp-from","rp-to","rp-roof","rp-tech","rp-warranty","rp-reporttype","rp-wotype"].forEach(function(id){
     var el = document.getElementById(id);
     if (el) el.value = "";
   });
@@ -2905,6 +2962,7 @@ function filterReports(){
   var q = val("rp-search").trim().toLowerCase();
   var from = val("rp-from"), to = val("rp-to");
   var roof = val("rp-roof"), tech = val("rp-tech"), warranty = val("rp-warranty"), rtype = val("rp-reporttype");
+  var wotype = val("rp-wotype");
   var fromTs = from ? new Date(from + "T00:00:00").getTime() : null;
   var toTs = to ? new Date(to + "T23:59:59").getTime() : null;
   return reportsCache.filter(function(r){
@@ -2916,6 +2974,7 @@ function filterReports(){
     if (tech && r.technician !== tech) return false;
     if (warranty && r.warrantyStatus !== warranty) return false;
     if (rtype && r.reportType !== rtype) return false;
+    if (wotype && r.workOrderType !== wotype) return false;
     return true;
   });
 }
@@ -2924,6 +2983,8 @@ function rpReportItemHtml(r){
     '\')"><div class="evt-head">' +
     '<span class="evt-date">' + esc(r.date || fmtTs(r.createdAt)) + '</span>' +
     '<span class="evt-tag">' + esc(r.reportType || "") + '</span>' +
+    (r.workOrderType && r.workOrderType !== WORK_ORDER_TYPES[0] ?
+      '<span class="evt-tag" style="background:#FFF3E0;color:#8A5A00">' + esc(r.workOrderType) + '</span>' : '') +
     (r.warrantyStatus ? '<span class="evt-tag">' + esc(r.warrantyStatus) + '</span>' : '') +
     (r.emailSent ? '<span class="evt-tag">Emailed ✓</span>' : '') +
     '</div>' +
@@ -2985,6 +3046,7 @@ function buildText(){
   L.push(o.jobName + (o.location ? " - " + o.location : ""));
   L.push("");
   L.push("JOB INFORMATION");
+  L.push("Work Order Type: " + o.woType);
   L.push("Job Name: " + o.jobName);
   L.push("Location: " + o.location);
   L.push("Date of Service: " + o.serviceDate);
@@ -3006,6 +3068,16 @@ function buildText(){
   filledRepairs().forEach(function(r,i){
     L.push((i+1) + ". " + r.repair + (r.location ? " — " + r.location : ""));
   });
+  if (o.woType === "Change Order"){
+    L.push("");
+    L.push("CHANGE ORDER DETAILS");
+    if (o.woCost) L.push("Cost: $" + o.woCost);
+    if (o.woManHours) L.push("Man-Hours: " + o.woManHours);
+    if (o.woPONumber) L.push("PO Number: " + o.woPONumber);
+    if (o.woDateCompleted) L.push("Date Completed: " + o.woDateCompleted);
+    if (o.woMaterials) L.push("Materials: " + o.woMaterials);
+    if (o.woDescription) L.push("Description of Work Performed: " + o.woDescription);
+  }
   L.push("");
   L.push("WARRANTY DETERMINATION");
   if (o.warrantable) L.push("Warrantable Repairs: " + o.warrantable);
@@ -3039,6 +3111,7 @@ function renderDoc(){
        "<div class='t2'>" + esc(o.jobName) + (o.location ? " — " + esc(o.location) : "") + "</div></div></div>";
 
   h += "<h3 class='cond'>Job Information</h3>" + kvTable([
+    ["Work Order Type",o.woType],
     ["Job Name",o.jobName],["Location",o.location],["Date of Service",o.serviceDate],
     ["Job No.",o.jobNo],["Bill To",o.billTo],["Billing Contact",o.billContact],
     ["Contact Phone",o.billPhone],["Site Contact",o.siteContact],["Technician",o.technician],
@@ -3062,6 +3135,17 @@ function renderDoc(){
       fr.map(function(r,i){
         return "<tr><td>" + (i+1) + "</td><td>" + esc(r.repair) + "</td><td>" + esc(r.location) + "</td></tr>";
       }).join("") + "</tbody></table>";
+  }
+
+  if (o.woType === "Change Order"){
+    var cod = kvTable([
+      ["Cost",o.woCost ? "$" + o.woCost : ""],["Man-Hours",o.woManHours],
+      ["PO Number",o.woPONumber],["Date Completed",o.woDateCompleted]]);
+    if (cod || o.woMaterials || o.woDescription){
+      h += "<h3 class='cond'>Change Order Details</h3>" + cod;
+      if (o.woMaterials) h += "<p><b>Materials:</b></p><p style='white-space:pre-wrap'>" + esc(o.woMaterials) + "</p>";
+      if (o.woDescription) h += "<p><b>Description of Work Performed:</b></p><p style='white-space:pre-wrap'>" + esc(o.woDescription) + "</p>";
+    }
   }
 
   var wd = kvTable([["Warrantable Repairs",o.warrantable],["Non-Warrantable Repairs",o.nonWarrantable]]);
@@ -3192,8 +3276,22 @@ async function generatePdf(){
     y = doc.lastAutoTable.finalY + 18;
   }
 
+  function wrappedTextPdf(text){
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9.5);
+    doc.setTextColor(30, 39, 46);
+    var lines = doc.splitTextToSize(text, W - M * 2);
+    lines.forEach(function(ln){
+      if (y > H - M - 14){ doc.addPage(); y = M; }
+      doc.text(ln, M, y);
+      y += 13;
+    });
+    y += 12;
+  }
+
   heading("Job Information");
   kvTablePdf([
+    ["Work Order Type", o.woType],
     ["Job Name", o.jobName], ["Location", o.location], ["Date of Service", o.serviceDate],
     ["Job No.", o.jobNo], ["Bill To", o.billTo], ["Billing Contact", o.billContact],
     ["Contact Phone", o.billPhone], ["Site Contact", o.siteContact], ["Technician", o.technician],
@@ -3230,6 +3328,24 @@ async function generatePdf(){
       margin: { left: M, right: M }
     });
     y = doc.lastAutoTable.finalY + 18;
+  }
+
+  if (o.woType === "Change Order" && (o.woCost || o.woManHours || o.woPONumber || o.woDateCompleted || o.woMaterials || o.woDescription)){
+    heading("Change Order Details");
+    kvTablePdf([
+      ["Cost", o.woCost ? "$" + o.woCost : ""], ["Man-Hours", o.woManHours],
+      ["PO Number", o.woPONumber], ["Date Completed", o.woDateCompleted]
+    ]);
+    if (o.woMaterials){
+      doc.setFont("helvetica", "bold"); doc.setFontSize(9.5); doc.setTextColor(38, 50, 56);
+      doc.text("Materials:", M, y); y += 13;
+      wrappedTextPdf(o.woMaterials);
+    }
+    if (o.woDescription){
+      doc.setFont("helvetica", "bold"); doc.setFontSize(9.5); doc.setTextColor(38, 50, 56);
+      doc.text("Description of Work Performed:", M, y); y += 13;
+      wrappedTextPdf(o.woDescription);
+    }
   }
 
   if (o.warrantable || o.nonWarrantable){
@@ -3395,6 +3511,7 @@ async function logReportAndHistoryEvent(o, kind, emailInfo){
       workOrderId: o.id, workOrderNo: o.jobNo || "",
       date: o.serviceDate || "", technician: o.technician || "",
       roofId: o.roofId || "roof_default",
+      workOrderType: o.woType || WORK_ORDER_TYPES[0],
       roofType: o.roofSystem || "", reportType: kind,
       conditionsSummary: summarizeRows(o.findings || [], "condition", "location"),
       repairsSummary: summarizeRows(o.repairs || [], "repair", "location"),

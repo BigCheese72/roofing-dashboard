@@ -14,7 +14,9 @@ The app is currently built for the Watkins Roofing workflow, but the long-term d
    To, Location, and Roof System fill in automatically instead of being re-typed
    (helps avoid accidentally creating a duplicate building record from a slightly
    different spelling). Skip this and just type if it's a brand-new job/customer.
-3. Fill out the work order details:
+3. Pick a **Work Order Type** at the top of Job Information — defaults to
+   **Leak / Service**, so most jobs need no extra step. See "Work Order Types" below.
+   Fill out the work order details:
    - job name
    - location
    - date of service
@@ -36,6 +38,23 @@ The app is currently built for the Watkins Roofing workflow, but the long-term d
 7. Send, share, or download the PDF.
 8. The app saves the work order and logs report/history information, including any
    pins placed, onto that building's permanent record.
+
+## Work Order Types
+
+Every work order has a type — **Leak / Service** (the default, and what every work
+order was implicitly before this existed), **Change Order**, **Inspection**,
+**Repair**, or **Warranty**. Pick it at the top of Job Information; everything else
+about the form stays the same for most types.
+
+**Change Order** reveals an extra "Change Order Details" section: Cost, Man-Hours, PO
+Number (optional), Date Completed (optional), Materials, and Description of Work
+Performed. These print into the generated PDF as their own clearly-labeled section,
+alongside the normal report — not a separate document.
+
+The type also shows up on that building's Building History timeline and in the
+Reports tab (as a filterable "Work Order Type," alongside Report Type, Technician,
+etc.) — so, for example, "every Change Order this month across every building" is a
+real question the Reports tab can answer.
 
 ## Managing Photos
 
