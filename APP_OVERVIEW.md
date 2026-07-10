@@ -42,7 +42,11 @@ Every finding can get a pin showing where on the roof it was found. Tap **"📍 
 Map"** on a finding to open a map:
 
 - **Default**: a satellite view, centered on the job address automatically. Drag the
-  pin to the exact spot.
+  pin to the exact spot. On a large roof, pinch/zoom in further than usual — the map
+  now enlarges the sharpest available imagery instead of stopping short, giving a
+  bigger, easier-to-tap target for precise placement. If a specific roof is still too
+  hard to read even zoomed all the way in, ask an admin about setting a custom base
+  map (roof plan/sketch, or a drone photo) for that building — see below.
 - **If a linked CompanyCam photo has GPS data**, the pin starts there instead — still
   drag it to correct if the phone's GPS wasn't precise (roofs are small; GPS often
   isn't accurate enough on its own).

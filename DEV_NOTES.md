@@ -258,6 +258,48 @@ silently computing wrong coordinates.
 a roof_plan/sketch after the fact) is explicitly excluded per the spec, as are
 roof-section labels/filters on the history map.
 
+**Satellite resolution for pin placement on large roofs (shipped)** — field feedback:
+placement is accurate, but a large roof has to be zoomed out to fit on screen, and at
+that zoom the Esri imagery looks blurry/coarse, making precise tapping hard. (Manual
+roof-tracing was floated as a fix and explicitly paused/declined — not built.)
+
+Researched free options before touching anything:
+- **Raising `maxZoom`/adding `maxNativeZoom` on the existing Esri layer** — the fix
+  actually shipped. Esri's `World_Imagery` service schema declares LODs up to zoom 23,
+  but its own service description says that depth is "select metropolitan areas"
+  only. Verified directly against live tiles (not just the schema) at a real
+  non-major-metro job site: fetched actual tile bytes at zoom 16–23 and hashed them —
+  19 and 20 were genuinely distinct real imagery, 21/22/23 came back **byte-identical**
+  (same tile served three times), proving 20 is that location's true resolution
+  ceiling and anything requested beyond it is a wasted network round-trip for no new
+  detail. Set `maxNativeZoom: 20` (shared top-of-file constant `SAT_MAX_NATIVE_ZOOM`,
+  used by the pin modal, asset modal, and building-history roof map — all three
+  satellite-mode Esri layers) with `maxZoom: 22` (was 21, uniformly, with no
+  `maxNativeZoom` at all). Leaflet now stops re-fetching the network past zoom 20 and
+  instead CSS-enlarges that last real tile for 21–22 — confirmed live: at map zoom 22
+  the browser only requested the `tile/20/...` URL, and it rendered visually 4x larger
+  (256px tile laid out at 1024px). Bigger on-screen targets for touch tapping on a big
+  roof, zero information-theoretic sharpening (can't invent detail that was never
+  photographed), zero added network cost, zero risk to existing pin accuracy (pin
+  coordinates are still real lat/lng, unaffected by tile display scale).
+- **A separate "Clarity" Esri layer** — Mark's instinct going in. Checked Esri's REST
+  catalog directly: there is no separate free/no-key tile endpoint for this. "Clarity"
+  is Esri's marketing name for periodic high-res updates *within* `World_Imagery`
+  itself — already the layer in use, nothing to switch to.
+- **USGS National Map imagery** (`basemap.nationalmap.gov`, free, no key, US-only) —
+  tested at the same coordinates and zoom levels: 404s, no coverage there. Esri
+  remains the better and already-integrated free option.
+- **A paid tile provider** (Mapbox Satellite, Google, Bing) was considered and
+  rejected — all require an API key/account, which conflicts with the standing "free,
+  no paid/keyed services" constraint for this app.
+- **The uploaded/drone-orthomosaic base map path already exists as the real "sharp"
+  answer** for a roof where even over-zoomed Esri imagery genuinely isn't enough — see
+  above in this section. It's intentionally admin-gated (shared, building-wide,
+  affects every future report — same reasoning as the rest of that gating, not
+  changed here). Not touched by this fix; still the right escalation path for a
+  chronically-troublesome large roof, just not something a field tech sets up
+  in-the-moment from a job site.
+
 ### Roof assets: permanent roof features (shipped)
 
 A finding `pin` and a roof asset marker look similar on the map but mean opposite

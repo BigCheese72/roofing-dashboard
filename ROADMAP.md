@@ -138,6 +138,20 @@ Goal: turn each building into a long-term roof record.
   "RoofMapper" in `DEV_NOTES.md`.
 - Not yet built: manual anchoring for non-georeferenced (roof plan/sketch) maps
   (deliberately excluded by the spec), roof-section labels/filters.
+- ✅ **Shipped**: sharper satellite imagery for pin placement on large roofs. Field
+  feedback: accurate placement, but big roofs need to zoom out to fit, and the
+  imagery gets blurry there. Manual roof-tracing was floated as a fix and explicitly
+  paused (not built). Verified Esri's `World_Imagery` service against live tile data
+  (not just its schema) to find each location's true resolution ceiling, then set
+  `maxNativeZoom`/`maxZoom` so Leaflet over-zooms (CSS-enlarges) the last real tile
+  instead of wastefully re-fetching non-existent deeper tiles — bigger, easier-to-tap
+  imagery on big roofs, no new information conjured, no cost, no pin-accuracy change.
+  Researched and ruled out: a separate Esri "Clarity" endpoint (doesn't exist —
+  that's the layer already in use), USGS imagery (no coverage at the test site), any
+  paid provider (against the no-paid-services constraint). The existing
+  drone-orthomosaic/uploaded-base-map path remains the answer for a roof where even
+  over-zoomed satellite genuinely isn't enough. See "Satellite resolution for pin
+  placement" in `DEV_NOTES.md`.
 
 ## Phase 4: Dashboard/Admin/Users
 
