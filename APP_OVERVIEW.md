@@ -28,13 +28,33 @@ The app is currently built for the Watkins Roofing workflow, but the long-term d
    - warranty determination
    - summary
 4. Add photos from the device or import them from CompanyCam. Optionally link each
-   photo to the specific finding it documents.
+   photo to the specific finding it documents. See "Managing Photos" below for
+   reordering and viewing them enlarged.
 5. Optionally place a pin on the roof map for any finding — see "How the Roof Map
    Works" below.
 6. Preview the report.
 7. Send, share, or download the PDF.
 8. The app saves the work order and logs report/history information, including any
    pins placed, onto that building's permanent record.
+
+## Managing Photos
+
+Every photo — whether added from the device or imported from CompanyCam — shows up
+the same way in the Photo Documentation section, in the order they'll print into the
+PDF:
+
+- **Tap a photo's thumbnail** to open it enlarged, near-full-screen. Tap the dark
+  background or the **✕ Close** button to dismiss it. Tapping the caption, the ▲/▼
+  buttons, or ✕ (remove) never opens the enlarged view — only the thumbnail image
+  itself does.
+- **▲ / ▼** on each photo moves it up or down in the list. The order shown here is
+  the order photos print into the generated PDF, so this is how to put the most
+  important photo first, group related ones together, etc. Captions and any linked
+  finding move together with their photo — reordering never mixes them up. On a
+  desktop browser, dragging a photo by its row works too, as a shortcut for the same
+  thing; on a phone, the ▲/▼ buttons are the reliable way to reorder (touch
+  drag-and-drop is inconsistent across phones, so it's intentionally not the primary
+  method).
 
 ## How the Roof Map Works
 

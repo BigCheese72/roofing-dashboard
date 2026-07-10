@@ -1696,6 +1696,62 @@ Spot-checked a normal project name (still works) and a deliberately hostile one
 apostrophe-containing building name now shows the correct confirm-dialog text with no
 broken handler. Zero console errors throughout.
 
+### Photo reorder + enlarge (shipped 2026-07-10)
+
+**Goal (from Mark)**: let a tech rearrange a work order's uploaded photos, with the
+new order flowing into the generated PDF, and let tapping a thumbnail open it
+enlarged. Both had to work for device-uploaded and CompanyCam-imported photos alike —
+true by construction, since `addPhotosFromFiles()` and `ccImport()`/`ccCompress()`
+both push the exact same shape (`{caption, img, w, h, finding_id}`, +`ccPhotoId`/`gps`
+for CompanyCam) into the same `photos[]` array, rendered by the same `renderPhotos()`.
+
+**Reorder**: `movePhoto(i, dir)` swaps `photos[i]` with its neighbor and re-renders.
+Whole photo objects swap together, so caption/finding/`ccPhotoId` never get separated
+from their image. New ▲/▼ buttons per photo card are the primary control — tap-to-move
+was prioritized over drag-and-drop per Mark's explicit direction, since HTML5
+drag-and-drop is unreliable on iOS touch. Buttons disable at the top/bottom of the
+list rather than silently no-oping. Desktop drag-and-drop (`draggable="true"` +
+`dragstart`/`dragover`/`drop`) was added as the requested "bonus" — splices the
+dragged photo to its drop position — but is a pure addition on top of the tap
+buttons, not a replacement; touch browsers that don't fire native HTML5 DnD events
+just never trigger it, leaving ▲/▼ as the only path there, exactly as intended.
+
+**Nothing downstream needed to change for the reorder to reach the PDF** —
+`buildText()`, the PDF builder, and `filledPhotos()` (used by both) all already just
+iterate the `photos[]` array in whatever order it's in. A reorder in the form *is* a
+reorder in the report, automatically.
+
+**Enlarge**: a new `#photo-lightbox` overlay (`position:fixed;inset:0;z-index:10000` —
+intentionally above the `9999` every other modal uses now, since this needed to sit
+above literally everything per the spec, including the reorder controls). Tapping a
+thumbnail (`onclick="openPhotoLightbox(i)"` on the `<img class="thumb">` element
+specifically, not the row) shows that photo full-size; tapping the dark backdrop or
+the **✕ Close** button dismisses it (backdrop check is `event.target===this`, same
+pattern as every other modal in the app, so tapping the enlarged image itself doesn't
+close it). Reuses the existing `lockBodyScroll()`/`unlockBodyScroll()` from "Modal
+z-index bug" above, so the page behind can't shift underneath it either.
+
+**No conflict between enlarge and the move/delete/caption controls, by construction**
+rather than by event-handling trickery: the thumbnail's click handler is on the `<img>`
+element alone; the ▲/▼ buttons, ✕ delete button, and caption input are separate
+sibling elements in the same row, so a tap on any of them never touches the image at
+all — no bubbling, no `stopPropagation()` needed.
+
+**Verified against seeded photo data at a mobile (375×812) viewport** (no production
+writes — this feature has no Firestore/network dimension to it at all, purely
+client-side form state): `movePhoto()` correctly swaps caption+image+`ccPhotoId`
+together and updates the disabled states on the boundary buttons; `collect()`'s
+`o.photos` and `filledPhotos()` both reflect the new order immediately after a move;
+the desktop drag-and-drop functions (`photoDragStart`/`photoDrop`) correctly reorder
+too; the lightbox opens with the right image, sits above everything (`elementFromPoint`
+confirmed it's the topmost element, above the surrounding form), closes on a backdrop
+tap but *not* on a tap on the image itself, and correctly locks/unlocks body scroll;
+clicking the move/delete buttons and editing the caption input all work normally and
+never open the lightbox. `.photo-row` gained `flex-wrap:wrap` so the two new ▲/▼
+buttons don't cram the row on a narrow phone screen — confirmed the row wraps to
+multiple lines at 375px width rather than squeezing the caption input unusably
+narrow. Zero console errors throughout.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |

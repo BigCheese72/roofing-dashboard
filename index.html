@@ -50,13 +50,18 @@
   .rowcard .rowhead b{font-size:15px;color:var(--slate)}
   .rowcard .rowhead .sp{flex:1}
   .photo-card{border-bottom:1px solid var(--card-line);margin-bottom:10px;padding-bottom:10px}
-  .photo-row{display:flex;gap:8px;align-items:center;margin-bottom:6px}
+  .photo-row{display:flex;gap:8px;align-items:center;margin-bottom:6px;flex-wrap:wrap}
   .photo-row b{min-width:60px;font-size:13px;color:var(--slate)}
-  .photo-row img.thumb{height:54px;width:72px;object-fit:cover;border:1px solid var(--line);border-radius:4px;flex:none}
+  .photo-row img.thumb{height:54px;width:72px;object-fit:cover;border:1px solid var(--line);border-radius:4px;flex:none;cursor:pointer}
+  .photo-row input[type=text]{min-width:120px}
+  .photo-move-btns{display:flex;flex-direction:column;gap:2px;flex:none}
+  .photo-move-btns .btn{padding:2px 10px;font-size:13px;line-height:1.3;min-width:36px}
   .photo-finding-row{display:flex;gap:8px;align-items:center;padding-left:80px}
   .photo-finding-row label{font-size:12px;color:var(--muted);white-space:nowrap;margin:0}
   .photo-finding-row select{flex:1;max-width:320px;padding:6px 8px;font-size:13px}
   @media (max-width:480px){ .photo-finding-row{padding-left:0} }
+  .photo-lightbox-img{max-width:94vw;max-height:90vh;object-fit:contain;position:absolute;
+    top:50%;left:50%;transform:translate(-50%,-50%);border-radius:4px}
 
   /* CompanyCam picker */
   .cc-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:8px;margin-top:10px}
@@ -556,6 +561,11 @@
       </div>
     </div>
   </div>
+</div>
+
+<div id="photo-lightbox" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:10000" onclick="if(event.target===this)closePhotoLightbox()">
+  <button class="btn" style="position:absolute;top:14px;right:14px" onclick="closePhotoLightbox()">✕ Close</button>
+  <img id="photo-lightbox-img" class="photo-lightbox-img" src="">
 </div>
 
 <div class="toast" id="toast"></div>
@@ -1657,6 +1667,47 @@ function addPhotosFromFiles(files){
   });
 }
 function removePhoto(i){ photos.splice(i,1); renderPhotos(); }
+/* Swaps two photos in place — works identically for a device-uploaded photo
+   or a CompanyCam import, since both end up in the same photos[] shape
+   (caption/img/w/h/finding_id, +ccPhotoId/gps for CompanyCam ones). The
+   whole photo object moves together, so caption/finding/ccPhotoId always
+   stay attached to the right image. Nothing downstream needs to know this
+   happened — buildText()/the PDF builder/filledPhotos() all just iterate
+   the photos[] array in order, so a reorder here is automatically the
+   report order too. Tap-to-move (▲▼) is the primary, mobile-reliable path
+   — HTML5 drag-and-drop below is a desktop-only bonus layered on top,
+   since touch drag-and-drop is notoriously unreliable on iOS. */
+function movePhoto(i, dir){
+  var j = i + dir;
+  if (j < 0 || j >= photos.length) return;
+  var tmp = photos[i];
+  photos[i] = photos[j];
+  photos[j] = tmp;
+  renderPhotos();
+}
+var photoDragFromIndex = null;
+function photoDragStart(i){ photoDragFromIndex = i; }
+function photoDragOver(e){ e.preventDefault(); }
+function photoDrop(e, i){
+  e.preventDefault();
+  if (photoDragFromIndex === null || photoDragFromIndex === i) return;
+  var moved = photos.splice(photoDragFromIndex, 1)[0];
+  photos.splice(i, 0, moved);
+  photoDragFromIndex = null;
+  renderPhotos();
+}
+function openPhotoLightbox(i){
+  var p = photos[i];
+  if (!p || !p.img) return;
+  document.getElementById("photo-lightbox-img").src = p.img;
+  document.getElementById("photo-lightbox").style.display = "";
+  lockBodyScroll();
+}
+function closePhotoLightbox(){
+  document.getElementById("photo-lightbox").style.display = "none";
+  document.getElementById("photo-lightbox-img").src = "";
+  unlockBodyScroll();
+}
 function renderPhotos(){
   var host = document.getElementById("photos-list");
   host.innerHTML = "";
@@ -1671,10 +1722,18 @@ function renderPhotos(){
   photos.forEach(function(p,i){
     var d = document.createElement("div");
     d.className = "photo-card";
+    d.draggable = true;
+    d.ondragstart = function(){ photoDragStart(i); };
+    d.ondragover = photoDragOver;
+    d.ondrop = function(e){ photoDrop(e, i); };
     d.innerHTML =
       '<div class="photo-row"><b>Photo ' + (i+1) + '</b>' +
-      (p.img ? '<img class="thumb" src="' + p.img + '">' : '') +
+      (p.img ? '<img class="thumb" src="' + p.img + '" onclick="openPhotoLightbox(' + i + ')" title="Tap to enlarge">' : '') +
       '<input type="text" style="flex:1" placeholder="Caption" data-i="' + i + '" value="' + esc(p.caption) + '">' +
+      '<div class="photo-move-btns">' +
+        '<button class="btn" onclick="movePhoto(' + i + ', -1)"' + (i === 0 ? " disabled" : "") + ' title="Move up">▲</button>' +
+        '<button class="btn" onclick="movePhoto(' + i + ', 1)"' + (i === photos.length - 1 ? " disabled" : "") + ' title="Move down">▼</button>' +
+      '</div>' +
       '<button class="btn danger" onclick="removePhoto(' + i + ')">✕</button></div>' +
       '<div class="photo-finding-row"><label>Finding:</label>' +
       '<select data-photo-finding="' + i + '">' +
