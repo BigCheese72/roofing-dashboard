@@ -285,6 +285,14 @@ shows up there too, and vice versa. If GPS accuracy is poor, no buildings are fo
 nearby, or OpenStreetMap can't be reached, RoofMapper shows a plain-language message
 and a way to try again rather than failing silently.
 
+**No OpenStreetMap footprint for this building?** (Happens — some buildings, like
+hospitals, are only mapped as a whole property parcel, or not mapped at all.) Tap
+**"🛰️ Switch to Satellite View"** to see real imagery instead of the street map, and
+**"✏️ Trace Manually Instead"** to tap the roof's corners by hand right on the
+satellite image — Undo the last point, Finish once you've got at least 3, or Cancel.
+A hand-traced outline works exactly the same as one found automatically: same save,
+export, and feature-placement steps above.
+
 **Zoom**: the map has real zoom in/out (scroll, pinch, +/- buttons) and a bigger
 default size for working on large roofs. Generating an outline zooms straight into it
 instead of staying at the wide "here's everything nearby" search view, and a

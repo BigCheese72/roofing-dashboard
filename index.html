@@ -485,6 +485,23 @@
       <p class="hint" id="rm-search-here-hint" style="display:none;margin:-6px 0 12px">Panned to the right spot? Tap
         <b>Search This Area</b> to look for building footprints where the map is centered now — GPS doesn't need to
         be right for this.</p>
+      <div class="rm-actions" id="rm-basemap-wrap" style="display:none">
+        <button class="btn" id="rm-baselayer-btn" onclick="rmToggleBaseLayer()">🛰️ Switch to Satellite View</button>
+        <button class="btn" id="rm-trace-btn" onclick="rmStartManualTrace()">✏️ Trace Manually Instead</button>
+      </div>
+      <p class="hint" id="rm-trace-hint" style="display:none;margin:-6px 0 12px">OpenStreetMap has no footprint here,
+        or none of the ones found are right? Switch to satellite view and trace the roof's outline by hand.</p>
+    </div>
+
+    <div class="card" id="rm-trace-panel" style="display:none">
+      <h2 class="cond">Trace Roof Outline</h2>
+      <p class="hint">Tap the roof's corners in order, all the way around, right on the satellite map above.
+        <span id="rm-trace-count">0 points</span> so far — need at least 3.</p>
+      <div class="rm-actions">
+        <button class="btn primary rm-bigbtn" id="rm-trace-finish-btn" onclick="rmFinishTrace()" disabled>✓ Finish Outline</button>
+        <button class="btn rm-bigbtn" id="rm-trace-undo-btn" onclick="rmTraceUndo()" disabled>↩️ Undo Last Point</button>
+        <button class="btn rm-bigbtn" onclick="rmCancelTrace()">✕ Cancel</button>
+      </div>
     </div>
 
     <div class="card" id="rm-footprint-panel" style="display:none">
@@ -5761,7 +5778,9 @@ var rmState = {
      linkedAssetsCache (Phase 2.5) is the last-fetched roof_assets[] array,
      kept so tapping a marker to edit it doesn't need a fresh Firestore
      read just to know what it is. */
-  linkedBuildingId: null, linkedRoofId: null, assetLayerGroup: null, linkedAssetsCache: []
+  linkedBuildingId: null, linkedRoofId: null, assetLayerGroup: null, linkedAssetsCache: [],
+  /* Phase 3: which base tile layer is currently showing (rmSetBaseLayer()). */
+  baseLayer: null, baseLayerType: "osm"
 };
 var RM_LOCAL_KEY = "roofmapper-local-outlines-v1";
 /* A commercial building — especially a hospital/medical campus — can easily
@@ -5818,6 +5837,13 @@ function rmSetStatus(msg, kind, extraHtml){
   el.className = "rm-status" + (kind ? " " + kind : "");
   if (extraHtml) el.innerHTML += extraHtml;
 }
+/* Phase 3: RoofMapper can show either free OSM street tiles (best for
+   reading building outlines/labels) or free Esri satellite imagery (best
+   for tracing a roof OSM has no footprint for at all -- the St. Joseph's
+   Hospital case). Same tile source already used elsewhere in the app
+   (asset/pin placement) -- no new/paid service. */
+var RM_TILE_OSM = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
+var RM_TILE_SAT = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
 function rmEnsureMap(){
   if (rmState.map) return rmState.map;
   document.getElementById("rm-map").style.display = "";
@@ -5826,10 +5852,29 @@ function rmEnsureMap(){
      wheel, pinch, +/- buttons) is intentionally on, not an accident of
      defaults. See "RoofMapper Phase 2" in DEV_NOTES.md. */
   rmState.map = L.map("rm-map", { zoomControl: true, scrollWheelZoom: true, touchZoom: true });
-  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-    maxZoom: 20, attribution: "&copy; OpenStreetMap contributors"
-  }).addTo(rmState.map);
+  rmSetBaseLayer("osm");
   return rmState.map;
+}
+function rmSetBaseLayer(type){
+  var map = rmEnsureMap();
+  if (rmState.baseLayer) map.removeLayer(rmState.baseLayer);
+  if (type === "satellite"){
+    rmState.baseLayer = L.tileLayer(RM_TILE_SAT, {
+      maxZoom: 22, maxNativeZoom: SAT_MAX_NATIVE_ZOOM, attribution: "Tiles &copy; Esri"
+    }).addTo(map);
+  } else {
+    type = "osm";
+    rmState.baseLayer = L.tileLayer(RM_TILE_OSM, {
+      maxZoom: 20, attribution: "&copy; OpenStreetMap contributors"
+    }).addTo(map);
+  }
+  rmState.baseLayer.bringToBack(); /* outlines/footprints/features stay on top */
+  rmState.baseLayerType = type;
+  var btn = document.getElementById("rm-baselayer-btn");
+  if (btn) btn.textContent = type === "satellite" ? "🗺️ Switch to Map View" : "🛰️ Switch to Satellite View";
+}
+function rmToggleBaseLayer(){
+  rmSetBaseLayer(rmState.baseLayerType === "satellite" ? "osm" : "satellite");
 }
 function rmZoomToOutline(){
   if (!rmState.map || !rmState.outlineLayer) return;
@@ -5857,6 +5902,8 @@ function rmUseMyLocation(){
       ' <span class="rm-accuracy ' + accKind + '">' + accLabel + ' GPS</span>');
     document.getElementById("rm-search-again-wrap").style.display = "";
     document.getElementById("rm-search-here-hint").style.display = "";
+    document.getElementById("rm-basemap-wrap").style.display = "";
+    document.getElementById("rm-trace-hint").style.display = "";
     if (accKind === "poor") toast("GPS accuracy is poor (±" + Math.round(acc) + "m) — searching anyway, open sky helps.");
     rmSearchBuildings();
   }, function(err){
@@ -5900,6 +5947,7 @@ function rmClearGeneratedOutline(){
   rmUpdateExportHint();
 }
 function rmClearFootprintLayers(){
+  rmCancelTrace(); /* starting fresh (new search, or a new trace) aborts any in-progress trace too */
   var map = rmState.map;
   if (map){
     Object.keys(rmState.footprintLayers).forEach(function(id){ map.removeLayer(rmState.footprintLayers[id]); });
@@ -5916,6 +5964,8 @@ async function rmSearchBuildings(){
   rmClearFootprintLayers();
   document.getElementById("rm-search-again-wrap").style.display = "";
   document.getElementById("rm-search-here-hint").style.display = "";
+  document.getElementById("rm-basemap-wrap").style.display = "";
+  document.getElementById("rm-trace-hint").style.display = "";
   try{
     var results = await rmFetchNearbyBuildings(rmState.lat, rmState.lng, radius);
     var hasMore = rmState.radiusIndex < RM_RADIUS_STEPS.length - 1;
@@ -6022,6 +6072,27 @@ function rmRenderOutlineStats(outline){
     '<div class="stat"><b>' + outline.ring.length + '</b><span>Points</span></div>';
   document.getElementById("rm-outline-panel").style.display = "";
 }
+/* Shared by rmGenerateOutline() (OSM footprint) and rmFinishTrace() (Phase
+   3 manual trace) -- draws whatever outline object was built, zooms to it,
+   and updates the surrounding UI, so both capture methods end up on
+   identical footing for save/export/feature-placement. */
+function rmDrawFinalOutline(outline){
+  rmState.outline = outline;
+  rmClearLinkedFeatures(); /* a freshly captured outline is never linked yet */
+  var map = rmEnsureMap();
+  if (rmState.outlineLayer) map.removeLayer(rmState.outlineLayer);
+  rmState.outlineLayer = L.polygon(outline.ring.map(function(p){ return [p.lat, p.lng]; }), {
+    color: "#E8600A", weight: 3, dashArray: outline.isSiteBoundary ? "6,6" : null, fillColor: "#E8600A", fillOpacity: 0.15
+  }).addTo(map);
+  /* Search results just left the map fit to EVERY candidate footprint --
+     zoom straight into the one actually chosen so there's real room to
+     work (Mark: "the current map feels small"), instead of leaving the
+     view zoomed out to fit buildings that no longer matter. */
+  rmZoomToOutline();
+  rmRenderOutlineStats(outline);
+  rmUpdateExportHint();
+  document.getElementById("rm-outline-panel").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
 function rmGenerateOutline(){
   var fp = rmState.footprints.find(function(f){ return f.id === rmState.selectedId; });
   if (!fp) return;
@@ -6038,22 +6109,93 @@ function rmGenerateOutline(){
     isSiteBoundary: !!fp.isSite,
     createdAt: Date.now()
   };
-  rmState.outline = outline;
-  rmClearLinkedFeatures(); /* a freshly generated outline is never linked yet */
-  var map = rmEnsureMap();
-  if (rmState.outlineLayer) map.removeLayer(rmState.outlineLayer);
-  rmState.outlineLayer = L.polygon(ring.map(function(p){ return [p.lat, p.lng]; }), {
-    color: "#E8600A", weight: 3, dashArray: outline.isSiteBoundary ? "6,6" : null, fillColor: "#E8600A", fillOpacity: 0.15
-  }).addTo(map);
-  /* Search results just left the map fit to EVERY candidate footprint --
-     zoom straight into the one actually chosen so there's real room to
-     work (Mark: "the current map feels small"), instead of leaving the
-     view zoomed out to fit buildings that no longer matter. */
-  rmZoomToOutline();
-  rmRenderOutlineStats(outline);
-  rmUpdateExportHint();
-  document.getElementById("rm-outline-panel").scrollIntoView({ behavior: "smooth", block: "nearest" });
+  rmDrawFinalOutline(outline);
   toast(outline.isSiteBoundary ? "Site boundary captured — not a single roof, see warning below ⚠️" : "Roof outline generated ✓");
+}
+
+/* ---- Phase 3: manual trace (satellite view, no OSM footprint needed) ----
+   Same rmState.outline shape as the OSM path (source:"manual_trace" instead
+   of "osm", no tags/osmId since there's no OSM feature behind it) so
+   everything downstream -- save, export, inline feature placement -- works
+   completely unchanged. Traces directly on rmState.map (auto-switched to
+   satellite), not a separate map instance. */
+var rmTraceState = { active: false, points: [], previewLayer: null, vertexLayers: [] };
+var rmTraceClickHandler = null;
+function rmStartManualTrace(){
+  rmClearFootprintLayers(); /* same clean-slate as starting a new search */
+  rmTraceState.active = true;
+  rmTraceState.points = [];
+  rmSetBaseLayer("satellite");
+  document.getElementById("rm-trace-panel").style.display = "";
+  document.getElementById("rm-footprint-panel").style.display = "none";
+  var map = rmEnsureMap();
+  rmTraceClickHandler = function(e){ rmTraceAddPoint(e.latlng); };
+  map.on("click", rmTraceClickHandler);
+  if (rmState.lat != null) map.setView([rmState.lat, rmState.lng], 20);
+  rmSetStatus("Tracing manually — tap the roof's corners in order below, then Finish Outline.");
+  document.getElementById("rm-trace-panel").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+function rmTraceAddPoint(latlng){
+  if (!rmTraceState.active) return;
+  rmTraceState.points.push({ lat: latlng.lat, lng: latlng.lng });
+  rmRenderTracePreview();
+  rmUpdateTraceButtons();
+}
+function rmTraceUndo(){
+  rmTraceState.points.pop();
+  rmRenderTracePreview();
+  rmUpdateTraceButtons();
+}
+function rmRenderTracePreview(){
+  var map = rmState.map;
+  if (!map) return;
+  rmTraceState.vertexLayers.forEach(function(l){ map.removeLayer(l); });
+  rmTraceState.vertexLayers = rmTraceState.points.map(function(p){
+    return L.circleMarker([p.lat, p.lng], { radius: 5, color: "#fff", weight: 2, fillColor: "#E8600A", fillOpacity: 1 }).addTo(map);
+  });
+  if (rmTraceState.previewLayer){ map.removeLayer(rmTraceState.previewLayer); rmTraceState.previewLayer = null; }
+  if (rmTraceState.points.length >= 2){
+    rmTraceState.previewLayer = L.polygon(rmTraceState.points.map(function(p){ return [p.lat, p.lng]; }), {
+      color: "#E8600A", weight: 2, dashArray: "4,4", fillColor: "#E8600A", fillOpacity: 0.1
+    }).addTo(map);
+  }
+}
+function rmUpdateTraceButtons(){
+  document.getElementById("rm-trace-finish-btn").disabled = rmTraceState.points.length < 3;
+  document.getElementById("rm-trace-undo-btn").disabled = rmTraceState.points.length === 0;
+  document.getElementById("rm-trace-count").textContent = rmTraceState.points.length + " point" + (rmTraceState.points.length === 1 ? "" : "s");
+}
+function rmCancelTrace(){
+  rmTraceState.active = false;
+  var map = rmState.map;
+  if (map){
+    rmTraceState.vertexLayers.forEach(function(l){ map.removeLayer(l); });
+    if (rmTraceState.previewLayer) map.removeLayer(rmTraceState.previewLayer);
+    if (rmTraceClickHandler){ map.off("click", rmTraceClickHandler); rmTraceClickHandler = null; }
+  }
+  rmTraceState.points = [];
+  rmTraceState.vertexLayers = [];
+  rmTraceState.previewLayer = null;
+  document.getElementById("rm-trace-panel").style.display = "none";
+  rmUpdateTraceButtons();
+}
+function rmFinishTrace(){
+  if (rmTraceState.points.length < 3){ toast("Tap at least 3 points to form a roof outline."); return; }
+  var ring = rmGeomCleanRing(rmTraceState.points.concat([rmTraceState.points[0]]));
+  if (ring.length < 4){ toast("Those points are too close together — try tracing wider corners."); return; }
+  var outline = {
+    ring: ring,
+    center: rmGeomRingCentroid(ring),
+    areaSqFt: rmGeomPolygonAreaSqMeters(ring) * 10.7639,
+    perimeterFt: rmGeomPolygonPerimeterMeters(ring) * 3.28084,
+    source: "manual_trace",
+    osmId: null, osmType: null, tags: {},
+    isSiteBoundary: false,
+    createdAt: Date.now()
+  };
+  rmCancelTrace();
+  rmDrawFinalOutline(outline);
+  toast("Roof outline traced ✓");
 }
 
 /* ---- save to building (existing or new) ---- */
@@ -6358,6 +6500,7 @@ function rmRenderLocalSaves(){
 function rmLoadLocalOutline(id){
   var o = rmLoadLocalOutlines().find(function(x){ return x.id === id; });
   if (!o) return;
+  rmCancelTrace();
   rmState.outline = o;
   rmClearLinkedFeatures(); /* a locally-saved outline has no building link -- clear any previous one */
   var map = rmEnsureMap();

@@ -376,27 +376,48 @@ Goal: turn each building into a long-term roof record.
   custom (x/y) base-map assets still can't place/show inline (lat/lng
   only). Photo auto-pin is untouched — separate code path entirely. See
   "RoofMapper Phase 2.5" in `DEV_NOTES.md`.
-  Planned follow-on phases (not built yet):
-  - **Phase 3**: let a satellite/drone/uploaded image be the RoofMapper capture
-    canvas directly (today RoofMapper only captures via OSM building
-    footprints; custom base maps are a separate roof-profile feature used only
-    at placement time, not at outline-capture time).
-  - **Dimensions**: per-side outline lengths (feet), and a way to add
-    freestanding measurement/dimension lines — RoofMapper already computes
-    total area + perimeter, this extends toward per-edge measurement.
-  - **Sections**: divide one roof outline into multiple labeled sections (e.g.
-    by roof system or area), each with its own computed area, tying into the
-    existing multi-roof/roof-section data model rather than a parallel one.
-  - **AI auto-detection of rooftop features (future / when-funded)**: a
-    computer-vision pass over satellite or (especially) drone imagery that
-    identifies RTUs/HVAC units and other larger rooftop features and suggests
-    placements for the tech to confirm, instead of every feature being placed
-    by hand. Explicitly a later, likely-paid capability — needs a vision
-    service or a trained model, and only really works at drone resolution;
-    small features like drains generally aren't detectable from satellite
-    imagery. Not being built now. The near-term approach stays manual
-    placement plus the existing photo-GPS auto-pin (see "photo-capture
-    rework" in `DEV_NOTES.md`).
+- ✅ **Shipped (dev only), part 1 of 2**: RoofMapper ↔ Roof Map unification —
+  Phase 3, satellite view + manual trace. Lets a tech map a roof even where
+  OpenStreetMap has no building footprint at all (the real case that
+  prompted this — St. Joseph's Hospital). A "🛰️ Switch to Satellite View"
+  toggle swaps RoofMapper's tile layer (same free Esri imagery already used
+  elsewhere, no paid service); "✏️ Trace Manually Instead" auto-switches to
+  satellite and lets the tech tap the roof's corners directly on the map to
+  build an outline by hand (Undo/Finish/Cancel), producing the exact same
+  outline shape as an OSM-captured one (just `source:"manual_trace"`
+  instead of `"osm"`) — so saving, exporting, and Phase 2.5's inline
+  feature placement all work on it with zero extra code. See "RoofMapper
+  Phase 3, part 1" in `DEV_NOTES.md`.
+  **Part 2, explicitly NOT built — flagged for a product decision**:
+  uploading a drone/custom image as the capture canvas. Researched the
+  existing image pipeline (`renderBaseMapAdminCard`, `resizeImageFile()`,
+  `tools/geotiff_to_webmap.py`) — the blocker is that the app's only way to
+  get a public image URL is CompanyCam's `upload_document` API, which
+  requires the building to already have a linked CompanyCam project.
+  RoofMapper is meant to work on roofs that may not even have a RoofOps
+  building record yet, let alone a linked CompanyCam project — building
+  this properly needs Mark to decide either (a) require picking/linking the
+  building before offering image upload (inverts RoofMapper's current
+  locate-first flow), or (b) reintroduce some image-hosting mechanism
+  (Firebase Storage is explicitly gated behind checking with the user
+  first — see the Storage policy elsewhere in this doc and in
+  `DEV_NOTES.md`). Not attempted; not routed around.
+- **Dimensions**: per-side outline lengths (feet), and a way to add
+  freestanding measurement/dimension lines — RoofMapper already computes
+  total area + perimeter, this extends toward per-edge measurement.
+- **Sections**: divide one roof outline into multiple labeled sections (e.g.
+  by roof system or area), each with its own computed area, tying into the
+  existing multi-roof/roof-section data model rather than a parallel one.
+- **AI auto-detection of rooftop features (future / when-funded)**: a
+  computer-vision pass over satellite or (especially) drone imagery that
+  identifies RTUs/HVAC units and other larger rooftop features and suggests
+  placements for the tech to confirm, instead of every feature being placed
+  by hand. Explicitly a later, likely-paid capability — needs a vision
+  service or a trained model, and only really works at drone resolution;
+  small features like drains generally aren't detectable from satellite
+  imagery. Not being built now. The near-term approach stays manual
+  placement plus the existing photo-GPS auto-pin (see "photo-capture
+  rework" in `DEV_NOTES.md`).
 - ✅ **Shipped (dev only, 2026-07-10)**: RoofMapper footprint deselect. Real
   gap Mark hit — once a footprint was selected there was no way back if it
   was the wrong building. Added a "✕ Wrong Building? Choose Again" control,

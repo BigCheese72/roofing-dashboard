@@ -3229,6 +3229,80 @@ test state removed; page reloaded clean (including restoring the native
 `window.confirm` after a temporary auto-confirm stub used for the delete
 test).
 
+### RoofMapper Phase 3, part 1: satellite view + manual trace (shipped 2026-07-10, dev only)
+
+Goal: map + mark up a roof even where OpenStreetMap has no building
+footprint at all (the real case that prompted this — St. Joseph's Hospital,
+whose OSM data has no `building=*` footprint anywhere near it). Shipped in
+two pieces; a third (uploading a drone/custom image as the capture canvas)
+is explicitly **not built** — see the flag below.
+
+- **Satellite/map toggle.** `rmEnsureMap()`'s single hardcoded OSM tile
+  layer became swappable via `rmSetBaseLayer("osm" | "satellite")` /
+  `rmToggleBaseLayer()` — same free Esri `World_Imagery` tiles already used
+  everywhere else in the app (asset/pin placement), no new or paid service.
+  A "🛰️ Switch to Satellite View" / "🗺️ Switch to Map View" button appears
+  once a location/search has happened, available at any time (not just
+  during a trace) since satellite view is also useful while picking an OSM
+  footprint in dense areas.
+- **Manual trace.** "✏️ Trace Manually Instead" (next to the satellite
+  toggle) auto-switches to satellite and enters trace mode: tap the roof's
+  corners in order directly on the SAME `rmState.map` (no separate map
+  instance) — each tap adds a point, drawn as a small marker plus a live
+  dashed polygon preview; "↩️ Undo Last Point" removes the last one; "✓
+  Finish Outline" (needs 3+ points) closes the ring and builds an outline
+  object; "✕ Cancel" aborts. Starting a trace, a fresh search, or loading a
+  local outline all now cancel any other in-progress trace too, so nothing
+  can be left half-finished when the user's attention moves elsewhere.
+- **Reuses the outline pipeline, doesn't fork it.** `rmDrawFinalOutline
+  (outline)` was extracted from `rmGenerateOutline()` and is now shared by
+  both the OSM-footprint path and the new `rmFinishTrace()` — a traced
+  outline is `{ ring, center, areaSqFt, perimeterFt, source:"manual_trace",
+  osmId:null, osmType:null, tags:{}, isSiteBoundary:false, createdAt }`,
+  identical in shape to an OSM-sourced one except `source`/`osmId`/`tags`.
+  Area/perimeter use the exact same `rmGeomPolygonAreaSqMeters()`/
+  `rmGeomPolygonPerimeterMeters()`/`rmGeomCleanRing()` helpers. Because the
+  shape matches, save-to-building, local save, export (SVG/PNG/PDF, outline
+  and full-roof alike), and Phase 2.5's inline feature placement all work
+  on a manually traced outline with **zero additional code** — verified
+  directly by saving a traced outline to a fake building and confirming it
+  links/shows a Features panel exactly like an OSM one would.
+
+**Flagged, explicitly NOT built: uploading a drone/custom image as the
+capture canvas.** Researched the existing upload path thoroughly
+(`renderBaseMapAdminCard`'s `drone_ortho`/`roof_plan`/`sketch` flow,
+`resizeImageFile()`, `tools/geotiff_to_webmap.py`) before deciding this,
+rather than guessing. The blocker: the ONLY way this app gets a public URL
+for an uploaded image is CompanyCam's `upload_document` API, which requires
+`bld.companyCamProjectId` to already be set — there's no Firebase Storage
+anywhere in this app, and reintroducing it is explicitly gated behind
+checking with the user first (see "Push app-added photos to CompanyCam,"
+this file). RoofMapper's whole reason to exist is mapping roofs that may
+not have a RoofOps building record — let alone a linked CompanyCam project
+— yet. Building this properly means Mark deciding one of:
+  1. Require picking/creating the building (and linking CompanyCam to it)
+     *before* offering an image-upload capture option, inverting
+     RoofMapper's current locate-first flow, or
+  2. Reintroducing some form of image hosting for this one case.
+  Not something to quietly route around — flagging for Mark's call rather
+  than forcing a decision that isn't mine to make.
+
+Tested with `fdb` mocked (and none needed for the satellite/trace pieces
+themselves — pure client-side Leaflet/geometry, no network calls beyond
+tile requests): confirmed the base-layer toggle switches
+`rmState.baseLayerType` and the button label both directions; confirmed
+starting a trace clears any prior search/outline state and switches to
+satellite automatically; confirmed the Finish button stays disabled under 3
+points and enables at 3; confirmed Undo removes exactly one point; confirmed
+Finish produces a correctly-shaped `manual_trace` outline (ring closed,
+area/perimeter computed, title falls back to "Roof Outline" since there are
+no OSM tags to draw a name from); confirmed that outline saves to a fake
+building and links/shows the Features panel identically to an OSM-sourced
+one; confirmed Cancel clears all trace state and hides the panel; confirmed
+the OSM-footprint path (`rmGenerateOutline()`) still produces
+`source:"osm"` correctly after the `rmDrawFinalOutline()` refactor. All test
+state removed, page reloaded clean.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |
