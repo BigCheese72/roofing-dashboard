@@ -6,17 +6,32 @@ RoofOps Field is a field work order app for commercial roofing service work. It 
 
 The app is currently built for the Watkins Roofing workflow, but the long-term direction is to grow it into a broader RoofOps platform where every building has a roof history over time.
 
+## Home Screen
+
+Opening the app shows a **Home** launcher — big tappable tiles for each work order
+type (Leak Work Order, Change Order, Inspection, Repair, Warranty), plus RoofMapper,
+Building History, and Reports as quick jumps to those tabs. Tapping a work-order-type
+tile starts a brand-new work order already set to that type. It's a launcher, not a
+gate: the existing header tabs (Edit, Preview, Saved, Building History, Reports,
+RoofMapper) all still work exactly as before, opening/editing an existing saved work
+order always goes straight to its form (never through Home), and **"+ New"** in the
+header returns to Home to start something new rather than immediately blanking the
+form. Tapping the Watkins logo in the header also returns to Home from anywhere.
+
 ## Main Workflow
 
-1. Open the app.
+1. Open the app — pick a tile on the Home screen to start, or use "+ New" any time
+   from within an existing work order. Opening an existing/saved work order skips
+   Home and goes straight to its form.
 2. Optionally tap **"🔍 Select Existing Building"** at the top of Job Information to
    pick a building/customer that's already been worked on before — its Job Name, Bill
    To, Location, and Roof System fill in automatically instead of being re-typed
    (helps avoid accidentally creating a duplicate building record from a slightly
    different spelling). Skip this and just type if it's a brand-new job/customer.
-3. Pick a **Work Order Type** at the top of Job Information — defaults to
-   **Leak / Service**, so most jobs need no extra step. See "Work Order Types" below.
-   Fill out the work order details:
+3. The **Work Order Type** at the top of Job Information is already set from the tile
+   picked on Home (defaults to Leak / Service for anything started another way) — change
+   it here any time if needed. See "Work Order Types" below. Fill out the work order
+   details:
    - job name
    - location
    - date of service
@@ -46,10 +61,15 @@ order was implicitly before this existed), **Change Order**, **Inspection**,
 **Repair**, or **Warranty**. Pick it at the top of Job Information; everything else
 about the form stays the same for most types.
 
-**Change Order** reveals an extra "Change Order Details" section: Cost, Man-Hours, PO
-Number (optional), Date Completed (optional), Materials, and Description of Work
-Performed. These print into the generated PDF as their own clearly-labeled section,
-alongside the normal report — not a separate document.
+**Change Order** reveals extra fields — Cost, Man-Hours, PO Number (optional), Date
+Completed (optional), Materials, and Description of Work Performed — and generates a
+**completely separate PDF**, styled like a real change-order/work-authorization
+document rather than the leak inspection report: "CHANGE ORDER" title in the Watkins
+red, job info, a prominent Description of Work Performed, an itemized Materials list,
+a Cost Summary with a Total, and an Approved By / Date signature line. No findings
+table or warranty section — that framing belongs to the leak report, not a change
+order. Every other type (Inspection, Repair, Warranty) still uses the standard leak
+report format for now.
 
 The type also shows up on that building's Building History timeline and in the
 Reports tab (as a filterable "Work Order Type," alongside Report Type, Technician,
@@ -330,6 +350,29 @@ These are set in Netlify:
 | `COMPANYCAM_USER_EMAIL` | Optional CompanyCam upload attribution. |
 | `RESEND_API_KEY` | Sends direct report emails. |
 | `FROM_EMAIL` | Optional sender email override. |
+
+## Logo & Brand Palette
+
+The Watkins Roofing logo lives in exactly one place: `var LOGO` near the top of
+`index.html`'s script — a single base64 PNG data URI. It's reused as-is in three
+spots: the header (`#hdr-logo`), the on-screen report preview (`renderDoc()`), and
+the actual generated PDF header (`generateLeakReportPdf()`/`generateChangeOrderPdf()`
+both call `doc.addImage(LOGO, ...)`).
+
+Extracted from the logo itself (sampling solid letter-stroke pixels to avoid
+anti-aliasing noise), for use in future styling work:
+
+| Color | Hex | Where it's from |
+|---|---|---|
+| Brand red | `#B4223F` | The "WATKINS" wordmark |
+| Black | `#000000` | "ROOFING" outline + the roofline triangle icon |
+| Muted charcoal | `~#4A4A4E` | "SINCE 1935" tagline (likely just anti-aliasing on thin text, not a deliberate third color) |
+
+The app's *current* CSS palette (`--slate:#263238`, `--orange:#E8600A`) doesn't match
+this at all — worth knowing before the planned aesthetic polish pass. The brand red is
+already used in one new place as of 2026-07-10: the Home screen's work-order-type
+tiles and the Change Order PDF's title, both deliberately scoped additions rather than
+a broader restyle.
 
 ## What Not To Break
 

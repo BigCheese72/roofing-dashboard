@@ -37,11 +37,21 @@ Goal: preserve and harden the existing RoofOps Field / Watkins work order workfl
   placement map on mobile" in `DEV_NOTES.md`.
 - ✅ **Shipped**: Work Order Type — Leak / Service (default, unchanged behavior),
   Change Order, Inspection, Repair, Warranty. Change Order reveals a Cost/Man-Hours/
-  Materials/Description/PO Number/Date Completed section, which prints as its own
-  labeled section in the generated PDF alongside the existing report format (not a
-  separate template yet — deliberate, noted for later). The type is also a filterable
+  Materials/Description/PO Number/Date Completed section and generates its own
+  distinct PDF template (a proper change-order/work-authorization layout — logo +
+  "CHANGE ORDER" title, description, itemized materials, cost summary with a total,
+  signature line — no findings/warranty framing), corrected same-day from an initial
+  version that only added a section to the leak report. Inspection/Repair/Warranty
+  still use the standard leak-report format for now. The type is also a filterable
   dimension on the Building History timeline and the Reports tab. See "Work order
-  type" in `DEV_NOTES.md`.
+  type" and "Change Order gets its own PDF template" in `DEV_NOTES.md`.
+- ✅ **Shipped**: Home / launcher screen — the app now opens to a tile-based launcher
+  (one tile per work order type + RoofMapper/Building History/Reports) instead of
+  dropping straight into a blank Leak/Service form. Existing tabs and navigation are
+  unaffected; opening an existing work order always skips Home. First real use of the
+  extracted Watkins brand red (`#B4223F`) in the UI, scoped to this one new screen.
+  See "Home / launcher screen" in `DEV_NOTES.md` and "Logo & Brand Palette" in
+  `APP_OVERVIEW.md`.
 - ❌ **Decided against (2026-07-09)**: pushing app-added phone photos to a matching
   CompanyCam project. CompanyCam's photo-upload API requires a publicly-fetchable URL
   per photo, which this app can't produce without paying for Firebase Storage or

@@ -1796,18 +1796,12 @@ it's not the default "Leak / Service," so the timeline/Reports list looks comple
 unchanged for the common case; a Change Order (or Inspection/Repair/Warranty) entry
 stands out with an amber-tinted chip instead.
 
-**PDF/preview/email text — a section, not a new template, as directed**: all three
-output paths (`buildText()` for the plain-text email body, `renderDoc()` for the
-on-screen HTML preview, and `generatePdf()` — the actual jsPDF document, which is a
-separate direct-drawing builder from the HTML preview, not html2canvas-based) now
-include "Work Order Type" in the Job Information section, and — only when
-`woType === "Change Order"` — a clearly-labeled "Change Order Details" section with
-Cost/Man-Hours/PO Number/Date Completed as a compact table, plus Materials and
-Description of Work Performed as wrapped paragraphs (matching how Summary is already
-rendered, since kvTable/kvTablePdf are built for short single-line facts, not
-multi-line text). Explicitly a small addition to the existing report format, not a
-separate Change Order template — noted per the spec, since a real template (different
-layout entirely for a Change Order) is a bigger, separate decision for later.
+**PDF/preview/email text — originally shipped as an added section, since superseded**:
+the first version of this feature added a "Change Order Details" section onto the
+existing leak-report template in all three output paths. Mark corrected this the same
+day — a Change Order needed to be its own distinct document, not a leak report with
+extra fields. See "Change Order gets its own PDF template" below for what actually
+ships now.
 
 **Verified against a mock Firestore** (no production writes): a fresh work order and
 a work order object with no `woType` field at all (simulating existing production
@@ -1824,6 +1818,122 @@ HTML preview) and inspecting its raw page content confirmed "Change Order Detail
 "Work Order Type," and the cost value are genuinely present in the real PDF output,
 with the section correctly absent for a plain Leak/Service PDF. Zero console errors
 throughout.
+
+### Change Order gets its own PDF template (shipped 2026-07-10, same day correction)
+
+**Correction from Mark**: a Change Order needed to be its own distinct document — a
+proper change-order/work-authorization style PDF — not a section added to the leak
+report. Built the same day as the type feature above, replacing that first approach.
+
+**Routing, not a rewrite of the leak report**: `generatePdf()` is now a thin router —
+`o.woType === "Change Order" ? generateChangeOrderPdf(o) : generateLeakReportPdf(o)`.
+`generateLeakReportPdf()` is the original function, renamed, with the Change Order
+splice removed — otherwise byte-for-byte the same logic as before this correction, so
+the Leak/Service PDF is unaffected. `generateChangeOrderPdf()` is a fully separate,
+self-contained jsPDF builder (its own `doc`/`heading()`/`kvTablePdf()`/
+`wrappedTextPdf()` closures, matching the leak builder's pattern but never sharing
+state with it) with its own layout:
+- Logo + a **"CHANGE ORDER"** title in the Watkins brand red (`#B4223F`, extracted from
+  the actual logo — see APP_OVERVIEW.md), not the leak report's slate-colored title.
+- Job Information: name, address, date, PO number, date completed (no roof
+  system/reported leak area — those aren't relevant to a change order).
+- **Description of Work Performed** — its own prominent heading, right after Job
+  Information, ahead of materials/cost, per spec.
+- **Materials** — rendered as an actual itemized list (each non-blank line of the
+  textarea becomes its own bulleted line), not a wrapped paragraph.
+- **Cost Summary** — Man-Hours and Cost in a compact table, then a separately-drawn
+  **Total** row with a filled background and bold/larger text (`doc.rect()` +
+  `doc.text()`, not just another table row) so it reads like a real invoice total.
+- **Approval/signature**: two actual drawn lines (`doc.line()`) labeled "Approved By"
+  and "Date" — a real signature line, not a table row.
+- Photos, if any, are a plain grid at the end with no "leak investigation" framing
+  text — secondary, per spec.
+- No findings table, no warranty determination — those belong to the leak report's
+  inspection framing, not a change order.
+
+`renderDoc()` (the on-screen HTML preview) and `buildText()` (the plain-text email
+body) got the identical treatment: both are now thin routers to
+`renderChangeOrderDoc()`/`buildChangeOrderText()`, matching the PDF's structure and
+section order, so what a tech previews on-screen is what actually gets emailed/
+downloaded — no mismatch between preview and output. Small new scoped CSS
+(`.co-materials`, `.co-cost`, `.co-total`, `.co-sig`) for the HTML preview's itemized
+list, total-row emphasis, and signature-line styling — additive, doesn't touch any
+existing `.doc` styling used by the leak report. `pdfFileName()` now prefixes
+`ChangeOrder_` instead of `WorkOrder_` for that type, and `sendEmailNow()`/`emailDoc()`'s
+subject/body text also branch by type.
+
+**Inspection/Repair/Warranty were left on the original leak-report format**, per the
+explicit instruction not to over-build — noted here in case Mark decides one of them
+should get its own template later (e.g. a Warranty determination letter might
+eventually want its own layout the same way Change Order just did).
+
+**Verified against a mock Firestore** (no production writes): generated an actual
+jsPDF document for a Change Order and inspected its raw page content — confirmed
+"CHANGE ORDER," "DESCRIPTION OF WORK PERFORMED," "MATERIALS," "COST SUMMARY," "TOTAL,"
+the cost value, and "Approved By" are all present, and confirmed "ROOF INVESTIGATION
+FINDINGS"/"WARRANTY DETERMINATION" are genuinely absent (proving this isn't just the
+leak template with headings added). Regenerated a plain Leak/Service PDF afterward and
+confirmed it's completely unaffected — same findings/warranty/work-performed sections
+as before, no Change Order content, filename correctly reverts to the `WorkOrder_`
+prefix. Repeated the same content checks against `renderDoc()`'s HTML output and
+`buildText()`'s plain text for both types. Zero console errors throughout.
+
+### Home / launcher screen (shipped 2026-07-10)
+
+**Goal (from Mark, refined through two rounds — a plain type chooser, then upgraded to
+an icon-tile launcher)**: instead of dropping straight into a blank Leak/Service form,
+the app should first ask "what are you creating?" — big tappable tiles for each work
+order type plus a way to jump straight into RoofMapper, without turning into a wall
+that blocks getting to the actual form.
+
+**A new `view-home`**, shown by `showView("home")`, is now what the app opens to
+(replacing the old `newOrder()` call in the init section) — `view-edit` gained an
+explicit `display:none` in its static HTML so there's no flash of the empty form
+before Home takes over. **`newOrder()` itself was repurposed**: "+ New" in the header
+and "+ New Work Order" in Building History's empty state both already called
+`newOrder()`, so changing what that function does (show Home instead of immediately
+blanking the form) updated both entry points for free, still behind the same
+unsaved-work `hasContent()` confirm guard as before. Tapping the header logo also
+returns to Home — a small, standard, low-risk addition.
+
+**Tiles are generated from `WORK_ORDER_TYPES`**, not hardcoded — `renderHomeTiles()`
+maps each type through `WORK_ORDER_TYPE_ICONS`/`WORK_ORDER_TYPE_LABELS` (only
+"Leak / Service" needs a label override, to "Leak Work Order" — every other type's
+tile just uses its own type string), so extending `WORK_ORDER_TYPES` later gets that
+new type its own home tile automatically, same "add a string, done" extensibility as
+the type selector itself. Three more tiles — RoofMapper, Building History, Reports —
+round out the launcher as secondary destinations (styled with a slate border instead
+of brand red, to visually separate "start a work order" from "jump to a tab").
+`startNewWorkOrder(type)` is the actual entry point a work-order tile calls: creates a
+fresh work order pre-set to that type (`fill({ id: ..., woType: type })`) and shows
+the Edit view — genuinely equivalent to picking a type from the in-form selector on a
+brand-new order, just one tap sooner.
+
+**Editing an existing work order was never routed through Home at all** — `loadOrder()`
+already calls `fill(o); showView("edit");` directly, unchanged; Home only sits in front
+of the "start something new" entry points, never in front of "open something that
+already exists." Switching type mid-form still works exactly as before (the in-form
+`#woType` selector and `onWoTypeChange()` weren't touched) — Home is a launcher for
+starting new work, not a gate you get routed back through.
+
+**Styled with the actual Watkins brand red** (`#B4223F`, from the logo — see "Logo
+location and brand palette" in APP_OVERVIEW.md) for the work-order-type tiles,
+deliberately scoped to just this new screen rather than touching the rest of the
+app's existing orange/slate palette, per the standing instruction to hold off on a
+broader restyle until the dedicated aesthetic pass.
+
+**Verified against a mock Firestore** (no production writes — this feature has no
+Firestore dimension, purely client-side navigation state), mobile (375×812) viewport:
+fresh page load shows Home with `view-edit` hidden, all 8 tiles present with the
+correct icons/labels/order; tapping a work-order-type tile starts a new order with
+that exact type, shows Edit, and (for Change Order) shows the Change Order Details
+card immediately; tapping the RoofMapper/Building History/Reports tiles correctly
+navigates to each; the "+ New" unsaved-work guard correctly blocks navigation on
+Cancel and proceeds to Home on Confirm; tapping the header logo returns to Home;
+loading/editing an existing work order goes straight to Edit with its saved type,
+never touching Home; switching type mid-form still works from an existing order; and
+the tile grid confirmed responsive (2-column layout at 375px width, not cramped into
+one column or overflowing). Zero console errors throughout.
 
 ## Netlify environment variables
 

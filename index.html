@@ -101,6 +101,21 @@
   .empty{background:#fff;border:1px dashed var(--line);border-radius:6px;padding:28px;
     text-align:center;color:var(--muted)}
 
+  /* home / launcher screen — brand red (#B4223F, from the actual Watkins
+     logo, see APP_OVERVIEW.md) used deliberately here since this is a
+     brand-new screen, not a restyle of any existing one; the rest of the
+     app keeps its current palette until the planned aesthetic pass. */
+  .home-hero{text-align:center}
+  .home-tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:14px;margin-top:4px}
+  .home-tile{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;
+    background:#fff;border:2px solid #B4223F;border-radius:10px;padding:22px 10px;cursor:pointer;
+    font-family:inherit;min-height:104px;box-shadow:0 1px 4px rgba(0,0,0,.06)}
+  .home-tile:active{background:#FBEAEE}
+  .home-tile-icon{font-size:32px;line-height:1}
+  .home-tile-label{font-size:13px;font-weight:700;text-align:center;color:#1E272E}
+  .home-tile-secondary{border-color:var(--slate)}
+  .home-tile-secondary .home-tile-label{color:var(--slate)}
+
   /* building history */
   .bld-item{background:#fff;border:1px solid var(--card-line);border-left:4px solid #37474F;
     border-radius:6px;padding:12px 14px;margin-bottom:10px;display:flex;align-items:center;
@@ -130,6 +145,17 @@
   .doc td.k{font-weight:700;width:180px}
   .doc .docfoot{border-top:2px solid var(--slate);margin-top:20px;padding-top:8px;
     font-size:12px;color:var(--muted)}
+
+  /* Change Order — its own distinct layout, not a section bolted onto the leak report */
+  .doc .co-empty{color:var(--muted);font-style:italic}
+  .doc ul.co-materials{margin:0 0 14px;padding-left:22px}
+  .doc ul.co-materials li{margin-bottom:3px}
+  .doc table.co-cost{max-width:320px}
+  .doc table.co-cost td.k{font-weight:700;width:140px}
+  .doc table.co-cost tr.co-total td{font-weight:700;font-size:16px;background:#F5F5F5;border-top:2px solid var(--slate)}
+  .doc .co-sig{margin-top:34px;display:flex;gap:40px;flex-wrap:wrap}
+  .doc .co-sig-line{font-size:13px;font-weight:600;color:var(--slate)}
+  .doc .co-sig-line span{display:inline-block;min-width:200px;border-bottom:1px solid #37474F;margin-left:6px}
 
   @media print{
     header,.no-print,.toast{display:none !important}
@@ -171,7 +197,8 @@
 <body>
 
 <header class="no-print">
-  <img id="hdr-logo" alt="Watkins Roofing" style="height:38px;background:#fff;border-radius:4px;padding:2px 6px">
+  <img id="hdr-logo" alt="Watkins Roofing" style="height:38px;background:#fff;border-radius:4px;padding:2px 6px;cursor:pointer"
+    onclick="showView('home')" title="Home">
   <div class="title cond">Leak Work Order <span class="accent">/</span> <span class="sub">Repair Documentation</span></div>
   <div class="spacer"></div>
   <button class="tab cond" style="background:#E8600A;color:#fff" onclick="newOrder()">+ New</button>
@@ -186,8 +213,18 @@
 
 <div class="wrap">
 
+  <!-- ================= HOME / LAUNCHER VIEW ================= -->
+  <div id="view-home" style="display:none">
+    <div class="card home-hero">
+      <h2 class="cond">What are you creating?</h2>
+      <p class="hint">Pick a work order type to start, or jump straight into RoofMapper, Building
+        History, or Reports.</p>
+    </div>
+    <div class="home-tiles" id="home-tiles"></div>
+  </div>
+
   <!-- ================= EDIT VIEW ================= -->
-  <div id="view-edit">
+  <div id="view-edit" style="display:none">
     <div class="btnrow">
       <button class="btn primary" onclick="saveOrder()">Save</button>
     </div>
@@ -1780,6 +1817,17 @@ function renderPhotos(){
    (#wo-changeorder-card) — the rest just get recorded, not built out
    further yet, per spec ("don't over-build"). */
 var WORK_ORDER_TYPES = ["Leak / Service", "Change Order", "Inspection", "Repair", "Warranty"];
+/* Icon + display label for the home-screen launcher tiles (see
+   renderHomeTiles() below) — keyed by the same WORK_ORDER_TYPES strings,
+   so adding a new type there and here is the only step needed for it to
+   get its own tile automatically. Falls back to the type string itself
+   if a label override isn't given (only "Leak / Service" needs one —
+   "Leak Work Order" reads better as a tile than the raw type value). */
+var WORK_ORDER_TYPE_ICONS = {
+  "Leak / Service": "💧", "Change Order": "📝", "Inspection": "🔍",
+  "Repair": "🔧", "Warranty": "🛡️"
+};
+var WORK_ORDER_TYPE_LABELS = { "Leak / Service": "Leak Work Order" };
 function populateWoTypeSelect(){
   var sel = document.getElementById("woType");
   if (sel.options.length) return;
@@ -1848,11 +1896,37 @@ function hasContent(){
       (photos && photos.length) || filledFindings().length || filledRepairs().length);
   }catch(e){ return false; }
 }
+/* "+ New" (header) and "+ New Work Order" (Building History's empty
+   state) both land here — now a launcher, not an immediate blank
+   Leak/Service form, so the user picks a type first (see
+   startNewWorkOrder() below). The unsaved-work guard still applies
+   before leaving the current form, same as before. */
 function newOrder(){
   if (hasContent() && !confirm("Start a new work order? Anything not saved on the current one will be lost.\n\nHit Cancel and press Save first if you want to keep it.")) return;
-  fill({ id: "wo_" + Date.now(), serviceDate: todayStr() });
+  showView("home");
+}
+function renderHomeTiles(){
+  var host = document.getElementById("home-tiles");
+  if (!host || host.childElementCount) return; /* static per session — no data-driven content to refresh */
+  var tiles = WORK_ORDER_TYPES.map(function(t){
+    return '<button class="home-tile" onclick="startNewWorkOrder(\'' + esc(t) + '\')">' +
+      '<span class="home-tile-icon">' + (WORK_ORDER_TYPE_ICONS[t] || "📄") + '</span>' +
+      '<span class="home-tile-label">' + esc(WORK_ORDER_TYPE_LABELS[t] || t) + '</span></button>';
+  });
+  tiles.push(
+    '<button class="home-tile home-tile-secondary" onclick="showView(\'roofmapper\')">' +
+      '<span class="home-tile-icon">🗺️</span><span class="home-tile-label">RoofMapper</span></button>',
+    '<button class="home-tile home-tile-secondary" onclick="showView(\'history\')">' +
+      '<span class="home-tile-icon">🏢</span><span class="home-tile-label">Building History</span></button>',
+    '<button class="home-tile home-tile-secondary" onclick="showView(\'reports\')">' +
+      '<span class="home-tile-icon">📋</span><span class="home-tile-label">Reports</span></button>'
+  );
+  host.innerHTML = tiles.join("");
+}
+function startNewWorkOrder(type){
+  fill({ id: "wo_" + Date.now(), serviceDate: todayStr(), woType: type });
   showView("edit");
-  toast("New work order started");
+  toast("New " + (WORK_ORDER_TYPE_LABELS[type] || type) + " started");
 }
 
 /* ================= storage ================= */
@@ -3040,8 +3114,18 @@ function filledFindings(){ return findings.filter(function(f){ return f.conditio
 function filledRepairs(){ return repairs.filter(function(r){ return r.repair || r.location; }); }
 function filledPhotos(){ return photos.filter(function(p){ return p.img || (p.caption||"").trim(); }); }
 
+/* Routes by work order type — Change Order gets its own distinct
+   document (buildChangeOrderText/renderChangeOrderDoc/
+   generateChangeOrderPdf), not a bolted-on section of the leak report.
+   See "Change Order gets its own PDF template" in DEV_NOTES.md. Every
+   other type (including the Inspection/Repair/Warranty placeholders)
+   still uses the original leak-report format, unchanged. */
 function buildText(){
-  var o = collect(), L = [];
+  var o = collect();
+  return o.woType === "Change Order" ? buildChangeOrderText(o) : buildLeakReportText(o);
+}
+function buildLeakReportText(o){
+  var L = [];
   L.push("LEAK WORK ORDER / REPAIR DOCUMENTATION");
   L.push(o.jobName + (o.location ? " - " + o.location : ""));
   L.push("");
@@ -3068,16 +3152,6 @@ function buildText(){
   filledRepairs().forEach(function(r,i){
     L.push((i+1) + ". " + r.repair + (r.location ? " — " + r.location : ""));
   });
-  if (o.woType === "Change Order"){
-    L.push("");
-    L.push("CHANGE ORDER DETAILS");
-    if (o.woCost) L.push("Cost: $" + o.woCost);
-    if (o.woManHours) L.push("Man-Hours: " + o.woManHours);
-    if (o.woPONumber) L.push("PO Number: " + o.woPONumber);
-    if (o.woDateCompleted) L.push("Date Completed: " + o.woDateCompleted);
-    if (o.woMaterials) L.push("Materials: " + o.woMaterials);
-    if (o.woDescription) L.push("Description of Work Performed: " + o.woDescription);
-  }
   L.push("");
   L.push("WARRANTY DETERMINATION");
   if (o.warrantable) L.push("Warrantable Repairs: " + o.warrantable);
@@ -3095,6 +3169,48 @@ function buildText(){
   L.push(o.jobName + " - " + o.location + " | Job No. " + o.jobNo + " | Date of Service: " + o.serviceDate);
   return L.join("\n");
 }
+/* Deliberately does NOT include findings/warranty framing — a change
+   order is a work-authorization document, not a leak inspection
+   report. Photos are secondary here (see spec) so they're mentioned
+   but not itemized like the leak report does. */
+function buildChangeOrderText(o){
+  var L = [];
+  L.push("CHANGE ORDER");
+  L.push(o.jobName + (o.location ? " - " + o.location : ""));
+  L.push("");
+  L.push("JOB INFORMATION");
+  L.push("Job Name: " + o.jobName);
+  L.push("Location: " + o.location);
+  L.push("Date: " + o.serviceDate);
+  L.push("Job No.: " + o.jobNo);
+  L.push("Bill To: " + o.billTo);
+  if (o.billContact) L.push((o.billTo || "Billing") + " Contact: " + o.billContact);
+  if (o.billPhone) L.push("Contact Phone: " + o.billPhone);
+  L.push("Site Contact: " + o.siteContact);
+  if (o.technician) L.push("Technician: " + o.technician);
+  if (o.woPONumber) L.push("PO Number: " + o.woPONumber);
+  if (o.woDateCompleted) L.push("Date Completed: " + o.woDateCompleted);
+  L.push("");
+  L.push("DESCRIPTION OF WORK PERFORMED");
+  if (o.woDescription) L.push(o.woDescription);
+  L.push("");
+  L.push("MATERIALS");
+  if (o.woMaterials) L.push(o.woMaterials);
+  L.push("");
+  L.push("MAN-HOURS: " + (o.woManHours || ""));
+  L.push("COST: " + (o.woCost ? "$" + o.woCost : ""));
+  L.push("TOTAL: " + (o.woCost ? "$" + o.woCost : ""));
+  var caps = filledPhotos();
+  if (caps.length){
+    L.push(""); L.push("PHOTOS");
+    L.push("(" + caps.length + " photo" + (caps.length > 1 ? "s" : "") + " — see attached PDF for images)");
+  }
+  L.push("");
+  L.push("Approved by: _______________________________   Date: ______________");
+  L.push("");
+  L.push(o.jobName + " - " + o.location + " | Job No. " + o.jobNo + " | Date: " + o.serviceDate);
+  return L.join("\n");
+}
 
 function kvTable(rows){
   var body = rows.filter(function(r){ return r[1]; }).map(function(r){
@@ -3104,7 +3220,12 @@ function kvTable(rows){
 }
 
 function renderDoc(){
-  var o = collect(), h = "";
+  var o = collect();
+  document.getElementById("doc-output").innerHTML =
+    o.woType === "Change Order" ? renderChangeOrderDoc(o) : renderLeakReportDoc(o);
+}
+function renderLeakReportDoc(o){
+  var h = "";
   h += "<div class='dochead' style='display:flex;align-items:center;gap:16px'>" +
        "<img src='" + LOGO + "' alt='Watkins Roofing' style='height:72px;flex:none'>" +
        "<div><div class='t1 cond'>Leak Work Order / Repair Documentation</div>" +
@@ -3137,17 +3258,6 @@ function renderDoc(){
       }).join("") + "</tbody></table>";
   }
 
-  if (o.woType === "Change Order"){
-    var cod = kvTable([
-      ["Cost",o.woCost ? "$" + o.woCost : ""],["Man-Hours",o.woManHours],
-      ["PO Number",o.woPONumber],["Date Completed",o.woDateCompleted]]);
-    if (cod || o.woMaterials || o.woDescription){
-      h += "<h3 class='cond'>Change Order Details</h3>" + cod;
-      if (o.woMaterials) h += "<p><b>Materials:</b></p><p style='white-space:pre-wrap'>" + esc(o.woMaterials) + "</p>";
-      if (o.woDescription) h += "<p><b>Description of Work Performed:</b></p><p style='white-space:pre-wrap'>" + esc(o.woDescription) + "</p>";
-    }
-  }
-
   var wd = kvTable([["Warrantable Repairs",o.warrantable],["Non-Warrantable Repairs",o.nonWarrantable]]);
   if (wd) h += "<h3 class='cond'>Warranty Determination</h3>" + wd;
 
@@ -3167,7 +3277,60 @@ function renderDoc(){
 
   h += "<div class='docfoot'>" + esc(o.jobName) + " — " + esc(o.location) +
        " | Job No. " + esc(o.jobNo) + " | Date of Service: " + esc(o.serviceDate) + "</div>";
-  document.getElementById("doc-output").innerHTML = h;
+  return h;
+}
+/* A change order is a work-authorization document, not a leak
+   inspection report — deliberately no findings table, no warranty
+   framing, no per-finding photo linkage. Materials render as an
+   itemized list (one <li> per non-blank line of the textarea);
+   photos, if any, are secondary — a plain grid at the bottom, not
+   framed as "documentation of the leak investigation." */
+function renderChangeOrderDoc(o){
+  var h = "";
+  h += "<div class='dochead' style='display:flex;align-items:center;gap:16px'>" +
+       "<img src='" + LOGO + "' alt='Watkins Roofing' style='height:72px;flex:none'>" +
+       "<div><div class='t1 cond'>Change Order</div>" +
+       "<div class='t2'>" + esc(o.jobName) + (o.location ? " — " + esc(o.location) : "") + "</div></div></div>";
+
+  h += "<h3 class='cond'>Job Information</h3>" + kvTable([
+    ["Job Name",o.jobName],["Location",o.location],["Date",o.serviceDate],
+    ["Job No.",o.jobNo],["Bill To",o.billTo],["Billing Contact",o.billContact],
+    ["Contact Phone",o.billPhone],["Site Contact",o.siteContact],["Technician",o.technician],
+    ["PO Number",o.woPONumber],["Date Completed",o.woDateCompleted]]);
+
+  h += "<h3 class='cond'>Description of Work Performed</h3>" +
+    "<p style='white-space:pre-wrap'>" + (o.woDescription ? esc(o.woDescription) : "<span class='co-empty'>(none entered)</span>") + "</p>";
+
+  h += "<h3 class='cond'>Materials</h3>";
+  var matLines = (o.woMaterials || "").split("\n").map(function(s){ return s.trim(); }).filter(Boolean);
+  h += matLines.length ?
+    "<ul class='co-materials'>" + matLines.map(function(m){ return "<li>" + esc(m) + "</li>"; }).join("") + "</ul>" :
+    "<p class='co-empty'>(none entered)</p>";
+
+  h += "<h3 class='cond'>Cost Summary</h3>" +
+    "<table class='co-cost'><tbody>" +
+    "<tr><td class='k'>Man-Hours</td><td>" + esc(o.woManHours || "") + "</td></tr>" +
+    "<tr><td class='k'>Cost</td><td>" + (o.woCost ? "$" + esc(o.woCost) : "") + "</td></tr>" +
+    "<tr class='co-total'><td class='k'>Total</td><td>" + (o.woCost ? "$" + esc(o.woCost) : "") + "</td></tr>" +
+    "</tbody></table>";
+
+  var fp = filledPhotos();
+  if (fp.length){
+    h += "<h3 class='cond'>Photos</h3><div class='photogrid'>" +
+      fp.map(function(p,i){
+        return "<div class='photocell'>" +
+          (p.img ? "<img src='" + p.img + "'>" : "") +
+          "<div class='cap'><b>Photo " + (i+1) + ":</b> " + esc(p.caption || "") + "</div></div>";
+      }).join("") + "</div>";
+  }
+
+  h += "<div class='co-sig'>" +
+    "<div class='co-sig-line'>Approved By: <span></span></div>" +
+    "<div class='co-sig-line'>Date: <span></span></div></div>";
+
+  h += "<div class='docfoot'>" + esc(o.jobName) + " — " + esc(o.location) +
+       " | Job No. " + esc(o.jobNo) + " | Date: " + esc(o.serviceDate) + "</div>";
+  return h;
 }
 
 /* ================= email / copy ================= */
@@ -3185,7 +3348,7 @@ async function emailDoc(){
   toast("Saving work order\u2026");
   if (!(await autoSaveBeforeReport("opening email"))) return;
   var o = collect();
-  var subject = "Leak Work Order — " + (o.jobName || "Job") +
+  var subject = (o.woType === "Change Order" ? "Change Order — " : "Leak Work Order — ") + (o.jobName || "Job") +
     (o.jobNo ? " #" + o.jobNo : "") + (o.location ? " (" + o.location + ")" : "");
   var addrs = val("emailTo").split(",").map(function(s){ return s.trim(); }).filter(Boolean)
     .map(encodeURIComponent).join(",");
@@ -3225,16 +3388,26 @@ function ensureDims(p){
 }
 function pdfFileName(){
   var o = collect();
-  var base = ("WorkOrder_" + (o.jobName || "") + "_" + (o.jobNo || ""))
+  var prefix = o.woType === "Change Order" ? "ChangeOrder" : "WorkOrder";
+  var base = (prefix + "_" + (o.jobName || "") + "_" + (o.jobNo || ""))
     .replace(/[^A-Za-z0-9_-]+/g, "_").replace(/_+/g, "_").replace(/^_|_$/g, "");
-  return (base || "WorkOrder") + ".pdf";
+  return (base || prefix) + ".pdf";
 }
+/* Routes to a fully separate PDF builder per work order type — a Change
+   Order is a work-authorization document, not a leak inspection report,
+   so it gets its own generateChangeOrderPdf() rather than a bolted-on
+   section here. Every other type still uses this original leak-report
+   builder, byte-for-byte unchanged in its own logic. See "Change Order
+   gets its own PDF template" in DEV_NOTES.md. */
 async function generatePdf(){
   if (!(window.jspdf && window.jspdf.jsPDF && window.jspdf.jsPDF.API && window.jspdf.jsPDF.API.autoTable)){
     toast("PDF tools couldn't load — check your internet connection, or use Print instead.");
     return null;
   }
   var o = collect();
+  return o.woType === "Change Order" ? generateChangeOrderPdf(o) : generateLeakReportPdf(o);
+}
+async function generateLeakReportPdf(o){
   var jsPDF = window.jspdf.jsPDF;
   var doc = new jsPDF({ unit: "pt", format: "letter" });
   var W = doc.internal.pageSize.getWidth();
@@ -3330,24 +3503,6 @@ async function generatePdf(){
     y = doc.lastAutoTable.finalY + 18;
   }
 
-  if (o.woType === "Change Order" && (o.woCost || o.woManHours || o.woPONumber || o.woDateCompleted || o.woMaterials || o.woDescription)){
-    heading("Change Order Details");
-    kvTablePdf([
-      ["Cost", o.woCost ? "$" + o.woCost : ""], ["Man-Hours", o.woManHours],
-      ["PO Number", o.woPONumber], ["Date Completed", o.woDateCompleted]
-    ]);
-    if (o.woMaterials){
-      doc.setFont("helvetica", "bold"); doc.setFontSize(9.5); doc.setTextColor(38, 50, 56);
-      doc.text("Materials:", M, y); y += 13;
-      wrappedTextPdf(o.woMaterials);
-    }
-    if (o.woDescription){
-      doc.setFont("helvetica", "bold"); doc.setFontSize(9.5); doc.setTextColor(38, 50, 56);
-      doc.text("Description of Work Performed:", M, y); y += 13;
-      wrappedTextPdf(o.woDescription);
-    }
-  }
-
   if (o.warrantable || o.nonWarrantable){
     heading("Warranty Determination");
     kvTablePdf([["Warrantable Repairs", o.warrantable], ["Non-Warrantable Repairs", o.nonWarrantable]]);
@@ -3412,6 +3567,185 @@ async function generatePdf(){
     doc.setFontSize(8);
     doc.setTextColor(91, 103, 112);
     doc.text(footTxt + "   \u00B7   Page " + pg + " of " + pages, M, H - 20);
+  }
+  return doc;
+}
+/* A change order is a work-authorization document — its own layout, not
+   a section tacked onto the leak report: no findings table, no warranty
+   framing, no per-finding photo linkage. Prominent Description of Work
+   Performed, an itemized Materials list, a Cost Summary with an
+   emphasized Total row, and a signature/date line — the things an
+   actual change-order form has. Photos are optional/secondary here (per
+   spec), so they're a plain grid at the end if present, not framed as
+   investigation documentation. Fully self-contained, same pattern as
+   generateLeakReportPdf() (its own doc/heading/kvTablePdf/wrappedTextPdf),
+   so the two templates never interfere with each other. */
+async function generateChangeOrderPdf(o){
+  var jsPDF = window.jspdf.jsPDF;
+  var doc = new jsPDF({ unit: "pt", format: "letter" });
+  var W = doc.internal.pageSize.getWidth();
+  var H = doc.internal.pageSize.getHeight();
+  var M = 40;
+  var y = M;
+
+  /* header with logo + a distinct "CHANGE ORDER" title */
+  try { doc.addImage(LOGO, "PNG", M, y, 96, 52); } catch(e){}
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(20);
+  doc.setTextColor(180, 34, 63); /* Watkins brand red — see APP_OVERVIEW.md */
+  doc.text("CHANGE ORDER", M + 112, y + 22, { maxWidth: W - M * 2 - 112 });
+  doc.setFontSize(11);
+  doc.setTextColor(30, 39, 46);
+  doc.text(String((o.jobName || "") + (o.location ? " — " + o.location : "")), M + 112, y + 44, { maxWidth: W - M * 2 - 112 });
+  y += 66;
+  doc.setDrawColor(180, 34, 63);
+  doc.setLineWidth(2);
+  doc.line(M, y, W - M, y);
+  y += 18;
+
+  function heading(t){
+    if (y > H - M - 60){ doc.addPage(); y = M; }
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(12);
+    doc.setTextColor(38, 50, 56);
+    doc.text(t.toUpperCase(), M, y);
+    y += 8;
+  }
+  function kvTablePdf(rows){
+    rows = rows.filter(function(r){ return r[1]; });
+    if (!rows.length){ y += 8; return; }
+    doc.autoTable({
+      startY: y, body: rows, theme: "grid",
+      styles: { fontSize: 9, cellPadding: 4, textColor: [30, 39, 46], lineColor: [154, 165, 172], lineWidth: 0.5 },
+      columnStyles: { 0: { fontStyle: "bold", cellWidth: 150 } },
+      margin: { left: M, right: M }
+    });
+    y = doc.lastAutoTable.finalY + 18;
+  }
+  function wrappedTextPdf(text){
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9.5);
+    doc.setTextColor(30, 39, 46);
+    var lines = doc.splitTextToSize(text, W - M * 2);
+    lines.forEach(function(ln){
+      if (y > H - M - 14){ doc.addPage(); y = M; }
+      doc.text(ln, M, y);
+      y += 13;
+    });
+    y += 12;
+  }
+
+  heading("Job Information");
+  kvTablePdf([
+    ["Job Name", o.jobName], ["Location", o.location], ["Date", o.serviceDate],
+    ["Job No.", o.jobNo], ["Bill To", o.billTo], ["Billing Contact", o.billContact],
+    ["Contact Phone", o.billPhone], ["Site Contact", o.siteContact], ["Technician", o.technician],
+    ["PO Number", o.woPONumber], ["Date Completed", o.woDateCompleted]
+  ]);
+
+  /* prominent, per spec — its own heading right after Job Information,
+     ahead of materials/cost */
+  heading("Description of Work Performed");
+  wrappedTextPdf(o.woDescription || "(none entered)");
+
+  heading("Materials");
+  var matLines = (o.woMaterials || "").split("\n").map(function(s){ return s.trim(); }).filter(Boolean);
+  if (matLines.length){
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9.5);
+    doc.setTextColor(30, 39, 46);
+    matLines.forEach(function(m){
+      if (y > H - M - 14){ doc.addPage(); y = M; }
+      var wrapped = doc.splitTextToSize("• " + m, W - M * 2);
+      doc.text(wrapped, M, y);
+      y += 13 * wrapped.length;
+    });
+    y += 12;
+  } else {
+    wrappedTextPdf("(none entered)");
+  }
+
+  heading("Cost Summary");
+  var costRows = [["Man-Hours", o.woManHours || ""], ["Cost", o.woCost ? "$" + o.woCost : ""]];
+  doc.autoTable({
+    startY: y, body: costRows, theme: "grid",
+    styles: { fontSize: 9, cellPadding: 4, textColor: [30, 39, 46], lineColor: [154, 165, 172], lineWidth: 0.5 },
+    columnStyles: { 0: { fontStyle: "bold", cellWidth: 150 } },
+    margin: { left: M, right: M }
+  });
+  y = doc.lastAutoTable.finalY;
+  /* Total row — visually emphasized (filled background, bold, larger),
+     drawn separately from the table above rather than as just another
+     autoTable row, so it reads as a real total the way an invoice does. */
+  var totalRowH = 26, totalRowW = 240;
+  doc.setFillColor(245, 245, 245);
+  doc.setDrawColor(38, 50, 56);
+  doc.setLineWidth(1);
+  doc.rect(M, y, totalRowW, totalRowH, "FD");
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(12);
+  doc.setTextColor(38, 50, 56);
+  doc.text("TOTAL", M + 10, y + 17);
+  doc.text(o.woCost ? "$" + o.woCost : "—", M + totalRowW - 10, y + 17, { align: "right" });
+  y += totalRowH + 20;
+
+  var fp = filledPhotos().filter(function(p){ return p.img; });
+  if (fp.length){
+    await Promise.all(fp.map(ensureDims));
+    fp = fp.filter(function(p){ return p.w && p.h; });
+  }
+  if (fp.length){
+    heading("Photos");
+    y += 10;
+    var gap = 16;
+    var cw = (W - M * 2 - gap) / 2;
+    for (var i = 0; i < fp.length; i += 2){
+      var pair = [fp[i], fp[i + 1]].filter(Boolean);
+      var cells = pair.map(function(p){
+        var ih = cw * p.h / p.w;
+        if (ih > 300) ih = 300;
+        var iw = Math.min(cw, ih * p.w / p.h);
+        return { p: p, iw: iw, ih: ih };
+      });
+      var rowH = Math.max.apply(null, cells.map(function(c){ return c.ih; })) + 28;
+      if (y + rowH > H - M){ doc.addPage(); y = M; }
+      cells.forEach(function(c, j){
+        var x = M + j * (cw + gap);
+        try { doc.addImage(c.p.img, "JPEG", x, y, c.iw, c.ih); } catch(e){}
+        doc.setFont("helvetica", "italic");
+        doc.setFontSize(8);
+        doc.setTextColor(60, 70, 77);
+        var num = fp.indexOf(c.p) + 1;
+        var cap = doc.splitTextToSize("Photo " + num + ": " + (c.p.caption || ""), cw);
+        doc.text(cap.slice(0, 2), x, y + c.ih + 11);
+      });
+      y += rowH + 8;
+    }
+  }
+
+  /* approval / signature line — common on a real change order */
+  if (y > H - M - 70){ doc.addPage(); y = M; }
+  y += 20;
+  doc.setDrawColor(55, 71, 79);
+  doc.setLineWidth(1);
+  doc.line(M, y, M + 260, y);
+  doc.line(M + 300, y, M + 460, y);
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(9);
+  doc.setTextColor(38, 50, 56);
+  doc.text("Approved By", M, y + 12);
+  doc.text("Date", M + 300, y + 12);
+
+  /* footer on every page */
+  var footTxt = (o.jobName || "") + " — " + (o.location || "") +
+    " | Job No. " + (o.jobNo || "") + " | Date: " + (o.serviceDate || "");
+  var pages = doc.getNumberOfPages();
+  for (var pg = 1; pg <= pages; pg++){
+    doc.setPage(pg);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(8);
+    doc.setTextColor(91, 103, 112);
+    doc.text(footTxt + "   ·   Page " + pg + " of " + pages, M, H - 20);
   }
   return doc;
 }
@@ -3696,11 +4030,14 @@ async function sendEmailNow(){
   if (!d) return;
   toast("Sending email\u2026");
   var o = collect();
-  var subject = "Leak Work Order \u2014 " + (o.jobName || "Job") +
+  var isCO = o.woType === "Change Order";
+  var subject = (isCO ? "Change Order \u2014 " : "Leak Work Order \u2014 ") + (o.jobName || "Job") +
     (o.jobNo ? " #" + o.jobNo : "") + (o.location ? " (" + o.location + ")" : "");
-  var body = "Leak work order documentation for " + (o.jobName || "the job") +
-    (o.jobNo ? " (Job No. " + o.jobNo + ")" : "") +
-    " is attached as a PDF, including photo documentation." +
+  var body = (isCO ?
+      "Change order documentation for " + (o.jobName || "the job") +
+      (o.jobNo ? " (Job No. " + o.jobNo + ")" : "") + " is attached as a PDF." :
+      "Leak work order documentation for " + (o.jobName || "the job") +
+      (o.jobNo ? " (Job No. " + o.jobNo + ")" : "") + " is attached as a PDF, including photo documentation.") +
     "\n\nDate of Service: " + (o.serviceDate || "") +
     "\nLocation: " + (o.location || "") +
     "\n\nSent from the Watkins Roofing work order app.";
@@ -4086,10 +4423,15 @@ function unlinkCC(){
 }
 /* ================= views ================= */
 function showView(v){
-  ["edit","preview","saved","history","reports","roofmapper"].forEach(function(name){
+  /* "home" has no header tab (reached via "+ New", the empty-state button
+     in Building History, or tapping the logo) — every other view still
+     keeps its tab exactly as before. */
+  ["home","edit","preview","saved","history","reports","roofmapper"].forEach(function(name){
     document.getElementById("view-" + name).style.display = (name === v ? "" : "none");
-    document.getElementById("tab-" + name).classList.toggle("active", name === v);
+    var tabEl = document.getElementById("tab-" + name);
+    if (tabEl) tabEl.classList.toggle("active", name === v);
   });
+  if (v === "home") renderHomeTiles();
   if (v === "preview") renderDoc();
   if (v === "saved") renderSaved();
   if (v === "history") renderHistoryList();
@@ -4790,7 +5132,14 @@ function rmDeleteLocalOutline(id){
 /* ================= init ================= */
 document.getElementById("hdr-logo").src = LOGO;
 try{ document.getElementById("photoSize").value = localStorage.getItem("photo-size-pref") || "small"; }catch(e){}
-newOrder();
+/* App opens on the home/launcher screen now, not straight into a blank
+   Leak/Service form — see "Home / launcher screen" in DEV_NOTES.md.
+   populateWoTypeSelect() runs here too (not just inside fill()) so the
+   Work Order Type dropdown has real options ready even if a user reaches
+   Preview/Save before ever picking a launcher tile or loading a saved
+   order — harmless either way, just extra safety. */
+populateWoTypeSelect();
+showView("home");
 renderSaved();
 updateAdminUI();
 </script>
