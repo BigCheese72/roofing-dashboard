@@ -1034,6 +1034,72 @@ containing `<s>`, confirmed no injection leak). Zero console errors. Real end-to
 verification (an actual send through the deployed dev app) is for Mark to run himself,
 per the standing testing discipline.
 
+### One timeline entry per work order (shipped 2026-07-09)
+
+**The bug**: Building History sometimes showed multiple timeline entries for the same
+work order. Root cause, confirmed by reading every place `logReportAndHistoryEvent()`
+is called (`downloadPdf()`, `sendEmailNow()`, all three branches of `sharePdf()`):
+every single call generated a **brand-new random Firestore auto-id**
+(`fdb.collection("reports").doc().id`) with no concept of "this work order already has
+an entry." Resending to a different recipient, resharing, or resaving all independently
+called this function again, each time inserting a whole new `reports` +
+`building_history_events` doc pair. This was the *original* design intent, not a
+regression — `flagDuplicateEvents()` (a 5-minute-window "possible duplicate" badge, see
+below) exists specifically because this was expected to happen occasionally from
+double-clicks/retries. What wasn't anticipated: genuinely resending the same job to
+several different people over hours, which the 5-minute window doesn't catch and which
+produced real, lasting duplicate timeline entries rather than an occasional near-instant
+retry artifact.
+
+**Confirmed in production data (read-only count, 2026-07-09)**: 10 total
+`building_history_events` docs across 5 distinct work orders — **2 of those 5 work
+orders have duplicates** (one with 4 entries, one with 3; the other 3 work orders
+correctly have exactly 1 each). Timestamps on the duplicate groups span from ~10 seconds
+apart up to ~4 hours apart, consistent with a mix of quick retries and genuine later
+resends — exactly the reported symptom. **Not touched** — no delete/merge performed;
+see the cleanup proposal below.
+
+**Fix**: `logReportAndHistoryEvent()`'s doc id is now deterministic —
+`"evt_" + workOrderId"` — instead of random, so every subsequent call for the same work
+order **upserts the same doc** instead of inserting a new one. This is also race-safe:
+even two near-simultaneous sends resolve to the same id, so the outcome is still exactly
+one document (last-write-wins on whichever fields raced), never two. To keep an upserted
+entry meaningful rather than just "whatever the latest action happened to be":
+- `createdAt` is preserved from the *first* time a work order is logged (read-before-write:
+  fetches the existing doc, if any, and carries its `createdAt` forward) — so the
+  timeline entry doesn't jump to "just now," and re-sort to the top, every time it's
+  resent. A new `updatedAt` field always reflects the latest action.
+- `emailRecipients` **accumulates** every distinct address this report has ever been
+  emailed to (deduped), rather than the latest send overwriting the list — "resent to 3
+  different people" now means the entry shows all 3, not just the last one.
+- `emailSent` is sticky-true: once a work order's report has been emailed, it stays
+  `true` even if a later action on the same work order is a Share or Download.
+- Everything else (`reportType`, findings/repairs summaries, warranty, pins, CompanyCam
+  refs) is a plain snapshot of the most recent action — matches how a technician would
+  expect "the current state of this report" to read, and avoids inventing a full
+  per-field audit history that wasn't asked for.
+
+**Existing duplicates from before this fix are untouched, on purpose** — deleting/merging
+them is a live-data mutation and needs Mark's separate sign-off, same standing rule as
+the shelved building-merge feature. **Proposed cleanup, not performed**: a one-time,
+human-reviewed script (matching the existing `tools/` pattern — standalone, not part of
+the deployed app) that, for each work order with more than one `building_history_events`
+doc, picks the entry with the union of all recipients + the latest snapshot fields (the
+same merge logic the live fix now applies going forward), writes that as the sole
+survivor under the new deterministic id, and deletes the rest — run once, by a human,
+against production, after reviewing exactly what it would change. Given only 2 work
+orders are affected today, this is a small, low-risk one-time job whenever Mark wants it
+— not urgent, since the forward-fix already stops it from getting worse.
+
+**Verified against an in-memory mock Firestore client (never touched real production
+Firestore)**: first save+send for a work order creates exactly one entry; a resend to 2
+more recipients + a reshare + a resave all against the *same* work order still leaves
+exactly one entry, with `emailRecipients` correctly grown to all 3 addresses,
+`emailSent` staying `true` after a non-email action, `createdAt` unchanged across all 4
+calls, and `updatedAt` advancing each time; a different work order gets its own,
+separate single entry, confirming no cross-contamination between work orders. Zero
+console errors.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |

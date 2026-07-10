@@ -43,6 +43,15 @@ Goal: preserve and harden the existing RoofOps Field / Watkins work order workfl
 - ✅ Shipped: duplicate-report detection on the building timeline (same work order +
   report type within 5 minutes flags a "possible duplicate" badge) as a safety net
   around report/history logging.
+- ✅ **Shipped**: exactly one Building History timeline entry per work order, ever —
+  fixed a real production bug where resending a report to more people, resharing, or
+  resaving each added another timeline entry (2 of 5 real work orders had duplicates
+  before this fix, up to 4 entries for one job). Now upserted by work order id instead
+  of inserted fresh every time; recipients accumulate onto the single entry rather than
+  the latest send overwriting the list. Existing duplicates from before the fix are
+  left alone on purpose (a live-data cleanup needs separate sign-off — a proposal is
+  written up, not performed). See "One timeline entry per work order" in
+  `DEV_NOTES.md`.
 
 ## Phase 2: Building/Site History Foundation
 
