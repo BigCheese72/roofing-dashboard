@@ -309,6 +309,31 @@ Goal: turn each building into a long-term roof record.
   "RoofMapper" in `DEV_NOTES.md`.
 - Not yet built: manual anchoring for non-georeferenced (roof plan/sketch) maps
   (deliberately excluded by the spec), roof-section labels/filters.
+- ✅ **Shipped (dev only)**: RoofMapper ↔ Roof Map unification — Phase 1 (connect).
+  Mark's end-state vision: capture the roof outline in RoofMapper (or eventually
+  drop in a satellite/drone image) → that outline becomes the canvas you place
+  features on → drains, HVAC, leaks, repairs, all on the roof you just mapped →
+  it all lives on the building's history. Phase 1 connects RoofMapper's
+  outline-save straight into the existing roof-asset feature-placement flow: save
+  an outline → automatically land on that roof's Building History roof map
+  (outline already drawn there) → "+ Add Roof Feature" now also draws the outline
+  inside the placement modal itself as you place the pin. Reused the existing
+  roof-asset placement and multi-roof roof-scoping as-is — no rebuild. See
+  "RoofMapper ↔ Roof Map unification" in `DEV_NOTES.md`.
+  Planned follow-on phases (not built yet):
+  - **Phase 2**: fold feature placement + zoom into RoofMapper itself as one
+    continuous surface, instead of RoofMapper handing off to a separate
+    Building-History screen/modal for placement.
+  - **Phase 3**: let a satellite/drone/uploaded image be the RoofMapper capture
+    canvas directly (today RoofMapper only captures via OSM building
+    footprints; custom base maps are a separate roof-profile feature used only
+    at placement time, not at outline-capture time).
+  - **Dimensions**: per-side outline lengths (feet), and a way to add
+    freestanding measurement/dimension lines — RoofMapper already computes
+    total area + perimeter, this extends toward per-edge measurement.
+  - **Sections**: divide one roof outline into multiple labeled sections (e.g.
+    by roof system or area), each with its own computed area, tying into the
+    existing multi-roof/roof-section data model rather than a parallel one.
 - 🚧 **In progress (dev only)**: Outlook / Microsoft 365 integration, so emails
   become part of a building's history the way CompanyCam photos already are.
   **Phase 0 (auth + mailbox read) shipped**: `netlify/functions/outlook.js` +

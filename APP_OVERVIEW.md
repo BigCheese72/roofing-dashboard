@@ -272,6 +272,13 @@ History, alongside finding pins and permanent roof features. If GPS accuracy is 
 no buildings are found nearby, or OpenStreetMap can't be reached, RoofMapper shows a
 plain-language message and a way to try again rather than failing silently.
 
+**After saving an outline to a building, RoofMapper hands you straight into feature
+placement** — it automatically switches you to that roof's Building History Roof
+Map (outline already drawn on it), so "+ Add Roof Feature" is one tap away and the
+placement map shows the outline too, right where you're placing the drain/HVAC/etc.
+Saving on this device only (no building link) skips that hand-off — there's no roof
+to route into yet.
+
 **If GPS puts you in the wrong spot** (common on desktop — location is IP-based there,
 often miles off; happens on phones too) — pan/zoom the map by hand to the actual
 building, then tap **"🔍 Search This Area"** to re-run the same building-footprint

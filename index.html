@@ -1734,15 +1734,15 @@ async function openAssetModal(buildingId, assetId, roofId){
     img.onerror = function(){
       toast("Couldn't load the custom base map — using satellite instead.");
       assetMapMode = "latlng";
-      openAssetModalSatellite(bld, assets, existing, orthoOverlay);
+      openAssetModalSatellite(bld, assets, existing, orthoOverlay, roof.roof_outlines);
     };
     img.src = roof.roof_base_map_url;
     return;
   }
   assetMapMode = "latlng";
-  await openAssetModalSatellite(bld, assets, existing, orthoOverlay);
+  await openAssetModalSatellite(bld, assets, existing, orthoOverlay, roof.roof_outlines);
 }
-async function openAssetModalSatellite(bld, assets, existing, orthoOverlay){
+async function openAssetModalSatellite(bld, assets, existing, orthoOverlay, outlines){
   var center, zoom = 18;
   if (existing && typeof existing.lat === "number"){
     center = { lat: existing.lat, lng: existing.lng };
@@ -1755,6 +1755,14 @@ async function openAssetModalSatellite(bld, assets, existing, orthoOverlay){
     } else if (orthoOverlay){
       var b = orthoOverlay.bounds;
       center = { lat: (b.north + b.south) / 2, lng: (b.east + b.west) / 2 };
+    } else if (outlines && outlines.length && outlines[outlines.length - 1].ring && outlines[outlines.length - 1].ring.length){
+      // No assets placed yet — center on the most recently saved outline
+      // (fresh from RoofMapper) rather than a generic address geocode.
+      var ring = outlines[outlines.length - 1].ring;
+      var sumLat = 0, sumLng = 0;
+      ring.forEach(function(p){ sumLat += p.lat; sumLng += p.lng; });
+      center = { lat: sumLat / ring.length, lng: sumLng / ring.length };
+      zoom = 19;
     } else {
       center = await geocodeAddress(bld.location || bld.name || "");
       if (!center){ center = { lat: 39.8283, lng: -98.5795 }; zoom = 4; }
@@ -1767,6 +1775,16 @@ async function openAssetModalSatellite(bld, assets, existing, orthoOverlay){
       maxZoom: 22, maxNativeZoom: SAT_MAX_NATIVE_ZOOM, attribution: "Tiles &copy; Esri"
     }).addTo(assetMap);
     if (orthoOverlay) L.imageOverlay(orthoOverlay.url, boundsToLatLngBounds(orthoOverlay.bounds)).addTo(assetMap);
+    /* RoofMapper <-> Roof Map unification, Phase 1: show the roof outline
+       here too (same style as the Building History map) so the outline is
+       visible as the canvas while actually placing the feature, not just
+       on the read-only map you passed through to get here. */
+    (outlines || []).forEach(function(o){
+      if (!o.ring || o.ring.length < 3) return;
+      L.polygon(o.ring.map(function(p){ return [p.lat, p.lng]; }), {
+        color: "#E8600A", weight: 2, fillColor: "#E8600A", fillOpacity: 0.1
+      }).addTo(assetMap);
+    });
     assets.forEach(function(a){
       if ((existing && a.id === existing.id) || typeof a.lat !== "number") return;
       L.marker([a.lat, a.lng], { icon: assetIcon(a.type), opacity: 0.55 }).addTo(assetMap);
@@ -5771,8 +5789,15 @@ async function rmSaveOutlineToBuilding(buildingId, roofId){
     var roofIdx = roofs.findIndex(function(r){ return r.id === roof.id; });
     roofs[roofIdx] = roof;
     await saveBuildingRoofs(buildingId, roofs);
-    toast("Roof outline saved to building ✓");
+    toast("Roof outline saved — add features to it now ✓");
     closeRmSaveModal();
+    /* Phase 1 of the RoofMapper <-> Roof Map unification: land straight on
+       this roof's Building History map (which already draws roof_outlines[]
+       as the orange polygon) instead of leaving the tech on RoofMapper with
+       nothing to do next. historySelectRoof() scopes the roof-asset picker
+       and the "+ Add Roof Feature" button to this exact roof. */
+    showView("history");
+    await historySelectRoof(buildingId, roof.id);
   }catch(e){ toast("Couldn't save: " + e.message); }
 }
 async function rmCreateBuildingAndSave(){

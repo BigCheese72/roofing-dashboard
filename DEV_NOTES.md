@@ -2804,6 +2804,64 @@ all clean), and confirmed directly that a non-admin can open, edit, and re-save 
 already-submitted work order again, identical to behavior before this was ever
 built. Only Builds A (field autocomplete) and B (Export button removed) shipped.
 
+### RoofMapper <-> Roof Map unification -- Phase 1: connect outline save to feature placement (shipped 2026-07-10, dev only)
+
+Mark's end-state vision: "Use RoofMapper to capture the roof outline (or drop in a
+satellite/drone image) -> that outline becomes the canvas you place features on ->
+drains, HVAC, leaks, repairs, all on the roof you just mapped -> it all lives on
+the building's history." Before this, RoofMapper (outline capture/generation) and
+the Roof Map / roof-asset feature-placement UI were two disconnected screens --
+saving an outline just toasted and closed a modal, with no path into placing a
+feature on the roof you'd just mapped.
+
+Phase 1 connects them without rebuilding either side:
+
+- `rmSaveOutlineToBuilding(buildingId, roofId)` -- after a successful save, instead
+  of just toasting, now calls `showView("history")` then
+  `historySelectRoof(buildingId, roof.id)` (the roof actually resolved/saved to,
+  not the possibly-undefined `roofId` param) so the tech lands directly on that
+  roof's Building History roof map. `rmCreateBuildingAndSave()` (the new-building
+  save path) funnels through the same function, so it's covered automatically.
+- Building History's roof map (`renderBuildingMap()`) already drew `roof_outlines[]`
+  as the orange polygon and already had an "+ Add Roof Feature" button scoped to
+  the selected roof -- no changes needed there. Landing there now puts the
+  just-saved outline directly in view with the add-feature action one tap away.
+- `openAssetModalSatellite()` (the roof-asset/feature placement modal itself) did
+  NOT previously draw the roof outline while actually placing a pin -- only other
+  existing assets (faded). Added the same outline-polygon rendering used on the
+  Building History map, so the outline is visible as the canvas while you're
+  placing the feature, not just on the map you passed through to get there. Also
+  added an outline-centroid fallback for the map's initial center/zoom (used only
+  when there's no existing pin, no other placed assets, and no drone orthomosaic
+  to center on) so a fresh roof with a fresh outline and zero features zooms
+  straight to the outline instead of a generic address geocode.
+- Left untouched, confirmed still working standalone: `rmSaveLocally()`
+  (device-only localStorage save, no building/roof link -- correctly has nothing
+  to route into, stays on the RoofMapper screen) and opening Building History /
+  the Roof Map directly without going through RoofMapper at all.
+- Feature-placement pixel/xy custom-base-map mode (roof plan or hand sketch
+  uploads) does NOT get the outline overlay -- `roof_outlines[]` are always real
+  lat/lng (see the comment at `renderBuildingMap`), and xy mode has no
+  georeferencing to place them against. Satellite/lat-lng mode only.
+
+Resulting flow: RoofMapper -> generate outline -> "Save Outline to Building" ->
+picks/confirms building+roof -> save succeeds -> automatically lands on that
+roof's Building History roof map (outline visible) -> tap "+ Add Roof Feature" ->
+the placement modal opens with the outline drawn on it -> place drain/HVAC/etc
+-> Save -> back on the roof map, feature now shown alongside the outline.
+
+Tested with `fdb` mocked (fake in-memory building/roof, no writes to production
+Firestore) end to end: outline save -> navigation -> roof correctly selected ->
+asset modal shows exactly one outline polygon layer -> closed cleanly. All test
+state (`window.fdb`, `rmState.outline`, the local-outline localStorage key) reset
+before finishing; page reloaded with a clean console.
+
+See the Roadmap section below for the full multi-phase plan (Phase 2: feature
+placement + zoom inline in RoofMapper as one surface; Phase 3: satellite/drone/
+uploaded image as the RoofMapper canvas) and the two new capabilities Mark wants
+captured for later -- per-edge dimensions/measurement lines, and dividing a roof
+outline into labeled sections.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |
