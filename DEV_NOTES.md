@@ -2862,6 +2862,57 @@ uploaded image as the RoofMapper canvas) and the two new capabilities Mark wants
 captured for later -- per-edge dimensions/measurement lines, and dividing a roof
 outline into labeled sections.
 
+### Email Send-to recipient defaults (shipped 2026-07-10, dev only)
+
+Mark's request: drop the "Office"/"Manager" role-labeled quick-picks from the
+report-email "Send to" dropdown, default the TO field instead of requiring a
+manual pick, and remember any address actually sent to so it becomes a future
+quick-pick. This is the report-email TO field only (`#emailTo`/`#emailPick` on
+the Preview view) -- the separate Reply-To (marks@ + charlottew@, set
+server-side in `netlify/functions/send-workorder.js` via `REPLY_TO_EMAIL`/the
+`domain` fallback) is untouched.
+
+- **Removed**: the two hardcoded `<option>`s labeled "Office — Charlotte
+  Washburn" and "Manager — Mark Sheppard" from `#emailPick`. Chris Gravits,
+  Nathan Dietiker, and Mark Emms remain as named quick-picks (they were never
+  "office"/"manager" presets, just individually named people) -- now sourced
+  from `EMAIL_RECIPIENTS_SEED` instead of static HTML.
+- **New default TO**: `renderDoc()` (runs every time the Preview view is
+  shown) now pre-fills `#emailTo` -- `marks@watkinsroofing.net` alone for
+  every work order type, or `charlottew@watkinsroofing.net` +
+  `marks@watkinsroofing.net` together specifically for `Leak / Service`
+  (`WORK_ORDER_TYPES[0]`). Only fills an **empty** box, so it never clobbers
+  recipients the user already picked/typed -- flipping back and forth between
+  Edit and Preview on the same order doesn't reset a manual choice.
+- **Auto-grow, persisted list**: `#emailPick`'s options now come from
+  `getEmailRecipients()` (localStorage key `email-recipients-v1`, seeded with
+  Chris/Nathan/Mark E on first use). After a confirmed-successful send via
+  "Send Email Now" (`resp.ok && out.ok` from `send-workorder`, the same guard
+  `markWorkOrderEmailed()` uses), `rememberEmailRecipients(addrs)` adds any
+  address not already in the list (case-insensitive dedupe against the whole
+  list, not just the seed) and re-renders the dropdown. Scoped to "Send Email
+  Now" only -- not `emailDoc()` (mailto:) or `sharePdf()` (system share sheet),
+  since neither of those confirms an email was actually sent (the user could
+  back out of their own mail app); only the server-confirmed Resend path
+  counts as "sent."
+- Same storage-quota-safe pattern as field-value memory (Build A): wrapped in
+  try/catch, a full/unavailable localStorage never blocks the send itself.
+
+Tested with `fdb` and `fetch` both mocked (no real Firestore writes, no real
+Resend/CompanyCam calls): confirmed the Office/Manager options are gone from
+the dropdown; confirmed the Leak/Service default is
+`charlottew@watkinsroofing.net, marks@watkinsroofing.net` and every other type
+defaults to `marks@watkinsroofing.net` alone; confirmed the empty-box guard
+leaves a manually-typed recipient list untouched; confirmed a brand-new
+address survives a full mocked `sendEmailNow()` call and gets added to the
+persisted list (and that re-sending to an already-known address, in a
+different case, does not duplicate it); confirmed the list persists across a
+page reload. All test-added recipients and the `email-recipients-v1` key were
+removed before finishing, leaving the seeded Chris/Nathan/Mark E list as the
+clean baseline; no test work orders were saved (real save/PDF/CompanyCam/
+history-log functions were stubbed out for this test, not exercised for
+real).
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |

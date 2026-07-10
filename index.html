@@ -402,11 +402,6 @@
     <div class="btnrow no-print" style="align-items:center">
       <select id="emailPick" style="width:auto" onchange="pickRecipient()">
         <option value="">Send to…</option>
-        <option value="charlottew@watkinsroofing.net">Office — Charlotte Washburn</option>
-        <option value="MarkS@watkinsroofing.net">Manager — Mark Sheppard</option>
-        <option value="ChrisG@watkinsroofing.net">Chris Gravits</option>
-        <option value="NathanD@watkinsroofing.net">Nathan Dietiker</option>
-        <option value="MarkE@watkinsroofing.net">Mark Emms</option>
       </select>
       <input type="text" id="emailTo" placeholder="or type any email (separate with commas)" style="width:280px">
       <button class="btn primary" onclick="sendEmailNow()">Send Email Now</button>
@@ -1207,6 +1202,60 @@ function rememberFieldValue(key, value){
     localStorage.setItem(fieldHistoryStorageKey(key), JSON.stringify(arr));
   }catch(e){ return; /* storage full/unavailable -- never block typing over this */ }
   populateFieldDatalist(key);
+}
+
+/* Email "Send to" recipient quick-pick list (the report-email TO field) --
+   separate from the fixed server-side Reply-To (marks@ + charlottew@, set
+   in netlify/functions/send-workorder.js, unaffected by any of this). No
+   more hardcoded "Office"/"Manager" role-labeled presets -- those addresses
+   are now automatic defaults instead (see renderDoc()) so there's nothing
+   to manually pick for them. Seeded with the office's other known named
+   contacts; any address actually confirmed-sent-to via "Send Email Now"
+   gets remembered here automatically (deduped, case-insensitive) so it's a
+   quick-pick next time. See "Email Send-to recipient defaults" in
+   DEV_NOTES.md. */
+var EMAIL_RECIPIENTS_KEY = "email-recipients-v1";
+var EMAIL_RECIPIENTS_SEED = [
+  { email: "ChrisG@watkinsroofing.net", label: "Chris Gravits" },
+  { email: "NathanD@watkinsroofing.net", label: "Nathan Dietiker" },
+  { email: "MarkE@watkinsroofing.net", label: "Mark Emms" }
+];
+var EMAIL_DEFAULT_TO = ["marks@watkinsroofing.net"];
+var EMAIL_DEFAULT_TO_LEAK = ["charlottew@watkinsroofing.net", "marks@watkinsroofing.net"];
+function getEmailRecipients(){
+  try{
+    var raw = localStorage.getItem(EMAIL_RECIPIENTS_KEY);
+    if (!raw) return EMAIL_RECIPIENTS_SEED.slice();
+    var arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : EMAIL_RECIPIENTS_SEED.slice();
+  }catch(e){ return EMAIL_RECIPIENTS_SEED.slice(); }
+}
+function populateEmailPick(){
+  var sel = document.getElementById("emailPick");
+  if (!sel) return;
+  var current = sel.value;
+  sel.innerHTML = '<option value="">Send to…</option>' +
+    getEmailRecipients().map(function(r){
+      return '<option value="' + esc(r.email) + '">' + esc(r.label || r.email) + '</option>';
+    }).join("");
+  sel.value = current; /* no-op if that option is no longer in the list */
+}
+function rememberEmailRecipients(addrs){
+  try{
+    var list = getEmailRecipients();
+    var known = {};
+    list.forEach(function(r){ known[(r.email || "").toLowerCase()] = true; });
+    var changed = false;
+    (addrs || []).forEach(function(addr){
+      addr = (addr || "").trim();
+      if (!addr || known[addr.toLowerCase()]) return;
+      list.push({ email: addr, label: addr });
+      known[addr.toLowerCase()] = true;
+      changed = true;
+    });
+    if (changed) localStorage.setItem(EMAIL_RECIPIENTS_KEY, JSON.stringify(list));
+  }catch(e){ return; /* storage full/unavailable -- never block a successful send over this */ }
+  populateEmailPick();
 }
 function toast(msg){
   var t = document.getElementById("toast");
@@ -3847,6 +3896,15 @@ function renderDoc(){
   var o = collect();
   document.getElementById("doc-output").innerHTML =
     o.woType === "Change Order" ? renderChangeOrderDoc(o) : renderLeakReportDoc(o);
+  populateEmailPick();
+  /* Default "Send to" -- marks@ on every work order type, plus charlottew@
+     for Leak / Service specifically. Only fills an EMPTY box so it never
+     clobbers a recipient list the user already picked/typed (e.g. flipping
+     back and forth between Edit and Preview on the same order). */
+  var toBox = document.getElementById("emailTo");
+  if (toBox && !toBox.value.trim()){
+    toBox.value = (o.woType === WORK_ORDER_TYPES[0] ? EMAIL_DEFAULT_TO_LEAK : EMAIL_DEFAULT_TO).join(", ");
+  }
 }
 function renderLeakReportDoc(o){
   var isRepair = o.woType === "Repair";
@@ -4745,6 +4803,7 @@ async function sendEmailNow(){
     try{ out = await resp.json(); }catch(e){}
     if (resp.ok && out && out.ok){
       markWorkOrderEmailed(o.id, addrs);
+      rememberEmailRecipients(addrs);
       var ccUp = { skipped: true };
       if (o.companyCamProjectId){
         ccUp = await uploadLinkedPdfToCompanyCam(d, o, "Email sent \u2713");
@@ -5867,6 +5926,7 @@ function rmDeleteLocalOutline(id){
 document.getElementById("hdr-logo").src = LOGO;
 loadGlobalPhotoSizePref();
 populateAllFieldDatalists();
+populateEmailPick();
 /* App opens on the home/launcher screen now, not straight into a blank
    Leak/Service form — see "Home / launcher screen" in DEV_NOTES.md.
    populateWoTypeSelect() runs here too (not just inside fill()) so the

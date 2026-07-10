@@ -385,6 +385,14 @@ When the user sends or shares a report:
 
 This means the user should not have to remember to manually save before sending.
 
+**"Send to" defaults itself**: the Preview screen's recipient box pre-fills with
+`marks@watkinsroofing.net` for any work order, or both `charlottew@watkinsroofing.net`
+and `marks@watkinsroofing.net` for Leak / Service specifically — no manual pick
+needed, though it can still be edited or added to. The "Send to…" dropdown next to
+it is a growing quick-pick list: it starts with a few named office contacts, and
+any address someone actually sends a report to gets remembered there automatically
+for next time.
+
 After **Send Email Now** succeeds, that work order shows **"📧 Emailed [date/time]"**
 right on its card in the **Saved** tab — so anyone (office or tech) can tell at a
 glance whether a report actually went out, without having to dig through Building

@@ -191,6 +191,14 @@ Goal: preserve and harden the existing RoofOps Field / Watkins work order workfl
   left alone on purpose (a live-data cleanup needs separate sign-off — a proposal is
   written up, not performed). See "One timeline entry per work order" in
   `DEV_NOTES.md`.
+- ✅ **Shipped (dev only, 2026-07-10)**: report-email "Send to" recipient defaults.
+  Dropped the hardcoded "Office"/"Manager" quick-picks; the TO field now defaults
+  itself instead — `marks@watkinsroofing.net` on every work order type, plus
+  `charlottew@watkinsroofing.net` too specifically for Leak / Service — and any
+  address actually sent to via "Send Email Now" is remembered (deduped,
+  persisted) as a future quick-pick. The separate Reply-To (marks@ + charlottew@,
+  server-side) is unaffected. See "Email Send-to recipient defaults" in
+  `DEV_NOTES.md`.
 
 ## Phase 2: Building/Site History Foundation
 
