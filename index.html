@@ -392,12 +392,9 @@
     </div>
 
     <div class="btnrow">
-      <button class="btn primary" id="btn-save" onclick="saveOrder()">Save</button>
-      <button class="btn" id="btn-preview-doc" onclick="showView('preview')">Preview Document →</button>
+      <button class="btn primary" onclick="saveOrder()">Save</button>
+      <button class="btn" onclick="showView('preview')">Preview Document →</button>
     </div>
-    <p class="hint" id="view-only-banner" style="display:none;background:#FFF4E5;border:1px solid #E8A33D;border-radius:6px;padding:10px 12px;font-weight:600;color:#8A5A00">
-      🔒 View only — this is a submitted work order. Admin mode is required to edit and re-save it.
-    </p>
   </div>
 
   <!-- ================= PREVIEW VIEW ================= -->
@@ -1154,13 +1151,6 @@ function updateAdminUI(){
   var importHint = document.getElementById("saved-import-hint");
   if (importHint) importHint.style.display = isAdmin ? "" : "none";
   if (document.getElementById("saved-list")) drawSaved();
-  /* Re-evaluate view-only lock immediately on admin toggle -- a non-admin
-     viewing a locked submitted work order who enters the admin PIN should
-     see it unlock right away, not need to leave and reopen it (and vice
-     versa if admin mode gets turned off while one is open). See
-     refreshViewOnlyLock() and "View-only mode for a submitted work
-     order" above it. */
-  refreshViewOnlyLock();
   renderCCLinkInfo();
   if (document.getElementById("view-history") && document.getElementById("view-history").style.display !== "none"){
     renderHistoryList();
@@ -2482,7 +2472,6 @@ function renderHomeTiles(){
   host.innerHTML = tiles.join("");
 }
 function startNewWorkOrder(type){
-  currentOrderIsSaved = false; /* a brand-new work order is always fully editable, even for a non-admin */
   fill({ id: "wo_" + Date.now(), serviceDate: todayStr(), woType: type });
   showView("edit");
   toast("New " + (WORK_ORDER_TYPE_LABELS[type] || type) + " started");
@@ -2583,66 +2572,6 @@ async function syncPinCorrectionsToHistory(o){
     if (any) await batch.commit();
   }catch(e){ console.warn("pin correction sync failed", e); }
 }
-/* ================= view-only mode for a submitted work order =================
-   Mark's clarified "review only" behavior: a non-admin's CURRENT (new/
-   in-progress, not-yet-saved) work order stays fully editable; a non-admin
-   who OPENS an already-saved/submitted work order (from the Saved list, or
-   jumping in from a Building History pin -- both go through loadOrder()
-   below) gets it read-only. Admins can always edit anything.
-
-   "Current vs submitted" is tracked with one flag, currentOrderIsSaved --
-   true the moment loadOrder() successfully loads an existing work order
-   into the Edit form, false the moment startNewWorkOrder() starts a fresh
-   one. The actual lock state is ALWAYS recomputed as
-   (currentOrderIsSaved && !isAdmin), not stored as its own on/off flag, so
-   toggling admin mode while a locked work order is still open immediately
-   unlocks it (and vice versa) -- refreshViewOnlyLock() is called from
-   updateAdminUI() for exactly this reason.
-
-   Implementation: rather than threading a disabled-attribute check through
-   every render function that touches #view-edit (findings/repairs/photos/
-   repair items all re-render independently), a single MutationObserver
-   watches #view-edit and disables any input/textarea/select/button as
-   fast as it's added to the DOM -- one choke point, can't be missed by a
-   render function nobody remembered to update. #btn-preview-doc is
-   deliberately exempt: reviewing the generated PDF preview IS the "review"
-   Mark wants allowed, not something to lock down. */
-var currentOrderIsSaved = false;
-var viewOnlyObserver = null;
-function lockFormControlsIn(root){
-  if (!root || !root.querySelectorAll) return;
-  var els = root.matches && root.matches("input,textarea,select,button") ? [root] : [];
-  els = els.concat(Array.prototype.slice.call(root.querySelectorAll("input,textarea,select,button")));
-  els.forEach(function(el){
-    if (el.id === "btn-preview-doc") return;
-    el.disabled = true;
-  });
-}
-function unlockFormControlsIn(root){
-  if (!root || !root.querySelectorAll) return;
-  root.querySelectorAll("input,textarea,select,button").forEach(function(el){ el.disabled = false; });
-}
-function refreshViewOnlyLock(){
-  var host = document.getElementById("view-edit");
-  var banner = document.getElementById("view-only-banner");
-  if (!host) return;
-  var shouldLock = currentOrderIsSaved && !isAdmin;
-  if (banner) banner.style.display = shouldLock ? "" : "none";
-  if (viewOnlyObserver){ viewOnlyObserver.disconnect(); viewOnlyObserver = null; }
-  if (shouldLock){
-    lockFormControlsIn(host);
-    viewOnlyObserver = new MutationObserver(function(mutations){
-      mutations.forEach(function(m){
-        m.addedNodes.forEach(function(node){
-          if (node.nodeType === 1) lockFormControlsIn(node);
-        });
-      });
-    });
-    viewOnlyObserver.observe(host, { childList: true, subtree: true });
-  } else {
-    unlockFormControlsIn(host);
-  }
-}
 /* Photo-capture rework follow-up (Mark): on a work order type that has
    findings (Leak/Service, Inspection, Warranty — see hasFindings in
    onWoTypeChange()), every photo must have both a caption and an
@@ -2669,19 +2598,6 @@ function findingsPhotoIssues(o){
 }
 function saveOrder(opts){
   opts = opts || {};
-  /* View-only enforcement (Mark) — defense in depth alongside the disabled
-     Save button (see refreshViewOnlyLock()): a non-admin can't re-save a
-     submitted work order with different content. Only guards the explicit
-     Save (opts.quiet unset) — same reasoning as the photo-issues check
-     below: the quiet auto-save ccImport()/autoSaveBeforeReport() already
-     make is harmless here (a locked form's inputs are disabled, so
-     collect() can only ever read back the exact same values that were
-     loaded — nothing to actually overwrite), and blocking it would break
-     Send/Share/Download for someone just reviewing a report. */
-  if (!opts.quiet && currentOrderIsSaved && !isAdmin){
-    toast("This is a submitted work order — admin mode is required to edit and re-save it.");
-    return Promise.resolve(false);
-  }
   var o = collect();
   if (!opts.quiet){
     var photoIssues = findingsPhotoIssues(o);
@@ -2725,13 +2641,6 @@ async function autoSaveBeforeReport(actionLabel){
   return true;
 }
 function loadOrder(id){
-  /* Every path through this function loads an EXISTING/submitted work
-     order (that's the whole point of loadOrder vs startNewWorkOrder) —
-     see "View-only mode for a submitted work order" above
-     refreshViewOnlyLock(). Set once up front rather than at each of the
-     several fill()/showView("edit") call sites below, since it's true
-     for all of them uniformly. */
-  currentOrderIsSaved = true;
   var db = loadDb();
   var local = db.orders[id];
   var localEntry = null;
@@ -5216,12 +5125,6 @@ function showView(v){
   if (v === "history") renderHistoryList();
   if (v === "reports") renderReportsList();
   if (v === "roofmapper") rmOnShow();
-  /* View-only mode (Mark) — refreshed every time the Edit view is shown,
-     not just from loadOrder()/startNewWorkOrder() directly, so it's
-     correct regardless of which code path got here (including a future
-     one nobody remembers to update individually). See
-     "View-only mode for a submitted work order" above refreshViewOnlyLock(). */
-  if (v === "edit") refreshViewOnlyLock();
   window.scrollTo(0,0);
   if (v === "edit" && pendingPinFindingId){
     var fid = pendingPinFindingId;

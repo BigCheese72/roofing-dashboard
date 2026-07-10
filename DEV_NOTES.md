@@ -2789,67 +2789,20 @@ call, not assumed here.
 shows only Open, an admin's shows Open + Delete (no Export for anyone, at any
 permission level); confirmed Import still works correctly for an admin.
 
-### View-only mode for a submitted work order (shipped 2026-07-10, dev only)
+### View-only mode for a submitted work order — built, then CANCELED by Mark
 
-**Goal (from Mark, clarifying the earlier Saved-view access-control pass)**: a
-non-admin's *current* (new/in-progress, not-yet-saved) work order stays fully
-editable. A non-admin who *opens* an already-saved/submitted work order from the
-Saved list becomes view-only — reviewable, not editable or re-savable. Admins can
-always edit anything, saved or not.
-
-**How "current vs. submitted" is scoped, exactly as asked to report**: one flag,
-`currentOrderIsSaved` — set `true` at the very top of `loadOrder()` (every path
-through that function loads an *existing* work order, so it's true uniformly
-regardless of which of `loadOrder()`'s several fetch/cache branches actually ran),
-and set `false` at the top of `startNewWorkOrder()`. The lock itself is **never**
-stored as its own flag — it's recomputed every time as `currentOrderIsSaved &&
-!isAdmin`, via `refreshViewOnlyLock()`, called from three places: `showView()`
-whenever the Edit view is shown (covers every current and future call path
-uniformly, including `jumpToAdjustPin()` from a Building History pin, which routes
-through `loadOrder()`), and `updateAdminUI()` (so toggling admin mode while a locked
-work order is open unlocks/re-locks it immediately, no need to leave and reopen).
-
-**Implementation — one `MutationObserver`, not per-render-function checks**: rather
-than adding a disabled-attribute check to every render function that touches
-`#view-edit` (findings/repairs/photos/repair items all re-render independently —
-easy to miss one), `refreshViewOnlyLock()` disables every current
-input/textarea/select/button under `#view-edit` in one pass, then attaches a
-`MutationObserver` (while locked) that disables any *newly added* one the instant
-it's inserted — confirmed this catches a finding row added via a direct
-`renderFindings()` re-render while locked, not just the initial elements. Unlocking
-does the reverse (re-enables everything currently in the DOM, disconnects the
-observer). **`#btn-preview-doc` ("Preview Document →") is deliberately exempt** —
-reviewing the generated PDF preview is exactly the "review" Mark wants a non-admin
-to keep; only edit/save actions are locked. The photo lightbox (tap-to-enlarge) is
-unaffected for a different reason — it's triggered by an `<img onclick>`, not a
-form control, so it was never touched by the lock in the first place.
-
-**`saveOrder()` also guards the explicit save directly** (defense in depth, same
-pattern as every other dual-gated admin action this session) — blocks with a toast
-if `currentOrderIsSaved && !isAdmin`, but **only for the explicit save**
-(`opts.quiet` unset), not the internal quiet auto-saves. This is safe: with every
-input disabled, `collect()` can only ever read back the exact values that were
-loaded, so a quiet auto-save before Send/Share/Download is a no-op in effect — no
-real "re-save with different content" can happen — and blocking it would break
-reviewing/re-sending a report for no benefit.
-
-**One real side effect worth knowing**: `jumpToAdjustPin()` (jumping from a Building
-History pin straight into adjusting it) routes through `loadOrder()`, so it now
-inherits this lock too — a non-admin can no longer drag-adjust a pin that way
-either, without admin mode. A logical consequence of "opening a submitted work
-order is view-only," not something separately decided.
-
-**Verified — no Firestore writes possible, `fdb` explicitly `null` throughout**:
-confirmed a brand-new work order stays fully editable for a non-admin; confirmed
-opening a saved work order as a non-admin disables every field, disables Save,
-shows the banner, and leaves Preview Document clickable; confirmed toggling admin
-mode on/off while that same locked order is still open unlocks/re-locks it live;
-confirmed starting a new work order right after resets to fully editable; confirmed
-a dynamically re-rendered finding row added while locked gets caught and disabled
-by the observer (not just the initial render); confirmed a direct `saveOrder()`
-call while locked+non-admin is blocked; confirmed an admin opening the same saved
-work order is immediately fully editable, no lock at all. Zero console errors
-throughout.
+Mark initially asked for this (see the Saved-view access-control pass above), then
+clarified he does **not** want it: non-admins CAN edit and re-save any work order,
+submitted or not, exactly as it worked before. The lock (MutationObserver on
+#view-edit, currentOrderIsSaved flag, refreshViewOnlyLock(), the saveOrder() guard,
+the view-only banner) was fully built, tested, and briefly shipped in one commit
+alongside Builds A/B, then **completely removed** in a follow-up commit the same
+day, before Mark saw it live -- confirmed zero trace of the removed code remains
+(grepped for every identifier: currentOrderIsSaved, viewOnlyObserver,
+lockFormControlsIn, unlockFormControlsIn, refreshViewOnlyLock, view-only-banner --
+all clean), and confirmed directly that a non-admin can open, edit, and re-save an
+already-submitted work order again, identical to behavior before this was ever
+built. Only Builds A (field autocomplete) and B (Export button removed) shipped.
 
 ## Netlify environment variables
 

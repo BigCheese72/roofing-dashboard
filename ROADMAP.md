@@ -156,16 +156,18 @@ Goal: preserve and harden the existing RoofOps Field / Watkins work order workfl
   asset Label) now remember the last ~25 distinct values typed into them and
   suggest them via a native `<datalist>` — on-device only (`localStorage`), no
   Firestore writes. See "Field-value memory / autocomplete" in `DEV_NOTES.md`.
-- ✅ **Shipped (dev only, 2026-07-10)**: two more changes from Mark, superseding
-  parts of the Saved-tab access-control pass above. **Export is gone entirely** —
-  not just admin-gated, removed ("I don't need an export button at all"); Import is
-  left in place for now, flagged as a possible next removal since its only source
-  file (Export's output) no longer exists in-app. **Opening an already-submitted
-  work order is now view-only for a non-admin** — every field and Save are
-  disabled, with a "🔒 View only" banner; a brand-new/in-progress work order stays
-  fully editable for everyone, and admins can always edit anything. See "Export
-  button removed" and "View-only mode for a submitted work order" in
-  `DEV_NOTES.md`.
+- ✅ **Shipped (dev only, 2026-07-10)**: Export is gone entirely, superseding part of
+  the Saved-tab access-control pass above — not just admin-gated, removed ("I don't
+  need an export button at all"). Import is left in place for now, flagged as a
+  possible next removal since its only source file (Export's output) no longer
+  exists in-app. See "Export button removed" in `DEV_NOTES.md`.
+- 🔄 **Built, then CANCELED by Mark (2026-07-10)**: view-only mode for an
+  already-submitted work order. Mark clarified after the fact that non-admins CAN
+  edit and re-save any work order, submitted or not — the same as it always worked.
+  Fully removed the same day, before this reached him live; confirmed no trace of
+  the lock code remains and a non-admin can open/edit/re-save a submitted work
+  order again. See "View-only mode for a submitted work order — built, then
+  CANCELED by Mark" in `DEV_NOTES.md`.
 - ❌ **Decided against (2026-07-09)**: pushing app-added phone photos to a matching
   CompanyCam project. CompanyCam's photo-upload API requires a publicly-fetchable URL
   per photo, which this app can't produce without paying for Firebase Storage or

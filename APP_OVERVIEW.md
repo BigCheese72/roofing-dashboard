@@ -413,13 +413,8 @@ reveals:
 - **Delete** on each saved work order in the Saved tab, plus **Import Work Order
   File**. A non-admin's Saved tab only offers **Open** — deleting one or importing
   one from a file is admin-only. (There's no Export button at all anymore, for
-  anyone — Mark: "I don't need an export button at all.")
-- **Editing an already-submitted work order.** Opening a *new, in-progress* work
-  order is always fully editable, for anyone. Opening an *already-saved* one from
-  the Saved list is **view-only for a non-admin** — every field is disabled, Save is
-  disabled, and a "🔒 View only" banner explains why; they can still tap "Preview
-  Document →" to review the generated report. Turning admin mode on while that same
-  work order is still open unlocks it immediately, no need to reopen it.
+  anyone — Mark: "I don't need an export button at all.") Opening any work order —
+  new or already submitted — is fully editable for everyone, admin or not.
 
 The timeline also auto-flags **possible duplicate entries** — same work order + same
 report type logged within 5 minutes of each other, almost always a double-click or a
