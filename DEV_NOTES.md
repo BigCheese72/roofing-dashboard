@@ -1935,6 +1935,58 @@ never touching Home; switching type mid-form still works from an existing order;
 the tile grid confirmed responsive (2-column layout at 375px width, not cramped into
 one column or overflowing). Zero console errors throughout.
 
+### RoofMapper: recovering from a wrong GPS fix (shipped 2026-07-10)
+
+**Bug (reported by Mark)**: on desktop, RoofMapper's GPS put him in the wrong location
+(desktop geolocation is IP-based and often miles off — expected, not itself a bug). He
+panned the map to the actual building, but couldn't tap it — nothing happened.
+
+**Root cause**: RoofMapper only ever renders the building footprints returned by the
+*one* Overpass search it ran (around the GPS point) as clickable polygons
+(`rmRenderFootprints()`/`rmState.footprintLayers`). Panning the map is just moving the
+viewport — Leaflet doesn't fetch or render anything new on its own — so a building the
+user pans to, with no footprint search ever run near it, has no clickable shape there
+at all. This wasn't a click-handling bug; there was genuinely nothing to click.
+
+**Fix — "🔍 Search This Area"**, the primary/only change shipped: a new button, always
+visible once the map is open (same row as "Search Wider"/"Re-locate & Search Again"),
+plus a plain-language hint explaining when to use it. `rmSearchThisArea()` reads
+`rmState.map.getCenter()` — wherever the user has panned to — writes it into
+`rmState.lat`/`rmState.lng` (overwriting the original, possibly-wrong GPS fix), resets
+`radiusIndex` to the narrowest step (same as a fresh GPS lock — this is "start over,
+but here"), and calls the *exact same* `rmSearchBuildings()` the GPS flow already
+uses. Deliberately not a new search path — reusing the existing function means the
+existing "no footprints found," "Search Wider," and site-boundary-fallback logic all
+apply identically whether the search center came from GPS or from a pan.
+
+**No stale/overlapping polygons**: `rmSearchBuildings()` already calls
+`rmClearFootprintLayers()` before rendering new results (needed for "Search Wider" and
+"Re-locate" too), so this was already correct by construction — confirmed rather than
+newly built.
+
+**Feature #2 (tap anywhere on the map to search that point) — evaluated, deferred, not
+built.** Leaflet's vector layers don't bubble their own click events up to the map by
+default, so a `map.on("click", ...)` handler technically wouldn't conflict with
+tapping an existing footprint to select it — that part would've been clean. What held
+it back: every stray tap (scrolling, pinch-zoom overshoot, an accidental touch) would
+silently fire a real Overpass request — Overpass is a shared public service with fair
+use limits, and an unpredictable "every tap has a network side effect" isn't good
+mobile UX either. The explicit button is a deliberate, visible action instead. Worth
+revisiting if Mark finds the button alone isn't fast enough in the field.
+
+**Verified with a mocked `rmFetchNearbyBuildings`** (never hit the real Overpass API —
+a shared public service, not something to hammer for testing), mobile and desktop
+viewports: seeded a "wrong" GPS fix and ran the normal search (renders the wrong
+building); panned the map to a different point entirely; tapped Search This Area with
+a different mocked result set at the new point — confirmed `rmState.lat`/`lng` updated
+to the panned-to center (not the original GPS point), `radiusIndex` reset to 0, the
+old footprint was genuinely removed (not just hidden), and the new footprints
+rendered; confirmed the newly-rendered footprint is actually selectable
+(`rmSelectFootprint` works, shows the correct building info) — proving the original
+"can't click on it" bug is fixed, not just that a search ran. Repeated a third
+pan-and-research on a desktop viewport to confirm it isn't mobile-specific. Zero
+console errors throughout.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |

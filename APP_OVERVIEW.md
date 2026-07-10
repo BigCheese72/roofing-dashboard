@@ -177,6 +177,14 @@ History, alongside finding pins and permanent roof features. If GPS accuracy is 
 no buildings are found nearby, or OpenStreetMap can't be reached, RoofMapper shows a
 plain-language message and a way to try again rather than failing silently.
 
+**If GPS puts you in the wrong spot** (common on desktop — location is IP-based there,
+often miles off; happens on phones too) — pan/zoom the map by hand to the actual
+building, then tap **"🔍 Search This Area"** to re-run the same building-footprint
+search centered on wherever the map sits now, instead of the original GPS point. The
+old search results clear automatically so there's never overlap between an old and
+new set of outlines. This is the recovery path whenever the GPS fix doesn't land on
+a clickable building — GPS itself is unchanged, this only helps when it's wrong.
+
 RoofMapper is Phase 1 — see `ROADMAP.md` for what's planned next (drains, HVAC,
 scuppers, pipe penetrations, dimensions, CompanyCam photos, drone orthomosaic overlays,
 roof history over time).

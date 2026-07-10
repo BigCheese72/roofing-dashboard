@@ -52,6 +52,16 @@ Goal: preserve and harden the existing RoofOps Field / Watkins work order workfl
   extracted Watkins brand red (`#B4223F`) in the UI, scoped to this one new screen.
   See "Home / launcher screen" in `DEV_NOTES.md` and "Logo & Brand Palette" in
   `APP_OVERVIEW.md`.
+- ✅ **Shipped**: fixed a real RoofMapper field bug (reported by Mark) — on desktop,
+  GPS is IP-based and often lands far from the actual building; panning the map to the
+  correct spot by hand left nothing clickable there, since RoofMapper only ever
+  rendered footprints from the one search run around the (possibly wrong) GPS point.
+  New **"🔍 Search This Area"** button re-runs the same footprint search centered on
+  wherever the map is currently panned to, reusing the existing search/clear logic so
+  there's never a stale/overlapping result set. A second, more ambitious option
+  (tap anywhere on the map to search that exact point) was evaluated and deliberately
+  deferred — real risk of firing an Overpass request on every stray/accidental tap.
+  See "RoofMapper: recovering from a wrong GPS fix" in `DEV_NOTES.md`.
 - ❌ **Decided against (2026-07-09)**: pushing app-added phone photos to a matching
   CompanyCam project. CompanyCam's photo-upload API requires a publicly-fetchable URL
   per photo, which this app can't produce without paying for Firebase Storage or

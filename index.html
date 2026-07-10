@@ -421,9 +421,13 @@
       <p class="rm-status" id="rm-status"></p>
       <div id="rm-map" style="height:min(55vh,460px);border-radius:6px;overflow:hidden;margin-bottom:12px;display:none"></div>
       <div class="rm-actions" id="rm-search-again-wrap" style="display:none">
-        <button class="btn primary rm-bigbtn" id="rm-widen-btn" style="display:none" onclick="rmWidenSearch()">🔎 Search Wider</button>
+        <button class="btn primary rm-bigbtn" id="rm-search-here-btn" onclick="rmSearchThisArea()">🔍 Search This Area</button>
+        <button class="btn rm-bigbtn" id="rm-widen-btn" style="display:none" onclick="rmWidenSearch()">🔎 Search Wider</button>
         <button class="btn rm-bigbtn" id="rm-search-again-btn" onclick="rmUseMyLocation()">🔄 Re-locate & Search Again</button>
       </div>
+      <p class="hint" id="rm-search-here-hint" style="display:none;margin:-6px 0 12px">Panned to the right spot? Tap
+        <b>Search This Area</b> to look for building footprints where the map is centered now — GPS doesn't need to
+        be right for this.</p>
     </div>
 
     <div class="card" id="rm-footprint-panel" style="display:none">
@@ -4791,6 +4795,25 @@ function rmWidenSearch(){
   if (rmState.radiusIndex < RM_RADIUS_STEPS.length - 1) rmState.radiusIndex++;
   rmSearchBuildings();
 }
+/* Recovers from bad GPS (very common on desktop — IP-based location can
+   be miles off — and not unheard of on phones either): after the user
+   pans/zooms the map to the actual building by hand, this re-runs the
+   exact same Overpass search rmSearchBuildings() already does, just
+   centered on wherever the map currently sits instead of the original
+   (possibly wrong) GPS fix. Resets to the narrowest radius step, same
+   as a fresh GPS lock, since this is effectively "start over, but here"
+   — rmClearFootprintLayers() inside rmSearchBuildings() already removes
+   the previous search's polygons first, so there's never a stale
+   overlap between an old and new result set. */
+function rmSearchThisArea(){
+  var map = rmState.map;
+  if (!map){ toast("Use My Location first to open the map."); return; }
+  var center = map.getCenter();
+  rmState.lat = center.lat;
+  rmState.lng = center.lng;
+  rmState.radiusIndex = 0;
+  rmSearchBuildings();
+}
 
 function rmOnShow(){
   if (rmState.map) setTimeout(function(){ rmState.map.invalidateSize(); }, 60);
@@ -4832,6 +4855,7 @@ function rmUseMyLocation(){
     rmSetStatus("Located — accuracy ±" + Math.round(acc) + "m.", accKind === "poor" ? "warn" : null,
       ' <span class="rm-accuracy ' + accKind + '">' + accLabel + ' GPS</span>');
     document.getElementById("rm-search-again-wrap").style.display = "";
+    document.getElementById("rm-search-here-hint").style.display = "";
     if (accKind === "poor") toast("GPS accuracy is poor (±" + Math.round(acc) + "m) — searching anyway, open sky helps.");
     rmSearchBuildings();
   }, function(err){
@@ -4857,6 +4881,7 @@ async function rmSearchBuildings(){
   rmSetStatus("Searching within " + radius + "m for building footprints…");
   rmClearFootprintLayers();
   document.getElementById("rm-search-again-wrap").style.display = "";
+  document.getElementById("rm-search-here-hint").style.display = "";
   try{
     var results = await rmFetchNearbyBuildings(rmState.lat, rmState.lng, radius);
     var hasMore = rmState.radiusIndex < RM_RADIUS_STEPS.length - 1;
