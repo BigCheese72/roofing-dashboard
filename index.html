@@ -355,7 +355,7 @@
       </div>
     </div>
 
-    <div class="card">
+    <div class="card" id="wo-warrantydetermination-card">
       <h2 class="cond">Warranty Determination</h2>
       <div id="wo-leak-warranty-extra" style="display:none">
         <details style="margin:0 0 14px">
@@ -376,13 +376,14 @@
 
     <div class="card" id="wo-globalphotos-card">
       <h2 class="cond">Photo Documentation</h2>
-      <p class="hint">Tip: for a photo tied to a specific finding, it's usually faster to capture it right in that finding above — caption, finding, and pin all attach in one step. This section shows every photo on the job, and controls the order they print into the PDF.</p>
+      <p class="hint" id="wo-globalphotos-hint-findings" style="display:none">Photos are captured directly in each finding above — caption, finding link, and map pin all attach in one step there, including importing from CompanyCam. This section shows every photo on the job, and controls the order they print into the PDF.</p>
+      <p class="hint" id="wo-globalphotos-hint-nofindings">Every photo needs a caption. Photos print into the PDF document automatically, in the order shown below.</p>
       <input type="file" id="photoInput" accept="image/*" multiple style="display:none"
         onchange="addPhotosFromFiles(this.files); this.value='';">
       <input type="file" id="cameraInput" accept="image/*" capture="environment" style="display:none"
         onchange="addPhotosFromCamera(this.files); this.value='';">
       <div id="photos-list"></div>
-      <div class="btnrow">
+      <div class="btnrow" id="wo-globalphotos-buttons">
         <button class="btn primary" onclick="document.getElementById('cameraInput').click()">📷 Take Photo</button>
         <button class="btn" onclick="document.getElementById('photoInput').click()">+ Add Photos</button>
         <button class="btn" onclick="openCC()">Import from CompanyCam</button>
@@ -1235,6 +1236,7 @@ function findingPhotoGalleryHtml(f){
     '<div class="btnrow" style="margin:0">' +
       '<button class="btn primary" onclick="document.getElementById(\'fcam-' + safeId + '\').click()">📷 Take Photo</button>' +
       '<button class="btn" onclick="document.getElementById(\'flib-' + safeId + '\').click()">+ Add Photos</button>' +
+      '<button class="btn" onclick="openCC(\'' + safeId + '\')">Import from CompanyCam</button>' +
     '</div>' +
     '<input type="file" id="fcam-' + safeId + '" accept="image/*" capture="environment" style="display:none" ' +
       'onchange="addPhotosFromCamera(this.files, \'' + safeId + '\'); this.value=\'\';">' +
@@ -2238,6 +2240,29 @@ function onWoTypeChange(){
      exactly as before. */
   var gpc = document.getElementById("wo-globalphotos-card");
   if (gpc) gpc.style.display = isCO ? "none" : "";
+  /* Photo capture buttons (Take Photo / Add Photos / Import from
+     CompanyCam) moved up into each finding's own card for every type
+     that HAS findings — same reasoning as photo-in-finding above: photos
+     belong with the finding they document, captured/imported in one
+     step, not added separately and linked up after. Repair is the one
+     exception: it has no findings at all (see wo-findings-card above),
+     so it's the only type left that still needs these buttons in the
+     global section — otherwise a Repair work order would have no way to
+     add a photo at all. Change Order's global section is already fully
+     hidden above, so this is moot for it. */
+  var hasFindings = !isRepair && !isCO;
+  var gpb = document.getElementById("wo-globalphotos-buttons");
+  if (gpb) gpb.style.display = hasFindings ? "none" : "";
+  var hintFindings = document.getElementById("wo-globalphotos-hint-findings");
+  if (hintFindings) hintFindings.style.display = hasFindings ? "" : "none";
+  var hintNoFindings = document.getElementById("wo-globalphotos-hint-nofindings");
+  if (hintNoFindings) hintNoFindings.style.display = hasFindings ? "none" : "";
+  /* Warranty Determination doesn't apply to a Change Order at all — it's a
+     scope-of-work/authorization document, not a leak/warranty
+     investigation (per Mark, same framing as the findings/repairs-made
+     sections above). Every other type keeps the card exactly as before. */
+  var wdc = document.getElementById("wo-warrantydetermination-card");
+  if (wdc) wdc.style.display = isCO ? "none" : "";
   /* Warranty guideline reference + Manufacturer Service # are leak-specific
      (per Mark: guideline lists are "for leaks and leaks only"; the
      manufacturer service # is what a warrantable leak usually also has a
@@ -2485,9 +2510,40 @@ async function syncPinCorrectionsToHistory(o){
     if (any) await batch.commit();
   }catch(e){ console.warn("pin correction sync failed", e); }
 }
+/* Photo-capture rework follow-up (Mark): on a work order type that has
+   findings (Leak/Service, Inspection, Warranty — see hasFindings in
+   onWoTypeChange()), every photo must have both a caption and an
+   assigned finding before the explicit Save can succeed — "General / no
+   specific finding" is no longer an acceptable end state for those
+   types. Repair and Change Order have no findings at all, so this never
+   applies to them. Deliberately checked only here (the explicit Save
+   button, opts.quiet unset) and NOT on the internal quiet auto-saves
+   ccImport() and autoSaveBeforeReport() already make — a freshly
+   imported photo hasn't had a chance to be captioned yet, and blocking
+   Send/Share/Download entirely over this felt too disruptive for field
+   use. See "Caption + finding enforcement" in DEV_NOTES.md. */
+function findingsPhotoIssues(o){
+  var hasFindings = o.woType !== "Repair" && o.woType !== "Change Order";
+  if (!hasFindings) return [];
+  var issues = [];
+  (o.photos || []).forEach(function(p, i){
+    var missing = [];
+    if (!(p.caption || "").trim()) missing.push("a caption");
+    if (!p.finding_id) missing.push("a finding");
+    if (missing.length) issues.push("Photo " + (i + 1) + " needs " + missing.join(" and "));
+  });
+  return issues;
+}
 function saveOrder(opts){
   opts = opts || {};
   var o = collect();
+  if (!opts.quiet){
+    var photoIssues = findingsPhotoIssues(o);
+    if (photoIssues.length){
+      toast("Fix before saving: " + photoIssues.join("; "));
+      return Promise.resolve(false);
+    }
+  }
   currentId = o.id;
   var db = loadDb();
   db.orders[o.id] = o;
@@ -4702,13 +4758,21 @@ async function sharePdf(){
 
 /* ================= CompanyCam import ================= */
 var ccSelected = {};
-function openCC(){
+/* findingId (optional) -- set when opened from a finding's own "Import from
+   CompanyCam" button (see findingPhotoGalleryHtml()), so ccImport() below
+   knows to attach every imported photo to that finding, same as camera/
+   library captures already do. Opened from the global section (Repair
+   only now — see onWoTypeChange()) leaves this null, same as before. */
+var ccTargetFindingId = null;
+function openCC(findingId){
+  ccTargetFindingId = findingId || null;
   document.getElementById("cc-modal").style.display = "";
   ccShowProjects("");
 }
 function closeCC(){
   document.getElementById("cc-modal").style.display = "none";
   ccSelected = {};
+  ccTargetFindingId = null;
 }
 async function ccApi(params){
   var qs = Object.keys(params).map(function(k){ return k + "=" + encodeURIComponent(params[k]); }).join("&");
@@ -4960,11 +5024,18 @@ async function ccImport(){
       var compressed = await ccCompress(out.dataUrl);
       compressed.ccPhotoId = p.id;
       if (p.gps) compressed.gps = p.gps; /* initial guess for pin placement — see placePin() */
+      /* Imported straight into the finding that opened this modal, same as
+         a camera/library capture already does (see findingPhotoGalleryHtml()
+         above) — attach + auto-pin in one action, not a separate manual
+         reassignment afterward. */
+      compressed.finding_id = ccTargetFindingId || null;
       photos.push(compressed);
+      if (ccTargetFindingId) maybeAutoPinFinding(compressed);
       ok++;
     }catch(e){ fail++; }
   }
   renderPhotos();
+  renderFindings();
   renderCCLinkInfo();
   if (ok){
     toast("Locking CompanyCam project and syncing history...");

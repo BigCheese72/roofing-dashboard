@@ -73,9 +73,9 @@ itemized Materials list, a Cost Summary with a Total, an Approved By / Date sign
 line, and those photos as a secondary grid at the end. No findings table or warranty
 section — that framing belongs to the leak report, not a change order. The form
 itself shows only what a Change Order needs: Roof Investigation Findings, the plain
-"Work Performed" list, and the global Photo Documentation section are all hidden for
-this type — its own Change Order Details card (with its own photo box) covers
-everything, so nothing is duplicated or irrelevant.
+"Work Performed" list, Warranty Determination, and the global Photo Documentation
+section are all hidden for this type — its own Change Order Details card (with its
+own photo box) covers everything, so nothing is duplicated or irrelevant.
 
 **Repair** is for project/small-project work — flashing a curb, several curbs and
 boots, that kind of scope — rather than a leak diagnosis. It hides the Roof
@@ -130,24 +130,32 @@ location access is available, grabs the device's current GPS at the moment of
 capture. **+ Add Photos** (choose from library) never attaches a location guess,
 since a library photo could be old or from somewhere else.
 
-**Capture right in the finding it belongs to.** Each finding in Roof Investigation
-Findings has its own "📷 Take Photo" / "+ Add Photos" buttons and a small photo
-strip, right there in the finding's card — this is the fast path, since caption,
-finding link, and map pin all attach in one action: capture the photo, and if GPS
-was available, the pin drops on the roof map immediately, no extra step. Consumer
-GPS is only accurate to ~10-30ft, so treat the pin as a starting point and drag to
-fine-tune (from "📍 Pinned — move" on that finding) rather than a final placement.
-No GPS available (denied, unsupported, or timed out) just means no auto-pin — the
-photo itself always saves either way. A pin that's already been placed — manually or
-from an earlier photo — is never overwritten by a later one.
+**Every photo is captured right in the finding it belongs to.** Each finding in Roof
+Investigation Findings has its own "📷 Take Photo" / "+ Add Photos" / **Import from
+CompanyCam** buttons and a small photo strip, right there in the finding's card —
+caption, finding link, and map pin all attach in one action: capture or import the
+photo, and if GPS was available (device GPS for a camera capture, or the photo's own
+location for a CompanyCam import), the pin drops on the roof map immediately, no
+extra step. Consumer GPS is only accurate to ~10-30ft, so treat the pin as a starting
+point and drag to fine-tune (from "📍 Pinned — move" on that finding) rather than a
+final placement. No GPS available (denied, unsupported, timed out, or the CompanyCam
+photo had none) just means no auto-pin — the photo itself always saves either way. A
+pin that's already been placed — manually or from an earlier photo — is never
+overwritten by a later one.
+
+**Every photo needs both a caption and an assigned finding.** Save is blocked with a
+specific message (e.g. "Photo 2 needs a caption") until both are filled in — capturing
+or importing right inside a finding already takes care of the finding link; only the
+caption is left to type. (Repair and Change Order have no findings, so this doesn't
+apply to them.)
 
 The global **Photo Documentation** section (bottom of the form) still shows *every*
-photo on the job — from a finding, general, or imported from CompanyCam — and is
-where reordering (print order) and reassigning a photo's finding both happen. Adding
-a photo there instead of inside a finding works exactly as before: it's just not
-linked to a finding until you pick one from its dropdown. **Hidden for Change Order**
-specifically, since that type has its own in-scope photo box instead (see "Work Order
-Types" above) — showing both would just be the same photos twice.
+photo on the job and is where reordering (print order) happens — but for Leak/Service,
+Inspection, and Warranty, its own Take Photo/Add Photos/Import-from-CompanyCam
+buttons are gone, since those all live in the findings now. **Repair** is the one
+exception and keeps them here, since Repair has no findings to capture into at all.
+**Hidden entirely for Change Order**, which has its own in-scope photo box instead
+(see "Work Order Types" above).
 
 Photo size (small/medium/large — how much a photo gets compressed/downscaled before
 saving) isn't a per-user choice anymore — it's one setting for everyone, defaulting

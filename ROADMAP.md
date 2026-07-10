@@ -139,6 +139,22 @@ Goal: preserve and harden the existing RoofOps Field / Watkins work order workfl
   form** (same as creating/editing any work order, complete with Save) — there is no
   read-only "review" mode yet; that's a decision still pending with Mark, not
   something this pass changed. See "Saved view access control" in `DEV_NOTES.md`.
+- ✅ **Shipped (dev only)**: three more form changes from Mark's review. (1) Change
+  Order drops its Warranty Determination section entirely — it's a scope-of-work
+  document, not a warranty investigation. (2) Import from CompanyCam moved up into
+  each finding's own card (attach + auto-pin in one action, same as camera/library
+  captures); the lower/global section's Take Photo and Add Photos buttons are gone
+  for Leak/Service, Inspection, and Warranty (Repair keeps them — it has no findings
+  to capture into at all). (3) Every photo on a findings-based work order type now
+  needs both a caption and an assigned finding before Save will succeed. See "Change
+  Order: no Warranty Determination," "Leak-form photo restructure," and "Caption +
+  finding enforcement" in `DEV_NOTES.md`.
+- 📋 **Researched, not built (2026-07-10)**: field-value memory/autocomplete for
+  free-text fields (Technician, Site Contact, etc.). Confirmed it doesn't exist
+  today — the only auto-populate mechanisms are Select Existing Building and
+  CompanyCam import, both "pull from one specific existing record," not general
+  field-history suggestion. See "Field-value memory / autocomplete" in
+  `DEV_NOTES.md`.
 - ❌ **Decided against (2026-07-09)**: pushing app-added phone photos to a matching
   CompanyCam project. CompanyCam's photo-upload API requires a publicly-fetchable URL
   per photo, which this app can't produce without paying for Firebase Storage or

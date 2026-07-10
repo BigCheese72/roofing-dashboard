@@ -2511,6 +2511,122 @@ via a direct Firestore read, deleted it, and confirmed the delete with a follow-
 read (404). All remaining verification was redone with `fdb` explicitly set to
 `null`. No trace of test data remains in production Firestore or local storage.
 
+### Change Order: no Warranty Determination (shipped 2026-07-10, dev only)
+
+**Goal (from Mark)**: a Change Order doesn't need a warranty section at all — it's a
+scope-of-work/authorization document, not a leak/warranty investigation.
+
+`#wo-warrantydetermination-card` (new id on the existing card — Warrantable/
+Non-Warrantable Repairs textareas, plus the Leak/Service-only guideline reference and
+Manufacturer Service # inside it) now hides for Change Order via `onWoTypeChange()`,
+same pattern as every other type-conditional card. Every other type keeps it exactly
+as before, including the Leak/Service-only guideline lists inside it. No PDF change
+needed — `generateChangeOrderPdf()`/`buildChangeOrderText()` never read
+`warrantable`/`nonWarrantable`/`mfgServiceNo` in the first place (confirmed by
+reading those builders — they're fully separate from the leak-report builder and
+never referenced these fields).
+
+### Leak-form photo restructure: CompanyCam moves into findings (shipped 2026-07-10, dev only)
+
+**Goal (from Mark)**: photos should live with findings — move Import from CompanyCam
+up into the finding section, remove the lower/global section's Take Photo and Add
+Photos buttons, and enforce that every photo has both a caption and an assigned
+finding.
+
+**Current layout, reported before touching anything**: findings already had their
+own Take Photo/Add Photos buttons (Increment 2 of the photo-capture rework). The
+lower "Photo Documentation" section (`#wo-globalphotos-card`) had Take Photo, Add
+Photos, *and* Import from CompanyCam, plus the full photo list (every photo, with
+caption/finding-reassignment dropdown/reorder/lightbox) and the CompanyCam link
+banner.
+
+**A real conflict found before implementing**: `#wo-globalphotos-card` is shared by
+every type except Change Order (which hides it entirely) — including **Repair**,
+which has no findings at all and no photo capture of its own on its "Repair Scope"
+card. Stripping the three buttons from the global section unconditionally would have
+left Repair work orders with no way to add a photo. Resolved by keeping Take
+Photo/Add Photos/Import-CompanyCam visible in the global section **only for Repair**
+(`#wo-globalphotos-buttons`, toggled by a new `hasFindings` check in
+`onWoTypeChange()` — `!isRepair && !isCO`); they're hidden for Leak/Service,
+Inspection, and Warranty (the types that have findings). The global section's hint
+text swaps between two variants (`#wo-globalphotos-hint-findings` /
+`#wo-globalphotos-hint-nofindings`) to match. Per spec, the photo **list/thumbnails**
+in the global section stay visible for every type (including Leak/Service) — only
+the capture buttons move/disappear; the list is still where reordering (print order)
+and reassigning a photo's finding happen.
+
+**CompanyCam import is now finding-aware**: `openCC(findingId)` (called from
+`findingPhotoGalleryHtml()`'s new "Import from CompanyCam" button) records
+`ccTargetFindingId`; `ccImport()` sets `compressed.finding_id` from it and calls
+`maybeAutoPinFinding()` when set — same "attach + auto-pin in one action" behavior
+camera/library captures already had, now extended to CompanyCam imports made from
+inside a finding. Opening from the global section (Repair only now) leaves
+`ccTargetFindingId` null, identical to today's behavior.
+
+### Caption + finding enforcement (shipped 2026-07-10, dev only)
+
+**`findingsPhotoIssues(o)`**: on any work order type that has findings
+(Leak/Service, Inspection, Warranty — not Repair or Change Order, which have no
+findings to assign to), every photo must have both a non-empty caption and an
+assigned `finding_id`. Checked in `saveOrder()`, which now returns `false` and shows
+a specific, itemized toast (e.g. "Photo 1 needs a caption and a finding; Photo 2
+needs a finding") instead of saving, if anything's missing.
+
+**Deliberately scoped to the explicit Save button only** (`opts.quiet` unset) — NOT
+the internal quiet auto-saves `ccImport()` and `autoSaveBeforeReport()` already make.
+Found and worked around a real conflict here too: `ccImport()` calls
+`saveOrder({quiet:true})` immediately after every import, and a freshly-imported
+photo hasn't had a chance to be captioned yet — validating that quiet save would
+have blocked the *entire CompanyCam import flow* with a false-positive error every
+single time. Same reasoning for not blocking `autoSaveBeforeReport()` (the pre-Send/
+Share/Download auto-save): blocking a tech from sending a report at all over a photo
+caption felt too disruptive for field use.
+
+**Known tradeoff, flagged for Mark rather than silently decided**: this does mean
+opening an *existing* Leak/Service/Inspection/Warranty work order that already has
+general/uncaptioned photos (anything saved before this shipped) will now be blocked
+from re-saving until those photos are fixed. That's arguably the intended
+"enforcement" outcome (force cleanup as old work orders get touched again), but it's
+a real behavior change worth knowing about.
+
+**Verified — `fdb` explicitly set to `null` before any test that could write, per
+the standing instruction**: confirmed the Warranty Determination card hides for
+Change Order only across all 5 types; confirmed the global photo buttons hide for
+Leak/Service/Inspection/Warranty and stay visible for Repair only, with the matching
+hint text swap; confirmed each finding's own "Import from CompanyCam" button targets
+that specific finding (not a different one — caught and fixed a real bug here, see
+below); confirmed a mocked CompanyCam import into a finding sets `finding_id` and
+auto-pins the finding from the imported photo's GPS; confirmed `saveOrder()` blocks
+with the exact itemized message for missing caption, missing finding, or both, and
+succeeds once both are fixed; confirmed Repair and Change Order are fully exempt
+(save succeeds even with an uncaptioned/unassigned photo). **A real bug found and
+fixed during this pass**: `ccImport()` tracked `ccTargetFindingId` but never actually
+applied it to the imported photo — caught by testing the actual import path (not just
+the open/close tracking), fixed by setting `compressed.finding_id` and calling
+`maybeAutoPinFinding()` inside the import loop. Zero console errors throughout. All
+local test work orders created during testing (all saved locally only, `fdb` was
+null) were cleared from `localStorage` afterward, and a direct read against real
+production Firestore confirmed no test document was ever created there.
+
+### Field-value memory / autocomplete — researched, not built (2026-07-10)
+
+**Mark's question**: "Did we address keeping track of what was entered in the fill
+boxes so they can auto-populate?" Checked the codebase directly (grepped for
+`datalist`, `autocomplete=`, and any field-history mechanism) — **no such thing
+exists today.** The only two "auto-populate" mechanisms in the app are both
+select-a-specific-existing-record flows, not general field memory:
+- **Select Existing Building** (`bpSelectBuilding()`) — pulls Job Name/Bill To/
+  Location/Roof System from a previously-*saved* building record the tech explicitly
+  picks.
+- **CompanyCam import** — pulls Job Name/Location from the linked CompanyCam
+  project's own metadata.
+
+Free-text fields like Technician, Site Contact, Billing Contact, etc. have no `name`
+attribute, no `autocomplete` hint, and no `<datalist>` — nothing remembers a
+previously-typed value across work orders or suggests it while typing. This is a
+real gap if Mark wants it; not something this pass built (report-only, per his
+request — he'll decide with the user whether to build it).
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |
