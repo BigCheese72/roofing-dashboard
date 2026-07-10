@@ -1153,6 +1153,82 @@ calls, and `updatedAt` advancing each time; a different work order gets its own,
 separate single entry, confirming no cross-contamination between work orders. Zero
 console errors.
 
+### Multiple roofs per building (in progress, started 2026-07-10)
+
+**The goal**: move from "a building has one roof" to "a building has one or more
+roofs," each with its own roof system, base map, permanent assets, and outlines — the
+foundational data-model step toward the full RoofOps vision (see the gap analysis
+delivered 2026-07-09). This is the highest-risk item so far this project: dev and
+production share one live Firestore, and production's code only ever reads the old
+singular building fields — so this had to be additive and backward-compatible from the
+first commit, never a big migration.
+
+**Schema**: a new `roofs[]` array field directly on the `buildings` doc (not a
+subcollection — no `firestore.rules` changes needed, and every existing read site
+already fetches the building doc once). Each roof carries what used to be
+building-level fields: `id`, `label`, `roofSystem`, `roof_base_map_type/url/bounds`,
+`roof_assets[]`, `roof_outlines[]`. Full shape and rationale in `DATA_MODEL.md`
+("Multi-roof backward compatibility").
+
+**Backward compatibility mechanism** — two adapter functions in `index.html`:
+- `getBuildingRoofs(bld)` — pure read-time function, never writes. A building with a
+  real `roofs[]` array uses it as-is; any other building (untouched by this feature, or
+  brand new) gets one virtual roof synthesized from its existing legacy fields, `id:
+  "roof_default"`, `label: "Roof 1"`. Every existing building, unless someone
+  deliberately adds a second roof, renders identically to before this shipped.
+- `saveBuildingRoofs(buildingId, roofs)` — always writes `roofs[]`, and additionally
+  mirrors `roofs[0]` back onto the legacy singular fields whenever a building still has
+  exactly one roof — so production (which only reads those legacy fields) keeps seeing
+  correct data for every still-single-roof building. Once a building gets a second real
+  roof, the legacy fields stop updating for that building specifically — an accepted,
+  called-out limit, not an oversight (flagged to Mark before implementation; he
+  confirmed proceeding on this basis).
+
+**What shipped in this first increment**:
+- The two adapters above, plus `getRoofById(bld, roofId)`.
+- `ensureCustomerAndBuilding()` (runs on every work order save) now also syncs
+  `roofSystem` into `roofs[0]` whenever a building still has exactly one roof — this is
+  what lazily creates a real `roofs[]` array on existing buildings the first time they're
+  touched after this ships, with zero visible change.
+- `openBuildingHistory()` is roof-scoped: a roof selector (`<select>`) only renders when
+  a building has more than one roof; "+ Add Roof" (`promptAddRoof()`) is always
+  available and starts a new roof empty (no base map, assets, or outlines). The Roof
+  Map, roof assets, and base map all read/write the *selected* roof via the adapters.
+- The asset modal (`openAssetModal`/`saveAssetFromModal`/`deleteAssetFromModal`) takes an
+  explicit `roofId` and reads/writes that specific roof's `roof_assets[]`.
+- RoofMapper's save-to-building (`rmSaveOutlineToBuilding`) was retrofit to go through
+  `getBuildingRoofs`/`saveBuildingRoofs` instead of writing `roof_outlines` straight onto
+  the building doc — that direct write would have silently stopped working for any
+  building that already picked up a real `roofs[]` array (which happens automatically on
+  its next work-order save, per the point above), so this was a real bug caught and
+  fixed during this same pass, not shipped broken.
+- The admin "Roof Base Map" card (`renderBaseMapAdminCard`) is disabled — with an
+  explanatory message, not silently — for the whole building once it has more than one
+  roof. Reason: `netlify/functions/admin.js`'s `set_building_roof_map` still only writes
+  the legacy singular fields, which stop being read once a building has a real
+  `roofs[]`; making it roof-aware is a follow-up server-side change, not done here.
+
+**Known follow-up gaps** (documented in `DATA_MODEL.md`, not hidden):
+- Work orders/finding pins aren't roof-scoped yet — the Roof Map's pins still show for
+  every roof regardless of which one is selected; only the base map/assets/outlines are
+  roof-scoped so far.
+- The pin modal (`lookupProspectiveBuildingBaseMap`) always targets the building's first
+  roof — no roof picker there yet.
+- The building picker and Building History's building list still show the legacy
+  `roofSystem` field for their one-line summary (display-only, prefill convenience) —
+  accurate for single-roof buildings, may go stale for a multi-roof building.
+- `admin.js` isn't roof-aware yet (see above) — custom base maps are single-roof-only
+  for now.
+
+**Verified against an in-memory mock Firestore client (never touched real production
+Firestore)**: a legacy-shaped mock building (only the old singular fields, no `roofs[]`)
+renders through `getBuildingRoofs` as exactly one roof, "Roof 1", with all its existing
+assets/outlines/base map intact — confirming zero visual regression for every existing
+building. A mock building with a real 2-roof `roofs[]` array renders its roof selector,
+switches roofs correctly, and adding assets to one roof doesn't affect the other.
+`saveBuildingRoofs` correctly mirrors to legacy fields for a 1-roof building and stops
+mirroring once a second roof is added, confirmed by direct reads of the mock store.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |

@@ -99,7 +99,8 @@ Notes:
 
 Physical buildings/sites associated with a customer.
 
-Example fields:
+**A building can have one or more roofs** (implemented, not just proposed — started
+2026-07-10, see "Multiple roofs per building" in `DEV_NOTES.md`). Example fields:
 
 ```js
 {
@@ -108,21 +109,78 @@ Example fields:
   name,
   slug,
   address,
-  roofSystem,
   companyCamProjectId,
   companyCamProjectName,
+  roofs: [ /* see "roofs[] item shape" below */ ],
+  createdAt,
+  updatedAt,
+
+  // LEGACY fields — kept for backward compatibility, see "Multi-roof backward
+  // compatibility" below. Never read these directly in new code; always go
+  // through getBuildingRoofs()/saveBuildingRoofs() in index.html.
+  roofSystem,
+  roof_base_map_type: null,
+  roof_base_map_url: null,
+  roof_base_map_bounds: null,
+  roof_assets: [],
+  roof_outlines: []
+}
+```
+
+**`roofs[]` item shape**:
+
+```js
+{
+  id,       // "roof_default" for a synthesized/first roof, or genId("roof")
+  label,    // "Roof 1" by default, editable, e.g. "East Wing"
+  roofSystem,
   roof_base_map_type: null, // "roof_plan" | "sketch" | "drone_ortho"
-  roof_base_map_url: null,  // a CompanyCam document URL when set — see DEV_NOTES.md
-  roof_base_map_bounds: null, // { north, south, east, west } — drone_ortho only
-  roof_base_map_updated_at: null,
-  roof_assets: [], // permanent roof features (drains, HVAC units, hatches, etc.) — see below
+  roof_base_map_url: null,
+  roof_base_map_bounds: null,
+  roof_assets: [],   // same shape as before, now per-roof — see below
+  roof_outlines: [], // same shape as before, now per-roof — see below
   createdAt,
   updatedAt
 }
 ```
 
+**Multi-roof backward compatibility** — dev and production share one live Firestore,
+and production's code only reads the legacy singular fields directly. Two adapter
+functions in `index.html` make this safe:
+
+- `getBuildingRoofs(bld)` — pure read-time function, never writes. A building with a
+  real `roofs[]` array uses it as-is. Any other building (untouched by this feature, or
+  brand new) gets one virtual roof synthesized from its legacy singular fields, `id:
+  "roof_default"`, `label: "Roof 1"` — so every existing building looks exactly like it
+  did before `roofs[]` existed, with zero migration.
+- `saveBuildingRoofs(buildingId, roofs)` — always writes the new `roofs[]` array, and
+  additionally mirrors `roofs[0]` back onto the legacy singular fields whenever a
+  building still has exactly one roof. Production, which only reads those legacy
+  fields, keeps seeing correct, current data for every still-single-roof building.
+  **Once a building has a second real roof, the legacy fields stop being updated** for
+  that building — production would show its last-synced single-roof snapshot until
+  this feature ships to `main`. Deliberate, accepted limit: it only applies to a
+  building actively using the brand-new multi-roof capability, which doesn't exist on
+  production regardless.
+
+Known follow-up gaps in this first increment (documented, not hidden):
+- Work orders aren't roof-scoped yet — a work order/finding pin doesn't know which roof
+  it belongs to, so pins on the Roof Map still show for every roof selection, and
+  `ensureCustomerAndBuilding()` only syncs `roofSystem` into `roofs[0]` while a building
+  has exactly one roof.
+- The pin modal (`lookupProspectiveBuildingBaseMap`) and RoofMapper's save-to-building
+  (`rmSaveOutlineToBuilding`) both only target the building's first roof — no picker yet
+  for a multi-roof building.
+- The admin "Roof Base Map" upload/clear card (`renderBaseMapAdminCard`) is disabled
+  entirely once a building has more than one roof, since it goes through
+  `netlify/functions/admin.js`'s `set_building_roof_map`, which only knows the legacy
+  singular fields and isn't roof-aware yet.
+- The building picker and Building History building list still read the legacy
+  `roofSystem` field directly for their summary line (display-only) — accurate for
+  single-roof buildings, may go stale for a multi-roof building until this is revisited.
+
 **`roof_assets[]` item shape** (implemented, not just proposed — see "Roof assets" in
-`DEV_NOTES.md`):
+`DEV_NOTES.md`). Lives on each roof in `roofs[]` now, not directly on the building:
 
 ```js
 {
@@ -143,7 +201,7 @@ to be added/moved/removed as the roof itself changes — the difference between 
 leak was" and "where the roof drain has always been."
 
 **`roof_outlines[]` item shape** (implemented, not just proposed — see "RoofMapper" in
-`DEV_NOTES.md`):
+`DEV_NOTES.md`). Also lives on each roof in `roofs[]` now, not directly on the building:
 
 ```js
 {

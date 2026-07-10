@@ -658,8 +658,79 @@ async function ensureCustomerAndBuilding(o){
       patch.roof_base_map_url = null;
     }
     await bldRef.set(patch, { merge: true });
+    try{
+      var freshBld = snap.exists ? Object.assign({}, snap.data(), patch) : patch;
+      var roofs = getBuildingRoofs(freshBld);
+      if (roofs.length === 1){
+        roofs[0].roofSystem = patch.roofSystem;
+        await saveBuildingRoofs(bldId, roofs);
+      }
+      /* A building with 2+ real roofs has no single target for a work
+         order's roof system — work orders aren't roof-scoped yet (see
+         DATA_MODEL.md), so multi-roof buildings just skip this sync until
+         that's built. The legacy/singular fields above are unaffected
+         either way. */
+    }catch(e){ console.warn("roof sync failed", e); }
   }catch(e){ console.warn("customer/building sync failed", e); }
   return { customerId: custId, buildingId: bldId };
+}
+
+/* ================= building roofs data layer =================
+   A building can have one or more roofs. Each roof carries its own copy
+   of what used to be building-level fields: roofSystem, roof_base_map_*,
+   roof_assets[], roof_outlines[]. See DATA_MODEL.md for the full design.
+
+   Backward compatibility is load-bearing: dev and production share one
+   live Firestore, and production's code only ever reads the OLD singular
+   fields directly on the building doc. So:
+   - getBuildingRoofs() is a pure read-time adapter, never writes anything.
+     A building with a real roofs[] array uses it as-is. Any other
+     building (never touched by this feature, or brand new) gets a single
+     virtual roof synthesized from its existing singular fields, id
+     "roof_default", label "Roof 1" — so every existing building looks
+     exactly like it does today, with zero migration.
+   - saveBuildingRoofs() always writes the new roofs[] array, AND mirrors
+     roofs[0] back onto the legacy singular fields whenever the building
+     still has exactly one roof — so production, which only reads those
+     singular fields, keeps seeing correct, current data for every
+     still-single-roof building (all of them, as of this writing). Once a
+     building has a second real roof, there's no single roof left to
+     mirror, so the legacy fields stop updating for that specific
+     building — production would show that building's last-synced
+     single-roof snapshot until this feature ships to main. That's a
+     deliberate, called-out limit of dual-write, not an oversight: it only
+     applies to a building actively using the brand-new capability that
+     doesn't exist on production regardless. */
+function getBuildingRoofs(bld){
+  bld = bld || {};
+  if (Array.isArray(bld.roofs) && bld.roofs.length) return bld.roofs;
+  return [{
+    id: "roof_default",
+    label: "Roof 1",
+    roofSystem: bld.roofSystem || "",
+    roof_base_map_type: bld.roof_base_map_type || null,
+    roof_base_map_url: bld.roof_base_map_url || null,
+    roof_base_map_bounds: bld.roof_base_map_bounds || null,
+    roof_assets: bld.roof_assets || [],
+    roof_outlines: bld.roof_outlines || []
+  }];
+}
+function getRoofById(bld, roofId){
+  var roofs = getBuildingRoofs(bld);
+  return roofs.find(function(r){ return r.id === roofId; }) || roofs[0];
+}
+async function saveBuildingRoofs(buildingId, roofs){
+  var patch = { roofs: roofs, updatedAt: Date.now() };
+  if (roofs.length === 1){
+    var r = roofs[0];
+    patch.roofSystem = r.roofSystem || "";
+    patch.roof_base_map_type = r.roof_base_map_type || null;
+    patch.roof_base_map_url = r.roof_base_map_url || null;
+    patch.roof_base_map_bounds = r.roof_base_map_bounds || null;
+    patch.roof_assets = r.roof_assets || [];
+    patch.roof_outlines = r.roof_outlines || [];
+  }
+  await fdb.collection("buildings").doc(buildingId).set(patch, { merge: true });
 }
 
 /* ================= building picker (explicit selection) =================
@@ -935,7 +1006,10 @@ async function lookupProspectiveBuildingBaseMap(){
   try{
     var snap = await fdb.collection("buildings").doc(bldId).get();
     if (!snap.exists) return null;
-    var bld = snap.data();
+    /* Work orders aren't roof-scoped yet (see DATA_MODEL.md), so this
+       always uses the building's first roof — byte-identical to today's
+       behavior for every still-single-roof building. */
+    var bld = getRoofById(snap.data(), null);
     if ((bld.roof_base_map_type === "roof_plan" || bld.roof_base_map_type === "sketch") && bld.roof_base_map_url){
       return { url: bld.roof_base_map_url, type: bld.roof_base_map_type, georeferenced: false };
     }
@@ -1162,12 +1236,15 @@ function assetIcon(type){
 }
 function assetPopupHtml(buildingId, a){
   var t = ROOF_ASSET_TYPES[a.type] || ROOF_ASSET_TYPES.other;
+  /* This map only ever renders the currently-selected roof's assets (see
+     openBuildingHistory), so historySelectedRoofId is always the right
+     roof for this marker's Edit button. */
   return "<b>" + t.emoji + " " + esc(t.label) + "</b>" + (a.label ? " — " + esc(a.label) : "") + "<br>" +
     (a.notes ? esc(a.notes) + "<br>" : "") +
-    "<button class=\"btn\" style=\"margin-top:6px\" onclick=\"openAssetModal('" + buildingId + "','" + a.id + "')\">Edit</button>";
+    "<button class=\"btn\" style=\"margin-top:6px\" onclick=\"openAssetModal('" + buildingId + "','" + a.id + "','" + historySelectedRoofId + "')\">Edit</button>";
 }
 var assetMap = null, assetMarker = null, assetModalBuildingId = null, assetModalAssetId = null,
-  assetMapMode = "latlng", assetXYSize = null;
+  assetModalRoofId = null, assetMapMode = "latlng", assetXYSize = null;
 function populateAssetTypeSelect(){
   var sel = document.getElementById("asset-type");
   if (sel.options.length) return;
@@ -1177,7 +1254,7 @@ function populateAssetTypeSelect(){
     sel.appendChild(opt);
   });
 }
-async function openAssetModal(buildingId, assetId){
+async function openAssetModal(buildingId, assetId, roofId){
   populateAssetTypeSelect();
   assetModalBuildingId = buildingId;
   assetModalAssetId = assetId || null;
@@ -1189,15 +1266,17 @@ async function openAssetModal(buildingId, assetId){
 
   var bldSnap = await fdb.collection("buildings").doc(buildingId).get();
   var bld = bldSnap.exists ? bldSnap.data() : {};
-  var assets = bld.roof_assets || [];
+  var roof = getRoofById(bld, roofId);
+  assetModalRoofId = roof.id;
+  var assets = roof.roof_assets || [];
   var existing = assetId ? assets.find(function(a){ return a.id === assetId; }) : null;
   document.getElementById("asset-type").value = existing ? existing.type : "drain";
   document.getElementById("asset-label").value = existing ? (existing.label || "") : "";
   document.getElementById("asset-notes").value = existing ? (existing.notes || "") : "";
 
-  var hasCustomBaseMap = !!((bld.roof_base_map_type === "roof_plan" || bld.roof_base_map_type === "sketch") && bld.roof_base_map_url);
-  var orthoOverlay = (bld.roof_base_map_type === "drone_ortho" && bld.roof_base_map_url && bld.roof_base_map_bounds) ?
-    { url: bld.roof_base_map_url, bounds: bld.roof_base_map_bounds } : null;
+  var hasCustomBaseMap = !!((roof.roof_base_map_type === "roof_plan" || roof.roof_base_map_type === "sketch") && roof.roof_base_map_url);
+  var orthoOverlay = (roof.roof_base_map_type === "drone_ortho" && roof.roof_base_map_url && roof.roof_base_map_bounds) ?
+    { url: roof.roof_base_map_url, bounds: roof.roof_base_map_bounds } : null;
 
   if (hasCustomBaseMap){
     assetMapMode = "xy";
@@ -1208,7 +1287,7 @@ async function openAssetModal(buildingId, assetId){
       var bounds = [[0,0],[h,w]];
       setTimeout(function(){
         assetMap = L.map("asset-map", { crs: L.CRS.Simple, minZoom: -5 });
-        L.imageOverlay(bld.roof_base_map_url, bounds).addTo(assetMap);
+        L.imageOverlay(roof.roof_base_map_url, bounds).addTo(assetMap);
         assets.forEach(function(a){
           if (a.id === assetId || typeof a.x !== "number") return;
           L.marker([a.y * h, a.x * w], { icon: assetIcon(a.type), opacity: 0.55 }).addTo(assetMap);
@@ -1227,7 +1306,7 @@ async function openAssetModal(buildingId, assetId){
       assetMapMode = "latlng";
       openAssetModalSatellite(bld, assets, existing, orthoOverlay);
     };
-    img.src = bld.roof_base_map_url;
+    img.src = roof.roof_base_map_url;
     return;
   }
   assetMapMode = "latlng";
@@ -1276,6 +1355,7 @@ function closeAssetModal(){
   if (assetMap){ assetMap.remove(); assetMap = null; assetMarker = null; }
   assetModalBuildingId = null;
   assetModalAssetId = null;
+  assetModalRoofId = null;
   assetXYSize = null;
 }
 async function saveAssetFromModal(){
@@ -1296,15 +1376,19 @@ async function saveAssetFromModal(){
     asset.lat = ll.lat;
     asset.lng = ll.lng;
   }
-  var buildingId = assetModalBuildingId;
+  var buildingId = assetModalBuildingId, roofId = assetModalRoofId;
   try{
-    var ref = fdb.collection("buildings").doc(buildingId);
-    var snap = await ref.get();
-    var assets = (snap.exists && snap.data().roof_assets) || [];
+    var snap = await fdb.collection("buildings").doc(buildingId).get();
+    var roofs = getBuildingRoofs(snap.exists ? snap.data() : {});
+    var roof = getRoofById(snap.exists ? snap.data() : {}, roofId);
+    var assets = roof.roof_assets || [];
     var idx = assets.findIndex(function(a){ return a.id === asset.id; });
     if (idx >= 0){ asset.createdAt = assets[idx].createdAt || Date.now(); assets[idx] = asset; }
     else { asset.createdAt = Date.now(); assets.push(asset); }
-    await ref.update({ roof_assets: assets });
+    roof.roof_assets = assets;
+    var roofIdx = roofs.findIndex(function(r){ return r.id === roof.id; });
+    if (roofIdx >= 0) roofs[roofIdx] = roof; else roofs.push(roof);
+    await saveBuildingRoofs(buildingId, roofs);
     toast("Roof feature saved ✓");
     closeAssetModal();
     openBuildingHistory(buildingId);
@@ -1313,12 +1397,15 @@ async function saveAssetFromModal(){
 async function deleteAssetFromModal(){
   if (!assetModalBuildingId || !assetModalAssetId) return;
   if (!confirm("Remove this roof feature?")) return;
-  var buildingId = assetModalBuildingId, assetId = assetModalAssetId;
+  var buildingId = assetModalBuildingId, assetId = assetModalAssetId, roofId = assetModalRoofId;
   try{
-    var ref = fdb.collection("buildings").doc(buildingId);
-    var snap = await ref.get();
-    var assets = ((snap.exists && snap.data().roof_assets) || []).filter(function(a){ return a.id !== assetId; });
-    await ref.update({ roof_assets: assets });
+    var snap = await fdb.collection("buildings").doc(buildingId).get();
+    var roofs = getBuildingRoofs(snap.exists ? snap.data() : {});
+    var roof = getRoofById(snap.exists ? snap.data() : {}, roofId);
+    roof.roof_assets = (roof.roof_assets || []).filter(function(a){ return a.id !== assetId; });
+    var roofIdx = roofs.findIndex(function(r){ return r.id === roof.id; });
+    if (roofIdx >= 0) roofs[roofIdx] = roof; else roofs.push(roof);
+    await saveBuildingRoofs(buildingId, roofs);
     toast("Roof feature removed");
     closeAssetModal();
     openBuildingHistory(buildingId);
@@ -2029,18 +2116,30 @@ function renderBuildingMap(pins, customBld, bldAddress, orthoOverlay, assets, bu
    in netlify/functions/admin.js. Images are stored as CompanyCam project
    documents (per DEV_NOTES.md — no Firebase Storage), so this requires
    the building to already have a linked CompanyCam project. */
-function renderBaseMapAdminCard(buildingId, bld){
-  var hasMap = bld.roof_base_map_type && bld.roof_base_map_url;
-  var hasProject = !!bld.companyCamProjectId;
+function renderBaseMapAdminCard(buildingId, roof, companyCamProjectId, roofScopingLimited){
+  if (roofScopingLimited){
+    /* Custom base maps still write through admin.js's set_building_roof_map,
+       which only knows the legacy singular fields (mirrored by
+       saveBuildingRoofs only while a building has exactly one roof) — see
+       DATA_MODEL.md. Rather than let this silently write somewhere the UI
+       no longer reads from, it's disabled for the whole building once it
+       has more than one roof, until admin.js gains real per-roof
+       targeting. */
+    return '<div class="card"><h2 class="cond">Roof Base Map (admin)</h2>' +
+      '<p class="hint">Custom base maps aren’t supported yet for buildings with more than one ' +
+      'roof (see DATA_MODEL.md) — this is a known follow-up.</p></div>';
+  }
+  var hasMap = roof.roof_base_map_type && roof.roof_base_map_url;
+  var hasProject = !!companyCamProjectId;
   var safeId = buildingId.replace(/[^A-Za-z0-9_-]/g, "");
-  var b = bld.roof_base_map_bounds;
+  var b = roof.roof_base_map_bounds;
   return '<div class="card"><h2 class="cond">Roof Base Map (admin)</h2>' +
     '<p class="hint">Building ID (for <code>tools/geotiff_to_webmap.py --upload</code>): ' +
       '<code>' + esc(buildingId) + '</code> ' +
       '<button class="btn" style="padding:2px 8px;font-size:11px" onclick="copyBuildingId(\'' + buildingId + '\')">Copy</button></p>' +
     (hasMap ?
-      '<p class="hint">Current: ' + esc(bld.roof_base_map_type.replace("_"," ")) +
-        ' — <a href="' + esc(bld.roof_base_map_url) + '" target="_blank" rel="noopener">view image</a>' +
+      '<p class="hint">Current: ' + esc(roof.roof_base_map_type.replace("_"," ")) +
+        ' — <a href="' + esc(roof.roof_base_map_url) + '" target="_blank" rel="noopener">view image</a>' +
         (b ? ' (bounds: N ' + b.north.toFixed(5) + ', S ' + b.south.toFixed(5) + ', E ' + b.east.toFixed(5) + ', W ' + b.west.toFixed(5) + ')' : '') +
         '</p>' +
       '<div class="btnrow"><button class="btn danger" onclick="clearRoofBaseMap(\'' + buildingId + '\')">Clear Base Map</button></div>'
@@ -2173,6 +2272,7 @@ async function clearRoofBaseMap(buildingId){
    would return zero results. */
 var historyEvents = [];
 var historyBuildingId = null;
+var historySelectedRoofId = null;
 function tlDistinctSorted(field){
   var set = {};
   historyEvents.forEach(function(e){ var v = (e[field] || "").trim(); if (v) set[v] = true; });
@@ -2265,17 +2365,38 @@ async function openBuildingHistory(buildingId){
   try{
     var bldSnap = await fdb.collection("buildings").doc(buildingId).get();
     var bld = bldSnap.exists ? bldSnap.data() : {};
-    var baseMapCardHtml = isAdmin ? renderBaseMapAdminCard(buildingId, bld) : "";
-    var hasCustomBaseMap = !!((bld.roof_base_map_type === "roof_plan" || bld.roof_base_map_type === "sketch") && bld.roof_base_map_url);
-    var orthoOverlay = (bld.roof_base_map_type === "drone_ortho" && bld.roof_base_map_url && bld.roof_base_map_bounds) ?
-      { url: bld.roof_base_map_url, bounds: bld.roof_base_map_bounds } : null;
-    var roofAssets = bld.roof_assets || [];
-    var addFeatureBtnHtml = '<button class="btn" onclick="openAssetModal(\'' + buildingId + '\')">+ Add Roof Feature</button>';
-    var emptyMapCardHtml = '<div class="card"><h2 class="cond">Roof Map</h2>' +
+    var roofs = getBuildingRoofs(bld);
+    if (!roofs.some(function(r){ return r.id === historySelectedRoofId; })) historySelectedRoofId = roofs[0].id;
+    var roof = getRoofById(bld, historySelectedRoofId);
+    /* uploadRoofBaseMap/clearRoofBaseMap still call admin.js's
+       set_building_roof_map, which only writes the legacy singular
+       fields — those stop being read at all once a building has a real,
+       persisted roofs[] array (saveBuildingRoofs only mirrors into them
+       while a building has exactly one roof). So once ANY second roof
+       exists, the admin base-map card is disabled entirely (even for the
+       first roof) rather than silently writing somewhere the UI no
+       longer reads from. Follow-up: make admin.js roof-aware. */
+    var baseMapCardHtml = isAdmin ?
+      renderBaseMapAdminCard(buildingId, roof, bld.companyCamProjectId, roofs.length > 1) : "";
+    var hasCustomBaseMap = !!((roof.roof_base_map_type === "roof_plan" || roof.roof_base_map_type === "sketch") && roof.roof_base_map_url);
+    var orthoOverlay = (roof.roof_base_map_type === "drone_ortho" && roof.roof_base_map_url && roof.roof_base_map_bounds) ?
+      { url: roof.roof_base_map_url, bounds: roof.roof_base_map_bounds } : null;
+    var roofAssets = roof.roof_assets || [];
+    /* Roof selector only renders for a building with more than one real
+       roof — a still-single-roof building (all of them, as of this
+       writing) looks exactly like it did before roofs[] existed. */
+    var roofPickerHtml = roofs.length > 1 ?
+      '<div class="fld" style="max-width:260px;margin-bottom:8px">' +
+        '<label>Roof</label><select onchange="historySelectRoof(\'' + buildingId + '\', this.value)">' +
+        roofs.map(function(r){ return '<option value="' + esc(r.id) + '"' + (r.id === historySelectedRoofId ? ' selected' : '') + '>' + esc(r.label || "Roof") + '</option>'; }).join('') +
+        '</select></div>' : '';
+    var addRoofBtnHtml = '<button class="btn" onclick="promptAddRoof(\'' + buildingId + '\')">+ Add Roof</button>';
+    var addFeatureBtnHtml = '<button class="btn" onclick="openAssetModal(\'' + buildingId + '\', null, \'' + historySelectedRoofId + '\')">+ Add Roof Feature</button>';
+    var emptyMapCardHtml = '<div class="card"><h2 class="cond">Roof Map</h2>' + roofPickerHtml +
       '<p class="hint">No pins placed yet — they’ll show up here as findings get pinned on future reports. ' +
       'Permanent features (drains, HVAC units, hatches, etc.) can be added any time.</p>' +
       '<div id="building-map" style="height:min(50vh,420px);border-radius:6px;overflow:hidden;margin-bottom:10px"></div>' +
-      addFeatureBtnHtml + '</div>';
+      addFeatureBtnHtml + ' ' + addRoofBtnHtml + '</div>';
     var qs = await fdb.collection("building_history_events")
       .where("buildingId", "==", buildingId).orderBy("createdAt", "desc").limit(50).get();
     var events = [];
@@ -2285,7 +2406,7 @@ async function openBuildingHistory(buildingId){
       historyBuildingId = buildingId;
       detail.innerHTML = baseMapCardHtml + emptyMapCardHtml + '<div class="card"><h2 class="cond">Timeline</h2>' +
         '<div class="empty">No reports logged for this building yet.</div></div>';
-      renderBuildingMap([], hasCustomBaseMap ? bld : null, bld.location, orthoOverlay, roofAssets, buildingId, bld.roof_outlines);
+      renderBuildingMap([], hasCustomBaseMap ? roof : null, bld.location, orthoOverlay, roofAssets, buildingId, roof.roof_outlines);
       return;
     }
     flagDuplicateEvents(events);
@@ -2293,6 +2414,10 @@ async function openBuildingHistory(buildingId){
     historyEvents = events;
     historyBuildingId = buildingId;
     var allPins = [];
+    /* Findings' pins aren't roof-scoped yet — work orders don't know which
+       roof they're for (see DATA_MODEL.md) — so every pin from every
+       report still shows regardless of which roof is selected above. Only
+       the base map / assets / outlines are roof-scoped so far. */
     events.forEach(function(e){ (e.pins || []).forEach(function(p){ allPins.push(Object.assign({ eventDate: e.date }, p)); }); });
     /* A building shows ONE map — either satellite (lat/lng pins) or its
        custom base map (x/y pins), not a mix, since those are two different
@@ -2306,12 +2431,12 @@ async function openBuildingHistory(buildingId){
     /* Always show the roof map, even with zero pins — it's the building's
        satellite/base-map view, not just a pin display. Pins fill in over
        time as reports get generated. */
-    var mapCardHtml = '<div class="card"><h2 class="cond">Roof Map</h2>' +
+    var mapCardHtml = '<div class="card"><h2 class="cond">Roof Map</h2>' + roofPickerHtml +
       '<p class="hint">' + (mapPins.length ?
         'Every pinned finding across every report for this building, plus any permanent roof features below. Tap a pin for details.' :
         'No pins placed yet — they’ll show up here as findings get pinned on future reports.') + '</p>' +
       '<div id="building-map" style="height:min(50vh,420px);border-radius:6px;overflow:hidden;margin-bottom:10px"></div>' +
-      addFeatureBtnHtml + '</div>';
+      addFeatureBtnHtml + ' ' + addRoofBtnHtml + '</div>';
     detail.innerHTML = baseMapCardHtml + mapCardHtml +
       '<div class="card"><h2 class="cond">Timeline (' + events.length + ')</h2>' +
       (dupCount ? '<p class="hint">\u26a0 ' + dupCount + ' possible duplicate' + (dupCount === 1 ? "" : "s") +
@@ -2320,10 +2445,35 @@ async function openBuildingHistory(buildingId){
       '<div id="timeline-list"></div></div>';
     populateTimelineFilterOptions();
     renderTimelineList();
-    renderBuildingMap(mapPins, hasCustomBaseMap ? bld : null, bld.location, orthoOverlay, roofAssets, buildingId, bld.roof_outlines);
+    renderBuildingMap(mapPins, hasCustomBaseMap ? roof : null, bld.location, orthoOverlay, roofAssets, buildingId, roof.roof_outlines);
   }catch(e){
     detail.innerHTML = '<div class="card"><div class="empty">Couldn\u2019t load timeline: ' + esc(e.message) + '</div></div>';
   }
+}
+function historySelectRoof(buildingId, roofId){
+  historySelectedRoofId = roofId;
+  openBuildingHistory(buildingId);
+}
+async function promptAddRoof(buildingId){
+  var label = prompt("Name for the new roof (e.g. \"Main Building\", \"East Wing\"):");
+  if (label === null) return;
+  label = label.trim();
+  if (!label) { toast("Enter a name for the roof."); return; }
+  toast("Adding roof\u2026");
+  try{
+    var snap = await fdb.collection("buildings").doc(buildingId).get();
+    var bld = snap.exists ? snap.data() : {};
+    var roofs = getBuildingRoofs(bld);
+    roofs.push({
+      id: genId("roof"), label: label, roofSystem: "",
+      roof_base_map_type: null, roof_base_map_url: null, roof_base_map_bounds: null,
+      roof_assets: [], roof_outlines: [], createdAt: Date.now(), updatedAt: Date.now()
+    });
+    await saveBuildingRoofs(buildingId, roofs);
+    historySelectedRoofId = roofs[roofs.length - 1].id;
+    toast("Roof added \u2713");
+    openBuildingHistory(buildingId);
+  }catch(e){ toast("Couldn't add roof: " + e.message); }
 }
 async function deleteHistoryEventAdmin(eventId, buildingId){
   if (!isAdmin){ toast("Admin mode required to delete."); return; }
@@ -3900,12 +4050,18 @@ async function rmSaveOutlineToBuilding(buildingId){
   if (!rmConfirmSiteBoundarySave()) return;
   toast("Saving…");
   try{
-    var ref = fdb.collection("buildings").doc(buildingId);
-    var snap = await ref.get();
-    var outlines = (snap.exists && snap.data().roof_outlines) || [];
+    var snap = await fdb.collection("buildings").doc(buildingId).get();
+    var bld = snap.exists ? snap.data() : {};
+    var roofs = getBuildingRoofs(bld);
+    /* RoofMapper doesn't have a roof picker yet, so an outline always
+       saves to the building's first roof — matches lookupProspectiveBuildingBaseMap's
+       same known limitation (see DATA_MODEL.md); a multi-roof building
+       would need this extended to ask which roof. */
+    var roof = roofs[0];
     var entry = Object.assign({}, rmState.outline, { id: genId("rmo") });
-    outlines.push(entry);
-    await ref.set({ roof_outlines: outlines, updatedAt: Date.now() }, { merge: true });
+    roof.roof_outlines = (roof.roof_outlines || []).concat([entry]);
+    roofs[0] = roof;
+    await saveBuildingRoofs(buildingId, roofs);
     toast("Roof outline saved to building ✓");
     closeRmSaveModal();
   }catch(e){ toast("Couldn't save: " + e.message); }

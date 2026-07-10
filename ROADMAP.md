@@ -73,6 +73,13 @@ Goal: make every work order contribute to a durable customer/building record.
 - Normalize building identifiers, customer relationships, addresses, roof system data, and CompanyCam project links.
 - Expand report/history logging without interrupting field users.
 - Prepare Firestore indexes for building history views and dashboard queries.
+- 🟡 **In progress**: a building can now have one or more roofs (`roofs[]` on the
+  building doc), each with its own roof system, base map, assets, and outlines —
+  additive and backward-compatible with production's still-singular-field reads. Roof
+  selector + "+ Add Roof" shipped in Building History; work orders/finding pins aren't
+  roof-scoped yet, and the admin base-map upload is disabled for multi-roof buildings
+  pending a `admin.js` follow-up. See "Multiple roofs per building" in `DEV_NOTES.md`
+  and `DATA_MODEL.md`.
 - ⚠️ **Partially shipped**: possible-duplicate buildings (same customer, very similar
   name) are now flagged with a badge in Building History, conservatively (same
   customer required, to avoid false positives). Merging flagged duplicates is
