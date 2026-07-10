@@ -265,7 +265,10 @@ helps a tech capture a clean roof outline for a building on the spot:
 5. Save it — **"💾 Save Outline to Building"** links it to an existing building (search
    by name) or creates a new one on the spot, or **"📱 Save on This Device Only"** if
    there's no signal or the building isn't in RoofOps yet (link it later from the
-   "Saved On This Device" list).
+   "Saved On This Device" list). Not happy with it? **"🗑️ Delete Outline"** clears it
+   and lets you start over — if it wasn't saved yet, it's just gone; if it was already
+   saved to a building, this only resets what you're looking at here, it doesn't
+   remove the saved copy from that building's record.
 6. **Mark it up right there** — once linked to a building, a "Roof Features" card
    appears with an **"🔧 Add Feature"** button. Tapping it drops a draggable marker
    directly on the RoofMapper map itself — no popup, no separate screen — with a

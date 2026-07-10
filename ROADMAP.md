@@ -402,6 +402,20 @@ Goal: turn each building into a long-term roof record.
   (Firebase Storage is explicitly gated behind checking with the user
   first — see the Storage policy elsewhere in this doc and in
   `DEV_NOTES.md`). Not attempted; not routed around.
+- ✅ **Shipped (dev only, 2026-07-10)**: RoofMapper refinements from
+  Mark's real-world dev testing. Fixed a real bug where editing an existing
+  feature left a duplicate, non-draggable ghost marker behind at its old
+  spot (the actual cause of "moving them around" not feeling right) —
+  markers now always redraw cleanly with exactly one hidden/editable at a
+  time, verified even when switching directly between two markers mid-edit.
+  Added "🗑️ Delete Outline" so there's finally a way to get rid of
+  whatever RoofMapper just generated — clears the working canvas always; if
+  the outline was already saved to a building, it does NOT delete that
+  saved Firestore record (`roof_outlines[]` is append-only with no delete
+  mechanism anywhere in the app, including Building History's own Roof Map
+  — building real delete-from-Firestore for saved roof history is a bigger
+  decision, flagged rather than quietly added). See "RoofMapper
+  refinements" in `DEV_NOTES.md`.
 - **Dimensions**: per-side outline lengths (feet), and a way to add
   freestanding measurement/dimension lines — RoofMapper already computes
   total area + perimeter, this extends toward per-edge measurement.

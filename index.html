@@ -520,6 +520,7 @@
       <div class="rm-actions">
         <button class="btn primary rm-bigbtn" onclick="openRmSaveModal()">💾 Save Outline to Building</button>
         <button class="btn rm-bigbtn" onclick="rmSaveLocally()">📱 Save on This Device Only</button>
+        <button class="btn danger rm-bigbtn" onclick="rmDeleteOutline()">🗑️ Delete Outline</button>
       </div>
       <div class="btnrow">
         <button class="btn" onclick="rmZoomToOutline()">🔍 Zoom to Roof</button>
@@ -5946,6 +5947,28 @@ function rmClearGeneratedOutline(){
   document.getElementById("rm-outline-panel").style.display = "none";
   rmUpdateExportHint();
 }
+/* Mark: "there's not anything to get rid of it... you still don't have the
+   delete button to get rid of anything that you generate on RoofMapper."
+   This clears the WORKING outline on this screen -- if it was never saved
+   to a building, that's the whole story, it's just gone. If it WAS already
+   saved (rmState.linkedBuildingId set -- pushed into that roof's
+   roof_outlines[] by rmSaveOutlineToBuilding()), this does NOT delete that
+   saved copy: roof_outlines[] is an append-only, no-delete-anywhere design
+   (same as Building History's own Roof Map -- there's no "delete a saved
+   outline" button there either), and adding real delete-from-Firestore for
+   permanent roof history records is a bigger decision than this fix, not
+   something to quietly bolt on. The confirm text makes that distinction
+   explicit rather than implying more than this button actually does. */
+function rmDeleteOutline(){
+  if (!rmState.outline) return;
+  var wasSaved = !!rmState.linkedBuildingId;
+  var msg = wasSaved ?
+    "This outline (and any features on it) was already saved to a building. Clearing it here only resets this screen -- it will NOT remove the saved copy from the building's record. Continue?" :
+    "Delete this outline and start over?";
+  if (!confirm(msg)) return;
+  rmClearGeneratedOutline();
+  toast(wasSaved ? "Cleared here — the saved copy on the building is unchanged." : "Outline deleted.");
+}
 function rmClearFootprintLayers(){
   rmCancelTrace(); /* starting fresh (new search, or a new trace) aborts any in-progress trace too */
   var map = rmState.map;
@@ -6364,6 +6387,7 @@ function rmDrawLinkedAssets(assets){
        systems) -- just not inline on this screen. */
     if (typeof a.lat !== "number" || typeof a.lng !== "number") return;
     var m = L.marker([a.lat, a.lng], { icon: assetIcon(a.type) }).addTo(rmState.assetLayerGroup);
+    m._rmAssetId = a.id; /* so rmOpenFeatureForm can hide this exact marker while it's being edited */
     m.on("click", function(){ rmEditFeature(a.id); });
   });
 }
@@ -6401,9 +6425,23 @@ function rmOpenFeatureForm(existingAsset){
   var map = rmEnsureMap();
   /* Idempotent re-entry: clear any marker/handler from a previous open
      (e.g. tapping a different existing marker while already adding one)
-     before setting up the new one, so nothing stacks or leaks. */
+     before setting up the new one, so nothing stacks or leaks. Redraw the
+     full (cached, no fetch) marker set fresh every time first, so a
+     PREVIOUS edit's hidden marker is always restored before deciding what
+     to hide this time -- guarantees exactly one marker is ever missing
+     (the one currently being edited), never zero and never two. */
   if (rmFeatureMarker){ map.removeLayer(rmFeatureMarker); rmFeatureMarker = null; }
   if (rmFeatureMapClickHandler){ map.off("click", rmFeatureMapClickHandler); rmFeatureMapClickHandler = null; }
+  rmDrawLinkedAssets(rmState.linkedAssetsCache);
+  /* Hide the existing (non-draggable) marker for whatever's being edited so
+     it doesn't sit duplicated underneath the new draggable one while the
+     form is open -- rmCloseFeatureForm() redraws the full set again once
+     it's done, restoring this one (updated or not, add/edit/cancel alike). */
+  if (existingAsset && rmState.assetLayerGroup){
+    rmState.assetLayerGroup.eachLayer(function(l){
+      if (l._rmAssetId === existingAsset.id) rmState.assetLayerGroup.removeLayer(l);
+    });
+  }
   var start;
   if (existingAsset && typeof existingAsset.lat === "number"){
     start = [existingAsset.lat, existingAsset.lng];
@@ -6420,7 +6458,7 @@ function rmOpenFeatureForm(existingAsset){
   rmZoomToOutline();
   document.getElementById("rm-feature-form").scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
-function rmCloseFeatureForm(){
+function rmCloseFeatureForm(refresh){
   var form = document.getElementById("rm-feature-form");
   if (form) form.style.display = "none";
   var actions = document.getElementById("rm-features-actions");
@@ -6428,8 +6466,14 @@ function rmCloseFeatureForm(){
   if (rmFeatureMarker){ if (rmState.map) rmState.map.removeLayer(rmFeatureMarker); rmFeatureMarker = null; }
   if (rmFeatureMapClickHandler){ if (rmState.map) rmState.map.off("click", rmFeatureMapClickHandler); rmFeatureMapClickHandler = null; }
   rmFeatureEditingId = null;
+  if (!rmState.map || !rmState.linkedBuildingId) return; /* whole roof link is being torn down -- nothing to restore */
+  /* refresh=true (Save/Delete -- the data actually changed) re-fetches;
+     plain Cancel just redraws from the already-held cache (no data
+     changed, no need for a fresh read) -- either way this is what restores
+     the marker that was hidden in rmOpenFeatureForm() while editing it. */
+  if (refresh) rmLoadLinkedAssets(); else rmDrawLinkedAssets(rmState.linkedAssetsCache);
 }
-function rmCancelFeatureForm(){ rmCloseFeatureForm(); }
+function rmCancelFeatureForm(){ rmCloseFeatureForm(false); }
 function rmAddFeature(){
   rmFeatureEditingId = null;
   rmOpenFeatureForm(null);
@@ -6453,8 +6497,7 @@ async function rmSaveFeature(){
   try{
     await persistRoofAsset(rmState.linkedBuildingId, rmState.linkedRoofId, asset);
     toast("Roof feature saved ✓");
-    rmCloseFeatureForm();
-    await rmLoadLinkedAssets();
+    rmCloseFeatureForm(true);
   }catch(e){ toast("Couldn't save: " + e.message); }
 }
 async function rmDeleteFeature(){
@@ -6463,8 +6506,7 @@ async function rmDeleteFeature(){
   try{
     await removeRoofAsset(rmState.linkedBuildingId, rmState.linkedRoofId, rmFeatureEditingId);
     toast("Roof feature removed");
-    rmCloseFeatureForm();
-    await rmLoadLinkedAssets();
+    rmCloseFeatureForm(true);
   }catch(e){ toast("Couldn't remove: " + e.message); }
 }
 

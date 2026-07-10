@@ -3303,6 +3303,75 @@ the OSM-footprint path (`rmGenerateOutline()`) still produces
 `source:"osm"` correctly after the `rmDrawFinalOutline()` refactor. All test
 state removed, page reloaded clean.
 
+### RoofMapper refinements: fixed duplicate feature markers, added Delete Outline (shipped 2026-07-10, dev only)
+
+Real-world feedback from Mark testing dev mid-build.
+
+**1. Fixed a real bug: editing an existing feature left a duplicate marker
+behind.** `rmOpenFeatureForm(existingAsset)` (Phase 2.5) created a new
+draggable `rmFeatureMarker` at the SAME lat/lng as the existing marker in
+`rmState.assetLayerGroup` without ever hiding the original — so dragging
+the new one visibly left a stale, non-draggable ghost marker sitting at the
+old spot. This is almost certainly what read as "the icons need to be...
+where you can move them around" not actually working. Fixed:
+- Each marker in `rmDrawLinkedAssets()` is now tagged `m._rmAssetId = a.id`.
+- `rmOpenFeatureForm()` now always redraws the full marker set fresh from
+  `rmState.linkedAssetsCache` first (cheap — cache only, no fetch), THEN
+  hides only the one specific marker being edited. This guarantees exactly
+  one marker is ever missing (the one currently open in the form) — never
+  zero, never two — even when switching directly from editing one marker to
+  another without closing the form first (verified: editing A, then tapping
+  B without saving/canceling A, correctly restores A and hides only B).
+- `rmCloseFeatureForm(refresh)` now takes a flag: `true` (Save/Delete — data
+  actually changed) triggers a real `rmLoadLinkedAssets()` re-fetch; `false`/
+  omitted (Cancel — nothing changed) just redraws from the existing cache,
+  restoring whatever was hidden without an unnecessary Firestore read.
+  `rmSaveFeature()`/`rmDeleteFeature()` were simplified to a single
+  `rmCloseFeatureForm(true)` call instead of a separate close-then-refetch
+  pair.
+- Delete was already present in the inline form (visible once editing an
+  existing feature) — confirmed still there and working; the bug was purely
+  the leftover duplicate marker during drag, not a missing delete option.
+
+**2. Added "🗑️ Delete Outline"** in the outline panel (Mark: "there's not
+anything to get rid of it... you still don't have the delete button to get
+rid of anything that you generate on RoofMapper"). Clears the CURRENT
+working outline (drawn polygon, linked-building state, feature markers) via
+the existing `rmClearGeneratedOutline()`. Two cases, worded differently in
+the confirm dialog so the distinction is explicit rather than assumed:
+- **Not yet saved to a building**: "Delete this outline and start over?" —
+  clears it, that's the whole story, nothing else to consider.
+- **Already saved** (`rmState.linkedBuildingId` set): "...it will NOT remove
+  the saved copy from the building's record. Continue?" — clears the
+  working screen only. Deliberately does NOT delete the Firestore entry:
+  `roof_outlines[]` is an append-only, no-delete-anywhere design (documented
+  since Phase 1 as "array is append-only, newest is current" — Building
+  History's own Roof Map has no delete-a-saved-outline button either, so
+  there's no existing admin-gated mechanism to reuse here). Adding real
+  delete-from-Firestore for permanent roof history records is a bigger,
+  more consequential decision than this bug-fix pass — flagging it rather
+  than quietly building it. Feature (roof_assets) deletion is unaffected by
+  this distinction and was already correctly ungated (matches the existing
+  "any tech can add/move/remove roof assets, no admin gating" rule) —
+  nothing changed there.
+
+Tested with `fdb` mocked: generated+saved an outline with two placed
+features (A, B) -> tapping A to edit showed exactly one marker in the
+group (B) while A's draggable marker was out on its own -> dragging A and
+Canceling restored exactly one marker at A's ORIGINAL position (drag
+discarded, confirmed via the underlying data too) -> dragging A and Saving
+persisted the new position with exactly one marker on the map afterward ->
+switching directly from editing A to editing B (without closing) correctly
+showed exactly one marker (A) the whole time, then correctly showed A again
+after closing out of B -> deleting a feature removed it from both Firestore
+and the map. Delete Outline: confirmed on an UNSAVED outline it clears
+`rmState.outline` and hides the panel; confirmed on a SAVED (linked)
+outline it clears the local link/view while the fake building's
+`roof_outlines[]` entry count stayed at 1 (untouched). Also re-verified the
+Building History asset-modal path (`openAssetModal`/`saveAssetFromModal`,
+untouched by this change) still saves correctly on its own. All test state
+removed, page reloaded clean.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |
