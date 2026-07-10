@@ -1394,6 +1394,78 @@ to `logReportAndHistoryEvent` for one work order still collapsing to exactly 1 e
 with correctly merged recipients) is completely unaffected, confirming this feature is
 fully additive. Zero console errors throughout.
 
+### Admin roof-profile fields (shipped 2026-07-10)
+
+**Goal**: give each roof a permanent, admin-editable profile — age/install date, health
+score, condition, warranty, manufacturer, deck/insulation type, drainage notes,
+customer contacts, internal notes, replacement history, estimated remaining life.
+Third gap closed from the 2026-07-09 vision gap analysis, building directly on the
+multi-roof work — every field lives on the roof it describes, not the building.
+
+**Fields** (`roof.profile`, full shape in `DATA_MODEL.md`): install date, estimated age
+(years), health score (0-100), condition (dropdown: Excellent/Good/Fair/Poor/Critical),
+manufacturer, deck type, insulation type, warranty provider, warranty expiration,
+warranty status (dropdown: Active/Expired/Unknown), drainage notes, customer contacts,
+internal notes, replacement history, estimated remaining life (years). Roof system
+itself is NOT duplicated under `profile` — the Roof Profile card edits the existing
+top-level `roof.roofSystem` field directly, reconciling with rather than replacing it.
+`ROOF_PROFILE_FIELDS`/`ROOF_CONDITION_OPTIONS`/`ROOF_WARRANTY_STATUS_OPTIONS` in
+`index.html` make the list easy to extend later.
+
+**Where it lives**: a new "Roof Profile" card in Building History, scoped to whichever
+roof is currently selected (same pattern as the Roof Map and base-map cards) — sits
+between the base-map admin card and the Roof Map. Visible to everyone, always; every
+field falls back to a muted "Not set" so a roof with no profile yet (all of them, until
+an admin fills one in) renders cleanly, never blank or broken. Reads are a plain client
+Firestore read, same as every other roof field — no admin gate on viewing.
+
+**Editing is admin-only, and — the key design decision — routes through
+`netlify/functions/admin.js` rather than a direct client write**, even though
+`firestore.rules` already permits client updates to `buildings`. This matches the
+existing custom base-map precedent (`set_building_roof_map`) rather than the looser
+roof-assets precedent (any tech, no gate): a roof's age/warranty/condition are
+consequential, shared, building-wide facts worth a server-enforced gate, not
+quick field-day data entry. The new `set_roof_profile` action:
+- Takes `buildingId`, an optional `roofId` (omitted = first roof, same convention as
+  `set_building_roof_map`), a `profile` object, and an optional `roofSystem` string.
+- **Allow-lists profile field names server-side** before writing — an arbitrary client
+  payload can't add unexpected keys to a roof, even though the whole action is already
+  PIN-gated.
+- Writes `profile` only into the matching `roofs[]` entry — there's no legacy
+  building-level equivalent to mirror it into (production's old code never had a notion
+  of a roof profile at all, so nothing there could ever read it regardless of where
+  it's stored). `roofSystem`, which predates `roofs[]`, still gets the usual
+  single-roof-only mirror to the legacy field for production parity, exactly like
+  `set_building_roof_map` already does.
+- **Not tested against the real deployed function or the admin PIN** (per the standing
+  rule) — verified by copying the exact algorithm into a standalone script and running
+  it against a plain-JS mock store (single-roof dual-write, multi-roof targeting a
+  specific roof without touching others, and allow-list stripping of an injected
+  unexpected field) — all 9 assertions passed, and the real `admin.js` file was
+  cross-checked line-for-line against the tested copy.
+
+**Quick fact surfaced where it's cheap**: the roof picker's `<option>` labels append
+the roof's condition when set (e.g. "East Wing — Critical"), so a tech scanning the
+dropdown sees roof health at a glance without opening the profile card — the only
+"nicety" built per the spec's "don't over-scope" guidance.
+
+**Verified against an in-memory mock Firestore client (never touched real production
+Firestore)**, covering the full UI path (not just the underlying functions): a
+non-admin sees the profile card with "Not set" everywhere and no Edit button, and
+`openRoofProfileModal` refuses to open at all without admin mode; an admin sees an
+Edit Profile button, and the full modal-open → prefill → edit → save →
+re-render round-trip correctly updates the card (condition, manufacturer, health
+score, warranty status, internal notes, and roof system all verified). On a multi-roof
+building, editing one specific roof's profile leaves the other roof's profile
+completely untouched (confirmed via direct mock-store reads, not just HTML string
+matching, since the roof picker itself shows every roof's condition — a crude string
+check false-failed here before a more precise read confirmed the isolation was
+correct), and the legacy `roofSystem` field correctly stays unmirrored once a building
+has two real roofs, matching the established dual-write-stops-at-two-roofs rule. A
+building with both a real report entry and a manually logged activity, plus the new
+profile card, all rendered together with no regressions. Zero console errors
+throughout.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |

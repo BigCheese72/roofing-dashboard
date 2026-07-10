@@ -153,6 +153,50 @@ exports.handler = async function (event) {
       return resp(200, { ok: true });
     }
 
+    if (body.action === "set_roof_profile") {
+      // Admin-editable facts ABOUT a roof (age, warranty, condition, etc.)
+      // — a shared, building-wide fact worth the same server-enforced gate
+      // as the custom base map above, not a per-work-order thing any tech
+      // should casually overwrite. See "Admin roof-profile fields" in
+      // DEV_NOTES.md / DATA_MODEL.md.
+      const buildingId = String(body.buildingId || "");
+      if (!buildingId) return resp(400, { error: "Missing buildingId" });
+      const roofId = body.roofId ? String(body.roofId) : null;
+      const rawProfile = (body.profile && typeof body.profile === "object") ? body.profile : {};
+      // Allow-list of fields — never let an arbitrary client payload write
+      // unexpected keys onto a roof, even though this whole action is
+      // already admin-PIN-gated.
+      const ALLOWED_PROFILE_FIELDS = ["installDate", "estimatedAgeYears", "healthScore",
+        "condition", "manufacturer", "deckType", "insulationType", "warrantyProvider",
+        "warrantyExpiration", "warrantyStatus", "drainageNotes", "customerContacts",
+        "internalNotes", "replacementHistory", "estimatedRemainingLifeYears"];
+      const profile = {};
+      ALLOWED_PROFILE_FIELDS.forEach(k => { if (rawProfile[k] !== undefined) profile[k] = rawProfile[k]; });
+      profile.updatedAt = Date.now();
+      const roofSystem = body.roofSystem !== undefined ? String(body.roofSystem) : undefined;
+
+      const bldRef = db.collection("buildings").doc(buildingId);
+      const bldSnap = await bldRef.get();
+      const bld = bldSnap.exists ? bldSnap.data() : {};
+      const roofs = getBuildingRoofsServer(bld);
+      const foundIdx = roofId ? roofs.findIndex(r => r.id === roofId) : 0;
+      const idx = foundIdx >= 0 ? foundIdx : 0;
+      const updatedRoof = Object.assign({}, roofs[idx], { profile: profile });
+      if (roofSystem !== undefined) updatedRoof.roofSystem = roofSystem;
+      roofs[idx] = updatedRoof;
+
+      const patch = { roofs, updatedAt: Date.now() };
+      // profile is a brand-new concept — there's no legacy singular field
+      // for it to mirror into (production's old code has no notion of a
+      // roof profile at all). roofSystem, however, predates roofs[] and
+      // still needs the usual single-roof mirror for production parity.
+      if (roofs.length === 1 && roofSystem !== undefined) {
+        patch.roofSystem = roofSystem;
+      }
+      await bldRef.set(patch, { merge: true });
+      return resp(200, { ok: true });
+    }
+
     return resp(400, { error: "Unknown action" });
   } catch (e) {
     return resp(500, { error: "Server error: " + (e && e.message ? e.message : "unknown") });

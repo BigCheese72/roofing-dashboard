@@ -137,6 +137,21 @@ skips that entirely. Unlike resending the same report (which updates one timelin
 entry in place), each logged activity is always its own separate entry — logging two
 different things a few minutes apart never merges them together.
 
+## Roof Profile
+
+Every roof also has a permanent **Roof Profile** — a card in Building History, scoped
+to whichever roof is currently selected, sitting above the Roof Map. It shows: roof
+system, install date, estimated age, health score, condition, manufacturer, deck type,
+insulation type, warranty provider/expiration/status, drainage notes, customer
+contacts, internal notes, replacement history, and estimated remaining life. Anyone can
+view it — a field with nothing entered just shows "Not set" rather than a blank or an
+error. Only **Admin mode** can edit it (**"Edit Profile"**), the same PIN-gated
+protection as the custom base map, since these are shared, building-wide facts rather
+than something a tech should casually overwrite mid-job. On a building with more than
+one roof, the roof picker's dropdown also shows each roof's condition right in the
+list (e.g. "East Wing — Critical") — a quick way to spot roof health without opening
+the profile itself.
+
 ## Timeline Filters
 
 The Timeline on a building's Building History page can be filtered by **date range,
@@ -223,6 +238,9 @@ reveals:
 - **Delete (admin)** per building in Building History (removes the building and its
   report/history records; leaves the underlying work orders alone).
 - **Delete (admin)** per timeline entry inside a building's "View Timeline" panel.
+- **Edit Profile** on a roof's Roof Profile card — age, warranty, condition, and the
+  rest of that roof's permanent facts.
+- Uploading/clearing a roof's custom base map.
 
 The timeline also auto-flags **possible duplicate entries** — same work order + same
 report type logged within 5 minutes of each other, almost always a double-click or a

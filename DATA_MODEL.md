@@ -139,10 +139,60 @@ Physical buildings/sites associated with a customer.
   roof_base_map_bounds: null,
   roof_assets: [],   // same shape as before, now per-roof — see below
   roof_outlines: [], // same shape as before, now per-roof — see below
+  profile: {}, // admin-editable roof facts — see "roof.profile shape" below.
+               // Absent/undefined until an admin sets one — read via
+               // getRoofProfile(roof), never directly.
   createdAt,
   updatedAt
 }
 ```
+
+**`roof.profile` shape** (implemented, not just proposed — third increment, 2026-07-10,
+see "Admin roof-profile fields" in `DEV_NOTES.md`). A permanent profile of facts ABOUT a
+roof — distinct from its living blueprint (`roof_assets`/`roof_outlines`, any tech can
+edit) and its history (`building_history_events`, one entry per report/activity):
+
+```js
+{
+  installDate,               // "YYYY-MM-DD" or ""
+  estimatedAgeYears,         // number or null — used when installDate isn't known
+  healthScore,               // number 0-100, or null
+  condition,                 // "" | "Excellent" | "Good" | "Fair" | "Poor" | "Critical"
+  manufacturer,              // free text
+  deckType,                  // free text
+  insulationType,            // free text
+  warrantyProvider,          // free text
+  warrantyExpiration,        // "YYYY-MM-DD" or ""
+  warrantyStatus,            // "" | "Active" | "Expired" | "Unknown" — a DIFFERENT
+                              // field from a report/timeline entry's warrantyStatus
+                              // (computed per-report from findings) — nesting under
+                              // profile avoids any naming collision between the two.
+  drainageNotes,              // free text
+  customerContacts,           // free text (name/phone/email, one field, not structured)
+  internalNotes,              // free text — visible to everyone, same as every other
+                               // field here, per spec; not staff-only despite the name
+  replacementHistory,         // free text — a running log, not a structured array
+  estimatedRemainingLifeYears, // number or null
+  updatedAt
+}
+```
+
+`roofSystem` itself is NOT nested under `profile` — it's the pre-existing top-level roof
+field (see above), reused/reconciled rather than duplicated; the Roof Profile UI edits
+it directly alongside the nested profile fields.
+
+**Write path — routes through `netlify/functions/admin.js`'s `set_roof_profile`
+action, not a direct client write**, even though `firestore.rules` already permits
+client updates to `buildings`. Deliberate choice, matching the existing custom
+base-map precedent (`set_building_roof_map`): a roof profile is a shared, building-wide
+fact worth the same server-enforced admin gate, not per-work-order draft data a tech
+should casually overwrite. Same dual-write rule as everywhere else in the multi-roof
+model: `roofSystem` mirrors to the legacy singular field only while the building has
+exactly one roof; `profile` itself has no legacy equivalent to mirror into at all (it's
+a brand-new concept — production's old code never had a notion of a roof profile), so
+it only ever lives inside the matching `roofs[]` entry. The action allow-lists profile
+field names server-side before writing, so an arbitrary client payload can't add
+unexpected keys.
 
 **Multi-roof backward compatibility** — dev and production share one live Firestore,
 and production's code only reads the legacy singular fields directly. Two adapter

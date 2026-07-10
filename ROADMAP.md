@@ -106,6 +106,14 @@ Goal: turn each building into a long-term roof record.
   Scan, Moisture Survey, Customer Conversation, Note/Other), roof-scoped, each its own
   separate entry (not merged like a resent report). Closes gap #2 from the 2026-07-09
   vision gap analysis. See "Manually logged activities" in `DEV_NOTES.md`.
+- ✅ **Shipped**: admin-editable roof profile fields — install date/age, health score,
+  condition, warranty (provider/expiration/status), manufacturer, deck type,
+  insulation type, drainage notes, customer contacts, internal notes, replacement
+  history, estimated remaining life — one profile per roof, visible to everyone,
+  editable only in Admin mode via a new `netlify/functions/admin.js` action
+  (`set_roof_profile`), matching the existing custom-base-map precedent. Closes gap #3
+  from the 2026-07-09 vision gap analysis. See "Admin roof-profile fields" in
+  `DEV_NOTES.md`.
 - ⚠️ **Scoped, partially addressed — not fully built, and part of it is
   deliberately blocked**:
   - **Photo source records**: found and fixed a real bug undermining the

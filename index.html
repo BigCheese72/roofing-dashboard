@@ -524,6 +524,40 @@
   </div>
 </div>
 
+<div id="profile-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:40" onclick="if(event.target===this)closeRoofProfileModal()">
+  <div style="background:#fff;max-width:640px;margin:4vh auto;border-radius:8px;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;width:94%">
+    <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
+      <b class="cond" style="font-size:17px">Edit Roof Profile</b>
+      <span style="flex:1"></span>
+      <button class="btn" onclick="closeRoofProfileModal()">Close</button>
+    </div>
+    <div style="padding:14px 16px;overflow:auto">
+      <div class="grid">
+        <div class="fld"><label>Roof System</label><input type="text" id="profile-roofsystem"></div>
+        <div class="fld"><label>Install Date</label><input type="date" id="profile-installdate"></div>
+        <div class="fld"><label>Estimated Age (years)</label><input type="number" id="profile-estimatedage"></div>
+        <div class="fld"><label>Health Score (0-100)</label><input type="number" id="profile-healthscore" min="0" max="100"></div>
+        <div class="fld"><label>Condition</label><select id="profile-condition"></select></div>
+        <div class="fld"><label>Manufacturer</label><input type="text" id="profile-manufacturer"></div>
+        <div class="fld"><label>Deck Type</label><input type="text" id="profile-decktype"></div>
+        <div class="fld"><label>Insulation Type</label><input type="text" id="profile-insulationtype"></div>
+        <div class="fld"><label>Warranty Provider</label><input type="text" id="profile-warrantyprovider"></div>
+        <div class="fld"><label>Warranty Expiration</label><input type="date" id="profile-warrantyexpiration"></div>
+        <div class="fld"><label>Warranty Status</label><select id="profile-warrantystatus"></select></div>
+        <div class="fld"><label>Estimated Remaining Life (years)</label><input type="number" id="profile-remaininglife"></div>
+      </div>
+      <div class="fld"><label>Drainage Notes</label><textarea id="profile-drainagenotes" rows="2"></textarea></div>
+      <div class="fld"><label>Customer Contacts</label><textarea id="profile-customercontacts" rows="2"></textarea></div>
+      <div class="fld"><label>Internal Notes</label><textarea id="profile-internalnotes" rows="2"></textarea></div>
+      <div class="fld"><label>Replacement History</label><textarea id="profile-replacementhistory" rows="2"></textarea></div>
+      <div class="btnrow">
+        <button class="btn primary" onclick="saveRoofProfileFromModal()">Save Profile</button>
+        <button class="btn" onclick="closeRoofProfileModal()">Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -756,6 +790,30 @@ async function saveBuildingRoofs(buildingId, roofs){
     patch.roof_outlines = r.roof_outlines || [];
   }
   await fdb.collection("buildings").doc(buildingId).set(patch, { merge: true });
+}
+
+/* ================= roof profile (admin-editable roof facts) =================
+   A permanent profile of facts ABOUT a roof, as opposed to its living
+   blueprint (roof_assets/roof_outlines, editable by any tech) or its
+   history (building_history_events, one entry per report/activity).
+   Lives at roof.profile — a brand-new nested object, not a rename of any
+   existing field, so it needs no legacy-field mirroring at all: there was
+   never a building-level equivalent for production's old code to read.
+   Visible to everyone (plain client read, same as every other roof
+   field); editing goes through admin.js's set_roof_profile action rather
+   than a direct client write, for the same reason the custom base map
+   does (see renderBaseMapAdminCard) — a shared, building-wide fact worth
+   the extra server-enforced gate, not per-work-order draft data. `roofSystem`
+   itself stays a top-level roof field (pre-existing, not moved under
+   profile) — the profile card edits it directly rather than duplicating it. */
+var ROOF_PROFILE_FIELDS = ["installDate", "estimatedAgeYears", "healthScore", "condition",
+  "manufacturer", "deckType", "insulationType", "warrantyProvider", "warrantyExpiration",
+  "warrantyStatus", "drainageNotes", "customerContacts", "internalNotes",
+  "replacementHistory", "estimatedRemainingLifeYears"];
+var ROOF_CONDITION_OPTIONS = ["Excellent", "Good", "Fair", "Poor", "Critical"];
+var ROOF_WARRANTY_STATUS_OPTIONS = ["Active", "Expired", "Unknown"];
+function getRoofProfile(roof){
+  return (roof && roof.profile) || {};
 }
 
 /* ================= building picker (explicit selection) =================
@@ -2225,6 +2283,46 @@ function renderBaseMapAdminCard(buildingId, roof, companyCamProjectId){
       : '<p class="hint">Link a CompanyCam project to this building first (import photos from a work order for it) before uploading a custom base map — it’s stored as a CompanyCam document.</p>') +
     '</div>';
 }
+/* Visible to everyone (read-only) — every field falls back to a muted
+   "Not set" so a roof with no profile yet (all of them, before an admin
+   fills one in) still renders cleanly, no blanks or crashes. Editing
+   (the button below) is admin-only; see the roof profile section above
+   for why saves route through admin.js instead of a direct client write. */
+function profileFieldRow(label, value, suffix){
+  var shown = (value === null || value === undefined || value === "") ?
+    '<span class="hint">Not set</span>' : esc(String(value)) + (suffix || "");
+  return '<div class="evt-row"><b>' + esc(label) + ':</b> ' + shown + '</div>';
+}
+function renderRoofProfileCard(buildingId, roof){
+  var p = getRoofProfile(roof);
+  var editBtnHtml = isAdmin ?
+    '<button class="btn" onclick="openRoofProfileModal(\'' + buildingId + '\', \'' + roof.id + '\')">Edit Profile</button>' : '';
+  return '<div class="card"><h2 class="cond">Roof Profile</h2>' +
+    '<div class="grid">' +
+      '<div>' +
+        profileFieldRow("Roof System", roof.roofSystem) +
+        profileFieldRow("Install Date", p.installDate) +
+        profileFieldRow("Estimated Age", p.estimatedAgeYears, " years") +
+        profileFieldRow("Health Score", p.healthScore, "/100") +
+        profileFieldRow("Condition", p.condition) +
+        profileFieldRow("Manufacturer", p.manufacturer) +
+        profileFieldRow("Deck Type", p.deckType) +
+        profileFieldRow("Insulation Type", p.insulationType) +
+      '</div>' +
+      '<div>' +
+        profileFieldRow("Warranty Provider", p.warrantyProvider) +
+        profileFieldRow("Warranty Expiration", p.warrantyExpiration) +
+        profileFieldRow("Warranty Status", p.warrantyStatus) +
+        profileFieldRow("Estimated Remaining Life", p.estimatedRemainingLifeYears, " years") +
+        profileFieldRow("Drainage Notes", p.drainageNotes) +
+        profileFieldRow("Customer Contacts", p.customerContacts) +
+        profileFieldRow("Internal Notes", p.internalNotes) +
+        profileFieldRow("Replacement History", p.replacementHistory) +
+      '</div>' +
+    '</div>' +
+    (editBtnHtml ? '<div class="btnrow">' + editBtnHtml + '</div>' : '') +
+    '</div>';
+}
 function toggleBaseMapBoundsFields(safeId){
   var typeSel = document.getElementById("basemap-type-" + safeId);
   var boundsDiv = document.getElementById("basemap-bounds-" + safeId);
@@ -2319,6 +2417,82 @@ async function clearRoofBaseMap(buildingId, roofId){
   }catch(e){
     toast("Failed: " + e.message);
   }
+}
+var profileModalBuildingId = null, profileModalRoofId = null;
+async function openRoofProfileModal(buildingId, roofId){
+  if (!isAdmin){ toast("Admin mode required."); return; }
+  profileModalBuildingId = buildingId;
+  profileModalRoofId = roofId;
+  var condSel = document.getElementById("profile-condition");
+  if (!condSel.options.length){
+    condSel.appendChild(new Option("(not set)", ""));
+    ROOF_CONDITION_OPTIONS.forEach(function(c){ condSel.appendChild(new Option(c, c)); });
+  }
+  var warrSel = document.getElementById("profile-warrantystatus");
+  if (!warrSel.options.length){
+    warrSel.appendChild(new Option("(not set)", ""));
+    ROOF_WARRANTY_STATUS_OPTIONS.forEach(function(w){ warrSel.appendChild(new Option(w, w)); });
+  }
+  document.getElementById("profile-modal").style.display = "";
+  var bldSnap = await fdb.collection("buildings").doc(buildingId).get();
+  var roof = getRoofById(bldSnap.exists ? bldSnap.data() : {}, roofId);
+  var p = getRoofProfile(roof);
+  setVal("profile-roofsystem", roof.roofSystem || "");
+  setVal("profile-installdate", p.installDate || "");
+  setVal("profile-estimatedage", p.estimatedAgeYears != null ? p.estimatedAgeYears : "");
+  setVal("profile-healthscore", p.healthScore != null ? p.healthScore : "");
+  setVal("profile-condition", p.condition || "");
+  setVal("profile-manufacturer", p.manufacturer || "");
+  setVal("profile-decktype", p.deckType || "");
+  setVal("profile-insulationtype", p.insulationType || "");
+  setVal("profile-warrantyprovider", p.warrantyProvider || "");
+  setVal("profile-warrantyexpiration", p.warrantyExpiration || "");
+  setVal("profile-warrantystatus", p.warrantyStatus || "");
+  setVal("profile-remaininglife", p.estimatedRemainingLifeYears != null ? p.estimatedRemainingLifeYears : "");
+  setVal("profile-drainagenotes", p.drainageNotes || "");
+  setVal("profile-customercontacts", p.customerContacts || "");
+  setVal("profile-internalnotes", p.internalNotes || "");
+  setVal("profile-replacementhistory", p.replacementHistory || "");
+}
+function closeRoofProfileModal(){
+  document.getElementById("profile-modal").style.display = "none";
+  profileModalBuildingId = null;
+  profileModalRoofId = null;
+}
+function numOrNull(id){
+  var v = val(id).trim();
+  if (v === "") return null;
+  var n = Number(v);
+  return isFinite(n) ? n : null;
+}
+async function saveRoofProfileFromModal(){
+  if (!profileModalBuildingId) return;
+  var buildingId = profileModalBuildingId, roofId = profileModalRoofId;
+  var profile = {
+    installDate: val("profile-installdate").trim(),
+    estimatedAgeYears: numOrNull("profile-estimatedage"),
+    healthScore: numOrNull("profile-healthscore"),
+    condition: val("profile-condition"),
+    manufacturer: val("profile-manufacturer").trim(),
+    deckType: val("profile-decktype").trim(),
+    insulationType: val("profile-insulationtype").trim(),
+    warrantyProvider: val("profile-warrantyprovider").trim(),
+    warrantyExpiration: val("profile-warrantyexpiration").trim(),
+    warrantyStatus: val("profile-warrantystatus"),
+    estimatedRemainingLifeYears: numOrNull("profile-remaininglife"),
+    drainageNotes: val("profile-drainagenotes").trim(),
+    customerContacts: val("profile-customercontacts").trim(),
+    internalNotes: val("profile-internalnotes").trim(),
+    replacementHistory: val("profile-replacementhistory").trim()
+  };
+  toast("Saving roof profile…");
+  try{
+    await callAdminApi({ action: "set_roof_profile", buildingId: buildingId, roofId: roofId,
+      profile: profile, roofSystem: val("profile-roofsystem").trim() });
+    toast("Roof profile saved ✓");
+    closeRoofProfileModal();
+    openBuildingHistory(buildingId);
+  }catch(e){ toast("Couldn't save profile: " + e.message); }
 }
 /* ================= timeline filters =================
    Client-side only: the events for a building are already fetched in full
@@ -2434,17 +2608,24 @@ async function openBuildingHistory(buildingId){
        roof-aware — see DATA_MODEL.md). */
     var baseMapCardHtml = isAdmin ?
       renderBaseMapAdminCard(buildingId, roof, bld.companyCamProjectId) : "";
+    var profileCardHtml = renderRoofProfileCard(buildingId, roof);
     var hasCustomBaseMap = !!((roof.roof_base_map_type === "roof_plan" || roof.roof_base_map_type === "sketch") && roof.roof_base_map_url);
     var orthoOverlay = (roof.roof_base_map_type === "drone_ortho" && roof.roof_base_map_url && roof.roof_base_map_bounds) ?
       { url: roof.roof_base_map_url, bounds: roof.roof_base_map_bounds } : null;
     var roofAssets = roof.roof_assets || [];
     /* Roof selector only renders for a building with more than one real
        roof — a still-single-roof building (all of them, as of this
-       writing) looks exactly like it did before roofs[] existed. */
+       writing) looks exactly like it did before roofs[] existed. Condition
+       (if the admin has set one) shows right in the option label — a cheap
+       way to surface a key profile fact without opening the profile card. */
     var roofPickerHtml = roofs.length > 1 ?
       '<div class="fld" style="max-width:260px;margin-bottom:8px">' +
         '<label>Roof</label><select onchange="historySelectRoof(\'' + buildingId + '\', this.value)">' +
-        roofs.map(function(r){ return '<option value="' + esc(r.id) + '"' + (r.id === historySelectedRoofId ? ' selected' : '') + '>' + esc(r.label || "Roof") + '</option>'; }).join('') +
+        roofs.map(function(r){
+          var cond = getRoofProfile(r).condition;
+          return '<option value="' + esc(r.id) + '"' + (r.id === historySelectedRoofId ? ' selected' : '') + '>' +
+            esc(r.label || "Roof") + (cond ? " — " + esc(cond) : "") + '</option>';
+        }).join('') +
         '</select></div>' : '';
     var addRoofBtnHtml = '<button class="btn" onclick="promptAddRoof(\'' + buildingId + '\')">+ Add Roof</button>';
     var addFeatureBtnHtml = '<button class="btn" onclick="openAssetModal(\'' + buildingId + '\', null, \'' + historySelectedRoofId + '\')">+ Add Roof Feature</button>';
@@ -2461,7 +2642,7 @@ async function openBuildingHistory(buildingId){
     if (!events.length){
       historyEvents = [];
       historyBuildingId = buildingId;
-      detail.innerHTML = baseMapCardHtml + emptyMapCardHtml + '<div class="card"><h2 class="cond">Timeline</h2>' +
+      detail.innerHTML = baseMapCardHtml + profileCardHtml + emptyMapCardHtml + '<div class="card"><h2 class="cond">Timeline</h2>' +
         '<div class="btnrow" style="margin:0 0 10px">' + addActivityBtnHtml + '</div>' +
         '<div class="empty">No reports logged for this building yet.</div></div>';
       renderBuildingMap([], hasCustomBaseMap ? roof : null, bld.location, orthoOverlay, roofAssets, buildingId, roof.roof_outlines);
@@ -2500,7 +2681,7 @@ async function openBuildingHistory(buildingId){
         'No pins placed yet — they’ll show up here as findings get pinned on future reports.') + '</p>' +
       '<div id="building-map" style="height:min(50vh,420px);border-radius:6px;overflow:hidden;margin-bottom:10px"></div>' +
       addFeatureBtnHtml + ' ' + addRoofBtnHtml + '</div>';
-    detail.innerHTML = baseMapCardHtml + mapCardHtml +
+    detail.innerHTML = baseMapCardHtml + profileCardHtml + mapCardHtml +
       '<div class="card"><h2 class="cond">Timeline (' + events.length + ')</h2>' +
       '<div class="btnrow" style="margin:0 0 10px">' + addActivityBtnHtml + '</div>' +
       (dupCount ? '<p class="hint">\u26a0 ' + dupCount + ' possible duplicate' + (dupCount === 1 ? "" : "s") +
