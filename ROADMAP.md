@@ -334,6 +334,16 @@ Goal: turn each building into a long-term roof record.
   - **Sections**: divide one roof outline into multiple labeled sections (e.g.
     by roof system or area), each with its own computed area, tying into the
     existing multi-roof/roof-section data model rather than a parallel one.
+  - **AI auto-detection of rooftop features (future / when-funded)**: a
+    computer-vision pass over satellite or (especially) drone imagery that
+    identifies RTUs/HVAC units and other larger rooftop features and suggests
+    placements for the tech to confirm, instead of every feature being placed
+    by hand. Explicitly a later, likely-paid capability — needs a vision
+    service or a trained model, and only really works at drone resolution;
+    small features like drains generally aren't detectable from satellite
+    imagery. Not being built now. The near-term approach stays manual
+    placement plus the existing photo-GPS auto-pin (see "photo-capture
+    rework" in `DEV_NOTES.md`).
 - 🚧 **In progress (dev only)**: Outlook / Microsoft 365 integration, so emails
   become part of a building's history the way CompanyCam photos already are.
   **Phase 0 (auth + mailbox read) shipped**: `netlify/functions/outlook.js` +
