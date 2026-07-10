@@ -492,6 +492,7 @@
       <div class="rm-footprint-info" id="rm-footprint-info"></div>
       <div class="rm-actions">
         <button class="btn primary rm-bigbtn" id="rm-generate-btn" onclick="rmGenerateOutline()">✏️ Generate Roof Outline</button>
+        <button class="btn rm-bigbtn" onclick="rmDeselectFootprint()">✕ Wrong Building? Choose Again</button>
       </div>
     </div>
 
@@ -1235,18 +1236,44 @@ var EMAIL_RECIPIENTS_SEED = [
   { email: "NathanD@watkinsroofing.net", label: "Nathan Dietiker" },
   { email: "MarkE@watkinsroofing.net", label: "Mark Emms" }
 ];
-var EMAIL_DEFAULT_TO = ["marks@watkinsroofing.net"];
-var EMAIL_DEFAULT_TO_LEAK = ["charlottew@watkinsroofing.net", "marks@watkinsroofing.net"];
+/* Mark doesn't want duplicate emails -- the always-on BCC (below) already
+   covers him, so he's deliberately NOT a default To recipient anywhere
+   (still on the quick-pick list to select manually if ever wanted, just not
+   pre-selected). Leak/Service defaults to Charlotte alone (she handles
+   billing); every other type has no default To at all -- an empty box for
+   the sender to fill in themselves. See "Email Send-to corrections" in
+   DEV_NOTES.md. */
+var EMAIL_DEFAULT_TO = [];
+var EMAIL_DEFAULT_TO_LEAK = ["charlottew@watkinsroofing.net"];
 /* Mark wants a guaranteed blind copy of every outgoing work-order email, no
    matter the type or who else it's addressed to. "Send Email Now" enforces
    this server-side and unconditionally (netlify/functions/send-workorder.js
    hardcodes the bcc itself — nothing to pass from here, and nothing the
-   client could omit to skip it). This constant is for the OTHER send paths
+   client could omit to skip it) UNLESS marks@ is already an explicit To
+   recipient, in which case the server skips the BCC so he never gets two
+   copies of the same email. This constant is for the OTHER send paths
    that build their own mailto: link client-side (emailDoc(), sharePdf()'s
-   desktop branch) so they honor the same guarantee. sharePdf()'s mobile Web
-   Share sheet has no BCC concept at all — not applicable there, same as it
-   has no To/CC either. */
+   desktop branch) so they honor the same guarantee, with the same
+   already-a-To-recipient skip. sharePdf()'s mobile Web Share sheet has no
+   BCC concept at all — not applicable there, same as it has no To/CC
+   either. */
 var EMAIL_ALWAYS_BCC = "marks@watkinsroofing.net";
+/* Splits a comma-separated recipient string into a trimmed, case-insensitive
+   deduped list -- shared by every send path so typing/picking the same
+   address twice (or in a different case) never results in two copies of
+   the same email to the same person. */
+function parseEmailRecipients(raw){
+  var out = [], seen = {};
+  (raw || "").split(",").forEach(function(s){
+    var addr = s.trim();
+    if (!addr) return;
+    var key = addr.toLowerCase();
+    if (seen[key]) return;
+    seen[key] = true;
+    out.push(addr);
+  });
+  return out;
+}
 function getEmailRecipients(){
   try{
     var raw = localStorage.getItem(EMAIL_RECIPIENTS_KEY);
@@ -4097,7 +4124,8 @@ function pickRecipient(){
   if (!addr) return;
   var box = document.getElementById("emailTo");
   var list = box.value.split(",").map(function(s){ return s.trim(); }).filter(Boolean);
-  if (list.indexOf(addr) === -1) list.push(addr);
+  var already = list.some(function(a){ return a.toLowerCase() === addr.toLowerCase(); });
+  if (!already) list.push(addr);
   box.value = list.join(", ");
   sel.value = "";
 }
@@ -4107,12 +4135,13 @@ async function emailDoc(){
   var o = collect();
   var subject = (o.woType === "Change Order" ? "Change Order — " : "Leak Work Order — ") + (o.jobName || "Job") +
     (o.jobNo ? " #" + o.jobNo : "") + (o.location ? " (" + o.location + ")" : "");
-  var addrs = val("emailTo").split(",").map(function(s){ return s.trim(); }).filter(Boolean)
-    .map(encodeURIComponent).join(",");
+  var addrList = parseEmailRecipients(val("emailTo"));
+  var alreadyHasBcc = addrList.some(function(a){ return a.toLowerCase() === EMAIL_ALWAYS_BCC.toLowerCase(); });
+  var addrs = addrList.map(encodeURIComponent).join(",");
   var href = "mailto:" + addrs +
     "?subject=" + encodeURIComponent(subject) +
     "&body=" + encodeURIComponent(buildText()) +
-    "&bcc=" + encodeURIComponent(EMAIL_ALWAYS_BCC);
+    (alreadyHasBcc ? "" : "&bcc=" + encodeURIComponent(EMAIL_ALWAYS_BCC));
   window.location.href = href;
   toast("Opening your email app… If nothing opens or it's cut off, use Copy Document Text.");
 }
@@ -4825,7 +4854,7 @@ async function downloadPdf(){
   logReportAndHistoryEvent(o, "PDF Downloaded", null, ccUp);
 }
 async function sendEmailNow(){
-  var addrs = val("emailTo").split(",").map(function(s){ return s.trim(); }).filter(Boolean);
+  var addrs = parseEmailRecipients(val("emailTo"));
   if (!addrs.length){
     toast("Pick someone from the Send to list (or type an email) first.");
     return;
@@ -4892,12 +4921,13 @@ async function sharePdf(){
       " is attached as a PDF, including photo documentation." +
       "\n\nDate of Service: " + (o.serviceDate || "") +
       "\nLocation: " + (o.location || "");
-    var addrs = val("emailTo").split(",").map(function(s){ return s.trim(); }).filter(Boolean)
-      .map(encodeURIComponent).join(",");
+    var addrList = parseEmailRecipients(val("emailTo"));
+    var alreadyHasBcc = addrList.some(function(a){ return a.toLowerCase() === EMAIL_ALWAYS_BCC.toLowerCase(); });
+    var addrs = addrList.map(encodeURIComponent).join(",");
     window.location.href = "mailto:" + addrs +
       "?subject=" + encodeURIComponent(subject) +
       "&body=" + encodeURIComponent(body) +
-      "&bcc=" + encodeURIComponent(EMAIL_ALWAYS_BCC);
+      (alreadyHasBcc ? "" : "&bcc=" + encodeURIComponent(EMAIL_ALWAYS_BCC));
   }
   toast("Building PDF\u2026");
   var d = await generatePdf();
@@ -5831,18 +5861,29 @@ function rmUpdateExportHint(){
     "Exports include the outline plus every placed feature and pinned finding on this roof." :
     "Exports include the outline only — save to a building and add features to include them too.";
 }
+function rmClearGeneratedOutline(){
+  /* Drops the generated outline itself (and everything tied to it -- the
+     drawn polygon, any building link, its feature markers) without
+     touching footprint search results -- shared by a fresh search,
+     switching to a different footprint, and the explicit "wrong building"
+     clear button, so none of them can leave a stale outline from whichever
+     footprint was selected before. */
+  if (rmState.map && rmState.outlineLayer) rmState.map.removeLayer(rmState.outlineLayer);
+  rmState.outlineLayer = null;
+  rmState.outline = null;
+  rmClearLinkedFeatures();
+  document.getElementById("rm-outline-panel").style.display = "none";
+  rmUpdateExportHint();
+}
 function rmClearFootprintLayers(){
   var map = rmState.map;
   if (map){
     Object.keys(rmState.footprintLayers).forEach(function(id){ map.removeLayer(rmState.footprintLayers[id]); });
-    if (rmState.outlineLayer){ map.removeLayer(rmState.outlineLayer); rmState.outlineLayer = null; }
   }
   rmState.footprintLayers = {};
   rmState.selectedId = null;
-  rmState.outline = null;
-  rmClearLinkedFeatures();
+  rmClearGeneratedOutline();
   document.getElementById("rm-footprint-panel").style.display = "none";
-  document.getElementById("rm-outline-panel").style.display = "none";
 }
 async function rmSearchBuildings(){
   if (rmState.lat == null){ toast("Get your location first."); return; }
@@ -5905,6 +5946,11 @@ function rmSelectFootprint(id){
   var fp = rmState.footprints.find(function(f){ return f.id === id; });
   if (!fp) return;
   rmState.selectedId = id;
+  /* Switching selection (tapping a different footprint directly, without
+     going through the explicit deselect button first) must not leave an
+     outline/features from the PREVIOUSLY selected footprint hanging
+     around. */
+  rmClearGeneratedOutline();
   Object.keys(rmState.footprintLayers).forEach(function(fid){
     var f = rmState.footprints.find(function(x){ return x.id === fid; });
     rmState.footprintLayers[fid].setStyle(rmFootprintStyle(f, fid === id));
@@ -5928,8 +5974,18 @@ function rmSelectFootprint(id){
   genBtn.classList.toggle("primary", !fp.isSite);
   genBtn.classList.toggle("danger", !!fp.isSite);
   document.getElementById("rm-footprint-panel").style.display = "";
-  document.getElementById("rm-outline-panel").style.display = "none";
   document.getElementById("rm-footprint-panel").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+function rmDeselectFootprint(){
+  rmState.selectedId = null;
+  rmClearGeneratedOutline();
+  Object.keys(rmState.footprintLayers).forEach(function(fid){
+    var f = rmState.footprints.find(function(x){ return x.id === fid; });
+    if (f) rmState.footprintLayers[fid].setStyle(rmFootprintStyle(f, false));
+  });
+  document.getElementById("rm-footprint-panel").style.display = "none";
+  document.getElementById("rm-footprint-info").innerHTML = "";
+  toast("Selection cleared — tap the correct building's outline on the map, or search again.");
 }
 function rmRenderOutlineStats(outline){
   document.getElementById("rm-outline-warning").innerHTML = outline.isSiteBoundary ?

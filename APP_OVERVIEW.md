@@ -257,7 +257,9 @@ helps a tech capture a clean roof outline for a building on the spot:
 2. The app automatically searches free OpenStreetMap data for building footprints near
    you.
 3. Tap the correct building's outline on the map — its name/address/type (if OSM has
-   them) show below.
+   them) show below. Tapped the wrong one? **"✕ Wrong Building? Choose Again"**
+   clears it (and any outline already generated for it) without losing the search
+   results — tap the right one right after, no re-search needed.
 4. Tap **"✏️ Generate Roof Outline"** — the app cleans up that footprint into a roof
    outline and shows its area and perimeter.
 5. Save it — **"💾 Save Outline to Building"** links it to an existing building (search
@@ -401,18 +403,23 @@ When the user sends or shares a report:
 This means the user should not have to remember to manually save before sending.
 
 **"Send to" defaults itself**: the Preview screen's recipient box pre-fills with
-`marks@watkinsroofing.net` for any work order, or both `charlottew@watkinsroofing.net`
-and `marks@watkinsroofing.net` for Leak / Service specifically — no manual pick
-needed, though it can still be edited or added to. The "Send to…" dropdown next to
-it is a growing quick-pick list: it starts with the office's named contacts
-(Charlotte Washburn, Mark Sheppard, Chris Gravits, Nathan Dietiker, Mark Emms),
-and any address someone actually sends a report to gets remembered there
-automatically for next time — you'll be asked to give a brand-new address a name
-so it shows up as something recognizable instead of a bare email.
+`charlottew@watkinsroofing.net` for Leak / Service (she handles billing) — every
+other work order type has no default, an empty box for the sender to fill in.
+marks@ is deliberately never a default (see below), though it can still be picked
+manually if ever needed. The "Send to…" dropdown next to the box is a growing
+quick-pick list: it starts with the office's named contacts (Charlotte Washburn,
+Mark Sheppard, Chris Gravits, Nathan Dietiker, Mark Emms), and any address someone
+actually sends a report to gets remembered there automatically for next time —
+you'll be asked to give a brand-new address a name so it shows up as something
+recognizable instead of a bare email. Picking or typing the same address twice
+(even in different capitalization) never adds it to the list twice.
 
 **Every outgoing email is always blind-copied to marks@watkinsroofing.net**, no
 matter the work order type or who else it's addressed to — a standing guarantee,
-not something that can be turned off per-send.
+not something that can be turned off per-send. He's intentionally left off the
+default "Send to" list so he doesn't get every report twice; if he's ever added
+as an explicit To recipient anyway, the blind copy is skipped for that send so he
+still only gets one email.
 
 After **Send Email Now** succeeds, that work order shows **"📧 Emailed [date/time]"**
 right on its card in the **Saved** tab — so anyone (office or tech) can tell at a

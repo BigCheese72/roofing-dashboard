@@ -43,13 +43,16 @@ exports.handler = async function (event) {
     ? process.env.REPLY_TO_EMAIL.split(",").map(s => s.trim()).filter(Boolean)
     : ["marks@" + domain, "charlottew@" + domain];
   // Mark wants a guaranteed blind copy of every outgoing work-order email,
-  // regardless of who else it's addressed to (including when he's already
-  // a To/Reply-To recipient) — enforced here server-side so it can't be
-  // dropped by omitting it from the client payload.
+  // regardless of who else it's addressed to — enforced here server-side so
+  // it can't be dropped by omitting it from the client payload. But he
+  // doesn't want duplicate emails: if he's manually added as an explicit To
+  // recipient (still selectable on the client's quick-pick list, just no
+  // longer a default), skip the BCC so he gets exactly one copy, not two.
+  const bccAddr = "marks@" + domain;
+  const alreadyInTo = to.some(a => a.toLowerCase() === bccAddr.toLowerCase());
   const payload = {
     from: from,
     to: to,
-    bcc: ["marks@" + domain],
     reply_to: replyTo,
     subject: String(data.subject || "Leak Work Order").slice(0, 200),
     text: String(data.body || "Work order attached.").slice(0, 10000),
@@ -58,6 +61,7 @@ exports.handler = async function (event) {
       content: data.pdfBase64
     }]
   };
+  if (!alreadyInTo) payload.bcc = [bccAddr];
 
   const resp = await fetch("https://api.resend.com/emails", {
     method: "POST",

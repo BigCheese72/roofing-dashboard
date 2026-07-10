@@ -3077,6 +3077,87 @@ the list (including a same-address-different-case check). All test
 recipients and the `email-recipients-v1` key were removed before finishing;
 page reloaded clean.
 
+### Email Send-to defaults, round 2: marks@ is BCC-only, no duplicates (shipped 2026-07-10, dev only)
+
+Mark: he doesn't want duplicate emails — the always-on BCC already covers
+him, so he shouldn't ALSO be a default To recipient (the exact flag left
+open at the end of the previous pass).
+
+- `EMAIL_DEFAULT_TO` is now `[]` (empty) — no default To recipient at all
+  for anything except Leak/Service. `EMAIL_DEFAULT_TO_LEAK` is now just
+  `["charlottew@watkinsroofing.net"]` (she handles billing) — Mark dropped
+  entirely from both. He's still on `EMAIL_RECIPIENTS_SEED` (the quick-pick
+  dropdown) as "Mark Sheppard," fully selectable, just no longer
+  pre-selected.
+- **Dedupe, made real.** Added `parseEmailRecipients(raw)` — trims, drops
+  blanks, and dedupes case-insensitively — and switched every place that
+  used to do a bare `.split(",").map(trim).filter(Boolean)` over to it:
+  `sendEmailNow()`, `emailDoc()`, `sharePdf()`'s desktop mailto: branch.
+  `pickRecipient()` (the dropdown-to-textbox add) also now compares
+  case-insensitively before pushing, so picking someone already in the box
+  in a different case doesn't add them twice.
+- **BCC no longer doubles up.** If marks@ ends up in the To list anyway
+  (he's still pickable), the guaranteed BCC is skipped for that send so he
+  gets exactly one copy, not two — enforced both server-side
+  (`send-workorder.js`: `alreadyInTo` check before setting `payload.bcc`)
+  and in the two client mailto: builders (`alreadyHasBcc` check before
+  appending `&bcc=`), matching the server's logic so the guarantee is
+  consistent across every send path.
+
+Tested with `fdb`/sends mocked: confirmed Leak/Service now defaults to
+`charlottew@watkinsroofing.net` alone; confirmed every other type's default
+is empty; confirmed Mark Sheppard is still a selectable dropdown option;
+confirmed picking an already-present recipient (same or different case)
+never duplicates it in the box; confirmed `parseEmailRecipients()` collapses
+mixed-case duplicates and blanks correctly; confirmed the
+already-a-To-recipient BCC-skip logic (identical pattern used client- and
+server-side) evaluates correctly for both the "marks@ already in To" and
+"marks@ not in To" cases. `email-recipients-v1` removed and page reloaded
+clean before finishing.
+
+### RoofMapper: deselect a wrong footprint (shipped 2026-07-10, dev only)
+
+Real gap Mark hit: once a building footprint was selected in RoofMapper,
+there was no way to back out of it — if you tapped the wrong building,
+you were stuck. Also a related latent bug found while fixing it: tapping a
+*different* footprint directly (without an explicit deselect) didn't clear
+a previously generated outline either, so it was possible to end up with a
+stale outline drawn/stored for the WRONG building.
+
+- Added **"✕ Wrong Building? Choose Again"** next to "Generate Roof
+  Outline" in the Selected Building card (`rmDeselectFootprint()`) —
+  clears the selection, restyles every footprint back to unselected, hides
+  the footprint/outline/features panels, and clears the footprint info
+  text. The candidate footprint polygons themselves stay on the map (no
+  re-search needed) so picking the right one is immediate.
+- Extracted the outline-clearing logic into a shared
+  `rmClearGeneratedOutline()` (removes the drawn outline polygon, clears
+  `rmState.outline`, clears any building link and its feature markers via
+  the existing `rmClearLinkedFeatures()`, hides the outline panel, updates
+  the export hint) and now call it from THREE places: a fresh search
+  (`rmClearFootprintLayers()`, refactored to delegate to it), **tapping a
+  different footprint directly** (`rmSelectFootprint()`, the fix for the
+  latent bug above), and the new explicit deselect button. All three now
+  behave identically — no path can leave a stale outline behind.
+- Purely a local/session-state clear — if the wrong building had already
+  been saved to Firestore (outline and/or features), deselecting does NOT
+  delete anything already persisted. It only clears what RoofMapper is
+  currently pointing at in this browser tab. Correcting a real mistaken
+  save is a separate, deliberate action (open that building directly), not
+  something a "wrong building" screen should silently attempt.
+
+Tested with `fdb` mocked: selected footprint A, generated an outline for
+it, confirmed the deselect button clears `rmState.selectedId`/`outline`/
+`outlineLayer`, hides the relevant panels, and leaves the two candidate
+footprint layers still on the map; re-selected footprint B and confirmed
+the outline generated afterward correctly reflects B, not stale A data;
+separately confirmed tapping B directly (skipping the deselect button)
+also correctly clears A's outline first; confirmed that after linking A to
+a fake building (outline + BCC-mocked save), deselecting clears
+`rmState.linkedBuildingId` locally while the already-saved outline entry on
+the fake building's data remains untouched (1 entry, not deleted). All test
+state removed, page reloaded clean.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |

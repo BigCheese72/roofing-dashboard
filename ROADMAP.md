@@ -194,17 +194,19 @@ Goal: preserve and harden the existing RoofOps Field / Watkins work order workfl
 - ✅ **Shipped (dev only, 2026-07-10)**: report-email "Send to" recipient defaults.
   Dropped the hardcoded "Office —"/"Manager —" role LABELS (Charlotte and Mark
   stayed as plain named quick-picks — an earlier pass mistakenly dropped them
-  entirely, corrected same day); the TO field now defaults itself instead —
-  `marks@watkinsroofing.net` on every work order type, plus
-  `charlottew@watkinsroofing.net` too specifically for Leak / Service — and any
-  address actually sent to via "Send Email Now" is remembered (name-prompted,
-  deduped, persisted) as a future quick-pick. Every outgoing email is now also
-  always BCC'd to marks@ (enforced server-side, unconditional). The separate
-  Reply-To (marks@ + charlottew@, server-side) is unaffected. **Flagged, not
-  changed**: Mark is now both a default To recipient and always BCC'd, so he
-  gets some emails twice — his call whether to simplify later. See "Email
-  Send-to recipient defaults" and "Email Send-to corrections" in
-  `DEV_NOTES.md`.
+  entirely, corrected same day). Final behavior after a second correction:
+  Leak / Service defaults to `charlottew@watkinsroofing.net` alone (she handles
+  billing); every other type has no default To at all. marks@ is deliberately
+  **not** a default anywhere — the always-on BCC to marks@ (enforced
+  server-side, unconditional) already covers him, so making him a default To
+  too would double-send. He's still fully selectable on the quick-pick
+  dropdown, just not pre-selected. Any address actually sent to via "Send
+  Email Now" is remembered (name-prompted, deduped case-insensitively,
+  persisted) as a future quick-pick. If marks@ ends up in To anyway (picked
+  manually), the guaranteed BCC is skipped for that send so he never gets two
+  copies. The separate Reply-To (marks@ + charlottew@, server-side) is
+  unaffected. See "Email Send-to recipient defaults", "Email Send-to
+  corrections", and "Email Send-to defaults, round 2" in `DEV_NOTES.md`.
 
 ## Phase 2: Building/Site History Foundation
 
@@ -382,6 +384,16 @@ Goal: turn each building into a long-term roof record.
     imagery. Not being built now. The near-term approach stays manual
     placement plus the existing photo-GPS auto-pin (see "photo-capture
     rework" in `DEV_NOTES.md`).
+- ✅ **Shipped (dev only, 2026-07-10)**: RoofMapper footprint deselect. Real
+  gap Mark hit — once a footprint was selected there was no way back if it
+  was the wrong building. Added a "✕ Wrong Building? Choose Again" control,
+  plus fixed a related latent bug found in the process: tapping a
+  *different* footprint directly (without deselecting first) didn't clear a
+  previously generated outline either, so a stale outline from the wrong
+  building could persist. Both paths now share the same clearing logic — no
+  way to end up with mismatched selection/outline state. Purely a local
+  clear; doesn't delete anything already saved to Firestore. See "RoofMapper:
+  deselect a wrong footprint" in `DEV_NOTES.md`.
 - 🚧 **In progress (dev only)**: Outlook / Microsoft 365 integration, so emails
   become part of a building's history the way CompanyCam photos already are.
   **Phase 0 (auth + mailbox read) shipped**: `netlify/functions/outlook.js` +
