@@ -3158,6 +3158,77 @@ a fake building (outline + BCC-mocked save), deselecting clears
 the fake building's data remains untouched (1 entry, not deleted). All test
 state removed, page reloaded clean.
 
+### RoofMapper Phase 2.5: place features right on RoofMapper's own map (shipped 2026-07-10, dev only)
+
+Fully realizes "map it, then mark it up on that same roof" — Phase 2 still
+opened a separate modal (`#asset-modal`, its own Leaflet map) for placement;
+Phase 2.5 replaces that with placement happening directly on `rmState.map`,
+no modal at all.
+
+- **Data layer extracted and shared, not duplicated.** `saveAssetFromModal()`/
+  `deleteAssetFromModal()`'s Firestore read-modify-write was pulled out into
+  `persistRoofAsset(buildingId, roofId, asset)` / `removeRoofAsset(buildingId,
+  roofId, assetId)` — both the Building History modal AND RoofMapper's new
+  inline placement now call the exact same two functions, so there's one
+  place that knows how to persist a roof asset, not two copies that could
+  drift apart. Refactor is behavior-preserving by construction (same
+  fetch/upsert/write logic, just relocated) — verified the modal path still
+  saves/loads/navigates identically.
+- **New inline UI, not a rebuilt placement engine.** `rmAddFeature()` and
+  `rmEditFeature(assetId)` no longer call `openAssetModal()` at all. Instead:
+  a draggable `rmFeatureMarker` is placed directly on `rmState.map` (starting
+  at the outline's centroid for a new feature, or the existing lat/lng for an
+  edit), a small inline form appears right in the "Roof Features" card
+  (Type/Label/Notes + Save/Delete/Cancel, reusing `ROOF_ASSET_TYPES` the same
+  way the modal's type select does), and tapping the map repositions the
+  marker exactly like the modal's map did. `rmZoomToOutline()` (Phase 2) runs
+  automatically when the form opens, so there's always room to work.
+  `rmEditFeature()` looks its asset up from `rmState.linkedAssetsCache` (the
+  array `rmDrawLinkedAssets()` already fetched to draw the markers) instead
+  of a fresh Firestore read — instant open, same pattern as the marker click
+  handler that was already there.
+- **Idempotent open/close.** `rmOpenFeatureForm()` always clears any previous
+  `rmFeatureMarker`/map-click-handler before creating new ones, so tapping a
+  different existing marker while already mid-add doesn't stack markers or
+  duplicate click listeners — it just cleanly switches to editing that one.
+  `rmCloseFeatureForm()` (Cancel, after Save, after Delete) removes the
+  marker and the click handler and restores the "+ Add Feature" button.
+  `rmClearLinkedFeatures()` (fresh search, switching footprint, loading a
+  local outline — see Phase 2/deselect above) now also closes the form, so
+  an in-progress add/edit can never be left orphaned pointing at a roof
+  RoofMapper is no longer linked to.
+- **`assetModalReturnTo` removed.** Phase 2's routing flag (so
+  `closeAssetModal()` could redraw RoofMapper instead of rebuilding Building
+  History) is now dead code, since RoofMapper never opens that modal at all
+  — removed along with its branch in `closeAssetModal()`, which is back to
+  its original single-purpose (Building History) form.
+- Still correctly out of scope, same reasoning as Phase 2: finding pins
+  (leak/repair markup) aren't placeable inline — a pin belongs to a specific
+  work order's finding, which RoofMapper still has no context for. Photo
+  auto-pin (`maybeAutoPinFinding()`/`maybeAutoPinPhoto()`) is untouched —
+  it's part of the work-order photo-capture flow, nothing in this change
+  goes near it. Custom (x/y) base-map assets still can't show inline here,
+  same lat/lng-only limitation as before — inline-placed features always
+  save `lat`/`lng`, never `x`/`y`.
+
+Tested with `fdb` mocked end to end: generated + saved an outline (linking to
+a fake building) -> `rmAddFeature()` confirmed the asset modal never opened
+and a marker appeared directly on `rmState.map` -> set type/label, dragged
+the marker (simulated), saved -> confirmed the asset persisted to the fake
+building's `roof_assets[]` and exactly one marker redrew on the map ->
+`rmEditFeature()` on that asset confirmed it pre-filled from the cache with
+no extra fetch and the marker started at its saved location -> deleted it,
+confirmed it's gone from both the fake building's data and the map ->
+confirmed Cancel removes the marker with nothing saved -> confirmed
+reopening the form (without closing first) replaces the click handler
+rather than stacking it, and a map click moves the marker exactly once ->
+confirmed a fresh search cleanly closes an in-progress form -> confirmed
+the Building History modal path (`openAssetModal`/`saveAssetFromModal`)
+still works standalone through the same shared persistence helpers. All
+test state removed; page reloaded clean (including restoring the native
+`window.confirm` after a temporary auto-confirm stub used for the delete
+test).
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |

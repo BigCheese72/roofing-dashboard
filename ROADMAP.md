@@ -342,9 +342,9 @@ Goal: turn each building into a long-term roof record.
   longer routes away to Building History (Phase 1's behavior, superseded) —
   RoofMapper reveals a "Roof Features" card right there, draws that roof's
   existing features on its own map, and "+ Add Feature"/tapping a marker
-  reuses the existing `openAssetModal()` placement engine unchanged, just
-  routed to stay on RoofMapper when it's done instead of rebuilding Building
-  History underneath. Map height increased (55vh/460px → 70vh/640px),
+  opened the existing `openAssetModal()` placement engine (superseded by
+  Phase 2.5 below, which moved placement directly onto RoofMapper's own map).
+  Map height increased (55vh/460px → 70vh/640px),
   zoom/scroll/pinch explicitly confirmed on, and generating an outline now
   auto-zooms into it (previously stayed at the wide multi-candidate search
   view) — plus a manual "🔍 Zoom to Roof" button. Exports (SVG/PNG/PDF) now
@@ -359,11 +359,24 @@ Goal: turn each building into a long-term roof record.
   (x/y, not georeferenced) can't be shown inline or in the export — same
   lat/lng-only limitation the outline itself already has. See "RoofMapper ↔
   Roof Map unification -- Phase 2" in `DEV_NOTES.md`.
+- ✅ **Shipped (dev only)**: RoofMapper ↔ Roof Map unification — Phase 2.5
+  (feature placement folded directly onto RoofMapper's own map). Fully
+  realizes "map it, then mark it up on that same roof" — "+ Add Feature"
+  and tapping an existing marker no longer open the separate asset-modal
+  overlay at all; a draggable marker appears right on `rmState.map` with a
+  small inline form (Type/Label/Notes) in the Roof Features card, reusing
+  `rmZoomToOutline()` from Phase 2 so there's room to work. The Firestore
+  read-modify-write itself was extracted into shared `persistRoofAsset()`/
+  `removeRoofAsset()` helpers used by BOTH this inline flow and Building
+  History's modal, so there's one persistence path, not two that could
+  drift apart — the modal itself still exists and still works standalone
+  for Building History's "+ Add Roof Feature." **Still correctly out of
+  scope, same as Phase 2**: finding-pin (leak/repair) placement stays
+  outside RoofMapper (no "current work order" context to attach one to);
+  custom (x/y) base-map assets still can't place/show inline (lat/lng
+  only). Photo auto-pin is untouched — separate code path entirely. See
+  "RoofMapper Phase 2.5" in `DEV_NOTES.md`.
   Planned follow-on phases (not built yet):
-  - **Phase 2.5 (not yet built)**: fold the placement UI itself directly
-    onto RoofMapper's map (today it's still the same modal overlay as
-    Building History uses, just kept on-screen instead of routing away —
-    a genuinely merged single canvas is a further step).
   - **Phase 3**: let a satellite/drone/uploaded image be the RoofMapper capture
     canvas directly (today RoofMapper only captures via OSM building
     footprints; custom base maps are a separate roof-profile feature used only

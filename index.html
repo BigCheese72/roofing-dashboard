@@ -518,8 +518,30 @@
       <p class="hint" id="rm-features-hint">Tap a marker on the map above to edit it, or add a new one. These are
         permanent roof fixtures (drains, HVAC, scuppers, etc.); leak/repair findings still get pinned from their
         work order as before, and everything shows up together in the exports above.</p>
-      <div class="rm-actions">
+      <div class="rm-actions" id="rm-features-actions">
         <button class="btn primary rm-bigbtn" onclick="rmAddFeature()">🔧 Add Feature</button>
+      </div>
+      <div id="rm-feature-form" style="display:none">
+        <p class="hint">Drag the marker on the map above to position it, or tap the map to move it there.</p>
+        <div class="grid">
+          <div class="fld">
+            <label>Type</label>
+            <select id="rm-feature-type"></select>
+          </div>
+          <div class="fld">
+            <label>Label (optional)</label>
+            <input type="text" id="rm-feature-label" placeholder="e.g. Drain #3, RTU-2">
+          </div>
+        </div>
+        <div class="fld">
+          <label>Notes (optional)</label>
+          <textarea id="rm-feature-notes" rows="2"></textarea>
+        </div>
+        <div class="btnrow" style="margin:8px 0 0">
+          <button class="btn primary" onclick="rmSaveFeature()">Save Feature</button>
+          <button class="btn danger" id="rm-feature-delete-btn" onclick="rmDeleteFeature()" style="display:none">Delete</button>
+          <button class="btn" onclick="rmCancelFeatureForm()">Cancel</button>
+        </div>
       </div>
     </div>
 
@@ -1781,12 +1803,33 @@ function assetPopupHtml(buildingId, a){
 }
 var assetMap = null, assetMarker = null, assetModalBuildingId = null, assetModalAssetId = null,
   assetModalRoofId = null, assetMapMode = "latlng", assetXYSize = null;
-/* Where closeAssetModal() should return to when it's done -- "history"
-   (default, unchanged) rebuilds Building History's map same as always;
-   "roofmapper" (set by rmAddFeature()/rmEditFeature()) instead redraws the
-   feature markers inline on RoofMapper's own map, part of the Phase 2
-   unified-surface work -- see "RoofMapper Phase 2" in DEV_NOTES.md. */
-var assetModalReturnTo = "history";
+/* Shared roof_assets[] read-modify-write, used by both this modal (Building
+   History's "+ Add Roof Feature") and RoofMapper's own inline placement
+   (Phase 2.5, rmSaveFeature()/rmDeleteFeature()) so there's exactly one
+   place that knows how to persist a roof asset, not two copies that could
+   drift apart. See "RoofMapper Phase 2.5" in DEV_NOTES.md. */
+async function persistRoofAsset(buildingId, roofId, asset){
+  var snap = await fdb.collection("buildings").doc(buildingId).get();
+  var roofs = getBuildingRoofs(snap.exists ? snap.data() : {});
+  var roof = getRoofById(snap.exists ? snap.data() : {}, roofId);
+  var assets = roof.roof_assets || [];
+  var idx = assets.findIndex(function(a){ return a.id === asset.id; });
+  if (idx >= 0){ asset.createdAt = assets[idx].createdAt || Date.now(); assets[idx] = asset; }
+  else { asset.createdAt = Date.now(); assets.push(asset); }
+  roof.roof_assets = assets;
+  var roofIdx = roofs.findIndex(function(r){ return r.id === roof.id; });
+  if (roofIdx >= 0) roofs[roofIdx] = roof; else roofs.push(roof);
+  await saveBuildingRoofs(buildingId, roofs);
+}
+async function removeRoofAsset(buildingId, roofId, assetId){
+  var snap = await fdb.collection("buildings").doc(buildingId).get();
+  var roofs = getBuildingRoofs(snap.exists ? snap.data() : {});
+  var roof = getRoofById(snap.exists ? snap.data() : {}, roofId);
+  roof.roof_assets = (roof.roof_assets || []).filter(function(a){ return a.id !== assetId; });
+  var roofIdx = roofs.findIndex(function(r){ return r.id === roof.id; });
+  if (roofIdx >= 0) roofs[roofIdx] = roof; else roofs.push(roof);
+  await saveBuildingRoofs(buildingId, roofs);
+}
 function populateAssetTypeSelect(){
   var sel = document.getElementById("asset-type");
   if (sel.options.length) return;
@@ -1924,8 +1967,6 @@ document.getElementById("asset-type") && document.getElementById("asset-type").a
 });
 function closeAssetModal(){
   var buildingId = assetModalBuildingId;
-  var returnTo = assetModalReturnTo;
-  assetModalReturnTo = "history"; /* reset before any early branch below */
   document.getElementById("asset-modal").style.display = "none";
   unlockBodyScroll();
   if (assetMap){ assetMap.remove(); assetMap = null; assetMarker = null; }
@@ -1933,18 +1974,12 @@ function closeAssetModal(){
   assetModalAssetId = null;
   assetModalRoofId = null;
   assetXYSize = null;
-  if (returnTo === "roofmapper"){
-    /* Opened via rmAddFeature()/rmEditFeature() -- stay on RoofMapper as
-       one unified surface (Phase 2) and just redraw its own feature
-       markers, rather than rebuilding Building History's map underneath a
-       view the user isn't even looking at. */
-    rmLoadLinkedAssets();
-    return;
-  }
   /* openAssetModal() destroyed the underlying Building History map
      entirely (see the comment there) — rebuild it every time this modal
      closes, save/delete or plain Cancel/Close alike, so the page never
-     sits there with the map missing underneath. */
+     sits there with the map missing underneath. RoofMapper no longer opens
+     this modal at all as of Phase 2.5 (it places features inline on its
+     own map instead), so this path is Building History-only again. */
   if (buildingId) openBuildingHistory(buildingId);
 }
 async function saveAssetFromModal(){
@@ -1967,17 +2002,7 @@ async function saveAssetFromModal(){
   }
   var buildingId = assetModalBuildingId, roofId = assetModalRoofId;
   try{
-    var snap = await fdb.collection("buildings").doc(buildingId).get();
-    var roofs = getBuildingRoofs(snap.exists ? snap.data() : {});
-    var roof = getRoofById(snap.exists ? snap.data() : {}, roofId);
-    var assets = roof.roof_assets || [];
-    var idx = assets.findIndex(function(a){ return a.id === asset.id; });
-    if (idx >= 0){ asset.createdAt = assets[idx].createdAt || Date.now(); assets[idx] = asset; }
-    else { asset.createdAt = Date.now(); assets.push(asset); }
-    roof.roof_assets = assets;
-    var roofIdx = roofs.findIndex(function(r){ return r.id === roof.id; });
-    if (roofIdx >= 0) roofs[roofIdx] = roof; else roofs.push(roof);
-    await saveBuildingRoofs(buildingId, roofs);
+    await persistRoofAsset(buildingId, roofId, asset);
     toast("Roof feature saved ✓");
     closeAssetModal(); /* also rebuilds the underlying map — see closeAssetModal() */
   }catch(e){ toast("Couldn't save: " + e.message); }
@@ -1987,13 +2012,7 @@ async function deleteAssetFromModal(){
   if (!confirm("Remove this roof feature?")) return;
   var buildingId = assetModalBuildingId, assetId = assetModalAssetId, roofId = assetModalRoofId;
   try{
-    var snap = await fdb.collection("buildings").doc(buildingId).get();
-    var roofs = getBuildingRoofs(snap.exists ? snap.data() : {});
-    var roof = getRoofById(snap.exists ? snap.data() : {}, roofId);
-    roof.roof_assets = (roof.roof_assets || []).filter(function(a){ return a.id !== assetId; });
-    var roofIdx = roofs.findIndex(function(r){ return r.id === roof.id; });
-    if (roofIdx >= 0) roofs[roofIdx] = roof; else roofs.push(roof);
-    await saveBuildingRoofs(buildingId, roofs);
+    await removeRoofAsset(buildingId, roofId, assetId);
     toast("Roof feature removed");
     closeAssetModal(); /* also rebuilds the underlying map — see closeAssetModal() */
   }catch(e){ toast("Couldn't remove: " + e.message); }
@@ -5738,8 +5757,11 @@ var rmState = {
   /* Phase 2 (unified surface): once the outline is saved to a building,
      these point at that building+roof so features can be placed and the
      full-roof export can pull them in, without leaving RoofMapper.
-     assetLayerGroup holds the markers drawn inline on rmState.map. */
-  linkedBuildingId: null, linkedRoofId: null, assetLayerGroup: null
+     assetLayerGroup holds the markers drawn inline on rmState.map.
+     linkedAssetsCache (Phase 2.5) is the last-fetched roof_assets[] array,
+     kept so tapping a marker to edit it doesn't need a fresh Firestore
+     read just to know what it is. */
+  linkedBuildingId: null, linkedRoofId: null, assetLayerGroup: null, linkedAssetsCache: []
 };
 var RM_LOCAL_KEY = "roofmapper-local-outlines-v1";
 /* A commercial building — especially a hospital/medical campus — can easily
@@ -5847,8 +5869,10 @@ function rmClearLinkedFeatures(){
      called whenever the outline itself is about to change (new search, or
      loading a different local save) so stale features from a PREVIOUS
      building never bleed into a new one. */
+  rmCloseFeatureForm(); /* don't leave an in-progress add/edit orphaned */
   if (rmState.map && rmState.assetLayerGroup) rmState.map.removeLayer(rmState.assetLayerGroup);
   rmState.assetLayerGroup = null;
+  rmState.linkedAssetsCache = [];
   rmState.linkedBuildingId = null;
   rmState.linkedRoofId = null;
   var panel = document.getElementById("rm-features-panel");
@@ -6185,6 +6209,7 @@ async function rmLoadLinkedAssets(){
   }catch(e){ toast("Couldn't load roof features: " + e.message); }
 }
 function rmDrawLinkedAssets(assets){
+  rmState.linkedAssetsCache = assets;
   var map = rmEnsureMap();
   if (rmState.assetLayerGroup) map.removeLayer(rmState.assetLayerGroup);
   rmState.assetLayerGroup = L.layerGroup().addTo(map);
@@ -6200,14 +6225,105 @@ function rmDrawLinkedAssets(assets){
     m.on("click", function(){ rmEditFeature(a.id); });
   });
 }
-function rmAddFeature(){
+
+/* ---- Phase 2.5: place features RIGHT ON RoofMapper's own map, no modal ----
+   rmFeatureMarker is the single draggable marker for whichever feature is
+   currently being added/edited; rmFeatureMapClickHandler is the specific
+   map click listener that repositions it, tracked so it can be removed
+   again on close instead of stacking a new one every time the form opens.
+   Persistence goes through the SAME persistRoofAsset()/removeRoofAsset()
+   helpers the Building History modal uses (see their definition above) --
+   this only replaces the placement UI, not the data layer. */
+var rmFeatureMarker = null, rmFeatureMapClickHandler = null, rmFeatureEditingId = null;
+function rmPopulateFeatureTypeSelect(){
+  var sel = document.getElementById("rm-feature-type");
+  if (sel.options.length) return;
+  Object.keys(ROOF_ASSET_TYPES).forEach(function(k){
+    var opt = document.createElement("option");
+    opt.value = k; opt.textContent = ROOF_ASSET_TYPES[k].emoji + " " + ROOF_ASSET_TYPES[k].label;
+    sel.appendChild(opt);
+  });
+}
+document.getElementById("rm-feature-type") && document.getElementById("rm-feature-type").addEventListener("change", function(){
+  if (rmFeatureMarker) rmFeatureMarker.setIcon(assetIcon(this.value));
+});
+function rmOpenFeatureForm(existingAsset){
   if (!rmState.linkedBuildingId || !rmState.linkedRoofId){ toast("Save this outline to a building first."); return; }
-  assetModalReturnTo = "roofmapper";
-  openAssetModal(rmState.linkedBuildingId, null, rmState.linkedRoofId);
+  rmPopulateFeatureTypeSelect();
+  document.getElementById("rm-feature-type").value = existingAsset ? existingAsset.type : "drain";
+  document.getElementById("rm-feature-label").value = existingAsset ? (existingAsset.label || "") : "";
+  document.getElementById("rm-feature-notes").value = existingAsset ? (existingAsset.notes || "") : "";
+  document.getElementById("rm-feature-delete-btn").style.display = existingAsset ? "" : "none";
+  document.getElementById("rm-feature-form").style.display = "";
+  document.getElementById("rm-features-actions").style.display = "none";
+  var map = rmEnsureMap();
+  /* Idempotent re-entry: clear any marker/handler from a previous open
+     (e.g. tapping a different existing marker while already adding one)
+     before setting up the new one, so nothing stacks or leaks. */
+  if (rmFeatureMarker){ map.removeLayer(rmFeatureMarker); rmFeatureMarker = null; }
+  if (rmFeatureMapClickHandler){ map.off("click", rmFeatureMapClickHandler); rmFeatureMapClickHandler = null; }
+  var start;
+  if (existingAsset && typeof existingAsset.lat === "number"){
+    start = [existingAsset.lat, existingAsset.lng];
+  } else if (rmState.outline){
+    var c = rmGeomRingCentroid(rmState.outline.ring);
+    start = [c.lat, c.lng];
+  } else {
+    var mc = map.getCenter();
+    start = [mc.lat, mc.lng];
+  }
+  rmFeatureMarker = L.marker(start, { draggable: true, icon: assetIcon(document.getElementById("rm-feature-type").value) }).addTo(map);
+  rmFeatureMapClickHandler = function(e){ rmFeatureMarker.setLatLng(e.latlng); };
+  map.on("click", rmFeatureMapClickHandler);
+  rmZoomToOutline();
+  document.getElementById("rm-feature-form").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+function rmCloseFeatureForm(){
+  var form = document.getElementById("rm-feature-form");
+  if (form) form.style.display = "none";
+  var actions = document.getElementById("rm-features-actions");
+  if (actions) actions.style.display = "";
+  if (rmFeatureMarker){ if (rmState.map) rmState.map.removeLayer(rmFeatureMarker); rmFeatureMarker = null; }
+  if (rmFeatureMapClickHandler){ if (rmState.map) rmState.map.off("click", rmFeatureMapClickHandler); rmFeatureMapClickHandler = null; }
+  rmFeatureEditingId = null;
+}
+function rmCancelFeatureForm(){ rmCloseFeatureForm(); }
+function rmAddFeature(){
+  rmFeatureEditingId = null;
+  rmOpenFeatureForm(null);
 }
 function rmEditFeature(assetId){
-  assetModalReturnTo = "roofmapper";
-  openAssetModal(rmState.linkedBuildingId, assetId, rmState.linkedRoofId);
+  var asset = (rmState.linkedAssetsCache || []).find(function(a){ return a.id === assetId; });
+  rmFeatureEditingId = assetId;
+  rmOpenFeatureForm(asset || null);
+}
+async function rmSaveFeature(){
+  if (!rmFeatureMarker || !rmState.linkedBuildingId) return;
+  var ll = rmFeatureMarker.getLatLng();
+  var asset = {
+    id: rmFeatureEditingId || genId("ast"),
+    type: document.getElementById("rm-feature-type").value,
+    label: document.getElementById("rm-feature-label").value.trim(),
+    notes: document.getElementById("rm-feature-notes").value.trim(),
+    lat: ll.lat, lng: ll.lng, x: null, y: null,
+    updatedAt: Date.now()
+  };
+  try{
+    await persistRoofAsset(rmState.linkedBuildingId, rmState.linkedRoofId, asset);
+    toast("Roof feature saved ✓");
+    rmCloseFeatureForm();
+    await rmLoadLinkedAssets();
+  }catch(e){ toast("Couldn't save: " + e.message); }
+}
+async function rmDeleteFeature(){
+  if (!rmFeatureEditingId || !rmState.linkedBuildingId) return;
+  if (!confirm("Remove this roof feature?")) return;
+  try{
+    await removeRoofAsset(rmState.linkedBuildingId, rmState.linkedRoofId, rmFeatureEditingId);
+    toast("Roof feature removed");
+    rmCloseFeatureForm();
+    await rmLoadLinkedAssets();
+  }catch(e){ toast("Couldn't remove: " + e.message); }
 }
 
 /* ---- save locally (localStorage fallback — offline or not linked yet) ---- */

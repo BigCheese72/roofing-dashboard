@@ -267,10 +267,11 @@ helps a tech capture a clean roof outline for a building on the spot:
    there's no signal or the building isn't in RoofOps yet (link it later from the
    "Saved On This Device" list).
 6. **Mark it up right there** — once linked to a building, a "Roof Features" card
-   appears with an **"🔧 Add Feature"** button: place drains, HVAC units, scuppers, and
-   the rest of the permanent roof fixtures directly on the map you were just looking
-   at, without leaving RoofMapper. Existing features for that roof are already drawn
-   on the map — tap one to edit it.
+   appears with an **"🔧 Add Feature"** button. Tapping it drops a draggable marker
+   directly on the RoofMapper map itself — no popup, no separate screen — with a
+   small Type/Label/Notes form right below it; drag the marker or tap the map to
+   position it, then Save. Existing features for that roof are already drawn on the
+   map — tap one to edit or delete it the same inline way.
 7. Export **SVG**, **PNG**, or **PDF** any time — all generated on the device, no
    internet required once the outline exists. Once linked to a building, exports
    include everything marked up on the roof (features + any leak/repair pins from past
