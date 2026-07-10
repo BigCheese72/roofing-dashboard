@@ -1056,8 +1056,7 @@ retry artifact.
 orders have duplicates** (one with 4 entries, one with 3; the other 3 work orders
 correctly have exactly 1 each). Timestamps on the duplicate groups span from ~10 seconds
 apart up to ~4 hours apart, consistent with a mix of quick retries and genuine later
-resends — exactly the reported symptom. **Not touched** — no delete/merge performed;
-see the cleanup proposal below.
+resends — exactly the reported symptom. **Cleanup performed 2026-07-09 — see below.**
 
 **Fix**: `logReportAndHistoryEvent()`'s doc id is now deterministic —
 `"evt_" + workOrderId"` — instead of random, so every subsequent call for the same work
@@ -1079,17 +1078,40 @@ entry meaningful rather than just "whatever the latest action happened to be":
   expect "the current state of this report" to read, and avoids inventing a full
   per-field audit history that wasn't asked for.
 
-**Existing duplicates from before this fix are untouched, on purpose** — deleting/merging
-them is a live-data mutation and needs Mark's separate sign-off, same standing rule as
-the shelved building-merge feature. **Proposed cleanup, not performed**: a one-time,
-human-reviewed script (matching the existing `tools/` pattern — standalone, not part of
-the deployed app) that, for each work order with more than one `building_history_events`
-doc, picks the entry with the union of all recipients + the latest snapshot fields (the
-same merge logic the live fix now applies going forward), writes that as the sole
-survivor under the new deterministic id, and deletes the rest — run once, by a human,
-against production, after reviewing exactly what it would change. Given only 2 work
-orders are affected today, this is a small, low-risk one-time job whenever Mark wants it
-— not urgent, since the forward-fix already stops it from getting worse.
+**Cleanup log (2026-07-09)** — Mark approved cleaning up the 2 affected work orders.
+Client-side `create`/`update` on `reports`/`building_history_events` is allowed by
+`firestore.rules`; `delete` is not (`allow delete: if false` for every client) — the only
+sanctioned delete path is the admin-PIN-gated `delete_history_event` action in
+`netlify/functions/admin.js`. I could not verify/use the admin PIN myself (correctly
+blocked, and did not attempt to route around it), so the cleanup was split into a safe
+part I could do directly, and a manual part left for Mark:
+
+- **wo_1783623513874 ("Planet fitness")** — read all 4 duplicate docs, computed the
+  merge (union of `emailRecipients`, earliest `createdAt`, latest `updatedAt`,
+  `emailSent` true since at least one send occurred), and wrote it to the canonical id
+  `evt_wo_1783623513874` in both `reports` and `building_history_events`. Merged
+  recipients: `charlottew@watkinsroofing.net`, `MarkE@watkinsroofing.net`,
+  `Chrisg@Watkinsroofing.net`. The 4 old docs were left in place (not deleted) — **Mark
+  needs to delete these 4 old ids** via Admin mode → Building History → that building →
+  View Timeline → Delete (admin): `5PPAV7KhSHadDdcUPRW2`, `7YYtjwFHvHycIZTwlIOD`,
+  `V4obeTd5WY62Vy1SEyMr`, `iqSgMjoJOIXx7c3dOs48`. Do **not** delete
+  `evt_wo_1783623513874` — that's the merged survivor.
+- **wo_1783627175735 ("St. Mary's Hospital - St. Louis")** — originally had 3 duplicate
+  docs. Two of them (`n7bfUGjxDK6BF3eRicTv`, `vrta02ezozxxKYf1avjt`) were deleted
+  (apparently manually, via the app's own Delete (admin) button, mid-cleanup) before I
+  wrote the merge, leaving only `UsZ7RmCZ7rsWBdjwb8gr`. Its data was written to the
+  canonical id `evt_wo_1783627175735` in both collections — recipients:
+  `charlottew@watkinsroofing.net`, `MarkE@watkinsroofing.net`. (`Chrisg@watkinsroofing.net`,
+  if it was ever on one of the 2 already-deleted docs, is no longer recoverable — that
+  data was gone before the merge ran. The email itself was already sent at the time;
+  this only affects the historical "who was this emailed to" record.) **Mark needs to
+  delete this 1 remaining old id**: `UsZ7RmCZ7rsWBdjwb8gr`. Do **not** delete
+  `evt_wo_1783627175735`.
+- Verified read-only afterward: both canonical docs exist in `reports` and
+  `building_history_events` with the expected merged `emailRecipients`. Once Mark deletes
+  the old ids listed above, both work orders will have exactly 1 entry each, matching the
+  other 3 unaffected work orders. No data was lost except the one recipient noted above,
+  which was already gone before this cleanup touched anything.
 
 **Verified against an in-memory mock Firestore client (never touched real production
 Firestore)**: first save+send for a work order creates exactly one entry; a resend to 2
