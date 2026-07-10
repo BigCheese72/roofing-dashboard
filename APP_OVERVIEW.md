@@ -54,6 +54,18 @@ form. Tapping the Watkins logo in the header also returns to Home from anywhere.
 8. The app saves the work order and logs report/history information, including any
    pins placed, onto that building's permanent record.
 
+## Field Suggestions (Autocomplete)
+
+Many free-text fields remember what's been typed into them before and suggest it as
+you type — Job Name, Location, Bill To, Billing/Site Contact, Contact Phone,
+Technician (including in the Log Activity modal), a finding or repair's
+Location/Detail, a Repair Item's Notes, a roof asset's Label, and every photo
+caption. It's entirely on-device (browser storage, nothing sent to the cloud) — the
+most recent ~25 distinct values typed into each field show up as suggestions the
+next time. Multi-line fields (Description, Summary, Materials, Warranty
+Determination, and the longer condition/repair-performed text areas) don't have
+this — it's built for short, recurring values, not paragraphs.
+
 ## Work Order Types
 
 Every work order has a type — **Leak / Service** (the default, and what every work
@@ -398,10 +410,16 @@ reveals:
   something tied to whatever work order happens to be open. Setting it applies to
   every user's *new* photos from that point on; it doesn't reprocess anything already
   saved. Defaults to small (email-friendly) if never set.
-- **Export** and **Delete** on each saved work order in the Saved tab, plus **Import
-  Work Order File**. A non-admin's Saved tab only offers **Open** — everything else
-  about managing saved work orders (exporting one to hand off, deleting one, or
-  importing one from a file) is admin-only.
+- **Delete** on each saved work order in the Saved tab, plus **Import Work Order
+  File**. A non-admin's Saved tab only offers **Open** — deleting one or importing
+  one from a file is admin-only. (There's no Export button at all anymore, for
+  anyone — Mark: "I don't need an export button at all.")
+- **Editing an already-submitted work order.** Opening a *new, in-progress* work
+  order is always fully editable, for anyone. Opening an *already-saved* one from
+  the Saved list is **view-only for a non-admin** — every field is disabled, Save is
+  disabled, and a "🔒 View only" banner explains why; they can still tap "Preview
+  Document →" to review the generated report. Turning admin mode on while that same
+  work order is still open unlocks it immediately, no need to reopen it.
 
 The timeline also auto-flags **possible duplicate entries** — same work order + same
 report type logged within 5 minutes of each other, almost always a double-click or a

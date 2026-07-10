@@ -278,15 +278,15 @@
         <span class="hint" style="margin:0">Picks an existing customer/building's info into the fields below — or just type a new one in directly.</span>
       </div>
       <div class="grid">
-        <div class="fld"><label>Job Name</label><input type="text" id="jobName"></div>
-        <div class="fld"><label>Location</label><input type="text" id="location"></div>
+        <div class="fld"><label>Job Name</label><input type="text" id="jobName" list="dl-jobName" onblur="rememberFieldValue('jobName', this.value)"></div>
+        <div class="fld"><label>Location</label><input type="text" id="location" list="dl-location" onblur="rememberFieldValue('location', this.value)"></div>
         <div class="fld"><label>Date of Service</label><input type="text" id="serviceDate"></div>
         <div class="fld"><label>Job No.</label><input type="text" id="jobNo"></div>
-        <div class="fld"><label>Bill To</label><input type="text" id="billTo"></div>
-        <div class="fld"><label>Billing Contact</label><input type="text" id="billContact"></div>
-        <div class="fld"><label>Contact Phone</label><input type="text" id="billPhone"></div>
-        <div class="fld"><label>Site Contact</label><input type="text" id="siteContact"></div>
-        <div class="fld"><label>Technician</label><input type="text" id="technician"></div>
+        <div class="fld"><label>Bill To</label><input type="text" id="billTo" list="dl-billTo" onblur="rememberFieldValue('billTo', this.value)"></div>
+        <div class="fld"><label>Billing Contact</label><input type="text" id="billContact" list="dl-contactName" onblur="rememberFieldValue('contactName', this.value)"></div>
+        <div class="fld"><label>Contact Phone</label><input type="text" id="billPhone" list="dl-contactPhone" onblur="rememberFieldValue('contactPhone', this.value)"></div>
+        <div class="fld"><label>Site Contact</label><input type="text" id="siteContact" list="dl-contactName" onblur="rememberFieldValue('contactName', this.value)"></div>
+        <div class="fld"><label>Technician</label><input type="text" id="technician" list="dl-technician" onblur="rememberFieldValue('technician', this.value)"></div>
         <div class="fld"><label>Roof System</label>
           <select id="roofSystem">
             <option value=""></option>
@@ -392,9 +392,12 @@
     </div>
 
     <div class="btnrow">
-      <button class="btn primary" onclick="saveOrder()">Save</button>
-      <button class="btn" onclick="showView('preview')">Preview Document →</button>
+      <button class="btn primary" id="btn-save" onclick="saveOrder()">Save</button>
+      <button class="btn" id="btn-preview-doc" onclick="showView('preview')">Preview Document →</button>
     </div>
+    <p class="hint" id="view-only-banner" style="display:none;background:#FFF4E5;border:1px solid #E8A33D;border-radius:6px;padding:10px 12px;font-weight:600;color:#8A5A00">
+      🔒 View only — this is a submitted work order. Admin mode is required to edit and re-save it.
+    </p>
   </div>
 
   <!-- ================= PREVIEW VIEW ================= -->
@@ -431,7 +434,7 @@
       <button class="btn" id="saved-import-btn" style="display:none" onclick="document.getElementById('importInput').click()">Import Work Order File</button>
     </div>
     <p class="hint" id="cloud-status"></p>
-    <p class="hint" id="saved-export-hint" style="display:none">Export a work order on one device, send the file to yourself (email/text), then Import it here on another device.</p>
+    <p class="hint" id="saved-import-hint" style="display:none">Import a work order file (.workorder.json) received from elsewhere.</p>
     <div id="saved-list"></div>
   </div>
 
@@ -574,7 +577,7 @@
         </div>
         <div class="fld">
           <label>Label (optional)</label>
-          <input type="text" id="asset-label" placeholder="e.g. Drain #3, RTU-2">
+          <input type="text" id="asset-label" placeholder="e.g. Drain #3, RTU-2" list="dl-assetLabel" onblur="rememberFieldValue('assetLabel', this.value)">
         </div>
       </div>
       <div class="fld">
@@ -618,8 +621,8 @@
       <div id="rm-roof-picker" style="margin-top:10px"></div>
       <h2 class="cond" style="font-size:15px;margin:18px 0 8px">Or Create a New Building</h2>
       <div class="grid">
-        <div class="fld"><label>Job Name / Building</label><input type="text" id="rm-new-jobname" placeholder="e.g. Westminster Plaza"></div>
-        <div class="fld"><label>Bill To / Customer</label><input type="text" id="rm-new-billto" placeholder="e.g. ACME Property Group"></div>
+        <div class="fld"><label>Job Name / Building</label><input type="text" id="rm-new-jobname" placeholder="e.g. Westminster Plaza" list="dl-jobName" onblur="rememberFieldValue('jobName', this.value)"></div>
+        <div class="fld"><label>Bill To / Customer</label><input type="text" id="rm-new-billto" placeholder="e.g. ACME Property Group" list="dl-billTo" onblur="rememberFieldValue('billTo', this.value)"></div>
       </div>
       <div class="btnrow">
         <button class="btn primary" onclick="rmCreateBuildingAndSave()">Create Building & Save Outline</button>
@@ -641,7 +644,7 @@
         <div class="fld"><label>Activity Type</label><select id="activity-type"></select></div>
         <div class="fld"><label>Date</label><input type="date" id="activity-date"></div>
       </div>
-      <div class="fld"><label>Technician / Author (optional)</label><input type="text" id="activity-technician"></div>
+      <div class="fld"><label>Technician / Author (optional)</label><input type="text" id="activity-technician" list="dl-technician" onblur="rememberFieldValue('technician', this.value)"></div>
       <div class="fld"><label>Notes / Description</label><textarea id="activity-notes" rows="4"></textarea></div>
       <div class="btnrow">
         <button class="btn primary" onclick="saveActivityFromModal()">Save Activity</button>
@@ -691,6 +694,20 @@
 </div>
 
 <div class="toast" id="toast"></div>
+
+<!-- Field-value memory / autocomplete datalists (see FIELD_HISTORY_KEYS in
+     the script below) -- one per shared suggestion pool, populated from
+     localStorage, referenced by list="dl-<key>" on the wired inputs. -->
+<datalist id="dl-jobName"></datalist>
+<datalist id="dl-location"></datalist>
+<datalist id="dl-billTo"></datalist>
+<datalist id="dl-contactName"></datalist>
+<datalist id="dl-contactPhone"></datalist>
+<datalist id="dl-technician"></datalist>
+<datalist id="dl-roofLocationDetail"></datalist>
+<datalist id="dl-repairItemNotes"></datalist>
+<datalist id="dl-photoCaption"></datalist>
+<datalist id="dl-assetLabel"></datalist>
 
 <script>
 "use strict";
@@ -1125,17 +1142,25 @@ function updateAdminUI(){
     var sel = document.getElementById("adminPhotoSize");
     if (isAdmin && sel) sel.value = globalPhotoSizePref;
   }
-  /* Saved view access control (Mark) — Import Work Order File and, per
-     saved work order, Export/Delete are admin-only. Toggling admin mode
-     re-draws the Saved list immediately (drawSaved() itself checks
-     isAdmin for the per-row buttons) so switching modes doesn't need a
-     tab change to take effect. See "Saved view access control" in
-     DEV_NOTES.md. */
+  /* Saved view access control (Mark) -- Import Work Order File and, per
+     saved work order, Delete, are admin-only (Export was removed
+     entirely, not gated -- see "Export button removed" in DEV_NOTES.md).
+     Toggling admin mode re-draws the Saved list immediately (drawSaved()
+     itself checks isAdmin for the per-row Delete button) so switching
+     modes doesnt need a tab change to take effect. See "Saved view
+     access control" in DEV_NOTES.md. */
   var importBtn = document.getElementById("saved-import-btn");
   if (importBtn) importBtn.style.display = isAdmin ? "" : "none";
-  var exportHint = document.getElementById("saved-export-hint");
-  if (exportHint) exportHint.style.display = isAdmin ? "" : "none";
+  var importHint = document.getElementById("saved-import-hint");
+  if (importHint) importHint.style.display = isAdmin ? "" : "none";
   if (document.getElementById("saved-list")) drawSaved();
+  /* Re-evaluate view-only lock immediately on admin toggle -- a non-admin
+     viewing a locked submitted work order who enters the admin PIN should
+     see it unlock right away, not need to leave and reopen it (and vice
+     versa if admin mode gets turned off while one is open). See
+     refreshViewOnlyLock() and "View-only mode for a submitted work
+     order" above it. */
+  refreshViewOnlyLock();
   renderCCLinkInfo();
   if (document.getElementById("view-history") && document.getElementById("view-history").style.display !== "none"){
     renderHistoryList();
@@ -1146,6 +1171,52 @@ function esc(s){
   return String(s == null ? "" : s)
     .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
     .replace(/"/g,"&quot;").replace(/'/g,"&#39;");
+}
+/* ================= field-value memory / autocomplete =================
+   Answers Mark's "did we address field memory" question with an actual
+   build: per-field-key value history in localStorage (no Firestore writes,
+   nothing leaves the device), surfaced via a native <datalist> on each
+   wired input. A "key" groups semantically-identical fields that should
+   share one suggestion pool across different parts of the app (e.g. Site
+   Contact and Billing Contact are both just "a person's name" — see
+   FIELD_HISTORY_KEYS below for the full key list and which inputs share
+   which key). Recorded on blur (not every keystroke), trimmed, deduped
+   (a re-typed value jumps back to the front, doesn't duplicate), and
+   capped at FIELD_HISTORY_CAP most-recent values per key. Datalist-only
+   fields (native browser UI, no custom dropdown to build/maintain) — see
+   "Field-value memory / autocomplete" in DEV_NOTES.md for the full field
+   list and what was deliberately left out. */
+var FIELD_HISTORY_CAP = 25;
+var FIELD_HISTORY_KEYS = ["jobName","location","billTo","contactName","contactPhone",
+  "technician","roofLocationDetail","repairItemNotes","photoCaption","assetLabel"];
+function fieldHistoryStorageKey(key){ return "field-history:" + key; }
+function getFieldHistory(key){
+  try{
+    var raw = localStorage.getItem(fieldHistoryStorageKey(key));
+    var arr = raw ? JSON.parse(raw) : [];
+    return Array.isArray(arr) ? arr : [];
+  }catch(e){ return []; }
+}
+function populateFieldDatalist(key){
+  var dl = document.getElementById("dl-" + key);
+  if (!dl) return;
+  dl.innerHTML = getFieldHistory(key).map(function(v){
+    return "<option value='" + esc(v) + "'>";
+  }).join("");
+}
+function populateAllFieldDatalists(){
+  FIELD_HISTORY_KEYS.forEach(populateFieldDatalist);
+}
+function rememberFieldValue(key, value){
+  value = (value || "").trim();
+  if (!value || value.length > 200) return; /* sanity cap -- never store a pasted essay */
+  try{
+    var arr = getFieldHistory(key).filter(function(v){ return v !== value; });
+    arr.unshift(value);
+    if (arr.length > FIELD_HISTORY_CAP) arr = arr.slice(0, FIELD_HISTORY_CAP);
+    localStorage.setItem(fieldHistoryStorageKey(key), JSON.stringify(arr));
+  }catch(e){ return; /* storage full/unavailable -- never block typing over this */ }
+  populateFieldDatalist(key);
 }
 function toast(msg){
   var t = document.getElementById("toast");
@@ -1228,7 +1299,7 @@ function findingPhotoGalleryHtml(f){
   var strip = items.map(function(x){
     return '<div class="finding-photo-item">' +
       (x.p.img ? '<img class="thumb" src="' + x.p.img + '" onclick="openPhotoLightbox(' + x.gi + ')" title="Tap to enlarge">' : '') +
-      '<input type="text" placeholder="Caption" data-findingphoto="' + x.gi + '" value="' + esc(x.p.caption) + '">' +
+      '<input type="text" placeholder="Caption" data-findingphoto="' + x.gi + '" value="' + esc(x.p.caption) + '" list="dl-photoCaption" onblur="rememberFieldValue(\'photoCaption\', this.value)">' +
       '<button class="btn danger" onclick="removePhoto(' + x.gi + ')">✕ Remove</button>' +
       '</div>';
   }).join("");
@@ -1257,7 +1328,7 @@ function renderFindings(){
       '<div class="fld"><label>Roof Condition Observed</label>' +
       '<textarea rows="1" data-i="' + i + '" data-f="condition">' + esc(f.condition) + '</textarea></div>' +
       '<div class="fld"><label>Location / Detail</label>' +
-      '<input type="text" data-i="' + i + '" data-f="location" value="' + esc(f.location) + '"></div>' +
+      '<input type="text" data-i="' + i + '" data-f="location" value="' + esc(f.location) + '" list="dl-roofLocationDetail" onblur="rememberFieldValue(\'roofLocationDetail\', this.value)"></div>' +
       '<div class="fld"><label>Warranty Opinion</label>' +
       '<select data-i="' + i + '" data-f="warranty">' +
         ["Warrantable","Warrantable condition noted","Non-warrantable","Undetermined"].map(function(o){
@@ -1804,7 +1875,7 @@ function renderRepairs(){
       '<div class="fld"><label>Repair Performed</label>' +
       '<textarea rows="1" data-i="' + i + '" data-f="repair">' + esc(r.repair) + '</textarea></div>' +
       '<div class="fld"><label>Location / Detail</label>' +
-      '<input type="text" data-i="' + i + '" data-f="location" value="' + esc(r.location) + '"></div>';
+      '<input type="text" data-i="' + i + '" data-f="location" value="' + esc(r.location) + '" list="dl-roofLocationDetail" onblur="rememberFieldValue(\'roofLocationDetail\', this.value)"></div>';
     host.appendChild(d);
   });
   host.querySelectorAll("[data-f]").forEach(function(el){
@@ -1846,7 +1917,7 @@ function renderRepairItems(){
       '<div class="fld"><label>Quantity</label><input type="number" min="0" step="1" data-i="' + i + '" data-f="qty" value="' + esc(it.qty) + '"></div>' +
       '</div>' +
       '<div class="fld"><label>Notes / Location</label>' +
-      '<input type="text" data-i="' + i + '" data-f="notes" value="' + esc(it.notes) + '"></div>';
+      '<input type="text" data-i="' + i + '" data-f="notes" value="' + esc(it.notes) + '" list="dl-repairItemNotes" onblur="rememberFieldValue(\'repairItemNotes\', this.value)"></div>';
     host.appendChild(d);
   });
   host.querySelectorAll("[data-f]").forEach(function(el){
@@ -2128,7 +2199,7 @@ function renderPhotos(){
     d.innerHTML =
       '<div class="photo-row"><b>Photo ' + (i+1) + '</b>' +
       (p.img ? '<img class="thumb" src="' + p.img + '" onclick="openPhotoLightbox(' + i + ')" title="Tap to enlarge">' : '') +
-      '<input type="text" style="flex:1" placeholder="Caption" data-i="' + i + '" value="' + esc(p.caption) + '">' +
+      '<input type="text" style="flex:1" placeholder="Caption" data-i="' + i + '" value="' + esc(p.caption) + '" list="dl-photoCaption" onblur="rememberFieldValue(\'photoCaption\', this.value)">' +
       '<div class="photo-move-btns">' +
         '<button class="btn" onclick="movePhoto(' + i + ', -1)"' + (i === 0 ? " disabled" : "") + ' title="Move up">▲</button>' +
         '<button class="btn" onclick="movePhoto(' + i + ', 1)"' + (i === photos.length - 1 ? " disabled" : "") + ' title="Move down">▼</button>' +
@@ -2174,7 +2245,7 @@ function renderChangeOrderPhotos(){
         '<span class="hint" style="display:block;margin:2px 0 0">No location</span>';
       return '<div class="finding-photo-item">' +
         (p.img ? '<img class="thumb" src="' + p.img + '" onclick="openPhotoLightbox(' + gi + ')" title="Tap to enlarge">' : '') +
-        '<input type="text" placeholder="Caption" data-cophoto="' + gi + '" value="' + esc(p.caption) + '">' +
+        '<input type="text" placeholder="Caption" data-cophoto="' + gi + '" value="' + esc(p.caption) + '" list="dl-photoCaption" onblur="rememberFieldValue(\'photoCaption\', this.value)">' +
         locNote +
         '<button class="btn danger" onclick="removePhoto(' + gi + ')">✕ Remove</button>' +
         '</div>';
@@ -2411,6 +2482,7 @@ function renderHomeTiles(){
   host.innerHTML = tiles.join("");
 }
 function startNewWorkOrder(type){
+  currentOrderIsSaved = false; /* a brand-new work order is always fully editable, even for a non-admin */
   fill({ id: "wo_" + Date.now(), serviceDate: todayStr(), woType: type });
   showView("edit");
   toast("New " + (WORK_ORDER_TYPE_LABELS[type] || type) + " started");
@@ -2432,9 +2504,10 @@ function startNewWorkOrder(type){
       stripped on the next save (pruneCachedPhotoDrafts(), called from
       saveOrder()). Nothing is lost: the cloud copy (Firestore) always has
       the full photos; this only affects what's available for offline
-      editing on this device without a network round-trip. exportOrder()'s
-      cache write is deliberately left untouched — it's a rare, explicit
-      "give me the full file" action, not passive viewing. */
+      editing on this device without a network round-trip. (The old
+      exportOrder() had a similar carve-out for the same reason before it
+      was removed entirely -- see "Export button removed" in
+      DEV_NOTES.md.) */
 var MAX_CACHED_PHOTO_DRAFTS = 10;
 function stripPhotoBytes(o){
   var copy = Object.assign({}, o);
@@ -2510,6 +2583,66 @@ async function syncPinCorrectionsToHistory(o){
     if (any) await batch.commit();
   }catch(e){ console.warn("pin correction sync failed", e); }
 }
+/* ================= view-only mode for a submitted work order =================
+   Mark's clarified "review only" behavior: a non-admin's CURRENT (new/
+   in-progress, not-yet-saved) work order stays fully editable; a non-admin
+   who OPENS an already-saved/submitted work order (from the Saved list, or
+   jumping in from a Building History pin -- both go through loadOrder()
+   below) gets it read-only. Admins can always edit anything.
+
+   "Current vs submitted" is tracked with one flag, currentOrderIsSaved --
+   true the moment loadOrder() successfully loads an existing work order
+   into the Edit form, false the moment startNewWorkOrder() starts a fresh
+   one. The actual lock state is ALWAYS recomputed as
+   (currentOrderIsSaved && !isAdmin), not stored as its own on/off flag, so
+   toggling admin mode while a locked work order is still open immediately
+   unlocks it (and vice versa) -- refreshViewOnlyLock() is called from
+   updateAdminUI() for exactly this reason.
+
+   Implementation: rather than threading a disabled-attribute check through
+   every render function that touches #view-edit (findings/repairs/photos/
+   repair items all re-render independently), a single MutationObserver
+   watches #view-edit and disables any input/textarea/select/button as
+   fast as it's added to the DOM -- one choke point, can't be missed by a
+   render function nobody remembered to update. #btn-preview-doc is
+   deliberately exempt: reviewing the generated PDF preview IS the "review"
+   Mark wants allowed, not something to lock down. */
+var currentOrderIsSaved = false;
+var viewOnlyObserver = null;
+function lockFormControlsIn(root){
+  if (!root || !root.querySelectorAll) return;
+  var els = root.matches && root.matches("input,textarea,select,button") ? [root] : [];
+  els = els.concat(Array.prototype.slice.call(root.querySelectorAll("input,textarea,select,button")));
+  els.forEach(function(el){
+    if (el.id === "btn-preview-doc") return;
+    el.disabled = true;
+  });
+}
+function unlockFormControlsIn(root){
+  if (!root || !root.querySelectorAll) return;
+  root.querySelectorAll("input,textarea,select,button").forEach(function(el){ el.disabled = false; });
+}
+function refreshViewOnlyLock(){
+  var host = document.getElementById("view-edit");
+  var banner = document.getElementById("view-only-banner");
+  if (!host) return;
+  var shouldLock = currentOrderIsSaved && !isAdmin;
+  if (banner) banner.style.display = shouldLock ? "" : "none";
+  if (viewOnlyObserver){ viewOnlyObserver.disconnect(); viewOnlyObserver = null; }
+  if (shouldLock){
+    lockFormControlsIn(host);
+    viewOnlyObserver = new MutationObserver(function(mutations){
+      mutations.forEach(function(m){
+        m.addedNodes.forEach(function(node){
+          if (node.nodeType === 1) lockFormControlsIn(node);
+        });
+      });
+    });
+    viewOnlyObserver.observe(host, { childList: true, subtree: true });
+  } else {
+    unlockFormControlsIn(host);
+  }
+}
 /* Photo-capture rework follow-up (Mark): on a work order type that has
    findings (Leak/Service, Inspection, Warranty — see hasFindings in
    onWoTypeChange()), every photo must have both a caption and an
@@ -2536,6 +2669,19 @@ function findingsPhotoIssues(o){
 }
 function saveOrder(opts){
   opts = opts || {};
+  /* View-only enforcement (Mark) — defense in depth alongside the disabled
+     Save button (see refreshViewOnlyLock()): a non-admin can't re-save a
+     submitted work order with different content. Only guards the explicit
+     Save (opts.quiet unset) — same reasoning as the photo-issues check
+     below: the quiet auto-save ccImport()/autoSaveBeforeReport() already
+     make is harmless here (a locked form's inputs are disabled, so
+     collect() can only ever read back the exact same values that were
+     loaded — nothing to actually overwrite), and blocking it would break
+     Send/Share/Download for someone just reviewing a report. */
+  if (!opts.quiet && currentOrderIsSaved && !isAdmin){
+    toast("This is a submitted work order — admin mode is required to edit and re-save it.");
+    return Promise.resolve(false);
+  }
   var o = collect();
   if (!opts.quiet){
     var photoIssues = findingsPhotoIssues(o);
@@ -2579,6 +2725,13 @@ async function autoSaveBeforeReport(actionLabel){
   return true;
 }
 function loadOrder(id){
+  /* Every path through this function loads an EXISTING/submitted work
+     order (that's the whole point of loadOrder vs startNewWorkOrder) —
+     see "View-only mode for a submitted work order" above
+     refreshViewOnlyLock(). Set once up front rather than at each of the
+     several fill()/showView("edit") call sites below, since it's true
+     for all of them uniformly. */
+  currentOrderIsSaved = true;
   var db = loadDb();
   var local = db.orders[id];
   var localEntry = null;
@@ -2653,33 +2806,6 @@ function deleteOrder(id){
 }
 /* Admin-only — see deleteOrder() above for why the check lives here too,
    not just on the button. */
-function exportOrder(id){
-  if (!isAdmin){ toast("Admin mode required to export."); return; }
-  var db = loadDb();
-  var o = db.orders[id];
-  if (!o && fdb){
-    toast("Fetching from cloud\u2026");
-    cloudFetchOrder(id).then(function(co){
-      if (co){ var d2 = loadDb(); d2.orders[co.id] = co; saveDb(d2); exportOrder(id); }
-      else toast("Could not find that work order");
-    }).catch(function(){ toast("Couldn't fetch \u2014 check internet"); });
-    return;
-  }
-  if (!o){ toast("Could not find that work order"); return; }
-  var fname = ((o.jobName || "WorkOrder") + "_" + (o.jobNo || ""))
-    .replace(/[^A-Za-z0-9_-]+/g, "_").replace(/_+/g, "_").replace(/^_|_$/g, "") + ".workorder.json";
-  var blob = new Blob([JSON.stringify(o)], { type: "application/json" });
-  var a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = fname;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  setTimeout(function(){ URL.revokeObjectURL(a.href); }, 5000);
-  toast("Exported — send this file to your other device, then Import it there.");
-}
-/* Admin-only — see deleteOrder() above for why the check lives here too,
-   not just on the button. */
 function importOrderFile(files){
   if (!isAdmin){ toast("Admin mode required to import."); return; }
   var f = files && files[0];
@@ -2736,10 +2862,11 @@ function drawSaved(){
       (e.cloud ? ' \u00B7 \u2601' : '') +
       (e.lastEmailedAt ? ' \u00B7 \uD83D\uDCE7 Emailed ' + fmtTs(e.lastEmailedAt) : '') + '</div></div>' +
       '<button class="btn" onclick="loadOrder(\'' + e.id + '\')">Open</button>' +
-      /* Export/Delete are admin-only (Mark's access-control change) \u2014 a
-         non-admin's Saved view only ever offers Open. See "Saved view
-         access control" in DEV_NOTES.md. */
-      (isAdmin ? '<button class="btn" onclick="exportOrder(\'' + e.id + '\')">Export</button>' : '') +
+      /* Delete is admin-only (Mark's access-control change) -- a
+         non-admin's Saved view only ever offers Open. Export was removed
+         entirely (Mark: "I don't need an export button at all"), not just
+         admin-gated -- see "Saved view access control" and "Export
+         button removed" in DEV_NOTES.md. */
       (isAdmin ? '<button class="btn danger" onclick="deleteOrder(\'' + e.id + '\')">Delete</button>' : '') +
       '</div>';
   }).join("");
@@ -5089,6 +5216,12 @@ function showView(v){
   if (v === "history") renderHistoryList();
   if (v === "reports") renderReportsList();
   if (v === "roofmapper") rmOnShow();
+  /* View-only mode (Mark) — refreshed every time the Edit view is shown,
+     not just from loadOrder()/startNewWorkOrder() directly, so it's
+     correct regardless of which code path got here (including a future
+     one nobody remembers to update individually). See
+     "View-only mode for a submitted work order" above refreshViewOnlyLock(). */
+  if (v === "edit") refreshViewOnlyLock();
   window.scrollTo(0,0);
   if (v === "edit" && pendingPinFindingId){
     var fid = pendingPinFindingId;
@@ -5805,6 +5938,7 @@ function rmDeleteLocalOutline(id){
 /* ================= init ================= */
 document.getElementById("hdr-logo").src = LOGO;
 loadGlobalPhotoSizePref();
+populateAllFieldDatalists();
 /* App opens on the home/launcher screen now, not straight into a blank
    Leak/Service form — see "Home / launcher screen" in DEV_NOTES.md.
    populateWoTypeSelect() runs here too (not just inside fill()) so the

@@ -149,11 +149,22 @@ Goal: preserve and harden the existing RoofOps Field / Watkins work order workfl
   needs both a caption and an assigned finding before Save will succeed. See "Change
   Order: no Warranty Determination," "Leak-form photo restructure," and "Caption +
   finding enforcement" in `DEV_NOTES.md`.
-- 📋 **Researched, not built (2026-07-10)**: field-value memory/autocomplete for
-  free-text fields (Technician, Site Contact, etc.). Confirmed it doesn't exist
-  today — the only auto-populate mechanisms are Select Existing Building and
-  CompanyCam import, both "pull from one specific existing record," not general
-  field-history suggestion. See "Field-value memory / autocomplete" in
+- ✅ **Shipped (dev only, 2026-07-10)**: field-value memory/autocomplete, following
+  up on the same-day research above that confirmed it didn't exist. Ten fields
+  (Job Name, Location, Bill To, Billing/Site Contact, Contact Phone, Technician,
+  finding/repair Location-Detail, Repair Item Notes, every photo caption, and roof
+  asset Label) now remember the last ~25 distinct values typed into them and
+  suggest them via a native `<datalist>` — on-device only (`localStorage`), no
+  Firestore writes. See "Field-value memory / autocomplete" in `DEV_NOTES.md`.
+- ✅ **Shipped (dev only, 2026-07-10)**: two more changes from Mark, superseding
+  parts of the Saved-tab access-control pass above. **Export is gone entirely** —
+  not just admin-gated, removed ("I don't need an export button at all"); Import is
+  left in place for now, flagged as a possible next removal since its only source
+  file (Export's output) no longer exists in-app. **Opening an already-submitted
+  work order is now view-only for a non-admin** — every field and Save are
+  disabled, with a "🔒 View only" banner; a brand-new/in-progress work order stays
+  fully editable for everyone, and admins can always edit anything. See "Export
+  button removed" and "View-only mode for a submitted work order" in
   `DEV_NOTES.md`.
 - ❌ **Decided against (2026-07-09)**: pushing app-added phone photos to a matching
   CompanyCam project. CompanyCam's photo-upload API requires a publicly-fetchable URL
@@ -296,6 +307,18 @@ Goal: turn each building into a long-term roof record.
   "RoofMapper" in `DEV_NOTES.md`.
 - Not yet built: manual anchoring for non-georeferenced (roof plan/sketch) maps
   (deliberately excluded by the spec), roof-section labels/filters.
+- 🚧 **In progress (dev only)**: Outlook / Microsoft 365 integration, so emails
+  become part of a building's history the way CompanyCam photos already are.
+  **Phase 0 (auth + mailbox read) shipped**: `netlify/functions/outlook.js` +
+  `lib/graphAuth.js`, app-only Microsoft Graph access to Mark's mailbox
+  (`marks@watkinsroofing.net`), same server-side-secret pattern as the
+  CompanyCam/Resend integrations. Access is scoped by an Exchange Application
+  Access Policy to a specific security group, which can take up to ~30 minutes
+  to propagate after a mailbox is added — see "Outlook / Microsoft 365
+  integration" in `DEV_NOTES.md` for the live connection-test result and exact
+  env vars. **Not yet built**: Phase 1 (organize mail into folders by sender —
+  needs a broader Graph permission grant first) and Phase 2 (auto-file
+  inspection-report PDFs to the matching CompanyCam project).
 - ✅ **Shipped**: sharper satellite imagery for pin placement on large roofs. Field
   feedback: accurate placement, but big roofs need to zoom out to fit, and the
   imagery gets blurry there. Manual roof-tracing was floated as a fix and explicitly

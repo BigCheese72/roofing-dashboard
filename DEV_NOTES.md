@@ -2627,6 +2627,230 @@ previously-typed value across work orders or suggests it while typing. This is a
 real gap if Mark wants it; not something this pass built (report-only, per his
 request — he'll decide with the user whether to build it).
 
+## Outlook / Microsoft 365 integration (Phase 0: auth + mailbox read, shipped dev-only)
+
+First increment of integrating Mark's Microsoft 365 mailbox (`marks@watkinsroofing.net`)
+via Microsoft Graph, so mail can eventually be organized and inspection-report PDFs
+auto-filed to the matching CompanyCam project. Follows the same proxy-function
+pattern as `companycam.js`/`send-workorder.js` — credentials live only in Netlify
+environment variables, never in the browser or the repo.
+
+- **`netlify/functions/lib/graphAuth.js`** — app-only (client-credentials) OAuth2
+  token helper. `POST`s to
+  `https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token` with
+  `scope=https://graph.microsoft.com/.default`, caches the resulting token in
+  memory (per warm function instance only — never written to disk) until ~1 minute
+  before it expires, and exposes `graphFetch(pathOrUrl, options)`, a thin wrapper
+  that resolves relative paths against `https://graph.microsoft.com/v1.0` and
+  attaches the bearer token. Not itself a deployed function — required by
+  `outlook.js`.
+- **`netlify/functions/outlook.js`** — the deployed endpoint.
+  - `GET ?action=folders` — lists the configured mailbox's mail folders
+    (`/users/{mailbox}/mailFolders`).
+  - `GET ?action=messages&folder_id=&top=` — lists recent messages, optionally
+    scoped to one folder, newest first, capped at 50 per call.
+  - Both actions pass a non-2xx Graph response through as `{ error }` with the
+    real status code and body (truncated to 500 chars) rather than swallowing it —
+    important right now because a **403 from Exchange's Application Access
+    Policy** (see below) needs to be visually distinguishable from a real
+    auth/credential failure.
+- **Access is intentionally restricted, not wide-open app-only mailbox access.**
+  The Azure app registration's app-only Graph permission is scoped down by an
+  **Exchange Application Access Policy** to a specific security group
+  ("RoofOps Team") — the app can only read mailboxes that are members of that
+  group, not every mailbox in the tenant. Adding a mailbox to that group is an
+  Exchange Online change that can take **up to ~30 minutes to propagate**; until
+  it does, reads against that mailbox 403 even though the credentials themselves
+  are valid. `outlook.js` returns that as a plain 403 with Graph's own error body,
+  which for this specific case looks like an `ErrorAccessDenied`/`AccessPolicy`
+  message rather than an `InvalidAuthenticationToken` one — that distinction is
+  the tell for "still propagating" vs. "actually broken."
+- **Required env vars** (Netlify > Project configuration > Environment variables —
+  see the table below): `GRAPH_TENANT_ID`, `GRAPH_CLIENT_ID`, `GRAPH_CLIENT_SECRET`,
+  `GRAPH_MAILBOX`. The client secret is time-limited and will be **rotated before
+  go-live** — when that happens, only the Netlify env var needs to change, nothing
+  in code references the value directly.
+- **Not built yet (left as code comments in `outlook.js`, not scaffolding)**:
+  - **Phase 1 — organize mail into folders by sender.** Needs the `Mail.ReadWrite`
+    app-only permission (this Phase 0 build only requests/uses `Mail.Read`) — the
+    Azure app registration's API permissions need extending + re-consenting before
+    this can be built, not just new code here.
+  - **Phase 2 — watch for inspection-report emails and file the PDF to the
+    matching CompanyCam project.** Planned approach: either polling (a scheduled
+    function querying `/messages?$filter=...`) or a Graph change-notification
+    subscription (needs a public HTTPS callback — a Netlify function URL would
+    work). On a match, download the attachment and reuse `companycam.js`'s
+    existing `upload_document` action to file it — no new CompanyCam-side code
+    needed, just wiring. Matching-strategy notes from the earlier (declined) "push
+    photos to CompanyCam" investigation — see "Push app-added photos to
+    CompanyCam" above — are the starting point for how to match an email/PDF to a
+    project.
+- **Live connection test (2026-07-10)**: ran the app-only auth + a mailbox read
+  against the real tenant/mailbox inline (credentials passed as environment
+  variables to a throwaway process, never written to disk, never logged, deleted
+  immediately after) to check whether the Exchange Application Access Policy had
+  finished propagating after the mailbox was added to the "RoofOps Team" group.
+  **Result: token acquisition succeeded (`200`), but the mailbox read still
+  failed** —
+  `403 {"error":{"code":"ErrorAccessDenied","message":"Access to OData is disabled: [RAOP] : Blocked by tenant configured AppOnly AccessPolicy settings."}}`.
+  Credentials are valid and the app-only flow works end-to-end; the Application
+  Access Policy simply hasn't propagated to allow this mailbox yet. No code
+  change needed — re-run the same check later (it can take up to ~30 minutes
+  after the mailbox was added to the group).
+
+### Field-value memory / autocomplete (shipped 2026-07-10, dev only)
+
+**Goal (from Mark)**: an actual build, following up on the earlier "did we address
+field memory" research (see "Field-value memory / autocomplete — researched, not
+built" above) — remember what's been typed into free-text fields before and suggest
+it, across many fields including photo captions.
+
+**Mechanism — plain `localStorage`, no Firestore writes, nothing leaves the
+device**: `FIELD_HISTORY_KEYS` names each shared suggestion pool (a "key" groups
+semantically-identical fields across different parts of the app — e.g. Site Contact
+and Billing Contact both feed the same `contactName` pool, since they're both just
+"a person's name"). `rememberFieldValue(key, value)` trims, dedupes (re-entering an
+existing value moves it to the front instead of duplicating), and caps each key's
+history at `FIELD_HISTORY_CAP` (25) most-recent values, stored under
+`localStorage["field-history:" + key]`. Recorded on **blur**, not every keystroke.
+Surfaced via a native `<datalist>` per key (`populateFieldDatalist()`/
+`populateAllFieldDatalists()`), referenced by `list="dl-<key>"` on each wired input —
+Mark's own suggested "cleanest approach," so no custom dropdown widget to build or
+maintain, and the browser's native suggestion UI just works.
+
+**Fields wired** (10 keys):
+- `jobName` — Job Name, and RoofMapper's quick-save "Job Name / Building"
+- `location` — Location
+- `billTo` — Bill To, and RoofMapper's quick-save "Bill To / Customer"
+- `contactName` — Billing Contact **and** Site Contact (shared pool)
+- `contactPhone` — Contact Phone
+- `technician` — Technician, **and** the Log Activity modal's Technician/Author
+  (shared pool)
+- `roofLocationDetail` — a finding's "Location / Detail," **and** a Work Performed
+  repair's "Location / Detail" (shared pool — both are "where on the roof" detail
+  fields)
+- `repairItemNotes` — a Repair work order's itemized Repair Item "Notes / Location"
+- `photoCaption` — every photo caption input in the app (finding-embedded gallery,
+  the global Photo Documentation section, and the Change Order photo gallery — all
+  three share one pool, since a caption is a caption regardless of which UI
+  captured it)
+- `assetLabel` — a permanent roof asset's Label (e.g. "Drain #3, RTU-2")
+
+**Deliberately left out, with reasons** (not an oversight):
+- **Materials** (`#woMaterials`, Change Order) and every other free-text `<textarea>`
+  (Description of Work Performed, Summary, Warrantable/Non-Warrantable Repairs,
+  Repair Scope's description, a finding's Roof Condition Observed, a repair's Repair
+  Performed) — the native `list` attribute only works on `<input>`, not `<textarea>`,
+  and datalist-style single-value suggestion doesn't fit a multi-line/multi-sentence
+  free-text block the same way it fits a short recurring value anyway.
+- Unique identifiers and dates — Job No., PO Number, Date Completed, Manufacturer
+  Service #, Date of Service — these are never repeat values by nature.
+- Search boxes (Reports/Building Picker/RoofMapper/CompanyCam search fields) — these
+  filter-as-you-type against existing data; suggesting past *search terms* isn't the
+  same thing and wasn't asked for.
+- Roof Profile admin fields (Roof System, Manufacturer, Deck Type, Insulation Type,
+  Warranty Provider) — genuinely could benefit from this later (manufacturer/deck
+  type names do recur across buildings), but it's an admin-only editing surface, not
+  a field a tech fills out routinely — left out to keep this pass scoped to what
+  Mark actually asked about. Flagging as a reasonable future candidate.
+
+**Verified — no Firestore writes possible, `fdb` explicitly `null` throughout**:
+confirmed a shared key (`contactName`) correctly pools values entered through two
+different fields (Site Contact and Billing Contact) into one datalist; confirmed
+re-entering an already-remembered value moves it to the front without creating a
+duplicate; confirmed the 25-item cap is enforced by pushing 30 values past it;
+confirmed empty/whitespace-only values are silently ignored (never stored). Zero
+console errors.
+
+### Export button removed (shipped 2026-07-10, dev only)
+
+**Goal (from Mark)**: "I don't need an export button at all." Not just admin-gating
+it further (it was already made admin-only earlier this session, see "Saved view
+access control" above) — full removal.
+
+`exportOrder()` is deleted entirely, along with its per-row button in `drawSaved()`.
+The Saved-tab hint that explained the Export → Import device-transfer pairing is
+reworded to describe Import on its own (`#saved-import-hint`, was
+`#saved-export-hint`) — "Import a work order file (.workorder.json) received from
+elsewhere."
+
+**Import was deliberately left in place, not removed** — per spec, flagging the
+tradeoff rather than deciding unilaterally: Import's job (load a `.workorder.json`
+file from *anywhere*, not necessarily one this app produced) doesn't strictly
+require Export to exist. It's genuinely a little less useful now that there's no
+in-app way to produce such a file, but it's not fully orphaned — a file could still
+arrive some other way (manually crafted for a migration/test, a future tool, etc.).
+**Recommendation for Mark to weigh in on**: if there's truly no other source for a
+`.workorder.json` file in practice, Import could reasonably go too — but that's his
+call, not assumed here.
+
+**Verified — no Firestore writes possible, `fdb` explicitly `null`**: confirmed
+`exportOrder` is `undefined` (not just hidden); confirmed a non-admin's Saved row
+shows only Open, an admin's shows Open + Delete (no Export for anyone, at any
+permission level); confirmed Import still works correctly for an admin.
+
+### View-only mode for a submitted work order (shipped 2026-07-10, dev only)
+
+**Goal (from Mark, clarifying the earlier Saved-view access-control pass)**: a
+non-admin's *current* (new/in-progress, not-yet-saved) work order stays fully
+editable. A non-admin who *opens* an already-saved/submitted work order from the
+Saved list becomes view-only — reviewable, not editable or re-savable. Admins can
+always edit anything, saved or not.
+
+**How "current vs. submitted" is scoped, exactly as asked to report**: one flag,
+`currentOrderIsSaved` — set `true` at the very top of `loadOrder()` (every path
+through that function loads an *existing* work order, so it's true uniformly
+regardless of which of `loadOrder()`'s several fetch/cache branches actually ran),
+and set `false` at the top of `startNewWorkOrder()`. The lock itself is **never**
+stored as its own flag — it's recomputed every time as `currentOrderIsSaved &&
+!isAdmin`, via `refreshViewOnlyLock()`, called from three places: `showView()`
+whenever the Edit view is shown (covers every current and future call path
+uniformly, including `jumpToAdjustPin()` from a Building History pin, which routes
+through `loadOrder()`), and `updateAdminUI()` (so toggling admin mode while a locked
+work order is open unlocks/re-locks it immediately, no need to leave and reopen).
+
+**Implementation — one `MutationObserver`, not per-render-function checks**: rather
+than adding a disabled-attribute check to every render function that touches
+`#view-edit` (findings/repairs/photos/repair items all re-render independently —
+easy to miss one), `refreshViewOnlyLock()` disables every current
+input/textarea/select/button under `#view-edit` in one pass, then attaches a
+`MutationObserver` (while locked) that disables any *newly added* one the instant
+it's inserted — confirmed this catches a finding row added via a direct
+`renderFindings()` re-render while locked, not just the initial elements. Unlocking
+does the reverse (re-enables everything currently in the DOM, disconnects the
+observer). **`#btn-preview-doc` ("Preview Document →") is deliberately exempt** —
+reviewing the generated PDF preview is exactly the "review" Mark wants a non-admin
+to keep; only edit/save actions are locked. The photo lightbox (tap-to-enlarge) is
+unaffected for a different reason — it's triggered by an `<img onclick>`, not a
+form control, so it was never touched by the lock in the first place.
+
+**`saveOrder()` also guards the explicit save directly** (defense in depth, same
+pattern as every other dual-gated admin action this session) — blocks with a toast
+if `currentOrderIsSaved && !isAdmin`, but **only for the explicit save**
+(`opts.quiet` unset), not the internal quiet auto-saves. This is safe: with every
+input disabled, `collect()` can only ever read back the exact values that were
+loaded, so a quiet auto-save before Send/Share/Download is a no-op in effect — no
+real "re-save with different content" can happen — and blocking it would break
+reviewing/re-sending a report for no benefit.
+
+**One real side effect worth knowing**: `jumpToAdjustPin()` (jumping from a Building
+History pin straight into adjusting it) routes through `loadOrder()`, so it now
+inherits this lock too — a non-admin can no longer drag-adjust a pin that way
+either, without admin mode. A logical consequence of "opening a submitted work
+order is view-only," not something separately decided.
+
+**Verified — no Firestore writes possible, `fdb` explicitly `null` throughout**:
+confirmed a brand-new work order stays fully editable for a non-admin; confirmed
+opening a saved work order as a non-admin disables every field, disables Save,
+shows the banner, and leaves Preview Document clickable; confirmed toggling admin
+mode on/off while that same locked order is still open unlocks/re-locks it live;
+confirmed starting a new work order right after resets to fully editable; confirmed
+a dynamically re-rendered finding row added while locked gets caught and disabled
+by the observer (not just the initial render); confirmed a direct `saveOrder()`
+call while locked+non-admin is blocked; confirmed an admin opening the same saved
+work order is immediately fully editable, no lock at all. Zero console errors
+throughout.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |
@@ -2639,6 +2863,10 @@ request — he'll decide with the user whether to build it).
 | `REPLY_TO_EMAIL` | `send-workorder.js` | optional, comma-separated. Defaults to `marks@<domain>` + `charlottew@<domain>` (Mark's and Charlotte's real monitored mailboxes, per his decision). See "Per-job From address" below. |
 | `ADMIN_PIN` | `admin.js` | yes, for admin mode to work | The real PIN check — not present anywhere in `index.html` anymore. |
 | `FIREBASE_SERVICE_ACCOUNT` | `admin.js` | yes, for admin mode to work | Entire JSON contents of a Firebase service account key. Full project access — treat as a secret, never commit it. |
+| `GRAPH_TENANT_ID` | `outlook.js` / `lib/graphAuth.js` | yes, for the Outlook/M365 integration to work | Azure AD tenant id. |
+| `GRAPH_CLIENT_ID` | `outlook.js` / `lib/graphAuth.js` | yes, for the Outlook/M365 integration to work | App registration (client) id. |
+| `GRAPH_CLIENT_SECRET` | `outlook.js` / `lib/graphAuth.js` | yes, for the Outlook/M365 integration to work | App registration client secret. Time-limited, will be rotated before go-live — treat as a secret, never commit it. |
+| `GRAPH_MAILBOX` | `outlook.js` / `lib/graphAuth.js` | yes, for the Outlook/M365 integration to work | Mailbox this app reads, e.g. `marks@watkinsroofing.net`. Must be a member of the Exchange Application Access Policy's allowed group — see "Outlook / Microsoft 365 integration" above. |
 
 ### Email (Resend) — designated test recipient, and known blocker
 
