@@ -289,7 +289,9 @@ When the user clicks **Import from CompanyCam**:
 8. The app automatically saves the work order.
 9. The app automatically syncs CompanyCam project/photo history metadata to Firebase.
 
-There is no manual sync button now. Importing CompanyCam photos is the action that links and syncs the project. An admin (see "Admin Mode" below) can unlink a project from the CompanyCam banner if it was linked by mistake — field users cannot.
+There is no manual sync button now. Importing CompanyCam photos is one way to link a work order to a project — the other is picking a building via **🔍 Select Existing Building** that's already linked (the picker shows "🔗 CompanyCam linked" next to those); the link now carries over automatically in that case too, unless the work order is already linked to something else. An admin (see "Admin Mode" below) can unlink a project from the CompanyCam banner if it was linked by mistake — field users cannot.
+
+**Saving the report PDF to CompanyCam**: when a work order is linked, generating the report via **Send Email Now**, **Share / Email PDF**, or **Download PDF** all attempt to save the PDF back into that CompanyCam project as a document (Print does not — it prints the on-screen preview directly, no PDF file is produced to save). The result is shown as a persistent badge on that report's entry in Building History and the Reports tab: **☁️ Saved to CompanyCam** (green) or **⚠️ Not saved to CompanyCam** (red — shown whether the work order simply isn't linked, or a real upload attempt failed; a failure also shows the specific error text). A report generated before this shipped just shows no badge.
 
 ## How Firebase Works
 

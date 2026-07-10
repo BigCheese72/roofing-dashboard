@@ -2110,6 +2110,63 @@ Order, Inspection, and Warranty; filled `mfgServiceNo` on a Leak/Service work or
 round-tripped through `collect()`/`fill()`, and confirmed it appears correctly in the
 text build, the HTML preview, and the generated PDF; zero console errors throughout.
 
+### CompanyCam PDF upload gaps (fixed 2026-07-10)
+
+**Background**: Mark reported report PDFs missing from CompanyCam for several real
+jobs (Planet Fitness, St. Mary's Hospital, St. Joseph's, Westminster). A code-path
+investigation (no live CompanyCam/production access from the dev sandbox — see that
+diagnosis for the full writeup) found three independent gaps, all fixed here:
+
+**1. "Select Existing Building" never carried over the building's CompanyCam link.**
+`bpSelectBuilding()` copied jobName/billTo/location/roofSystem from the building
+record but never `b.companyCamProjectId`/`companyCamProjectName` — even though the
+picker list shows "🔗 CompanyCam linked" right next to buildings that have one. A work
+order for an already-linked building silently stayed unlinked (`o.companyCamProjectId`
+null) unless the tech separately used Import from CompanyCam too — the natural
+workflow for a repeat customer skips that. Now `bpSelectBuilding()` sets
+`ccLinkedProjectId`/`ccLinkedProjectName` from the building record when present (and
+calls `renderCCLinkInfo()` so the "🔗 Locked to CompanyCam project" banner appears
+immediately) — but only if the work order isn't already linked to something else, so
+it never clobbers an explicit Import-from-CompanyCam link made in the same session.
+
+**2. "Download PDF" never attempted a CompanyCam upload at all.** Only "Send Email
+Now" and "Share / Email PDF" called `uploadLinkedPdfToCompanyCam()`; `downloadPdf()`
+built and saved the PDF locally and stopped there, regardless of linking. Now it calls
+`uploadLinkedPdfToCompanyCam()` too, same as Share — matching toast behavior (its own
+"Saving to CompanyCam…"/success/failure toasts when linked; the original "attach it to
+your email" toast only when not linked, unchanged for that case). `window.print()`
+(the Print button) is unchanged — it prints the live HTML preview directly, never
+produces PDF bytes app-side, so there's nothing there to upload.
+
+**3. No persistent visibility into whether an upload actually happened.** Even when an
+upload was attempted and failed, the only feedback was a one-time toast at that exact
+moment — nothing was ever recorded. `logReportAndHistoryEvent()` now takes a 4th
+param, `ccUploadResult` (the same `{ok:true}` / `{ok:false,error}` / `{skipped:true}`
+shape `uploadLinkedPdfToCompanyCam()` already returned), and writes it as
+`companyCamUploadStatus` ("saved" | "failed" | "not_linked" | `null` if never
+attempted) + `companyCamUploadError` on both the `reports` and `building_history_events`
+docs — sticky like `emailSent`, so an action that doesn't attempt an upload (e.g. a
+manually logged activity) preserves whatever was already recorded rather than
+overwriting it with "unknown." All four call sites (`downloadPdf`, `sendEmailNow`, and
+both branches of `sharePdf`) were reordered so the upload attempt completes *before*
+logging, so the very first log entry already reflects the real outcome. Building
+History and the Reports tab now show a persistent "☁️ Saved to CompanyCam" (green) or
+"⚠️ Not saved to CompanyCam" (red, covers both `failed` and `not_linked` — both mean
+the PDF genuinely isn't there) badge via the new shared `ccUploadBadgeHtml()` helper,
+plus the actual error text on a `failed` entry. Entries logged before this shipped just
+show no badge (status `null`) rather than a misleading one.
+
+**Verified with mocked Firestore + mocked `ccApiPost`** (never touched the real
+CompanyCam API or production Firestore): confirmed `bpSelectBuilding()` carries the
+link over and doesn't clobber an existing one; ran `downloadPdf()` against a linked
+work order with a mocked successful upload and confirmed `companyCamUploadStatus:
+"saved"` lands on both the `reports` and `building_history_events` mock docs; reran
+with a mocked rejection and confirmed `"failed"` + the exact error message are
+recorded; reran unlinked and confirmed `"not_linked"`; confirmed `ccUploadBadgeHtml()`
+renders the right text for all four states (including no badge for `null`); ran
+`sendEmailNow()` end-to-end (mocked `fetch` for the send-workorder function too) and
+confirmed the same status recording. Zero console errors throughout.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |

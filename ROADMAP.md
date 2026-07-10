@@ -88,6 +88,15 @@ Goal: preserve and harden the existing RoofOps Field / Watkins work order workfl
   warrantable leak usually has ("~9 times out of 10," per Mark) — a single text field,
   prints on the leak report when filled. See "Warranty guidelines restricted to
   Leak/Service + Manufacturer Service #" in `DEV_NOTES.md`.
+- ✅ **Shipped**: fixed three real gaps behind report PDFs going missing from
+  CompanyCam for several real jobs (Planet Fitness, St. Mary's Hospital, St. Joseph's,
+  Westminster). Selecting an already-linked building via 🔍 Select Existing Building
+  now carries that CompanyCam link into the work order (it never did before); Download
+  PDF now attempts the CompanyCam save too, same as Send/Share (it never did before);
+  and every report/timeline entry now shows a persistent "☁️ Saved to CompanyCam" /
+  "⚠️ Not saved to CompanyCam" badge (with the error text on a real failure), so a skip
+  or failure is never invisible again. See "CompanyCam PDF upload gaps" in
+  `DEV_NOTES.md`.
 - ❌ **Decided against (2026-07-09)**: pushing app-added phone photos to a matching
   CompanyCam project. CompanyCam's photo-upload API requires a publicly-fetchable URL
   per photo, which this app can't produce without paying for Firebase Storage or

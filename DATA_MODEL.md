@@ -404,6 +404,15 @@ Example fields:
   warrantyStatus,
   companyCamProjectId,
   companyCamPhotoIds: [],
+  companyCamUploadStatus, // "saved" | "failed" | "not_linked" | null (never attempted —
+                          // e.g. a manually logged activity, or an entry logged before
+                          // this field existed). Set by logReportAndHistoryEvent() from
+                          // uploadLinkedPdfToCompanyCam()'s result; drives the persistent
+                          // "☁️ Saved to CompanyCam" / "⚠️ Not saved to CompanyCam" badge
+                          // in Building History and Reports. Sticky like emailSent — an
+                          // action that doesn't attempt an upload preserves whatever was
+                          // already recorded. See DEV_NOTES.md.
+  companyCamUploadError, // free text, set only when companyCamUploadStatus === "failed"
   pdfRef: null,
   emailSent: true,
   emailRecipients: [],
@@ -492,6 +501,10 @@ Example fields:
   warrantyStatus,
   companyCamProjectId,
   companyCamPhotoIds: [],
+  companyCamUploadStatus, // "saved" | "failed" | "not_linked" | null — same field/
+                          // meaning as on `reports` above, written identically in the
+                          // same batch. See DEV_NOTES.md.
+  companyCamUploadError,
   pins: [], // denormalized from findings with a pin — see DEV_NOTES.md. Each pin also
             // carries its own roofId (same value as the event's), used by the Roof Map
             // to show only the pins for the currently-selected roof.

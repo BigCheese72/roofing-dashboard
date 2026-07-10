@@ -970,6 +970,20 @@ function bpSelectBuilding(buildingId){
   setVal("billTo", b.customerName || "");
   setVal("location", b.location || "");
   setVal("roofSystem", b.roofSystem || "");
+  /* Previously only copied plain fields — the building's CompanyCam link
+     (shown right here in the picker as "🔗 CompanyCam linked") never
+     carried over, so a work order for an already-linked building silently
+     stayed unlinked unless the tech separately used Import from CompanyCam
+     too. That's the root cause behind report PDFs missing from CompanyCam
+     for repeat-building jobs — see "CompanyCam PDF upload gaps" in
+     DEV_NOTES.md. Only sets it if this work order isn't already linked to
+     something else (never clobbers an explicit Import-from-CompanyCam
+     link the tech already made in this session). */
+  if (b.companyCamProjectId && !ccLinkedProjectId){
+    ccLinkedProjectId = b.companyCamProjectId;
+    ccLinkedProjectName = b.companyCamProjectName || "";
+    renderCCLinkInfo();
+  }
   closeBuildingPicker();
   toast("Loaded “" + b.name + "” — review the fields below before saving");
 }
@@ -2955,6 +2969,17 @@ function timelineFiltersHtml(){
     '<button class="btn" onclick="clearTimelineFilters()">Clear Filters</button>' +
     '<span class="hint" id="tl-count" style="margin:0"></span></div>';
 }
+/* Persistent CompanyCam-upload indicator for a report/timeline entry — see
+   companyCamUploadStatus in logReportAndHistoryEvent(). Deliberately says
+   nothing when status is null (never attempted, e.g. entries logged before
+   this shipped, or a manually logged activity) — only "saved" and
+   "failed"/"not_linked" (both surfaced as "Not saved," since both mean the
+   PDF genuinely isn't in CompanyCam) get a badge, per Mark's spec. */
+function ccUploadBadgeHtml(status){
+  if (status === "saved") return '<span class="evt-tag" style="background:#E8F5E9;color:#2E7D32">☁️ Saved to CompanyCam</span>';
+  if (status === "failed" || status === "not_linked") return '<span class="evt-tag" style="background:#FBE2E2;color:#D64545">⚠️ Not saved to CompanyCam</span>';
+  return "";
+}
 function timelineEventHtml(e, buildingId){
   return '<div class="evt-item"' + (e._dup ? ' style="border-left-color:#D64545"' : '') + '><div class="evt-head">' +
     '<span class="evt-date">' + esc(e.date || fmtTs(e.createdAt)) + '</span>' +
@@ -2963,6 +2988,7 @@ function timelineEventHtml(e, buildingId){
       '<span class="evt-tag" style="background:#FFF3E0;color:#8A5A00">' + esc(e.workOrderType) + '</span>' : '') +
     (e.warrantyStatus ? '<span class="evt-tag">' + esc(e.warrantyStatus) + '</span>' : '') +
     (e.emailSent ? '<span class="evt-tag">Emailed ✓</span>' : '') +
+    ccUploadBadgeHtml(e.companyCamUploadStatus) +
     (e._dup ? '<span class="evt-tag" style="background:#FBE2E2;color:#D64545">Possible duplicate</span>' : '') +
     (isAdmin ? '<span class="sp"></span><button class="btn danger" onclick="deleteHistoryEventAdmin(\'' + e._id + '\', \'' + buildingId + '\')">Delete (admin)</button>' : '') +
     '</div>' +
@@ -2971,6 +2997,8 @@ function timelineEventHtml(e, buildingId){
     (e.roofType ? '<div class="evt-row">Roof: ' + esc(e.roofType) + '</div>' : '') +
     (e.emailSent && (e.emailRecipients || []).length ?
       '<div class="evt-row">📧 Emailed to ' + esc(e.emailRecipients.join(", ")) + '</div>' : '') +
+    (e.companyCamUploadStatus === "failed" && e.companyCamUploadError ?
+      '<div class="evt-row" style="color:#D64545">CompanyCam upload error: ' + esc(e.companyCamUploadError) + '</div>' : '') +
     (e.conditionsSummary ? '<div class="evt-row">Findings: ' + esc(e.conditionsSummary) + '</div>' : '') +
     (e.repairsSummary ? '<div class="evt-row">Repairs: ' + esc(e.repairsSummary) + '</div>' : '') +
     (e.notes ? '<div class="evt-row">' + esc(e.notes) + '</div>' : '') +
@@ -3195,6 +3223,7 @@ function rpReportItemHtml(r){
       '<span class="evt-tag" style="background:#FFF3E0;color:#8A5A00">' + esc(r.workOrderType) + '</span>' : '') +
     (r.warrantyStatus ? '<span class="evt-tag">' + esc(r.warrantyStatus) + '</span>' : '') +
     (r.emailSent ? '<span class="evt-tag">Emailed ✓</span>' : '') +
+    ccUploadBadgeHtml(r.companyCamUploadStatus) +
     '</div>' +
     '<div class="evt-row"><b>' + esc(r.buildingName || "(unknown building)") + '</b>' +
     (r.customerName ? ' — ' + esc(r.customerName) : '') + '</div>' +
@@ -3203,6 +3232,8 @@ function rpReportItemHtml(r){
     (r.roofType ? '<div class="evt-row">Roof: ' + esc(r.roofType) + '</div>' : '') +
     (r.emailSent && (r.emailRecipients || []).length ?
       '<div class="evt-row">📧 Emailed to ' + esc(r.emailRecipients.join(", ")) + '</div>' : '') +
+    (r.companyCamUploadStatus === "failed" && r.companyCamUploadError ?
+      '<div class="evt-row" style="color:#D64545">CompanyCam upload error: ' + esc(r.companyCamUploadError) + '</div>' : '') +
     (r.notes ? '<div class="evt-row">' + esc(r.notes) + '</div>' : '') +
     '</div>';
 }
@@ -4017,7 +4048,17 @@ function buildPinsForHistoryEvent(o){
     };
   });
 }
-async function logReportAndHistoryEvent(o, kind, emailInfo){
+/* ccUploadResult is the return value of uploadLinkedPdfToCompanyCam() —
+   { ok:true } | { ok:false, error } | { skipped:true } (no linked
+   project) | undefined (this action never attempted an upload, e.g. a
+   manually logged activity). Recorded durably (companyCamUploadStatus/
+   companyCamUploadError) so the timeline/reports UI can show a persistent
+   "saved to CompanyCam" / "not saved" indicator instead of the one-time
+   toast being the only signal — see "CompanyCam PDF upload gaps" in
+   DEV_NOTES.md. Sticky like emailSent: a call that doesn't pass a result
+   (nothing new to report) preserves whatever was already recorded rather
+   than overwriting it with "unknown." */
+async function logReportAndHistoryEvent(o, kind, emailInfo, ccUploadResult){
   if (!fdb) return;
   try{
     var ids = await ensureCustomerAndBuilding(o);
@@ -4032,6 +4073,12 @@ async function logReportAndHistoryEvent(o, kind, emailInfo){
     ((emailInfo && emailInfo.to) || []).forEach(function(addr){
       if (mergedRecipients.indexOf(addr) === -1) mergedRecipients.push(addr);
     });
+    var ccStatus = (existing && existing.companyCamUploadStatus) || null;
+    var ccError = (existing && existing.companyCamUploadError) || "";
+    if (ccUploadResult){
+      ccStatus = ccUploadResult.ok ? "saved" : (ccUploadResult.skipped ? "not_linked" : "failed");
+      ccError = (!ccUploadResult.ok && !ccUploadResult.skipped) ? (ccUploadResult.error || "") : "";
+    }
     var nowTs = Date.now();
     var payload = {
       buildingId: ids.buildingId, buildingName: o.jobName || "",
@@ -4046,6 +4093,8 @@ async function logReportAndHistoryEvent(o, kind, emailInfo){
       warrantyStatus: computeWarrantyStatus(o),
       companyCamProjectId: o.companyCamProjectId || null,
       companyCamPhotoIds: (o.photos || []).filter(function(p){ return p.ccPhotoId; }).map(function(p){ return p.ccPhotoId; }),
+      companyCamUploadStatus: ccStatus,   // "saved" | "failed" | "not_linked" | null (never attempted)
+      companyCamUploadError: ccError,     // set only when status === "failed"
       pins: buildPinsForHistoryEvent(o),
       pdfRef: pdfRef,
       emailSent: !!(emailInfo && emailInfo.sent) || !!(existing && existing.emailSent),
@@ -4208,8 +4257,13 @@ async function downloadPdf(){
   var d = await generatePdf();
   if (!d) return;
   d.save(pdfFileName());
-  toast("PDF downloaded \u2014 attach it to your email.");
-  logReportAndHistoryEvent(collect(), "PDF Downloaded", null);
+  var o = collect();
+  /* Previously the one PDF-producing action that never saved to
+     CompanyCam at all, even when the work order was linked \u2014 see
+     "CompanyCam PDF upload gaps" in DEV_NOTES.md. Now matches Send/Share. */
+  var ccUp = await uploadLinkedPdfToCompanyCam(d, o, "PDF downloaded");
+  if (!o.companyCamProjectId) toast("PDF downloaded \u2014 attach it to your email.");
+  logReportAndHistoryEvent(o, "PDF Downloaded", null, ccUp);
 }
 async function sendEmailNow(){
   var addrs = val("emailTo").split(",").map(function(s){ return s.trim(); }).filter(Boolean);
@@ -4248,13 +4302,14 @@ async function sendEmailNow(){
     var out = null;
     try{ out = await resp.json(); }catch(e){}
     if (resp.ok && out && out.ok){
-      await logReportAndHistoryEvent(o, "PDF Emailed", { sent: true, to: addrs, subject: subject });
       markWorkOrderEmailed(o.id, addrs);
+      var ccUp = { skipped: true };
       if (o.companyCamProjectId){
-        await uploadLinkedPdfToCompanyCam(d, o, "Email sent \u2713");
+        ccUp = await uploadLinkedPdfToCompanyCam(d, o, "Email sent \u2713");
       } else {
         toast("Email sent \u2713 to " + addrs.join(", "));
       }
+      await logReportAndHistoryEvent(o, "PDF Emailed", { sent: true, to: addrs, subject: subject }, ccUp);
     } else {
       toast("Send failed: " + ((out && out.error) || ("server error " + resp.status)));
     }
@@ -4294,22 +4349,22 @@ async function sharePdf(){
       var file = new File([blob], fname, { type: "application/pdf" });
       if (navigator.canShare && navigator.share && navigator.canShare({ files: [file] })){
         await navigator.share({ files: [file], title: fname });
-        await logReportAndHistoryEvent(o, "PDF Shared", null);
-        await uploadLinkedPdfToCompanyCam(d, o, "PDF shared");
+        var ccUp1 = await uploadLinkedPdfToCompanyCam(d, o, "PDF shared");
+        await logReportAndHistoryEvent(o, "PDF Shared", null, ccUp1);
         return;
       }
     }catch(e){
       if (e && e.name === "AbortError") return; /* user closed the share sheet */
     }
     d.save(fname);
-    await logReportAndHistoryEvent(o, "PDF Shared", null);
-    await uploadLinkedPdfToCompanyCam(d, o, "PDF downloaded");
+    var ccUp2 = await uploadLinkedPdfToCompanyCam(d, o, "PDF downloaded");
+    await logReportAndHistoryEvent(o, "PDF Shared", null, ccUp2);
     if (!o.companyCamProjectId) toast("Sharing isn't supported on this device \u2014 PDF downloaded instead. Attach it to your email.");
     return;
   }
   d.save(fname);
-  await logReportAndHistoryEvent(o, "PDF Shared", null);
-  await uploadLinkedPdfToCompanyCam(d, o, "PDF downloaded");
+  var ccUp3 = await uploadLinkedPdfToCompanyCam(d, o, "PDF downloaded");
+  await logReportAndHistoryEvent(o, "PDF Shared", null, ccUp3);
   if (!o.companyCamProjectId) toast("PDF downloaded \u2014 drag it from Downloads into the email that just opened, then send.");
 }
 
