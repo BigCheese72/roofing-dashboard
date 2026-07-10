@@ -331,7 +331,16 @@ Example fields:
   findings: [], // each: { id, condition, location, warranty, pin } — see DEV_NOTES.md
                 // Not applicable/hidden on the form for woType === "Repair", but the
                 // field itself is unchanged — a Repair work order just keeps an
-                // empty/unused findings array.
+                // empty/unused findings array. pin.source is "device_gps" for a pin
+                // placed via "Use My Location" OR auto-dropped from a camera-captured
+                // photo's GPS (maybeAutoPinFinding(), see "Photo-capture rework" in
+                // DEV_NOTES.md) — both write the identical shape, so nothing reading
+                // a pin can tell which one it was.
+  photos: [], // each: { caption, img (base64), w, h, finding_id, ccPhotoId }. gps
+              // (optional: {lat,lng,accuracy}) is set either by a CompanyCam import
+              // (photo's own EXIF-derived location) or by in-app camera capture
+              // (device GPS at the moment of capture, see captureDeviceGps() in
+              // DEV_NOTES.md) — a library-picked photo has no gps key at all.
   repairs: [],
   warrantable,
   nonWarrantable,

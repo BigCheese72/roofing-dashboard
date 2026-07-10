@@ -352,9 +352,12 @@
       </div>
       <input type="file" id="photoInput" accept="image/*" multiple style="display:none"
         onchange="addPhotosFromFiles(this.files); this.value='';">
+      <input type="file" id="cameraInput" accept="image/*" capture="environment" style="display:none"
+        onchange="addPhotosFromCamera(this.files); this.value='';">
       <div id="photos-list"></div>
       <div class="btnrow">
-        <button class="btn primary" onclick="document.getElementById('photoInput').click()">+ Add Photos</button>
+        <button class="btn primary" onclick="document.getElementById('cameraInput').click()">📷 Take Photo</button>
+        <button class="btn" onclick="document.getElementById('photoInput').click()">+ Add Photos</button>
         <button class="btn" onclick="openCC()">Import from CompanyCam</button>
       </div>
       <div id="cc-link-info"></div>
@@ -1814,6 +1817,89 @@ function addPhotosFromFiles(files){
     reader.readAsDataURL(file);
   });
 }
+/* Resolves to {lat,lng,accuracy} or null -- NEVER rejects, so a capture
+   flow can always just await this and keep going. "Handle no-GPS/denied
+   gracefully" per spec: the photo still saves either way, this only
+   decides whether there's anything to auto-pin from. Same accuracy
+   expectations as useMyLocationForPin() above (~10-30ft, consumer GPS) --
+   this is a starting point for the pin, not a final placement. */
+function captureDeviceGps(){
+  return new Promise(function(resolve){
+    if (!navigator.geolocation){ resolve(null); return; }
+    var settled = false;
+    var timer = setTimeout(function(){
+      if (settled) return; settled = true; resolve(null);
+    }, 8000);
+    navigator.geolocation.getCurrentPosition(function(pos){
+      if (settled) return; settled = true; clearTimeout(timer);
+      resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy });
+    }, function(){
+      if (settled) return; settled = true; clearTimeout(timer);
+      resolve(null);
+    }, { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 });
+  });
+}
+/* Camera capture (input[capture=environment]) -- a deliberate separate
+   path from addPhotosFromFiles() above, not a shared refactor: a photo
+   taken right now, standing at the job, gets the device's current GPS
+   attached; a photo picked from the library could be old or from
+   somewhere else entirely, so that path is intentionally left untouched
+   with no GPS guess attached. Same resize/compress pipeline either way. */
+function addPhotosFromCamera(files){
+  var list = Array.prototype.slice.call(files || []);
+  if (!list.length) return;
+  captureDeviceGps().then(function(gps){
+    if (!gps) toast("Photo added — location wasn't available, place the pin manually if needed.");
+    var results = new Array(list.length);
+    var pending = list.length;
+    function done(){
+      pending--;
+      if (pending === 0){
+        results.forEach(function(r){ if (r) photos.push(r); });
+        renderPhotos();
+      }
+    }
+    list.forEach(function(file, idx){
+      var reader = new FileReader();
+      reader.onload = function(){
+        var img = new Image();
+        img.onload = function(){
+          var preset = photoPreset();
+          var MAX = preset.max, w = img.width, h = img.height;
+          if (w > MAX || h > MAX){
+            if (w >= h){ h = Math.round(h * MAX / w); w = MAX; }
+            else { w = Math.round(w * MAX / h); h = MAX; }
+          }
+          var c = document.createElement("canvas");
+          c.width = w; c.height = h;
+          c.getContext("2d").drawImage(img, 0, 0, w, h);
+          results[idx] = { caption:"", img: c.toDataURL("image/jpeg", preset.q), w: w, h: h, finding_id: null, gps: gps };
+          done();
+        };
+        img.onerror = function(){ toast("Couldn't read the photo"); done(); };
+        img.src = reader.result;
+      };
+      reader.onerror = function(){ toast("Couldn't read the photo"); done(); };
+      reader.readAsDataURL(file);
+    });
+  });
+}
+/* Auto-drops a finding's pin from a photo's captured GPS the moment a
+   GPS-tagged photo becomes associated with that finding -- reuses the
+   exact same finding.pin shape/field the manual pin modal already writes
+   (source:"device_gps" matches useMyLocationForPin()'s convention), so
+   nothing downstream (roof map rendering, PDF pin refs, warrantyColor)
+   needs to know this pin came from a photo instead of a manual tap.
+   Never overwrites an existing pin -- a tech's manual placement or an
+   earlier auto-pin always wins. */
+function maybeAutoPinFinding(photo){
+  if (!photo || !photo.gps || !photo.finding_id) return;
+  var f = findingById(photo.finding_id);
+  if (!f || f.pin) return;
+  f.pin = { lat: photo.gps.lat, lng: photo.gps.lng, x: null, y: null, source: "device_gps" };
+  renderFindings();
+  toast("📍 Pin auto-placed on the roof map from the photo's location — drag to fine-tune if needed.");
+}
 function removePhoto(i){ photos.splice(i,1); renderPhotos(); }
 /* Swaps two photos in place — works identically for a device-uploaded photo
    or a CompanyCam import, since both end up in the same photos[] shape
@@ -1896,7 +1982,11 @@ function renderPhotos(){
     el.addEventListener("input", function(){ photos[+el.dataset.i].caption = el.value; });
   });
   host.querySelectorAll("select[data-photo-finding]").forEach(function(el){
-    el.addEventListener("change", function(){ photos[+el.dataset.photoFinding].finding_id = el.value || null; });
+    el.addEventListener("change", function(){
+      var p = photos[+el.dataset.photoFinding];
+      p.finding_id = el.value || null;
+      maybeAutoPinFinding(p);
+    });
   });
 }
 

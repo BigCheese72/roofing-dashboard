@@ -2211,6 +2211,63 @@ after this deploys.
 resolve to the right URLs in the DOM, and confirmed the rest of the app
 (header, home launcher, tabs) still renders normally — zero console errors.
 
+### Photo-capture rework — Increment 1: camera capture + auto-pin (shipped 2026-07-10, dev only)
+
+**Goal (from Mark)**: photos should be captured in context — right in a finding, with
+caption/details/pin all attaching in one action, no separate photo section to link up
+afterward. This is the enabling piece: in-app camera capture that grabs GPS and
+auto-drops a pin. Increments 2 (photo-in-finding UI) and 3 (change-order photos) build
+on top of this.
+
+**"📷 Take Photo"** — a new `input[type=file][accept=image/*][capture=environment]`
+(`#cameraInput`), alongside the existing library-picker input (`#photoInput`,
+untouched). `capture=environment` is what actually opens the device camera directly
+on mobile rather than a file picker.
+
+**`captureDeviceGps()`** — wraps `navigator.geolocation.getCurrentPosition` in a
+Promise that **never rejects**: no geolocation support, permission denied, or an
+8-second timeout all resolve to `null` rather than throwing, so a capture flow can
+always just `await` it and keep going — "handle no-GPS/denied gracefully" per spec.
+Same accuracy expectations as `useMyLocationForPin()` (~10-30ft, consumer GPS) — a
+starting point for the pin, not a final placement.
+
+**`addPhotosFromCamera(files)`** — a deliberate separate function from
+`addPhotosFromFiles()`, not a shared refactor: a photo taken right now, standing at
+the job, gets the device's current GPS attached (`photo.gps = {lat,lng,accuracy}`);
+a library-picked photo could be old or from somewhere else entirely, so that path is
+intentionally left with no GPS guess. Same resize/compress pipeline as the existing
+upload path either way (this repeats a bit of code intentionally, matching the
+established pattern in this codebase of keeping two things that must never interfere
+with each other in fully separate functions rather than sharing a fragile control-flow
+branch).
+
+**`maybeAutoPinFinding(photo)`** — the actual auto-pin: if a GPS-tagged photo is (or
+becomes) associated with a finding that doesn't already have a pin, sets
+`finding.pin = {lat, lng, x:null, y:null, source:"device_gps"}` — the exact same shape
+and `source` convention `useMyLocationForPin()` already writes for a manual "Use My
+Location" placement, so nothing downstream (roof map rendering, PDF pin refs,
+`warrantyColor()`) needs to know a pin came from a photo instead of a manual tap.
+**Never overwrites an existing pin** — a tech's manual placement, or an earlier
+auto-pin, always wins. Wired into the existing photo→finding dropdown's change handler
+(`renderPhotos()`) — today that's still the only way a photo gets associated with a
+finding; increment 2 replaces that manual step with capturing directly inside the
+finding's card, at which point auto-pin fires immediately instead of only once the
+tech picks from the dropdown.
+
+**Verified — mocked `navigator.geolocation` only, no real device/GPS, no Firestore or
+CompanyCam writes of any kind**: `captureDeviceGps()` resolves correctly for a mocked
+success, a mocked permission-denial, and a browser with no `navigator.geolocation` at
+all (`null` in every failure case, confirmed never throws); `addPhotosFromCamera()`
+end-to-end with a synthetic in-memory JPEG produced a photo with `.img` and `.gps`
+set correctly; `maybeAutoPinFinding()` set a finding's pin from a GPS-tagged photo,
+confirmed a second call with different GPS did **not** overwrite it; drove the actual
+`<select>` dropdown via a real `change` event (not a direct function call) and
+confirmed a camera-style (GPS-tagged) photo auto-pins its finding while a
+library-style (no `gps` key at all) photo correctly does **not**; confirmed
+`collect()`/`fill()` round-trips the new `gps` field with no data loss. Zero console
+errors throughout. No real backend was touched at any point in this testing — nothing
+to clean up.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |

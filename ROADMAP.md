@@ -104,6 +104,14 @@ Goal: preserve and harden the existing RoofOps Field / Watkins work order workfl
   clean (unbadged) production icons are generated and committed to `icons/prod/` but
   not yet wired in — that's the last step when this carries over to `main`. See
   "Home-screen app icon" in `DEV_NOTES.md` and `icons/README.md`.
+- 🚧 **In progress (dev only)**: photo-capture rework, so photos are captured in
+  context (right in a finding, or a change order's scope) instead of a separate
+  section to link up afterward. **Increment 1 shipped**: "📷 Take Photo" opens the
+  device camera directly and grabs GPS at capture time; associating that photo with a
+  finding auto-drops a pin from it (never overwrites a manual placement). Increment 2
+  (photo capture embedded directly in each finding's card, backward-compatible with
+  existing separate-photo work orders) and Increment 3 (change-order photos, each with
+  their own auto-pin) are still to come. See "Photo-capture rework" in `DEV_NOTES.md`.
 - ❌ **Decided against (2026-07-09)**: pushing app-added phone photos to a matching
   CompanyCam project. CompanyCam's photo-upload API requires a publicly-fetchable URL
   per photo, which this app can't produce without paying for Firebase Storage or

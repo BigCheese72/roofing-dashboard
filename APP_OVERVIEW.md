@@ -118,9 +118,19 @@ prints on the leak report alongside Warrantable/Non-Warrantable Repairs.
 
 ## Managing Photos
 
-Every photo — whether added from the device or imported from CompanyCam — shows up
-the same way in the Photo Documentation section, in the order they'll print into the
-PDF:
+**📷 Take Photo** opens the device camera directly (not a file picker) and, if
+location access is available, grabs the device's current GPS at the moment of
+capture. If that photo then gets linked to a finding (see below), a pin is
+auto-dropped on the roof map at that location — consumer GPS is only accurate to
+~10-30ft, so treat it as a starting point and drag to fine-tune, same as a manually
+placed pin. No GPS available (denied, unsupported, or timed out) just means no
+auto-pin — the photo itself always saves either way. **+ Add Photos** (choose from
+library) is unchanged and never attaches a location guess, since a library photo
+could be old or from somewhere else.
+
+Every photo — whether taken with the camera, added from the device library, or
+imported from CompanyCam — shows up the same way in the Photo Documentation section,
+in the order they'll print into the PDF:
 
 - **Tap a photo's thumbnail** to open it enlarged, near-full-screen. Tap the dark
   background or the **✕ Close** button to dismiss it. Tapping the caption, the ▲/▼
