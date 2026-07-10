@@ -1987,66 +1987,42 @@ rendered; confirmed the newly-rendered footprint is actually selectable
 pan-and-research on a desktop viewport to confirm it isn't mobile-specific. Zero
 console errors throughout.
 
-### Warranty Assessment guide + finding classification (shipped 2026-07-10)
+### Warranty guidelines reference (shipped 2026-07-10)
 
-**Goal (from Mark)**: give techs Red Shield/Elevate warranty-coverage guidance inside
-the app, and let them tag a finding as warrantable/not/needs-review against that
-guidance, tied to the Warranty work order type.
+**Goal (from Mark, simplified twice from an initial classification-tool build — see
+below)**: show techs the warranty-coverage guideline lists right on the work order
+form. Explicitly **display-only** — "just guidelines for the techs," no manufacturer
+branding, no data capture.
 
-**Reference data — `WARRANTY_PROGRAMS`** (index.html, right after the
-`WORK_ORDER_TYPE_*` constants): a plain object keyed by manufacturer/program name,
-currently just `"Red Shield / Elevate"`. Each program has `warrantable` and
-`notWarrantable` string arrays (Mark's exact lists — membrane seam failures, failed
-factory flashings, etc. vs. foot traffic damage, storm damage unless covered, normal
-aging, etc.) and a `note` string (the Elevate Licensed Applicator / Amrize-approval
-requirement). `DEFAULT_WARRANTY_PROGRAM` points at the one currently in use. Adding a
-second manufacturer later is additive: add a new key to `WARRANTY_PROGRAMS`, no other
-code changes required to store or display it — same extensible-constant pattern as
-`WORK_ORDER_TYPES`.
+**`WARRANTY_GUIDELINES`** (index.html, right after `onWoTypeChange()`): a plain
+object with `warrantable` and `notWarrantable` string arrays (Mark's exact lists —
+membrane seam failures, failed factory flashings, etc. vs. foot traffic damage, storm
+damage unless covered, normal aging, etc.). Nothing else — no note, no manufacturer
+name, no per-item metadata. Editing the guidance is editing these two arrays.
 
-**"📖 Warranty Assessment Guide" reference view** (`#warranty-modal`,
-`openWarrantyModal()`/`closeWarrantyModal()`): shows the warrantable list (green),
-not-warrantable list (red), and the Elevate/Amrize compliance note (amber callout),
-built from `WARRANTY_PROGRAMS[DEFAULT_WARRANTY_PROGRAM]` by `warrantyModalBodyHtml()`
-so it never drifts from the reference data. Reachable from three places: a dedicated
-button on a new `#wo-warranty-card` (Job Information area, shown only when
-`woType === "Warranty"`, same show/hide mechanism as the existing Change Order card —
-see `onWoTypeChange()`); a "📖 Guide" button on the existing "Warranty Determination"
-card heading (present on every work order type, not just Warranty — Mark asked for it
-reachable "reasonably from a finding/leak entry too"); and a "📖 Guide" button next to
-each finding's "Warranty Opinion" field in Roof Investigation Findings.
+**Display**: a collapsible `<details>` block ("Warranty Guidelines (reference for
+techs)", closed by default) on the existing "Warranty Determination" card — present on
+every work order type, same as before. `populateWarrantyGuidelines()` renders both
+lists into `#warranty-guidelines-body` once at page load (green card for warrantable,
+red card for not-warrantable) — plain text, no inputs, nothing to select or save.
 
-**Classification helper — new "Warranty Reason" field per finding**: each finding's
-`renderFindings()` row gained a second select, `warrantyCategory`, offering every
-warrantable/not-warrantable reason from `findingWarrantyCategoryOptions()` (grouped
-into two `<optgroup>`s). This is additive — the existing "Warranty Opinion" select
-(Warrantable / Warrantable condition noted / Non-warrantable / Undetermined) is
-unchanged, still the field that actually drives things elsewhere in the app.
-Picking a Warranty Reason **auto-sets** the Warranty Opinion to match (Warrantable if
-the reason came from the warrantable list, Non-warrantable if not) — this is the "connect
-to the existing finding-pin warranty-status coloring" hook Mark asked for: Opinion is
-what `warrantyColor()` already reads to color a finding's map pin (green/red), so
-picking a specific reason from the guide immediately repaints the pin correctly with no
-separate wiring needed. "Needs Review" maps to the existing "Undetermined" Opinion —
-left as its own dropdown option rather than a third field, so a tech who doesn't want
-to pick a specific reason yet can still flag it for review. `warrantyCategory` is
-optional and purely additive to the data model (see DATA_MODEL.md `work_orders`);
-findings saved before this shipped self-heal to `warrantyCategory: ""` in `fill()`,
-same pattern as the existing `id`/`pin` self-heal.
+**What this replaced**: an earlier same-day build had a "Warranty Assessment Guide"
+modal, a per-finding "Warranty Reason" dropdown that auto-set the finding's Warranty
+Opinion (and so its map pin color), and an Elevate Licensed Applicator/Amrize
+compliance note. Mark corrected this twice — first to drop the modal/classification
+UI entirely in favor of an inline list, then to drop the Elevate/Amrize/Red Shield
+branding too, since the lists are just informal tech guidelines, not an official
+manufacturer program. That version was fully removed (no `warrantyCategory` field, no
+modal, no auto-sync) rather than left dormant — the finding row and `warranty` field
+are back to exactly what they were before any of this started.
 
-**Verified with mocked state** (no real save/backend touched): switched work order
-type to Warranty and confirmed `#wo-warranty-card` appears (and disappears again for
-every other type, including Leak/Service — no regression); added findings and
-confirmed the Warranty Reason select renders with both optgroups populated from
-`WARRANTY_PROGRAMS`; picked "Vandalism" and confirmed the finding's `warranty` field
-flipped to "Non-warrantable" and `warrantyColor()` returned the red pin color; picked
-"Failed factory flashings" on a second finding and confirmed it flipped to
-"Warrantable" / green; opened the guide modal and confirmed both lists and the
-Elevate/Amrize note render, then closed it; ran `collect()` → `fill()` to confirm
-`warrantyCategory` round-trips on save/reload; loaded a legacy-shaped work order object
-(no `woType`, no `warrantyCategory`, finding missing `id`/`pin`) and confirmed it still
-defaults to Leak/Service with the warranty card hidden and the finding self-heals
-correctly — zero console errors throughout.
+**Verified with mocked state**: reloaded, opened a Leak/Service work order, confirmed
+the `<details>` block renders both lists correctly (both headings present, no
+Elevate/Amrize/Red Shield text anywhere) and is closed by default; confirmed a new
+finding has no extra field (`Object.keys` on a fresh finding is back to
+`condition/location/warranty/id/pin`, nothing added); confirmed `collect()` never
+produces a `warrantyCategory` key; confirmed no `#warranty-modal` element exists in the
+DOM at all — zero console errors throughout.
 
 ## Netlify environment variables
 

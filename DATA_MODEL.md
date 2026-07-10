@@ -328,13 +328,7 @@ Example fields:
           // "Multiple roofs per building, part 2". null/omitted means the
           // building's first roof (implemented as currentRoofId in index.html).
   reportedArea,
-  findings: [], // each: { id, condition, location, warranty, warrantyCategory, pin }
-                // warrantyCategory (optional, additive) is a specific reason picked
-                // from WARRANTY_PROGRAMS[...].warrantable/notWarrantable in index.html
-                // (e.g. "Vandalism", "Failed factory flashings") — picking one
-                // auto-sets `warranty` to match, which is what drives the finding's
-                // pin color (warrantyColor()). See "Warranty Assessment" in
-                // DEV_NOTES.md.
+  findings: [], // each: { id, condition, location, warranty, pin } — see DEV_NOTES.md
   repairs: [],
   warrantable,
   nonWarrantable,
@@ -359,12 +353,9 @@ Notes:
 
 - Consider keeping photos in a subcollection or separate `photos` collection.
 - Existing `workorders` can remain until a careful migration is planned.
-- `WARRANTY_PROGRAMS` in index.html (currently just `"Red Shield / Elevate"`) is a
-  reference-data constant, not stored per work order — it's manufacturer-specific
-  warranty coverage guidance (warrantable/not-warrantable lists + a compliance
-  note) shown in the Warranty Assessment guide and used to populate each
-  finding's warrantyCategory options. Add another manufacturer's program by
-  adding a new key; nothing in the data model changes. See DEV_NOTES.md.
+- `WARRANTY_GUIDELINES` in index.html is a display-only reference constant (two plain
+  guideline lists for techs, shown in a collapsible section on the form) — not stored
+  per work order, no data model impact. See DEV_NOTES.md.
 
 ### `reports`
 

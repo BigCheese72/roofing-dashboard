@@ -297,16 +297,12 @@
         <textarea id="woDescription" rows="4"></textarea></div>
     </div>
 
-    <div class="card" id="wo-warranty-card" style="display:none">
-      <h2 class="cond">🛡️ Warranty Assessment</h2>
-      <p class="hint">Red Shield / Elevate coverage guidance — check it before tagging each finding's Warranty Opinion below.</p>
-      <div class="btnrow" style="margin:0 0 4px">
-        <button class="btn primary" onclick="openWarrantyModal()">📖 Open Warranty Assessment Guide</button>
-      </div>
-    </div>
-
     <div class="card">
-      <h2 class="cond">Warranty Determination <button type="button" class="btn" style="padding:2px 10px;font-size:12px;margin-left:8px" onclick="openWarrantyModal()">📖 Guide</button></h2>
+      <h2 class="cond">Warranty Determination</h2>
+      <details style="margin:0 0 14px">
+        <summary style="cursor:pointer;font-weight:600;color:#B4223F">Warranty Guidelines (reference for techs)</summary>
+        <div id="warranty-guidelines-body" style="margin-top:8px"></div>
+      </details>
       <div class="fld"><label>Warrantable Repairs</label><textarea id="warrantable" rows="3"></textarea></div>
       <div class="fld"><label>Non-Warrantable Repairs</label><textarea id="nonWarrantable" rows="3"></textarea></div>
     </div>
@@ -628,17 +624,6 @@
         <button class="btn" onclick="closeRoofProfileModal()">Cancel</button>
       </div>
     </div>
-  </div>
-</div>
-
-<div id="warranty-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)closeWarrantyModal()">
-  <div style="background:#fff;max-width:640px;margin:4vh auto;border-radius:8px;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;width:94%">
-    <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
-      <b class="cond" style="font-size:17px">🛡️ Warranty Assessment Guide</b>
-      <span style="flex:1"></span>
-      <button class="btn" onclick="closeWarrantyModal()">Close</button>
-    </div>
-    <div style="padding:14px 16px;overflow:auto" id="warranty-modal-body"></div>
   </div>
 </div>
 
@@ -1119,9 +1104,8 @@ function genId(prefix){
 function addFinding(data){
   /* pin is the roof-map location for this finding — null until placed on a
      map (see placePin()). Every finding gets a stable id so a photo can
-     reference it (photo.finding_id) independent of array order.
-     warrantyCategory is optional and additive — see findingWarrantyCategoryOptions(). */
-  findings.push(data || {id: genId("fnd"), condition:"",location:"",warranty:"Warrantable", warrantyCategory:"", pin:null});
+     reference it (photo.finding_id) independent of array order. */
+  findings.push(data || {id: genId("fnd"), condition:"",location:"",warranty:"Warrantable", pin:null});
   renderFindings();
   renderPhotos(); /* new finding should be immediately selectable in each photo's dropdown */
 }
@@ -1147,27 +1131,11 @@ function renderFindings(){
       '<textarea rows="1" data-i="' + i + '" data-f="condition">' + esc(f.condition) + '</textarea></div>' +
       '<div class="fld"><label>Location / Detail</label>' +
       '<input type="text" data-i="' + i + '" data-f="location" value="' + esc(f.location) + '"></div>' +
-      '<div class="fld"><label>Warranty Opinion <button type="button" class="btn" style="padding:1px 8px;font-size:11px;margin-left:6px" onclick="openWarrantyModal()">📖 Guide</button></label>' +
+      '<div class="fld"><label>Warranty Opinion</label>' +
       '<select data-i="' + i + '" data-f="warranty">' +
         ["Warrantable","Warrantable condition noted","Non-warrantable","Undetermined"].map(function(o){
           return '<option' + (f.warranty === o ? " selected" : "") + '>' + o + '</option>';
         }).join("") +
-      '</select></div>' +
-      '<div class="fld"><label>Warranty Reason (optional — picking one sets the Opinion above)</label>' +
-      '<select data-i="' + i + '" data-f="warrantyCategory">' +
-        '<option value="">— Select a reason —</option>' +
-        (function(){
-          var cats = findingWarrantyCategoryOptions();
-          return '<optgroup label="Typically Warrantable">' +
-            cats.warrantable.map(function(o){
-              return '<option' + (f.warrantyCategory === o ? " selected" : "") + '>' + esc(o) + '</option>';
-            }).join("") +
-          '</optgroup><optgroup label="Typically Not Warrantable">' +
-            cats.notWarrantable.map(function(o){
-              return '<option' + (f.warrantyCategory === o ? " selected" : "") + '>' + esc(o) + '</option>';
-            }).join("") +
-          '</optgroup>';
-        })() +
       '</select></div>' +
       '<div class="btnrow" style="margin:-4px 0 12px">' +
         '<button class="btn" onclick="openPinModal(\'' + f.id + '\')">' +
@@ -1177,17 +1145,8 @@ function renderFindings(){
   });
   host.querySelectorAll("[data-f]").forEach(function(el){
     el.addEventListener("input", function(){
-      var f = findings[+el.dataset.i];
-      f[el.dataset.f] = el.value;
+      findings[+el.dataset.i][el.dataset.f] = el.value;
       if (el.dataset.f === "warranty") renderFindings();
-      if (el.dataset.f === "warrantyCategory" && el.value){
-        /* Auto-sync the Warranty Opinion (and so the map pin color via
-           warrantyColor()) to match the chosen reason's list — this is
-           the "connect to the existing finding-pin coloring" hook. */
-        var cats = findingWarrantyCategoryOptions();
-        f.warranty = cats.warrantable.indexOf(el.value) !== -1 ? "Warrantable" : "Non-warrantable";
-        renderFindings();
-      }
     });
   });
 }
@@ -1889,84 +1848,58 @@ function populateWoTypeSelect(){
 function onWoTypeChange(){
   var el = document.getElementById("wo-changeorder-card");
   if (el) el.style.display = (val("woType") === "Change Order") ? "" : "none";
-  var w = document.getElementById("wo-warranty-card");
-  if (w) w.style.display = (val("woType") === "Warranty") ? "" : "none";
 }
 
-/* ================= warranty reference data ================= */
-/* Manufacturer-specific warranty coverage guidance, for reference and for
-   the finding-level classification helper below. Currently modeled on
-   Red Shield / Elevate only (per Mark). To add another manufacturer's
-   program later: add a new key here with its own warrantable/
-   notWarrantable/note, then offer it as a choice wherever
-   DEFAULT_WARRANTY_PROGRAM is used today (openWarrantyModal(),
-   findingWarrantyCategoryOptions()) — nothing else needs to change,
-   same extensible-constant pattern as WORK_ORDER_TYPES. */
-var WARRANTY_PROGRAMS = {
-  "Red Shield / Elevate": {
-    note: "Repairs that become part of the Red Shield warranty must be performed by an Elevate Licensed Applicator and approved by an Elevate/Amrize representative.",
-    warrantable: [
-      "Membrane seam failures",
-      "Failed factory flashings",
-      "Premature material defects",
-      "Membrane splits or cracks caused by material defects",
-      "Failures caused by warranted workmanship",
-      "Water leaks resulting from covered roofing system defects"
-    ],
-    notWarrantable: [
-      "Damage from other contractors (HVAC, electrical, plumbing, solar, etc.)",
-      "Foot traffic damage",
-      "Dropped tools or punctures",
-      "Cuts or gouges",
-      "Vandalism",
-      "Storm damage (unless specifically covered)",
-      "Hail (unless hail coverage was purchased)",
-      "Animal damage",
-      "Chemical contamination",
-      "Lack of routine maintenance",
-      "Clogged drains",
-      "Ponding caused by structural settlement",
-      "Damage from modifications made after installation",
-      "Unauthorized repairs",
-      "Normal aging and wear",
-      "Cosmetic issues that do not affect watertightness"
-    ]
-  }
+/* ================= warranty guidelines (display-only reference) =================
+   Plain tech guidelines, NOT manufacturer-official — Mark: "just guidelines
+   for the techs." Two arrays, easy to edit (add/remove a line to change what
+   shows in the on-form reference). Display-only: shown as a collapsible
+   <details> section on the Warranty Determination card (see the "Warranty
+   Guidelines" details block in the form HTML) via populateWarrantyGuidelines()
+   below. No selection, no data capture, nothing saved on the work order. */
+var WARRANTY_GUIDELINES = {
+  warrantable: [
+    "Membrane seam failures",
+    "Failed factory flashings",
+    "Premature material defects",
+    "Membrane splits or cracks caused by material defects",
+    "Failures caused by warranted workmanship",
+    "Water leaks resulting from covered roofing system defects"
+  ],
+  notWarrantable: [
+    "Damage from other contractors (HVAC, electrical, plumbing, solar, etc.)",
+    "Foot traffic damage",
+    "Dropped tools or punctures",
+    "Cuts or gouges",
+    "Vandalism",
+    "Storm damage (unless specifically covered)",
+    "Hail (unless hail coverage was purchased)",
+    "Animal damage",
+    "Chemical contamination",
+    "Lack of routine maintenance",
+    "Clogged drains",
+    "Ponding caused by structural settlement",
+    "Damage from modifications made after installation",
+    "Unauthorized repairs",
+    "Normal aging and wear",
+    "Cosmetic issues that do not affect watertightness"
+  ]
 };
-var DEFAULT_WARRANTY_PROGRAM = "Red Shield / Elevate";
-function warrantyModalBodyHtml(){
-  var p = WARRANTY_PROGRAMS[DEFAULT_WARRANTY_PROGRAM];
+function populateWarrantyGuidelines(){
+  var host = document.getElementById("warranty-guidelines-body");
+  if (!host || host.childElementCount) return; /* static reference text — no data-driven content to refresh */
   function list(items){
     return "<ul style='margin:6px 0 0;padding-left:20px'>" +
       items.map(function(i){ return "<li style='margin:0 0 4px'>" + esc(i) + "</li>"; }).join("") +
       "</ul>";
   }
-  return (
-    "<p class='hint' style='margin:0 0 12px'>" + esc(DEFAULT_WARRANTY_PROGRAM) + " coverage guidance — use as an at-a-glance reference when assessing a finding. This is guidance, not a final determination.</p>" +
-    "<div style='background:#EAF6EC;border:1px solid #2E7D32;border-radius:8px;padding:10px 12px;margin:0 0 12px'>" +
-      "<b style='color:#2E7D32'>✓ Typically Warrantable</b>" + list(p.warrantable) +
+  host.innerHTML =
+    "<div style='background:#EAF6EC;border:1px solid #2E7D32;border-radius:8px;padding:10px 12px;margin:0 0 10px'>" +
+      "<b style='color:#2E7D32'>Typically Warrantable</b>" + list(WARRANTY_GUIDELINES.warrantable) +
     "</div>" +
-    "<div style='background:#FBEAEA;border:1px solid #D64545;border-radius:8px;padding:10px 12px;margin:0 0 12px'>" +
-      "<b style='color:#D64545'>✗ Typically Not Warrantable</b>" + list(p.notWarrantable) +
-    "</div>" +
-    "<div style='background:#FFF4E5;border:1px solid #B4223F;border-radius:8px;padding:10px 12px'>" +
-      "<b style='color:#B4223F'>⚠ Important</b><p style='margin:6px 0 0'>" + esc(p.note) + "</p>" +
-    "</div>"
-  );
-}
-function openWarrantyModal(){
-  document.getElementById("warranty-modal-body").innerHTML = warrantyModalBodyHtml();
-  document.getElementById("warranty-modal").style.display = "";
-}
-function closeWarrantyModal(){
-  document.getElementById("warranty-modal").style.display = "none";
-}
-/* Category list offered per finding, grouped by which Warranty Opinion it
-   maps to — picking one auto-sets that opinion (and so the pin color via
-   warrantyColor()), see findingFieldChange() below. */
-function findingWarrantyCategoryOptions(){
-  var p = WARRANTY_PROGRAMS[DEFAULT_WARRANTY_PROGRAM];
-  return { warrantable: p.warrantable, notWarrantable: p.notWarrantable };
+    "<div style='background:#FBEAEA;border:1px solid #D64545;border-radius:8px;padding:10px 12px'>" +
+      "<b style='color:#D64545'>Typically Not Warrantable</b>" + list(WARRANTY_GUIDELINES.notWarrantable) +
+    "</div>";
 }
 var FIELD_IDS = ["jobName","location","serviceDate","jobNo","billTo","billContact","billPhone",
   "siteContact","technician","roofSystem","reportedArea","warrantable","nonWarrantable","summary",
@@ -1996,16 +1929,14 @@ function fill(o){
   populateWoTypeSelect();
   setVal("woType", o.woType || WORK_ORDER_TYPES[0]);
   onWoTypeChange();
-  findings = (o.findings || []).slice(); if (!findings.length) findings = [{condition:"",location:"",warranty:"Warrantable",warrantyCategory:""}];
+  findings = (o.findings || []).slice(); if (!findings.length) findings = [{condition:"",location:"",warranty:"Warrantable"}];
   /* Self-heals findings/photos saved before ids and pins existed — never
      fabricates a pin location for old data, just ensures every finding has
      a stable id going forward (see spec: don't backfill pins, but a missing
-     id isn't a pin, it's plumbing). warrantyCategory is the same kind of
-     additive backfill, for findings saved before that field existed. */
+     id isn't a pin, it's plumbing). */
   findings.forEach(function(f){
     if (!f.id) f.id = genId("fnd");
     if (f.pin === undefined) f.pin = null;
-    if (f.warrantyCategory === undefined) f.warrantyCategory = "";
   });
   repairs = (o.repairs || []).slice(); if (!repairs.length) repairs = [{repair:"",location:""}];
   photos = (o.photos || []).slice();
@@ -5289,6 +5220,7 @@ try{ document.getElementById("photoSize").value = localStorage.getItem("photo-si
    Preview/Save before ever picking a launcher tile or loading a saved
    order — harmless either way, just extra safety. */
 populateWoTypeSelect();
+populateWarrantyGuidelines();
 showView("home");
 renderSaved();
 updateAdminUI();
