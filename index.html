@@ -4,6 +4,19 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Leak Work Order / Repair Documentation</title>
+
+<!-- Home-screen / PWA icon (production — built and verified on dev first,
+     see "Home-screen app icon" in DEV_NOTES.md). iOS caches the home-screen
+     icon aggressively — after this deploys, remove and re-add the
+     home-screen shortcut to see the new icon; a plain page reload won't
+     do it. -->
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="RoofOps">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#000000">
 <style>
   :root{
     --slate:#263238; --orange:#E8600A; --line:#C9CFD4; --muted:#5B6770;
