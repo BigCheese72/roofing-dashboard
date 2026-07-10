@@ -3372,6 +3372,40 @@ Building History asset-modal path (`openAssetModal`/`saveAssetFromModal`,
 untouched by this change) still saves correctly on its own. All test state
 removed, page reloaded clean.
 
+### RoofMapper: surfaced "Clear Base Map" from RoofMapper itself (shipped 2026-07-10, dev only)
+
+Mark wanted to be able to clear a custom base map (roof plan/sketch/drone
+ortho) so the roof reverts to satellite, while working from RoofMapper. The
+capability already existed -- `renderBaseMapAdminCard()` in Building History
+has had a "Clear Base Map" button since the custom-base-map feature shipped,
+wired to `clearRoofBaseMap(buildingId, roofId)`, which is admin-gated
+(`if (!isAdmin)`) and goes through the same `callAdminApi({action:
+"set_building_roof_map", ...roof_base_map_type:null, roof_base_map_url:null})`
+server path as setting one. It just wasn't visible from RoofMapper, which is
+now where Mark is actually working.
+
+`rmLoadLinkedAssets()` now also reads the linked roof's `roof_base_map_type`
+and calls the new `rmRenderBaseMapStatus(baseMapType)`, which shows nothing
+when there's no custom base map, or a short explanatory line plus (admin
+only, exact same gating as the Building History card) a "🗑️ Clear Base Map
+(admin)" button that calls `rmClearBaseMap()` -> the SAME unmodified
+`clearRoofBaseMap()` -- reused, not rebuilt or duplicated. The status line
+also flags a real, separate limitation worth knowing about: RoofMapper's own
+map always shows satellite/street tiles and never switches into the custom
+base map's xy/CRS.Simple mode the way the Building History placement modal
+does -- clearing the base map has no visual effect on RoofMapper itself, it
+only affects placement from Building History. Not fixed here (out of scope
+for this ask); noted so it doesn't read as a bug later.
+
+Tested with `fdb`/`callAdminApi` mocked: confirmed the status line and Clear
+button are hidden entirely for a non-admin (matches the existing Building
+History card's behavior exactly, not just disabled); confirmed both appear
+for an admin when a custom base map is set; confirmed clicking Clear
+correctly nulls `roof_base_map_type`/`roof_base_map_url` via the existing
+admin path and the status line updates to empty afterward; confirmed
+`rmClearLinkedFeatures()` (fresh search, etc.) also clears the status line.
+All test state removed, page reloaded clean.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |

@@ -416,9 +416,28 @@ Goal: turn each building into a long-term roof record.
   — building real delete-from-Firestore for saved roof history is a bigger
   decision, flagged rather than quietly added). See "RoofMapper
   refinements" in `DEV_NOTES.md`.
-- **Dimensions**: per-side outline lengths (feet), and a way to add
-  freestanding measurement/dimension lines — RoofMapper already computes
-  total area + perimeter, this extends toward per-edge measurement.
+- ✅ **Shipped (dev only, 2026-07-10)**: "Clear Base Map" surfaced from
+  RoofMapper itself. The capability already existed (Building History's
+  admin base-map card) — just wasn't reachable from where Mark is actually
+  working now. RoofMapper shows a status line (admin-only Clear button,
+  same gating as the existing card) when the linked roof has a custom base
+  map, reusing the exact same admin-gated `clearRoofBaseMap()` path, not a
+  new one. See "RoofMapper: surfaced Clear Base Map" in `DEV_NOTES.md`.
+- **Dimensions** (next major RoofMapper capability after the movable/
+  deletable-icons + delete work above; confirmed with Mark, not yet built).
+  Two distinct parts:
+  1. **Automatic per-edge perimeter dimensions**: the length in feet of
+     EVERY side of the roof outline, computed and labeled automatically,
+     shown right on the map — not just the single total-perimeter number
+     RoofMapper already shows today. Applies to any captured outline
+     (OSM footprint, manual trace, or the planned walk-the-corners method)
+     since it's pure geometry off the existing `ring` points.
+  2. **User-added dimension lines to features**: let the tech draw/add a
+     measurement line FROM a placed feature (e.g. a drain) to a roof edge
+     or to another feature, so the export/blueprint shows exactly how far
+     things are from each other, not just where they are. Distinct from
+     #1 (perimeter is automatic and roof-wide; this is manual and
+     feature-specific).
 - **Sections**: divide one roof outline into multiple labeled sections (e.g.
   by roof system or area), each with its own computed area, tying into the
   existing multi-roof/roof-section data model rather than a parallel one.

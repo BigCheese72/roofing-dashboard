@@ -536,6 +536,7 @@
       <p class="hint" id="rm-features-hint">Tap a marker on the map above to edit it, or add a new one. These are
         permanent roof fixtures (drains, HVAC, scuppers, etc.); leak/repair findings still get pinned from their
         work order as before, and everything shows up together in the exports above.</p>
+      <p class="hint" id="rm-basemap-status"></p>
       <div class="rm-actions" id="rm-features-actions">
         <button class="btn primary rm-bigbtn" onclick="rmAddFeature()">🔧 Add Feature</button>
       </div>
@@ -5925,6 +5926,8 @@ function rmClearLinkedFeatures(){
   rmState.linkedRoofId = null;
   var panel = document.getElementById("rm-features-panel");
   if (panel) panel.style.display = "none";
+  var bmStatus = document.getElementById("rm-basemap-status");
+  if (bmStatus) bmStatus.innerHTML = "";
 }
 function rmUpdateExportHint(){
   var el = document.getElementById("rm-export-hint");
@@ -6371,7 +6374,30 @@ async function rmLoadLinkedAssets(){
     var bld = snap.exists ? snap.data() : {};
     var roof = getRoofById(bld, rmState.linkedRoofId);
     rmDrawLinkedAssets(roof.roof_assets || []);
+    rmRenderBaseMapStatus(roof.roof_base_map_type || null);
   }catch(e){ toast("Couldn't load roof features: " + e.message); }
+}
+/* Custom base maps (roof plan/sketch/drone ortho) are a per-roof, admin-
+   managed setting (renderBaseMapAdminCard() in Building History,
+   clearRoofBaseMap() -> the SAME admin-gated set_building_roof_map path
+   reused here, not rebuilt). RoofMapper's own map always shows satellite/
+   street tiles regardless of this setting -- it never switches into the
+   custom-base-map xy/CRS.Simple mode the way the Building History
+   placement modal does. Surfaced here (admin-only, same as the Building
+   History card) since Mark hit this while working from RoofMapper and had
+   no obvious way to clear it from there. */
+function rmRenderBaseMapStatus(baseMapType){
+  var el = document.getElementById("rm-basemap-status");
+  if (!el) return;
+  if (!baseMapType){ el.innerHTML = ""; return; }
+  el.innerHTML = "This roof has a custom base map set (" + esc(baseMapType.replace(/_/g," ")) +
+    ") used for feature placement in Building History -- RoofMapper's own map above always shows " +
+    "satellite/street imagery regardless." +
+    (isAdmin ? ' <button class="btn danger" style="margin-left:6px" onclick="rmClearBaseMap()">🗑️ Clear Base Map (admin)</button>' : '');
+}
+function rmClearBaseMap(){
+  if (!rmState.linkedBuildingId || !rmState.linkedRoofId) return;
+  clearRoofBaseMap(rmState.linkedBuildingId, rmState.linkedRoofId).then(rmLoadLinkedAssets);
 }
 function rmDrawLinkedAssets(assets){
   rmState.linkedAssetsCache = assets;
