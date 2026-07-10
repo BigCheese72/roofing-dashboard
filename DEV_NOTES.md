@@ -2167,6 +2167,50 @@ renders the right text for all four states (including no badge for `null`); ran
 `sendEmailNow()` end-to-end (mocked `fetch` for the send-workorder function too) and
 confirmed the same status recording. Zero console errors throughout.
 
+### Home-screen app icon (shipped 2026-07-10, dev only)
+
+**Goal (from Mark)**: with the new RoofOps logo approved, give the app a real
+home-screen/PWA icon on iOS instead of the browser's default, and make the
+`dev` build's icon visually distinct from production so it's obvious which
+one is open.
+
+**Source asset**: `icons/source/roofops-logo-source.png` (1254×1254, the full
+logo — metallic "RO" house monogram + "ROOF OPS" wordmark, on black). The
+wordmark isn't legible at real icon sizes (tested down to 120×120, the rough
+size iOS actually renders), so the icons use the monogram alone, cropped and
+centered on a black square with ~14% margin — see `icons/README.md` and
+`icons/source/gen_icons.py` for exactly how.
+
+**DEV vs prod, same logo**: `icons/dev/*` has a red "DEV" ribbon banner
+across the bottom-left corner (the one area of the monogram crop that's
+clear black space, so it doesn't cover any of the house/lettering) —
+generated once at high res and downsampled, so the ribbon text stays crisp
+at 180px. `icons/prod/*` is the identical clean monogram, no ribbon.
+**Only `icons/dev/*` is wired into anything right now** — `icons/prod/*` is
+generated and committed, ready for when this carries over to `main` (swap
+the `index.html` icon links to `icons/prod/*` and drop in a clean
+`manifest.json`, see `icons/README.md`).
+
+**Wiring**: `index.html`'s `<head>` gained a `manifest.json` link, an
+`apple-touch-icon` link (→ `icons/dev/icon-180.png`), a 192px `icon` link,
+and the standard iOS PWA meta tags (`apple-mobile-web-app-capable`,
+`apple-mobile-web-app-title: "RoofOps DEV"`,
+`apple-mobile-web-app-status-bar-style`, `theme-color: #000000`). New
+`manifest.json` at the repo root: `name`/`short_name: "RoofOps DEV"`,
+`display: standalone`, black `background_color`/`theme_color`, 192/512
+dev icons.
+
+**iOS caches the home-screen icon** — this only affects a *new* "Add to
+Home Screen." An existing dev shortcut on Mark's phone won't pick up the
+new icon on its own; he'll need to delete it and re-add it from the site
+after this deploys.
+
+**Verified**: reloaded the app, confirmed `manifest.json` and all three
+`icons/dev/*.png` return 200 with the right content-type, confirmed
+`manifest.json` parses as valid JSON, confirmed the `<link>`/`<meta>` tags
+resolve to the right URLs in the DOM, and confirmed the rest of the app
+(header, home launcher, tabs) still renders normally — zero console errors.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |

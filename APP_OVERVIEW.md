@@ -424,6 +424,30 @@ already used in one new place as of 2026-07-10: the Home screen's work-order-typ
 tiles and the Change Order PDF's title, both deliberately scoped additions rather than
 a broader restyle.
 
+**Note**: `var LOGO` above is the older "Watkins Roofing" wordmark used *inside* the
+app (header, PDF, preview) — unrelated to the newer "RoofOps" house-monogram logo
+used for the home-screen icon below. The two haven't been unified; that's a
+question for the aesthetic polish pass, not something this session decided.
+
+## Home-Screen App Icon
+
+Adding the app to an iOS home screen ("Add to Home Screen") now shows a real RoofOps
+icon instead of a screenshot of the page — a metallic "RO" house monogram (cropped
+from the new RoofOps logo; the "ROOF OPS" wordmark wasn't legible at real icon sizes)
+on a black background. Wired via `manifest.json` (repo root) plus `apple-touch-icon`/
+`theme-color` tags in `index.html`'s `<head>`.
+
+The **dev build's icon has a red "DEV" ribbon** across the corner so it's obviously
+different from production at a glance — useful since Mark may have both added to his
+home screen at once. See `icons/README.md` for the full asset layout (source logo,
+generation script, dev vs. prod icon sets) and "Home-screen app icon" in
+`DEV_NOTES.md` for how it was built. Production icons (no ribbon) are already
+generated and sitting in `icons/prod/`, just not wired in yet.
+
+iOS caches home-screen icons per shortcut — after this ships, an *existing* dev
+shortcut on a phone needs to be deleted and re-added to pick up the new icon; a
+plain page reload won't do it.
+
 ## What Not To Break
 
 The current app is intentionally simple and mostly working. Future development should protect these working pieces:

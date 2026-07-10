@@ -97,6 +97,13 @@ Goal: preserve and harden the existing RoofOps Field / Watkins work order workfl
   "⚠️ Not saved to CompanyCam" badge (with the error text on a real failure), so a skip
   or failure is never invisible again. See "CompanyCam PDF upload gaps" in
   `DEV_NOTES.md`.
+- ✅ **Shipped (dev only)**: home-screen/PWA app icon, built from the new RoofOps logo
+  Mark provided (metallic "RO" house monogram, cropped for legibility at real icon
+  sizes). Wired via `manifest.json` + `apple-touch-icon`/`theme-color` tags. The dev
+  build's icon carries a red "DEV" ribbon so it's visually distinct from production;
+  clean (unbadged) production icons are generated and committed to `icons/prod/` but
+  not yet wired in — that's the last step when this carries over to `main`. See
+  "Home-screen app icon" in `DEV_NOTES.md` and `icons/README.md`.
 - ❌ **Decided against (2026-07-09)**: pushing app-added phone photos to a matching
   CompanyCam project. CompanyCam's photo-upload API requires a publicly-fetchable URL
   per photo, which this app can't produce without paying for Firebase Storage or
