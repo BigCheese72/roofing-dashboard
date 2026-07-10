@@ -2127,15 +2127,24 @@ async function renderHistoryList(){
         (b.roofSystem ? ' \u00b7 ' + esc(b.roofSystem) : "") +
         (b.companyCamProjectId ? ' \u00b7 \ud83d\udd17 CompanyCam linked' : "") + '</div></div>' +
         '<button class="btn">View Timeline</button>' +
-        (isAdmin ? '<button class="btn danger" onclick="event.stopPropagation(); deleteBuildingAdmin(\'' + b.id + '\', \'' + esc(b.name).replace(/'/g,"&#39;") + '\')">Delete (admin)</button>' : '') +
+        (isAdmin ? '<button class="btn danger" onclick="event.stopPropagation(); deleteBuildingAdmin(\'' + b.id + '\')">Delete (admin)</button>' : '') +
         '</div>';
     }).join("");
   }catch(e){
     host.innerHTML = '<div class="empty">Couldn\u2019t load building history: ' + esc(e.message) + '</div>';
   }
 }
-async function deleteBuildingAdmin(buildingId, buildingName){
+async function deleteBuildingAdmin(buildingId){
   if (!isAdmin){ toast("Admin mode required to delete."); return; }
+  /* Looked up from the cached list rather than passed in as a raw string —
+     interpolating a name straight into an onclick="..." attribute breaks
+     for any name containing an apostrophe (HTML-decodes back to a literal
+     ' inside the inline handler's JS source, terminating the string early
+     — see "CompanyCam project names with apostrophes" in DEV_NOTES.md for
+     the same bug found in ccLoadProjects()). Passing just the id sidesteps
+     the whole escaping problem. */
+  var b = (lastBuildingList || []).find(function(x){ return x.id === buildingId; });
+  var buildingName = b ? b.name : "this building";
   if (!confirm('Delete "' + buildingName + '" and its entire history? This removes the building, customer link, ' +
     "and every logged report event for it. Work orders themselves are not deleted \u2014 only the building/history record. " +
     "This can't be undone.")) return;
@@ -3740,6 +3749,18 @@ async function applyCompanyCamProjectDetail(id){
     return null;
   }
 }
+/* Holds the last-loaded project list so folder buttons can look a project
+   up by array index instead of having its name interpolated straight into
+   an onclick="..." attribute. A project name containing an apostrophe (e.g.
+   "St. Mary's Hospital") broke that: the browser HTML-decodes the
+   attribute value BEFORE handing it to the JS parser as the inline
+   handler's source, so an HTML-escaped &#39; comes back as a literal '
+   right where it terminates the JS string early \u2014 the handler then fails
+   to parse at all, so tapping the button silently does nothing. Every
+   other project (no apostrophe/quote in its name) "worked" because it
+   never hit that edge case. Index-based lookup sidesteps the whole
+   escaping problem rather than trying to get the encoding exactly right. */
+var ccProjectsCache = [];
 async function ccLoadProjects(q){
   var list = document.getElementById("cc-list");
   list.className = "hint";
@@ -3747,10 +3768,11 @@ async function ccLoadProjects(q){
   try{
     var out = await ccApi({ action:"projects", q: q || "" });
     var ps = out.projects || [];
+    ccProjectsCache = ps;
     if (!ps.length){ list.textContent = "No projects found" + (q ? ' for "' + q + '"' : "") + "."; return; }
     list.className = "";
-    list.innerHTML = ps.map(function(p){
-      return '<button class="cc-proj" onclick="ccOpenProject(\'' + esc(p.id) + '\', \'' + esc(p.name).replace(/'/g, "&#39;") + '\')">' +
+    list.innerHTML = ps.map(function(p, i){
+      return '<button class="cc-proj" onclick="ccOpenProjectAt(' + i + ')">' +
         '<b>' + esc(p.name) + '</b>' +
         (p.address ? '<div class="addr">' + esc(p.address) + '</div>' : '') +
         '</button>';
@@ -3758,6 +3780,11 @@ async function ccLoadProjects(q){
   }catch(e){
     list.textContent = "Couldn't load projects: " + e.message;
   }
+}
+function ccOpenProjectAt(i){
+  var p = ccProjectsCache[i];
+  if (!p) return;
+  ccOpenProject(p.id, p.name);
 }
 var ccPage = 1, ccProjId = null, ccPhotos = [];
 async function ccOpenProject(id, name){

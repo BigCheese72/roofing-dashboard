@@ -1644,6 +1644,58 @@ between the "simple upload" hint and the drone/CLI instructions in both directio
 confirmed the already-has-a-base-map state (unchanged functionality) still renders
 correctly. Zero console errors.
 
+### CompanyCam project names with apostrophes couldn't be opened (fixed 2026-07-10)
+
+**Symptom (reported by Mark)**: tapping the "St. Mary's Hospital" folder in Import
+from CompanyCam did nothing — every other project opened fine.
+
+**Root cause, confirmed exactly as hypothesized**: `ccLoadProjects()` built each
+project's folder button as `onclick="ccOpenProject('<id>', '<name>')"`, with the name
+run through `esc()` (HTML-escaping, so `'` → `&#39;`) plus a redundant second
+`.replace(/'/g, "&#39;")` that no longer had anything left to match. The bug: an
+`onclick="..."` attribute's value is HTML-*decoded* by the browser before being
+handed to the JS parser as the inline handler's source — so `&#39;` decodes right back
+to a literal `'` at exactly the point it's read as JavaScript, not the point it's read
+as HTML. For "St. Mary's Hospital," that produced effective JS source
+`ccOpenProject('54362584', 'St. Mary's Hospital...')` — the apostrophe in "Mary's"
+closes the second string literal early, leaving trailing garbage after it. The inline
+handler fails to parse at all, so the tap does silently nothing. Any project without
+an apostrophe/quote in its name never hit this, which is why it looked like only one
+folder was broken.
+
+Grepped for the same anti-pattern (a name manually `.replace(/'/g, ...)`'d before
+being dropped into an inline `onclick`) and found one more, identical case:
+`deleteBuildingAdmin`'s button in the Building History list, one line away from the
+building-picker code fixed under "Multiple roofs per building." Fixed both in the same
+pass.
+
+**Fix — stopped interpolating names into `onclick="..."` at all**, rather than trying
+to find the "correct" escaping (there isn't a clean one for HTML-attribute-then-JS
+double-decoding without resorting to something like `JSON.stringify` + further
+escaping, which is exactly the kind of fragile approach worth avoiding):
+- `ccLoadProjects()` now caches the loaded list in `ccProjectsCache` and renders each
+  button as `onclick="ccOpenProjectAt(<index>)"` — a plain integer, never
+  user-controlled data. `ccOpenProjectAt(i)` looks the real project object back up
+  from the cache and calls `ccOpenProject(p.id, p.name)` with the actual, unescaped
+  values as real JS arguments (not string-interpolated at all).
+- `deleteBuildingAdmin`'s button now passes only `b.id`; the function looks the
+  building's name up from `lastBuildingList` (already cached by `renderHistoryList()`)
+  instead of receiving it as a parameter.
+- The *displayed* text (`<b>` + `esc(p.name)`) was always fine and is unchanged — this
+  was only ever about the `onclick` attribute specifically.
+
+**Verified against a mocked `ccApi`/`callAdminApi`** (never touched real CompanyCam or
+production Firestore): rendered a project list including `id: "54362584", name: "St.
+Mary's Hospital - St. Louis"` and confirmed the rendered HTML has no raw name in any
+`onclick` attribute at all; called the resulting `onclick` handler directly and
+confirmed the project actually opens (`ccProjId` set correctly, title set correctly,
+photos loaded into the grid) — previously this exact case would have failed to parse.
+Spot-checked a normal project name (still works) and a deliberately hostile one
+(`Bob's "Best" Roofing & Sons` — apostrophe, double quotes, and an ampersand together)
+— displays and opens correctly. Confirmed `deleteBuildingAdmin` with an
+apostrophe-containing building name now shows the correct confirm-dialog text with no
+broken handler. Zero console errors throughout.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |
