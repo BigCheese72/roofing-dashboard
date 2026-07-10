@@ -90,12 +90,13 @@ Reports tab (as a filterable "Work Order Type," alongside Report Type, Technicia
 etc.) — so, for example, "every Change Order this month across every building" is a
 real question the Reports tab can answer.
 
-## Warranty Guidelines Reference
+## Warranty Guidelines Reference (Leak / Service only)
 
-The Warranty Determination card (on every work order type) has a collapsible
-"Warranty Guidelines (reference for techs)" section — closed by default, tap to
-expand. It's a plain, display-only reference for two informal guideline lists (not
-tied to any manufacturer program):
+The Warranty Determination card on a **Leak / Service** work order — and only that
+type, since these lists are "for leaks and leaks only" — has a collapsible "Warranty
+Guidelines (reference for techs)" section, closed by default, tap to expand. It's a
+plain, display-only reference for two informal guideline lists (not tied to any
+manufacturer program):
 
 - **Typically Warrantable**: membrane seam failures, failed factory flashings,
   premature material defects, membrane splits/cracks from material defects, failures
@@ -106,10 +107,14 @@ tied to any manufacturer program):
   drains, settlement ponding, post-install modifications, unauthorized repairs, normal
   aging, cosmetic-only issues.
 
-That's the whole feature — nothing is selected, tagged, or saved. It's just a quick
-lookup for the tech while filling out the Warrantable/Non-Warrantable Repairs
-textareas below it. The lists live in one constant (`WARRANTY_GUIDELINES` in
-index.html) so they're easy to edit.
+Nothing is selected, tagged, or saved — it's just a quick lookup for the tech while
+filling out the Warrantable/Non-Warrantable Repairs textareas below it. The lists live
+in one constant (`WARRANTY_GUIDELINES` in index.html) so they're easy to edit.
+
+Right below it, also Leak/Service only, is an optional **Manufacturer Service #**
+field — for a warrantable leak, there's usually also a manufacturer's own work order/
+service number (Mark: "~9 times out of 10"). It's a single text field; when filled, it
+prints on the leak report alongside Warrantable/Non-Warrantable Repairs.
 
 ## Managing Photos
 

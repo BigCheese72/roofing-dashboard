@@ -2077,6 +2077,39 @@ still routed to its own separate builder, untouched; loaded a legacy-shaped Repa
 work order (no `repairItems`/`repairDescription` at all) and confirmed it loads clean
 with an empty items list — zero console errors throughout.
 
+### Warranty guidelines restricted to Leak/Service + Manufacturer Service # (shipped 2026-07-10)
+
+**Two refinements from Mark, same commit.**
+
+**1. Warranty guideline lists are leak-only.** The "Warranty Guidelines" `<details>`
+reference (see "Warranty guidelines reference" above) was visible on every work order
+type's Warranty Determination card. Mark: the lists are "for leaks and leaks only."
+Both the `<details>` block and the new Manufacturer Service # field (below) now live
+inside a single wrapper, `#wo-leak-warranty-extra`, toggled by `onWoTypeChange()`
+alongside the Change Order / Repair cards — visible only when
+`val("woType") === WORK_ORDER_TYPES[0]` (i.e. "Leak / Service"). The Warrantable/
+Non-Warrantable Repairs textareas underneath stay visible for every type, unchanged —
+only the reference list and the new field are leak-gated.
+
+**2. Manufacturer Service # field.** For a warrantable leak, Mark says there's
+"~9 times out of 10" also a manufacturer's own work order/service number. New optional
+text input, `mfgServiceNo`, inside the same leak-only wrapper. Added to `FIELD_IDS` so
+it round-trips through `collect()`/`fill()` like any other simple field — a single
+input, no category picker, no pin-sync (explicitly not a repeat of the earlier
+over-built warranty classification tool). Included in the Warranty Determination
+section of the leak report — text, HTML preview, and PDF — only when filled (same
+"skip if empty" behavior as Warrantable/Non-Warrantable Repairs). Since
+`buildLeakReportText`/`renderLeakReportDoc`/`generateLeakReportPdf` are shared with
+Repair (see "Repair work order type" above), the field is technically present in those
+too, but harmlessly always empty there since the form never shows the input for
+Repair — confirmed by testing, not just assumed.
+
+**Verified with mocked state**: checked `#wo-leak-warranty-extra`'s visibility across
+all five work order types — visible only for Leak/Service, hidden for Repair, Change
+Order, Inspection, and Warranty; filled `mfgServiceNo` on a Leak/Service work order,
+round-tripped through `collect()`/`fill()`, and confirmed it appears correctly in the
+text build, the HTML preview, and the generated PDF; zero console errors throughout.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |

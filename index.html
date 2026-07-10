@@ -307,10 +307,14 @@
 
     <div class="card">
       <h2 class="cond">Warranty Determination</h2>
-      <details style="margin:0 0 14px">
-        <summary style="cursor:pointer;font-weight:600;color:#B4223F">Warranty Guidelines (reference for techs)</summary>
-        <div id="warranty-guidelines-body" style="margin-top:8px"></div>
-      </details>
+      <div id="wo-leak-warranty-extra" style="display:none">
+        <details style="margin:0 0 14px">
+          <summary style="cursor:pointer;font-weight:600;color:#B4223F">Warranty Guidelines (reference for techs)</summary>
+          <div id="warranty-guidelines-body" style="margin-top:8px"></div>
+        </details>
+        <div class="fld" style="max-width:280px"><label>Manufacturer Service # (optional)</label>
+          <input type="text" id="mfgServiceNo" placeholder="Manufacturer's work order / service number"></div>
+      </div>
       <div class="fld"><label>Warrantable Repairs</label><textarea id="warrantable" rows="3"></textarea></div>
       <div class="fld"><label>Non-Warrantable Repairs</label><textarea id="nonWarrantable" rows="3"></textarea></div>
     </div>
@@ -1906,15 +1910,24 @@ function onWoTypeChange(){
      (leak pins/conditions) don't apply to it, per Mark. */
   var fc = document.getElementById("wo-findings-card");
   if (fc) fc.style.display = isRepair ? "none" : "";
+  /* Warranty guideline reference + Manufacturer Service # are leak-specific
+     (per Mark: guideline lists are "for leaks and leaks only"; the
+     manufacturer service # is what a warrantable leak usually also has a
+     manufacturer work order for) — shown only for the default type. */
+  var isLeak = val("woType") === WORK_ORDER_TYPES[0];
+  var lw = document.getElementById("wo-leak-warranty-extra");
+  if (lw) lw.style.display = isLeak ? "" : "none";
 }
 
 /* ================= warranty guidelines (display-only reference) =================
    Plain tech guidelines, NOT manufacturer-official — Mark: "just guidelines
    for the techs." Two arrays, easy to edit (add/remove a line to change what
    shows in the on-form reference). Display-only: shown as a collapsible
-   <details> section on the Warranty Determination card (see the "Warranty
-   Guidelines" details block in the form HTML) via populateWarrantyGuidelines()
-   below. No selection, no data capture, nothing saved on the work order. */
+   <details> section inside #wo-leak-warranty-extra on the Warranty
+   Determination card via populateWarrantyGuidelines() below. Leak/Service
+   only — "for leaks and leaks only" (Mark) — gated by onWoTypeChange(), same
+   wrapper as the Manufacturer Service # field. No selection, no data
+   capture, nothing saved on the work order. */
 var WARRANTY_GUIDELINES = {
   warrantable: [
     "Membrane seam failures",
@@ -1961,7 +1974,8 @@ function populateWarrantyGuidelines(){
 }
 var FIELD_IDS = ["jobName","location","serviceDate","jobNo","billTo","billContact","billPhone",
   "siteContact","technician","roofSystem","reportedArea","warrantable","nonWarrantable","summary",
-  "woCost","woManHours","woMaterials","woDescription","woPONumber","woDateCompleted","repairDescription"];
+  "woCost","woManHours","woMaterials","woDescription","woPONumber","woDateCompleted","repairDescription",
+  "mfgServiceNo"];
 
 function collect(){
   var o = { id: currentId || ("wo_" + Date.now()) };
@@ -3292,6 +3306,7 @@ function buildLeakReportText(o){
   L.push("WARRANTY DETERMINATION");
   if (o.warrantable) L.push("Warrantable Repairs: " + o.warrantable);
   if (o.nonWarrantable) L.push("Non-Warrantable Repairs: " + o.nonWarrantable);
+  if (o.mfgServiceNo) L.push("Manufacturer Service #: " + o.mfgServiceNo);
   L.push("");
   L.push("SUMMARY");
   if (o.summary) L.push(o.summary);
@@ -3411,7 +3426,7 @@ function renderLeakReportDoc(o){
       }).join("") + "</tbody></table>";
   }
 
-  var wd = kvTable([["Warrantable Repairs",o.warrantable],["Non-Warrantable Repairs",o.nonWarrantable]]);
+  var wd = kvTable([["Warrantable Repairs",o.warrantable],["Non-Warrantable Repairs",o.nonWarrantable],["Manufacturer Service #",o.mfgServiceNo]]);
   if (wd) h += "<h3 class='cond'>Warranty Determination</h3>" + wd;
 
   if (o.summary) h += "<h3 class='cond'>Summary</h3><p style='white-space:pre-wrap'>" + esc(o.summary) + "</p>";
@@ -3682,9 +3697,9 @@ async function generateLeakReportPdf(o){
     y = doc.lastAutoTable.finalY + 18;
   }
 
-  if (o.warrantable || o.nonWarrantable){
+  if (o.warrantable || o.nonWarrantable || o.mfgServiceNo){
     heading("Warranty Determination");
-    kvTablePdf([["Warrantable Repairs", o.warrantable], ["Non-Warrantable Repairs", o.nonWarrantable]]);
+    kvTablePdf([["Warrantable Repairs", o.warrantable], ["Non-Warrantable Repairs", o.nonWarrantable], ["Manufacturer Service #", o.mfgServiceNo]]);
   }
 
   if (o.summary){

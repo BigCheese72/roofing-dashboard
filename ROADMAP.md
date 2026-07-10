@@ -81,6 +81,13 @@ Goal: preserve and harden the existing RoofOps Field / Watkins work order workfl
   Project Report" with the findings section swapped for Repair Scope. Leak/Service and
   Change Order are both unaffected. Inspection and Warranty remain on the base form
   until Mark defines their fields. See "Repair work order type" in `DEV_NOTES.md`.
+- ✅ **Shipped**: two Leak/Service-only refinements. The Warranty Guidelines reference
+  (see above) is now gated to Leak/Service only — Mark: the lists are "for leaks and
+  leaks only," not Repair/Change Order/Inspection/Warranty. Added an optional
+  Manufacturer Service # field alongside it, for the manufacturer work order a
+  warrantable leak usually has ("~9 times out of 10," per Mark) — a single text field,
+  prints on the leak report when filled. See "Warranty guidelines restricted to
+  Leak/Service + Manufacturer Service #" in `DEV_NOTES.md`.
 - ❌ **Decided against (2026-07-09)**: pushing app-added phone photos to a matching
   CompanyCam project. CompanyCam's photo-upload API requires a publicly-fetchable URL
   per photo, which this app can't produce without paying for Firebase Storage or

@@ -335,6 +335,11 @@ Example fields:
   repairs: [],
   warrantable,
   nonWarrantable,
+  mfgServiceNo, // free text, optional — manufacturer's work order / service number
+                // for a warrantable leak (Mark: "~9 times out of 10" one exists).
+                // Leak/Service-only field on the form (see onWoTypeChange() in
+                // index.html), but not enforced at the data level — just never
+                // populated for other types since the input is hidden.
   summary,
   // Change Order-only fields — blank/absent for every other type. Only
   // rendered/editable in the form when woType === "Change Order".
@@ -365,7 +370,8 @@ Notes:
 - Existing `workorders` can remain until a careful migration is planned.
 - `WARRANTY_GUIDELINES` in index.html is a display-only reference constant (two plain
   guideline lists for techs, shown in a collapsible section on the form) — not stored
-  per work order, no data model impact. See DEV_NOTES.md.
+  per work order, no data model impact. Leak/Service-only ("for leaks and leaks only"
+  per Mark), same visibility gate as `mfgServiceNo` above. See DEV_NOTES.md.
 
 ### `reports`
 
