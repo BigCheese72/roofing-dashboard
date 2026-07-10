@@ -29,6 +29,12 @@ Goal: preserve and harden the existing RoofOps Field / Watkins work order workfl
   instead of one fixed sender, with a Reply-To safeguard so customer replies don't
   bounce against a mailbox that doesn't exist. See "Per-job From address" in
   `DEV_NOTES.md`.
+- ✅ **Shipped**: fixed a real field bug (reported by Mark) — opening a placement map
+  (roof asset, finding pin, RoofMapper's save flow, or the building picker) left the
+  page underneath still scrollable on mobile, so the old map could visibly shift
+  through the modal's dimmed backdrop mid-interaction. Body scroll is now locked
+  while any full-screen modal is open. See "Old map visible behind a modal's
+  placement map on mobile" in `DEV_NOTES.md`.
 - ❌ **Decided against (2026-07-09)**: pushing app-added phone photos to a matching
   CompanyCam project. CompanyCam's photo-upload API requires a publicly-fetchable URL
   per photo, which this app can't produce without paying for Firebase Storage or

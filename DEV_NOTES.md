@@ -1466,6 +1466,64 @@ building with both a real report entry and a manually logged activity, plus the 
 profile card, all rendered together with no regressions. Zero console errors
 throughout.
 
+### Old map visible behind a modal's placement map on mobile (fixed 2026-07-10)
+
+**Symptom (reported by Mark)**: opening a map to place something — "+ Add Roof
+Feature," a finding pin, RoofMapper's save flow — showed the new placement map, but
+the OLD map underneath (Building History's Roof Map, or whatever the background page
+was showing) stayed visible "in the way," as if two maps were overlapping and
+interfering with placing the new item. Reported after the multi-roof/activity/profile
+work, suspected regression.
+
+**Investigation**: reproduced against a mock Firestore at a mobile (375×812) viewport.
+Direct DOM inspection (`elementsFromPoint` at the new map's coordinates) showed the
+z-index stacking was actually correct — the modal's own map sat on top, with Building
+History's card properly stacked behind it via the modal's `position:fixed;z-index:40`.
+So this was never a Leaflet z-index/stacking-context bug, and no duplicate/orphaned
+Leaflet map instance was found either (`renderBuildingMap()`'s existing
+`if(buildingMap){buildingMap.remove();...}` cleanup was already correct).
+
+**Root cause**: every full-screen modal in the app (pin, asset, activity, roof
+profile, RoofMapper's save-to-building, the building picker) is a dimmed
+(`rgba(0,0,0,.55)`, not opaque) `position:fixed` overlay — by design, so the page
+doesn't feel like it vanished. But **nothing ever locked the page behind it from
+scrolling** — checked the full git history, this was never implemented for any modal,
+in this app's entire history. `position:fixed` only affects the modal's own layout; it
+does nothing to stop the `<body>` behind it from still responding to touch-scroll. On
+mobile, a touch near the modal's edges (or even a slightly imprecise tap while trying
+to place a pin) could scroll the page underneath, and since the backdrop is only 55%
+opaque, that moving background — including its own Roof Map — stayed visibly, and
+confusingly, present through the dim overlay.
+
+This bug always existed, but became far more likely to actually trigger now: the new
+Roof Profile card (previous entry above) added significant height above the Roof Map,
+making the background page much taller/more scrollable than before, and
+`openBuildingHistory()` now re-renders far more often (every roof switch, asset save,
+activity log, and profile save all trigger a full re-render) — more opportunities for
+the background to visibly shift while a modal happens to be open on top of it.
+
+**Fix**: `lockBodyScroll()`/`unlockBodyScroll()` (reference-counted, not a plain
+boolean, so one modal's close can't prematurely re-enable scrolling if another modal
+is — or ever becomes — open at the same time) set `document.body.style.overflow` and
+are called from every full-screen modal's open/close pair: `openPinModal`/
+`closePinModal`, `openAssetModal`/`closeAssetModal`, `openActivityModal`/
+`closeActivityModal`, `openRoofProfileModal`/`closeRoofProfileModal`,
+`openRmSaveModal`/`closeRmSaveModal`, `openBuildingPicker`/`closeBuildingPicker`.
+One wrinkle handled specifically: `pinSelectRoof()` reopens the pin modal (to redraw
+for a different roof's base map) *without* closing it first, so `openPinModal()`
+only locks if the modal wasn't already displayed — otherwise switching roofs twice
+in the pin modal would have locked twice but only unlocked once, leaving scroll
+stuck locked after closing.
+
+**Verified against an in-memory mock Firestore client (never touched real production
+Firestore)**, mobile viewport: every modal listed above correctly sets
+`document.body.style.overflow` to `"hidden"` on open and back to `""` on close, with
+the lock counter confirmed balanced (including the pin-modal roof-switch-without-close
+case, checked by switching roofs twice in a row and confirming the counter never
+exceeds 1 and returns to 0 on close). Confirmed no regression to actual placement:
+saving a roof asset through the modal after this change still writes the correct
+type/label/coordinates. Zero console errors throughout.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |

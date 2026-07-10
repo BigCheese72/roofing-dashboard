@@ -831,6 +831,7 @@ function getRoofProfile(roof){
 var bpCache = null;
 async function openBuildingPicker(){
   document.getElementById("bp-modal").style.display = "";
+  lockBodyScroll();
   document.getElementById("bp-search").value = "";
   var list = document.getElementById("bp-list");
   list.className = "hint";
@@ -851,6 +852,7 @@ async function openBuildingPicker(){
 }
 function closeBuildingPicker(){
   document.getElementById("bp-modal").style.display = "none";
+  unlockBodyScroll();
 }
 function bpFilter(){
   if (!bpCache) return;
@@ -986,6 +988,26 @@ function toast(msg){
   t.textContent = msg; t.style.display = "block";
   clearTimeout(toastTimer);
   toastTimer = setTimeout(function(){ t.style.display = "none"; }, 3500);
+}
+/* Every full-screen modal (pin/asset/activity/profile/RoofMapper-save) is
+   position:fixed with a dimmed (not opaque) backdrop over the page behind
+   it — by design, so the page doesn't feel like it vanished. But nothing
+   ever stopped that BACKGROUND page from still scrolling on touch while a
+   modal is open, since position:fixed only affects the modal itself, not
+   body's own scrollability. On mobile this let a touch meant for the
+   modal's own map (placing a pin/asset) drag the page underneath instead
+   — visible through the dimmed backdrop as "the old roof map is still
+   there, in the way." Counted rather than a plain boolean so an unlock
+   from one modal can't prematurely re-enable scrolling if another modal
+   is (or ever becomes) open at the same time. */
+var scrollLockCount = 0;
+function lockBodyScroll(){
+  scrollLockCount++;
+  document.body.style.overflow = "hidden";
+}
+function unlockBodyScroll(){
+  scrollLockCount = Math.max(0, scrollLockCount - 1);
+  if (scrollLockCount === 0) document.body.style.overflow = "";
 }
 function val(id){ return document.getElementById(id).value; }
 function setVal(id,v){
@@ -1161,7 +1183,12 @@ async function openPinModal(findingId){
   pinModalFindingId = findingId;
   pinInteracted = false;
   pinDeviceGpsUsed = false;
-  document.getElementById("pin-modal").style.display = "";
+  var pinModalEl = document.getElementById("pin-modal");
+  /* pinSelectRoof() reopens this same modal (to redraw for a different
+     roof's base map) without closing it first — guard so that doesn't
+     double-lock scrolling with no matching unlock. */
+  if (pinModalEl.style.display !== "") lockBodyScroll();
+  pinModalEl.style.display = "";
   document.getElementById("pin-clear-btn").style.display = f.pin ? "" : "none";
   document.getElementById("pin-mylocation-btn").style.display = "none"; /* re-shown in openPinModalSatellite — device GPS doesn't map onto a custom base map's pixel coords */
   document.getElementById("pin-hint").textContent = "Locating…";
@@ -1268,6 +1295,7 @@ async function openPinModalSatellite(f, findingId, orthoOverlay){
 }
 function closePinModal(){
   document.getElementById("pin-modal").style.display = "none";
+  unlockBodyScroll();
   if (pinMap){ pinMap.remove(); pinMap = null; pinMarker = null; }
   pinModalFindingId = null;
   pinXYSize = null;
@@ -1384,6 +1412,7 @@ async function openAssetModal(buildingId, assetId, roofId){
   document.getElementById("asset-delete-btn").style.display = assetId ? "" : "none";
   document.getElementById("asset-hint").textContent = "Loading…";
   document.getElementById("asset-modal").style.display = "";
+  lockBodyScroll();
   if (assetMap){ assetMap.remove(); assetMap = null; assetMarker = null; }
 
   var bldSnap = await fdb.collection("buildings").doc(buildingId).get();
@@ -1474,6 +1503,7 @@ document.getElementById("asset-type") && document.getElementById("asset-type").a
 });
 function closeAssetModal(){
   document.getElementById("asset-modal").style.display = "none";
+  unlockBodyScroll();
   if (assetMap){ assetMap.remove(); assetMap = null; assetMarker = null; }
   assetModalBuildingId = null;
   assetModalAssetId = null;
@@ -2434,6 +2464,7 @@ async function openRoofProfileModal(buildingId, roofId){
     ROOF_WARRANTY_STATUS_OPTIONS.forEach(function(w){ warrSel.appendChild(new Option(w, w)); });
   }
   document.getElementById("profile-modal").style.display = "";
+  lockBodyScroll();
   var bldSnap = await fdb.collection("buildings").doc(buildingId).get();
   var roof = getRoofById(bldSnap.exists ? bldSnap.data() : {}, roofId);
   var p = getRoofProfile(roof);
@@ -2456,6 +2487,7 @@ async function openRoofProfileModal(buildingId, roofId){
 }
 function closeRoofProfileModal(){
   document.getElementById("profile-modal").style.display = "none";
+  unlockBodyScroll();
   profileModalBuildingId = null;
   profileModalRoofId = null;
 }
@@ -3353,6 +3385,7 @@ async function openActivityModal(buildingId){
   document.getElementById("activity-technician").value = "";
   document.getElementById("activity-notes").value = "";
   document.getElementById("activity-modal").style.display = "";
+  lockBodyScroll();
   /* Only worth mentioning which roof this logs to once a building
      actually has more than one — a single-roof building's modal stays
      exactly as simple as the rest of this feature. */
@@ -3369,6 +3402,7 @@ async function openActivityModal(buildingId){
 }
 function closeActivityModal(){
   document.getElementById("activity-modal").style.display = "none";
+  unlockBodyScroll();
   activityModalBuildingId = null;
 }
 async function saveActivityFromModal(){
@@ -4366,6 +4400,7 @@ var rmBpCache = null;
 function openRmSaveModal(){
   if (!rmState.outline){ toast("Generate a roof outline first."); return; }
   document.getElementById("rm-save-modal").style.display = "";
+  lockBodyScroll();
   document.getElementById("rm-bp-search").value = "";
   document.getElementById("rm-roof-picker").innerHTML = "";
   var list = document.getElementById("rm-bp-list");
@@ -4386,6 +4421,7 @@ function openRmSaveModal(){
 }
 function closeRmSaveModal(){
   document.getElementById("rm-save-modal").style.display = "none";
+  unlockBodyScroll();
 }
 function rmBpFilter(){
   if (!rmBpCache) return;
