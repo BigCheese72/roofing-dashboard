@@ -1153,7 +1153,7 @@ calls, and `updatedAt` advancing each time; a different work order gets its own,
 separate single entry, confirming no cross-contamination between work orders. Zero
 console errors.
 
-### Multiple roofs per building (in progress, started 2026-07-10)
+### Multiple roofs per building, part 1: data model (shipped 2026-07-10)
 
 **The goal**: move from "a building has one roof" to "a building has one or more
 roofs," each with its own roof system, base map, permanent assets, and outlines — the
@@ -1228,6 +1228,90 @@ building. A mock building with a real 2-roof `roofs[]` array renders its roof se
 switches roofs correctly, and adding assets to one roof doesn't affect the other.
 `saveBuildingRoofs` correctly mirrors to legacy fields for a 1-roof building and stops
 mirroring once a second roof is added, confirmed by direct reads of the mock store.
+
+### Multiple roofs per building, part 2: pins, work orders, RoofMapper, admin base map (shipped 2026-07-10)
+
+**Goal**: finish what part 1 left as known gaps — finding pins, work orders, RoofMapper's
+outline save, and the admin base-map card all needed to become roof-aware, not just the
+Building History browsing UI. Same rules as part 1: additive, backward-compatible,
+mock-tested only, no production writes, `main` untouched.
+
+**Work orders now record which roof they're for.** A new `roofId` field on the work
+order object (`currentRoofId` module-level state in `index.html`, wired through
+`collect()`/`fill()` exactly like `ccLinkedProjectId`). One work order's findings/pins
+all share the SAME roof — a tech visits one roof per job, not several at once — so this
+is one field per work order, not one per finding. Default (`null`/omitted) means "the
+building's first roof," so every existing work order and every still-single-roof
+building behaves identically to before this shipped; verified a legacy work order with
+no `roofId` at all still resolves correctly.
+
+**Pin modal is roof-scoped.** A new `lookupProspectiveBuildingRoofInfo()` (shared by the
+base-map lookup and the new picker) resolves the current work order's prospective
+building and its full `roofs[]`. `openPinModal()` now calls a new
+`renderPinRoofPicker()` first: if the building has more than one roof, a small "Roof"
+dropdown appears above the map (in a `#pin-roof-picker` container added to the pin
+modal's markup); picking one sets `currentRoofId` and reopens the modal so the map
+reflects that roof's base map. A single-roof building never sees this picker at all —
+`renderPinRoofPicker()` clears the container and returns immediately. Verified: picking
+a roof correctly changes which custom base map loads, and a pin placed while a
+non-default roof is selected saves with that roof's id.
+
+**Pins carry `roofId`, and the Roof Map filters by it.** `buildPinsForHistoryEvent()`
+tags every pin with the work order's `roofId` (defaulting to `"roof_default"` for a
+pin/work order predating this field — always the correct id for a building's first/only
+roof, per the same convention as part 1). `logReportAndHistoryEvent()`'s payload also
+carries `roofId` at the event level. `openBuildingHistory()`'s pin aggregation now
+filters `allPins` by `(p.roofId || "roof_default") === historySelectedRoofId` — closing
+the gap flagged in part 1 where every pin showed regardless of which roof was selected.
+For a single-roof building, `historySelectedRoofId` is always `"roof_default"` and every
+pin (tagged or untagged) matches, so this is a no-op there — verified with a mock
+3-event building (one `roof_default` pin, one `roof_east` pin, one untagged legacy pin):
+selecting Roof 1 shows 2 pins (the roof_default one + the legacy one), selecting East
+Wing shows 1 (only its own), switching back shows 2 again.
+
+**RoofMapper's save-to-building targets the selected roof.** `rmBpRender()`'s "Save
+Here" button now calls a new `rmChooseBuildingForSave(buildingId)` instead of saving
+directly: for a single-roof building (the common case) it saves immediately, zero extra
+tap, identical to before. For a multi-roof building, it renders a small roof picker
+(`#rm-roof-picker`, added to the save modal's markup) before saving.
+`rmSaveOutlineToBuilding(buildingId, roofId)` now takes the target roof id, defaulting
+to the first roof when omitted (new-building-creation path). Verified: saving to a
+specific non-first roof only adds the outline to that roof's `roof_outlines`, leaving
+others untouched; the single-roof path still writes with zero friction.
+
+**Admin base-map upload/clear is roof-aware again**, closing the gap from part 1 where
+it was disabled outright for any building with more than one roof.
+`netlify/functions/admin.js`'s `set_building_roof_map` action gained an optional
+`roofId` param — omitted (every call before this change) targets the first roof, exactly
+as before; passed, it targets that specific `roofs[]` entry instead. Mirrors the same
+dual-write rule as the client's `saveBuildingRoofs()`: still writes the legacy singular
+fields too whenever the building has exactly one roof, so production keeps working
+unmodified for the common case. `renderBaseMapAdminCard()` no longer disables itself for
+multi-roof buildings; `uploadRoofBaseMap`/`clearRoofBaseMap` now pass the currently
+selected roof's id through. **Not tested against the real deployed function or the admin
+PIN** (per the standing rule not to use the PIN against production) — verified instead
+by copying the exact same algorithm into a standalone script and running it against a
+plain-JS mock store (4 scenarios: single-roof dual-write, multi-roof targeting a
+specific roof, omitted-roofId defaulting to the first roof, and clearing) — all 10
+assertions passed. The real admin.js file was cross-checked line-for-line against the
+tested copy to confirm they match.
+
+**Also fixed in this pass**: `historySelectRoof()` wasn't returning
+`openBuildingHistory()`'s promise, so a caller couldn't reliably await the re-render
+after switching roofs — caught via a flaky-looking test result, not a reported bug.
+
+**Known remaining gap**: the building picker and Building History's building list still
+show the legacy `roofSystem` field for their one-line summary (display-only, prefill
+convenience) — accurate for single-roof buildings, may go stale for a multi-roof
+building. Not fixed in this pass; low-stakes since it's just a summary line, not
+authoritative data.
+
+**Verified against an in-memory mock Firestore client (never touched real production
+Firestore)** across all of the above — legacy-shaped and multi-roof buildings, pin
+roof-picker rendering and base-map switching, roof-tagged pin round-tripping through
+`collect()`/`fill()`, Building History's per-roof pin filtering, RoofMapper's
+roof-targeted save (both single- and multi-roof paths), and the admin.js roof-merge
+logic (via the standalone mirror script above). Zero console errors throughout.
 
 ## Netlify environment variables
 

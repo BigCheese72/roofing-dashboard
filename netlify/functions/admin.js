@@ -15,6 +15,26 @@ function resp(code, obj) {
   return { statusCode: code, headers: { "Content-Type": "application/json" }, body: JSON.stringify(obj) };
 }
 
+// Server-side mirror of getBuildingRoofs()/saveBuildingRoofs() in index.html
+// — see "Multiple roofs per building" in DEV_NOTES.md / DATA_MODEL.md for
+// the full design. Duplicated here (not shared code) because this function
+// runs under the Firebase Admin SDK, not the browser; keep both in sync by
+// hand if the roof shape ever changes.
+function getBuildingRoofsServer(bld) {
+  bld = bld || {};
+  if (Array.isArray(bld.roofs) && bld.roofs.length) return bld.roofs;
+  return [{
+    id: "roof_default",
+    label: "Roof 1",
+    roofSystem: bld.roofSystem || "",
+    roof_base_map_type: bld.roof_base_map_type || null,
+    roof_base_map_url: bld.roof_base_map_url || null,
+    roof_base_map_bounds: bld.roof_base_map_bounds || null,
+    roof_assets: bld.roof_assets || [],
+    roof_outlines: bld.roof_outlines || []
+  }];
+}
+
 function getDb() {
   if (!admin.apps.length) {
     const raw = process.env.FIREBASE_SERVICE_ACCOUNT;
@@ -84,6 +104,10 @@ exports.handler = async function (event) {
       // left to a client-side-only check.
       const buildingId = String(body.buildingId || "");
       if (!buildingId) return resp(400, { error: "Missing buildingId" });
+      // roofId is optional — omitted (every call before this change) means
+      // "the building's first roof", same as before. Passing it targets a
+      // specific roof on a multi-roof building instead.
+      const roofId = body.roofId ? String(body.roofId) : null;
       const type = body.roof_base_map_type ? String(body.roof_base_map_type) : null;
       const url = body.roof_base_map_url ? String(body.roof_base_map_url) : null;
       if (type && ["drone_ortho", "satellite", "roof_plan", "sketch"].indexOf(type) === -1) {
@@ -100,12 +124,32 @@ exports.handler = async function (event) {
         }
         bounds = { north: n, south: s, east: e, west: w };
       }
-      await db.collection("buildings").doc(buildingId).set({
+
+      const bldRef = db.collection("buildings").doc(buildingId);
+      const bldSnap = await bldRef.get();
+      const bld = bldSnap.exists ? bldSnap.data() : {};
+      const roofs = getBuildingRoofsServer(bld);
+      const foundIdx = roofId ? roofs.findIndex(r => r.id === roofId) : 0;
+      const idx = foundIdx >= 0 ? foundIdx : 0;
+      roofs[idx] = Object.assign({}, roofs[idx], {
         roof_base_map_type: type,
         roof_base_map_url: url,
         roof_base_map_bounds: bounds,
-        roof_base_map_updated_at: Date.now()
-      }, { merge: true });
+        updatedAt: Date.now()
+      });
+
+      const patch = { roofs, updatedAt: Date.now() };
+      // Mirror onto the legacy singular fields whenever the building still
+      // has exactly one roof — same dual-write rule as saveBuildingRoofs()
+      // client-side, so production (which only reads those legacy fields)
+      // keeps working for every still-single-roof building.
+      if (roofs.length === 1) {
+        patch.roof_base_map_type = type;
+        patch.roof_base_map_url = url;
+        patch.roof_base_map_bounds = bounds;
+        patch.roof_base_map_updated_at = Date.now();
+      }
+      await bldRef.set(patch, { merge: true });
       return resp(200, { ok: true });
     }
 

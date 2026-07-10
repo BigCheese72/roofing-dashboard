@@ -163,20 +163,28 @@ functions in `index.html` make this safe:
   building actively using the brand-new multi-roof capability, which doesn't exist on
   production regardless.
 
-Known follow-up gaps in this first increment (documented, not hidden):
-- Work orders aren't roof-scoped yet — a work order/finding pin doesn't know which roof
-  it belongs to, so pins on the Roof Map still show for every roof selection, and
-  `ensureCustomerAndBuilding()` only syncs `roofSystem` into `roofs[0]` while a building
-  has exactly one roof.
-- The pin modal (`lookupProspectiveBuildingBaseMap`) and RoofMapper's save-to-building
-  (`rmSaveOutlineToBuilding`) both only target the building's first roof — no picker yet
-  for a multi-roof building.
-- The admin "Roof Base Map" upload/clear card (`renderBaseMapAdminCard`) is disabled
-  entirely once a building has more than one roof, since it goes through
-  `netlify/functions/admin.js`'s `set_building_roof_map`, which only knows the legacy
-  singular fields and isn't roof-aware yet.
+**Work orders are roof-scoped** (implemented, not just proposed — second increment,
+2026-07-10): a work order carries `roofId` (default `null`, meaning "the building's
+first roof" — see `currentRoofId` in `index.html`). One work order's findings/pins all
+belong to the SAME roof — a tech visits one roof per work order, not several at once —
+so there's no per-finding roofId, just one per work order. A pin saved before this
+field existed has no `roofId` at all, which is always treated as `"roof_default"`
+(the building's first/only roof), same convention as everywhere else in the multi-roof
+design. The picker to choose a roof only appears in the pin modal, and only once the
+resolved building actually has more than one roof — a single-roof work order never
+sees it. `buildPinsForHistoryEvent()` and `logReportAndHistoryEvent()`'s payload both
+carry `roofId` now, and the Building History Roof Map filters its pins by whichever
+roof is currently selected.
+
+RoofMapper's save-to-building (`rmSaveOutlineToBuilding`) and the admin "Roof Base Map"
+upload/clear card are both roof-aware now too (same increment) — see "Multiple roofs
+per building, part 2" in `DEV_NOTES.md` for the full rundown, including the
+`netlify/functions/admin.js` change that made the base-map card work again for
+multi-roof buildings (it had been disabled for them in the first increment).
+
+Remaining known follow-up gap:
 - The building picker and Building History building list still read the legacy
-  `roofSystem` field directly for their summary line (display-only) — accurate for
+  `roofSystem` field directly for their one-line summary (display-only) — accurate for
   single-roof buildings, may go stale for a multi-roof building until this is revisited.
 
 **`roof_assets[]` item shape** (implemented, not just proposed — see "Roof assets" in
@@ -261,6 +269,9 @@ Example fields:
   technician,
   siteContact,
   roofSystem,
+  roofId, // which of buildingId's roofs[] this work order is for — see DEV_NOTES.md
+          // "Multiple roofs per building, part 2". null/omitted means the
+          // building's first roof (implemented as currentRoofId in index.html).
   reportedArea,
   findings: [], // each: { id, condition, location, warranty, pin } — see DEV_NOTES.md
   repairs: [],
@@ -369,6 +380,8 @@ Example fields:
   reportId,
   date,
   technician,
+  roofId, // which roof this report/event is for — see "Multiple roofs per building,
+          // part 2" in DEV_NOTES.md. "roof_default" for anything predating this field.
   roofType,
   title,
   summary,
@@ -377,7 +390,9 @@ Example fields:
   warrantyStatus,
   companyCamProjectId,
   companyCamPhotoIds: [],
-  pins: [], // denormalized from findings with a pin — see DEV_NOTES.md
+  pins: [], // denormalized from findings with a pin — see DEV_NOTES.md. Each pin also
+            // carries its own roofId (same value as the event's), used by the Roof Map
+            // to show only the pins for the currently-selected roof.
   pdfRef: null,
   emailSent: false,
   emailRecipients: [],
