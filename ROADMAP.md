@@ -100,6 +100,12 @@ Goal: turn each building into a long-term roof record.
   query/index/schema). See "Timeline filters" in `DEV_NOTES.md`. Leak type / repair
   type filters not yet built — those aren't currently their own fields on a
   `building_history_events` doc (only free-text `conditionsSummary`/`repairsSummary`).
+- ✅ **Shipped**: manually logged activities — "+ Log Activity" in Building History
+  creates a timeline entry without a generated PDF/report behind it (Service Call, Leak
+  Investigation, Repair, Roof Replacement, Warranty Inspection, Drone Flight, Thermal
+  Scan, Moisture Survey, Customer Conversation, Note/Other), roof-scoped, each its own
+  separate entry (not merged like a resent report). Closes gap #2 from the 2026-07-09
+  vision gap analysis. See "Manually logged activities" in `DEV_NOTES.md`.
 - ⚠️ **Scoped, partially addressed — not fully built, and part of it is
   deliberately blocked**:
   - **Photo source records**: found and fixed a real bug undermining the

@@ -1313,6 +1313,87 @@ roof-picker rendering and base-map switching, roof-tagged pin round-tripping thr
 roof-targeted save (both single- and multi-roof paths), and the admin.js roof-merge
 logic (via the standalone mirror script above). Zero console errors throughout.
 
+### Manually logged activities (shipped 2026-07-10)
+
+**Goal**: let a building history timeline entry exist without a generated PDF report
+behind it — a service call, a drone flight, a customer phone conversation — directly
+serving the core "every activity creates history" mission. Second gap closed from the
+2026-07-09 vision gap analysis, building on the multi-roof work.
+
+**Activity types** (`ACTIVITY_TYPES` in `index.html`, easy to extend): Service Call,
+Leak Investigation, Repair, Roof Replacement, Warranty Inspection, Drone Flight,
+Thermal Scan, Moisture Survey, Customer Conversation, Note/Other.
+
+**How it works**: "+ Log Activity" appears in Building History's Timeline card (both
+the empty-timeline and normal cases) — no admin gate, any tech can log one, same
+philosophy as roof assets. The modal (`openActivityModal`/`saveActivityFromModal`)
+captures: activity type (dropdown), date (defaults to today), technician/author
+(optional free text), and notes (free text). It logs to whichever roof is currently
+selected on the Building History page (`historySelectedRoofId`, defaulting to the
+building's first roof) — a small hint ("Logging for: East Wing") only appears once a
+building actually has more than one roof, so a single-roof building's modal stays as
+simple as everything else in this app.
+
+**Reused the existing `reportType` field rather than adding a new "activity type"
+field** — an activity's type string (e.g. "Drone Flight") is just another value in the
+same field PDF actions already use ("PDF Downloaded"/"PDF Emailed"/"PDF Shared"). This
+was a deliberate simplification: the timeline and Reports tab's "Report Type" filter
+dropdowns (`populateTimelineFilterOptions`/`populateReportsFilterOptions`) already
+derive their options dynamically from whatever values actually appear in real data — so
+the moment an activity is logged, its type automatically shows up as a filter option on
+both pages, with zero filter-code changes needed.
+
+**Deliberately NOT part of the evt_`<workOrderId>` upsert/dedup model.**
+`logActivityEvent()` is a new, separate function from `logReportAndHistoryEvent()` — an
+activity gets its own random id (`genId("act")`) and is simply inserted, never merged
+with another entry. This is intentional per the spec: two activities logged close
+together (e.g. a Drone Flight then a Thermal Scan two minutes later) are genuinely two
+separate things that happened, unlike a retried Send/Share/Download of the same report,
+which should still dedup exactly as before. `isActivity: true`/`false` marks which is
+which on every entry going forward (existing report entries retroactively read as
+`isActivity: false` once resaved; older entries with no `isActivity` field at all are
+implicitly reports too, since activities are new as of this ship).
+
+**Caught and fixed one real bug while building this**: `flagDuplicateEvents()`'s
+"possible duplicate" heuristic matched on `workOrderId` — since every activity has
+`workOrderId: null`, two unrelated activities of the same type logged within the 5-minute
+window would have incorrectly matched each other (`null === null`) and been flagged as
+"possible duplicate," which is wrong for genuinely separate logged activities. Fixed by
+requiring a truthy `workOrderId` before the comparison runs at all — existing report
+entries (always a real `workOrderId`) are completely unaffected; activities can never
+false-positive against each other via this heuristic now.
+
+**Written to both `reports` and `building_history_events`** (same pairing convention as
+generated reports), so activities show up in the per-building timeline AND the
+cross-building Reports tab/its filters — e.g. "every Warranty Inspection logged this
+month, across every building" is now a real question the Reports tab can answer.
+`admin.js`'s `delete_history_event` (deletes both by shared id) already works unchanged
+for cleaning up a mis-logged activity, since it doesn't care what kind of entry it's
+deleting.
+
+**Rendering guards**: the warranty-status tag in both the timeline card
+(`timelineEventHtml`) and the Reports tab card (`rpReportItemHtml`) was previously
+unguarded (`e.warrantyStatus || ""`) — harmless before, since every real report always
+had a real warranty status, but would have rendered a visible empty pill for an
+activity (which has none). Fixed to only render the tag when non-empty; existing report
+entries are unaffected since they always have a non-empty value. Both cards also gained
+a guarded `notes` row. The existing `pdfRef` guard (`e.pdfRef && e.pdfRef.url`) already
+handled the "no broken PDF link" requirement correctly with zero changes needed.
+
+**Verified against an in-memory mock Firestore client (never touched real production
+Firestore)**: logging an activity on a legacy single-roof building writes correctly to
+both collections with `roofId` defaulting to `"roof_default"`; two distinct activities
+logged seconds apart are correctly NOT flagged as duplicates; logging to a specific
+non-default roof on a multi-roof building (both via direct call and via the full
+modal-open → fill → save UI flow) tags the right `roofId` and shows the correct
+"Logging for: <roof>" hint; the timeline's "Report Type" filter dropdown picks up new
+activity type values from real data with no code changes; rendering both card types
+produces no empty warranty pill and no broken PDF link, with notes showing correctly;
+and — the most important regression check — the existing report dedup behavior (3 calls
+to `logReportAndHistoryEvent` for one work order still collapsing to exactly 1 entry,
+with correctly merged recipients) is completely unaffected, confirming this feature is
+fully additive. Zero console errors throughout.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |

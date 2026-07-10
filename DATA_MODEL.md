@@ -293,7 +293,9 @@ Notes:
 
 ### `reports`
 
-Generated report records, including download/share/email actions.
+Generated report records (download/share/email actions) **and manually logged
+activities** (see "Manually logged activities" below) — both are "things that happened
+to a building," so they share one flat log.
 
 Example fields:
 
@@ -302,9 +304,12 @@ Example fields:
   accountId,
   customerId,
   buildingId,
-  workOrderId,
+  workOrderId, // null for a manually logged activity — see below
   workOrderNo,
-  reportType: "PDF Emailed",
+  roofId, // which of buildingId's roofs[] this is for — "roof_default" if predates this field
+  reportType: "PDF Emailed", // or an activity type string, e.g. "Drone Flight"
+  isActivity: false, // true for a manually logged activity, false for a real generated report
+  notes, // free-text description — activities only; empty/absent for report entries
   date,
   technician,
   roofType,
@@ -326,10 +331,16 @@ Notes:
 - `pdfRef` is reserved. Current PDF persistence uses CompanyCam documents rather than Firebase Storage.
 - Current implementation detail worth preserving in any future migration: the current
   app writes the `reports` doc and the matching `building_history_events` doc with the
-  **same Firestore document id** (one id generated per report, reused across both
-  collections). This lets a single delete-by-id clean up both sides of the pair. If
-  this collection is ever restructured, keep some equivalent way to delete a report
-  and its timeline entry together.
+  **same Firestore document id** for a generated report (one id generated per report,
+  reused across both collections, upserted going forward — see "One timeline entry per
+  work order" in `DEV_NOTES.md`). This lets a single delete-by-id clean up both sides of
+  the pair. If this collection is ever restructured, keep some equivalent way to delete
+  a report and its timeline entry together.
+- **Manually logged activities are the one exception to the upsert-by-id rule above** —
+  each gets its own random id (`genId("act")`) and is never merged with another, even if
+  logged seconds apart on the same building/roof, because two logged activities are
+  genuinely two separate things that happened (unlike a retried Send/Share/Download of
+  the same report). See "Manually logged activities" in `DEV_NOTES.md`.
 
 ### `photos`
 
@@ -385,6 +396,9 @@ Example fields:
   roofType,
   title,
   summary,
+  isActivity: false, // true for a manually logged activity — see "Manually logged
+                      // activities" in DEV_NOTES.md
+  notes, // free-text description, activities only
   conditionsSummary,
   repairsSummary,
   warrantyStatus,

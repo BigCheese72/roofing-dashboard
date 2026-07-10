@@ -122,17 +122,34 @@ RoofMapper is Phase 1 — see `ROADMAP.md` for what's planned next (drains, HVAC
 scuppers, pipe penetrations, dimensions, CompanyCam photos, drone orthomosaic overlays,
 roof history over time).
 
+## Logging Activities
+
+Not everything worth recording on a building's history comes from a generated PDF
+report. **"+ Log Activity"** on a building's Building History page (in the Timeline
+card) records something that happened without requiring a work order or a report:
+Service Call, Leak Investigation, Repair, Roof Replacement, Warranty Inspection, Drone
+Flight, Thermal Scan, Moisture Survey, Customer Conversation, or Note/Other. Fill in the
+date, an optional technician/author, and a free-text note, then save — it shows up in
+the timeline immediately alongside generated reports, and in the cross-building
+**Reports** tab too. On a building with more than one roof, it logs to whichever roof
+is currently selected on the page (a hint shows which one); a single-roof building
+skips that entirely. Unlike resending the same report (which updates one timeline
+entry in place), each logged activity is always its own separate entry — logging two
+different things a few minutes apart never merges them together.
+
 ## Timeline Filters
 
 The Timeline on a building's Building History page can be filtered by **date range,
 roof area, technician, warranty status, and report type**. The dropdown filters only
 ever list values that actually appear on that building's own timeline — so you won't
 see a technician's name in the filter unless they've actually logged a report for this
-building. Filters narrow instantly (no waiting on the network) and can be combined —
-e.g. one technician's non-warrantable reports from last month. **"Clear Filters"**
-resets back to the full timeline. Note the date range filters by when the report was
-generated, not the "Date of Service" typed into the work order — those are usually the
-same day but aren't guaranteed to be.
+building, and logged activity types (Drone Flight, Customer Conversation, etc.) show up
+in the "Report Type" filter the same way generated-report types do. Filters narrow
+instantly (no waiting on the network) and can be combined — e.g. one technician's
+non-warrantable reports from last month. **"Clear Filters"** resets back to the full
+timeline. Note the date range filters by when the entry was logged, not the "Date of
+Service" typed into a work order — those are usually the same day but aren't
+guaranteed to be.
 
 ## How CompanyCam Works
 

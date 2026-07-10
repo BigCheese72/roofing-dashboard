@@ -501,6 +501,29 @@
   </div>
 </div>
 
+<div id="activity-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:40" onclick="if(event.target===this)closeActivityModal()">
+  <div style="background:#fff;max-width:520px;margin:6vh auto;border-radius:8px;max-height:88vh;display:flex;flex-direction:column;overflow:hidden;width:94%">
+    <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
+      <b class="cond" style="font-size:17px">Log Activity</b>
+      <span style="flex:1"></span>
+      <button class="btn" onclick="closeActivityModal()">Close</button>
+    </div>
+    <div style="padding:14px 16px;overflow:auto">
+      <p class="hint" id="activity-roof-hint" style="margin:0 0 8px"></p>
+      <div class="grid">
+        <div class="fld"><label>Activity Type</label><select id="activity-type"></select></div>
+        <div class="fld"><label>Date</label><input type="date" id="activity-date"></div>
+      </div>
+      <div class="fld"><label>Technician / Author (optional)</label><input type="text" id="activity-technician"></div>
+      <div class="fld"><label>Notes / Description</label><textarea id="activity-notes" rows="4"></textarea></div>
+      <div class="btnrow">
+        <button class="btn primary" onclick="saveActivityFromModal()">Save Activity</button>
+        <button class="btn" onclick="closeActivityModal()">Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -2026,12 +2049,16 @@ async function deleteBuildingAdmin(buildingId, buildingName){
    same report type within a few minutes of another entry \u2014 the common
    case is a double-click or a retried Send/Share/Download, not two
    genuinely separate reports. Doesn't touch the data, just marks it for
-   the admin delete control below. */
+   the admin delete control below. Requires a real workOrderId to match on
+   \u2014 manually logged activities (logActivityEvent) have no work order, so
+   two genuinely separate activities of the same type logged close
+   together (e.g. two real Drone Flights) never get flagged against each
+   other just because both have no work order. */
 var DUP_WINDOW_MS = 5 * 60 * 1000;
 function flagDuplicateEvents(events){
   var seen = [];
   events.forEach(function(e){
-    e._dup = seen.some(function(s){
+    e._dup = !!e.workOrderId && seen.some(function(s){
       return s.workOrderId === e.workOrderId && s.reportType === e.reportType &&
         Math.abs((s.createdAt || 0) - (e.createdAt || 0)) < DUP_WINDOW_MS;
     });
@@ -2361,7 +2388,7 @@ function timelineEventHtml(e, buildingId){
   return '<div class="evt-item"' + (e._dup ? ' style="border-left-color:#D64545"' : '') + '><div class="evt-head">' +
     '<span class="evt-date">' + esc(e.date || fmtTs(e.createdAt)) + '</span>' +
     '<span class="evt-tag">' + esc(e.reportType || "") + '</span>' +
-    '<span class="evt-tag">' + esc(e.warrantyStatus || "") + '</span>' +
+    (e.warrantyStatus ? '<span class="evt-tag">' + esc(e.warrantyStatus) + '</span>' : '') +
     (e.emailSent ? '<span class="evt-tag">Emailed ✓</span>' : '') +
     (e._dup ? '<span class="evt-tag" style="background:#FBE2E2;color:#D64545">Possible duplicate</span>' : '') +
     (isAdmin ? '<span class="sp"></span><button class="btn danger" onclick="deleteHistoryEventAdmin(\'' + e._id + '\', \'' + buildingId + '\')">Delete (admin)</button>' : '') +
@@ -2373,6 +2400,7 @@ function timelineEventHtml(e, buildingId){
       '<div class="evt-row">📧 Emailed to ' + esc(e.emailRecipients.join(", ")) + '</div>' : '') +
     (e.conditionsSummary ? '<div class="evt-row">Findings: ' + esc(e.conditionsSummary) + '</div>' : '') +
     (e.repairsSummary ? '<div class="evt-row">Repairs: ' + esc(e.repairsSummary) + '</div>' : '') +
+    (e.notes ? '<div class="evt-row">' + esc(e.notes) + '</div>' : '') +
     (e.pdfRef && e.pdfRef.url ? '<div class="evt-row"><a href="' + esc(e.pdfRef.url) + '" target="_blank" rel="noopener">View saved PDF</a></div>' : '') +
     '</div>';
 }
@@ -2420,6 +2448,7 @@ async function openBuildingHistory(buildingId){
         '</select></div>' : '';
     var addRoofBtnHtml = '<button class="btn" onclick="promptAddRoof(\'' + buildingId + '\')">+ Add Roof</button>';
     var addFeatureBtnHtml = '<button class="btn" onclick="openAssetModal(\'' + buildingId + '\', null, \'' + historySelectedRoofId + '\')">+ Add Roof Feature</button>';
+    var addActivityBtnHtml = '<button class="btn" onclick="openActivityModal(\'' + buildingId + '\')">+ Log Activity</button>';
     var emptyMapCardHtml = '<div class="card"><h2 class="cond">Roof Map</h2>' + roofPickerHtml +
       '<p class="hint">No pins placed yet — they’ll show up here as findings get pinned on future reports. ' +
       'Permanent features (drains, HVAC units, hatches, etc.) can be added any time.</p>' +
@@ -2433,6 +2462,7 @@ async function openBuildingHistory(buildingId){
       historyEvents = [];
       historyBuildingId = buildingId;
       detail.innerHTML = baseMapCardHtml + emptyMapCardHtml + '<div class="card"><h2 class="cond">Timeline</h2>' +
+        '<div class="btnrow" style="margin:0 0 10px">' + addActivityBtnHtml + '</div>' +
         '<div class="empty">No reports logged for this building yet.</div></div>';
       renderBuildingMap([], hasCustomBaseMap ? roof : null, bld.location, orthoOverlay, roofAssets, buildingId, roof.roof_outlines);
       return;
@@ -2472,6 +2502,7 @@ async function openBuildingHistory(buildingId){
       addFeatureBtnHtml + ' ' + addRoofBtnHtml + '</div>';
     detail.innerHTML = baseMapCardHtml + mapCardHtml +
       '<div class="card"><h2 class="cond">Timeline (' + events.length + ')</h2>' +
+      '<div class="btnrow" style="margin:0 0 10px">' + addActivityBtnHtml + '</div>' +
       (dupCount ? '<p class="hint">\u26a0 ' + dupCount + ' possible duplicate' + (dupCount === 1 ? "" : "s") +
         ' flagged below (same work order + report type within 5 minutes of another entry).</p>' : '') +
       timelineFiltersHtml() +
@@ -2577,7 +2608,7 @@ function rpReportItemHtml(r){
     '\')"><div class="evt-head">' +
     '<span class="evt-date">' + esc(r.date || fmtTs(r.createdAt)) + '</span>' +
     '<span class="evt-tag">' + esc(r.reportType || "") + '</span>' +
-    '<span class="evt-tag">' + esc(r.warrantyStatus || "") + '</span>' +
+    (r.warrantyStatus ? '<span class="evt-tag">' + esc(r.warrantyStatus) + '</span>' : '') +
     (r.emailSent ? '<span class="evt-tag">Emailed ✓</span>' : '') +
     '</div>' +
     '<div class="evt-row"><b>' + esc(r.buildingName || "(unknown building)") + '</b>' +
@@ -2587,6 +2618,7 @@ function rpReportItemHtml(r){
     (r.roofType ? '<div class="evt-row">Roof: ' + esc(r.roofType) + '</div>' : '') +
     (r.emailSent && (r.emailRecipients || []).length ?
       '<div class="evt-row">📧 Emailed to ' + esc(r.emailRecipients.join(", ")) + '</div>' : '') +
+    (r.notes ? '<div class="evt-row">' + esc(r.notes) + '</div>' : '') +
     '</div>';
 }
 function rpRenderList(){
@@ -3058,6 +3090,7 @@ async function logReportAndHistoryEvent(o, kind, emailInfo){
       emailSent: !!(emailInfo && emailInfo.sent) || !!(existing && existing.emailSent),
       emailRecipients: mergedRecipients,
       emailSubject: (emailInfo && emailInfo.subject) || (existing && existing.emailSubject) || "",
+      isActivity: false,
       createdAt: (existing && existing.createdAt) || nowTs,
       updatedAt: nowTs
     };
@@ -3066,6 +3099,118 @@ async function logReportAndHistoryEvent(o, kind, emailInfo){
     batch.set(fdb.collection("building_history_events").doc(sharedId), payload);
     await batch.commit();
   }catch(e){ console.warn("history log failed", e); }
+}
+
+/* ================= manually logged activities =================
+   A "log activity" entry is a building history timeline entry that isn't
+   tied to a generated PDF report at all — a service call, a drone flight,
+   a customer conversation, etc. Deliberately does NOT go through
+   logReportAndHistoryEvent()'s evt_<workOrderId> upsert: two activities
+   logged close together are genuinely two separate things that happened
+   (not a retried Send/Share/Download of the same report), so each gets
+   its own random id and is never merged with another. isActivity: true
+   distinguishes these from real report entries (isActivity: false above)
+   for any code that needs to tell them apart. Written to both `reports`
+   (so the cross-building Reports tab/filters pick them up too) and
+   `building_history_events` (the per-building timeline), same pairing
+   convention as logReportAndHistoryEvent — see DATA_MODEL.md. */
+var ACTIVITY_TYPES = ["Service Call", "Leak Investigation", "Repair", "Roof Replacement",
+  "Warranty Inspection", "Drone Flight", "Thermal Scan", "Moisture Survey",
+  "Customer Conversation", "Note/Other"];
+async function logActivityEvent(buildingId, activity){
+  if (!fdb) throw new Error("cloud not available");
+  var bldSnap = await fdb.collection("buildings").doc(buildingId).get();
+  var bld = bldSnap.exists ? bldSnap.data() : {};
+  var roof = getRoofById(bld, activity.roofId);
+  var id = genId("act");
+  var nowTs = Date.now();
+  var payload = {
+    buildingId: buildingId, buildingName: bld.name || "",
+    customerId: bld.customerId || null, customerName: bld.customerName || "",
+    workOrderId: null, workOrderNo: "",
+    date: activity.date || todayStr(), technician: activity.technician || "",
+    roofId: roof.id, roofType: roof.roofSystem || "",
+    reportType: activity.type, notes: activity.notes || "",
+    conditionsSummary: "", repairsSummary: "", warrantyStatus: "",
+    companyCamProjectId: null, companyCamPhotoIds: [], pins: [],
+    pdfRef: null, emailSent: false, emailRecipients: [], emailSubject: "",
+    isActivity: true,
+    createdAt: nowTs, updatedAt: nowTs
+  };
+  var batch = fdb.batch();
+  batch.set(fdb.collection("reports").doc(id), payload);
+  batch.set(fdb.collection("building_history_events").doc(id), payload);
+  await batch.commit();
+  return id;
+}
+var activityModalBuildingId = null;
+/* The rest of the app stores dates as typed "M/D/YY" (see todayStr()),
+   but a native <input type="date"> needs ISO "YYYY-MM-DD" — these just
+   convert between the two for the activity modal's date field. */
+function isoDateFromMDY(mdy){
+  var parts = (mdy || "").split("/");
+  if (parts.length !== 3) return "";
+  var y = parts[2].length === 2 ? "20" + parts[2] : parts[2];
+  return y + "-" + ("0" + parts[0]).slice(-2) + "-" + ("0" + parts[1]).slice(-2);
+}
+function mdyFromIsoDate(iso){
+  var parts = (iso || "").split("-");
+  if (parts.length !== 3) return "";
+  return parseInt(parts[1], 10) + "/" + parseInt(parts[2], 10) + "/" + parts[0].slice(-2);
+}
+async function openActivityModal(buildingId){
+  activityModalBuildingId = buildingId;
+  var sel = document.getElementById("activity-type");
+  if (!sel.options.length){
+    ACTIVITY_TYPES.forEach(function(t){
+      var opt = document.createElement("option");
+      opt.value = t; opt.textContent = t;
+      sel.appendChild(opt);
+    });
+  }
+  setVal("activity-date", isoDateFromMDY(todayStr()));
+  document.getElementById("activity-technician").value = "";
+  document.getElementById("activity-notes").value = "";
+  document.getElementById("activity-modal").style.display = "";
+  /* Only worth mentioning which roof this logs to once a building
+     actually has more than one — a single-roof building's modal stays
+     exactly as simple as the rest of this feature. */
+  var hint = document.getElementById("activity-roof-hint");
+  hint.textContent = "";
+  try{
+    var bldSnap = await fdb.collection("buildings").doc(buildingId).get();
+    var roofs = getBuildingRoofs(bldSnap.exists ? bldSnap.data() : {});
+    if (roofs.length > 1){
+      var roof = getRoofById(bldSnap.data(), historySelectedRoofId);
+      hint.textContent = "Logging for: " + (roof.label || "Roof");
+    }
+  }catch(e){ /* non-critical — save still defaults correctly without this hint */ }
+}
+function closeActivityModal(){
+  document.getElementById("activity-modal").style.display = "none";
+  activityModalBuildingId = null;
+}
+async function saveActivityFromModal(){
+  if (!activityModalBuildingId) return;
+  var buildingId = activityModalBuildingId;
+  var isoDate = val("activity-date");
+  var activity = {
+    type: val("activity-type"),
+    date: isoDate ? mdyFromIsoDate(isoDate) : todayStr(),
+    technician: val("activity-technician").trim(),
+    notes: val("activity-notes").trim(),
+    /* Logs to whichever roof is currently showing in Building History —
+       defaults to the building's first roof (see historySelectedRoofId),
+       so a single-roof building's activities need no extra picker. */
+    roofId: historySelectedRoofId
+  };
+  toast("Saving activity…");
+  try{
+    await logActivityEvent(buildingId, activity);
+    toast("Activity logged ✓");
+    closeActivityModal();
+    openBuildingHistory(buildingId);
+  }catch(e){ toast("Couldn't log activity: " + e.message); }
 }
 
 /* Durable, VISIBLE "email sent" marker on the work order itself — separate
