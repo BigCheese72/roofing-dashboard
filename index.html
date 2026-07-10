@@ -271,10 +271,18 @@
         <textarea id="reportedArea" rows="3"></textarea></div>
     </div>
 
-    <div class="card">
+    <div class="card" id="wo-findings-card">
       <h2 class="cond">Roof Investigation Findings</h2>
       <div id="findings-list"></div>
       <div class="btnrow"><button class="btn" onclick="addFinding()">+ Add Finding</button></div>
+    </div>
+
+    <div class="card" id="wo-repair-card" style="display:none">
+      <h2 class="cond">Repair Scope</h2>
+      <div class="fld"><label>Description of Work Performed</label>
+        <textarea id="repairDescription" rows="4"></textarea></div>
+      <div id="repairitems-list"></div>
+      <div class="btnrow"><button class="btn" onclick="addRepairItem()">+ Add Repair Item</button></div>
     </div>
 
     <div class="card">
@@ -979,6 +987,7 @@ function computeWarrantyStatus(o){
 var currentId = null;
 var findings = [];
 var repairs = [];
+var repairItems = []; /* Repair-type only — see wo-repair-card / addRepairItem() */
 var photos = [];
 var ccLinkedProjectId = null;
 var ccLinkedProjectName = "";
@@ -1681,6 +1690,48 @@ function renderRepairs(){
   });
 }
 
+/* Repair work order type only (see wo-repair-card / onWoTypeChange()) — an
+   itemized scope list, e.g. "2x Curb", "1x Pipe Boot / Flashing". Type
+   options are worded to align with the existing roof-asset vocabulary
+   (ROOF_ASSET_TYPES) without being coupled to it — repair items aren't map
+   pins, just line items on the report. Easy to extend: add a string here. */
+var REPAIR_ITEM_TYPES = ["Curb","Pipe Boot / Flashing","Seam","Vent","Drain","Scupper",
+  "Expansion Joint","Skylight","Roof Hatch","Penetration","Other"];
+function addRepairItem(data){
+  repairItems.push(data || {type:REPAIR_ITEM_TYPES[0], qty:"", notes:""});
+  renderRepairItems();
+}
+function removeRepairItem(i){ repairItems.splice(i,1); renderRepairItems(); }
+function renderRepairItems(){
+  var host = document.getElementById("repairitems-list");
+  if (!host) return;
+  host.innerHTML = "";
+  repairItems.forEach(function(it,i){
+    var d = document.createElement("div");
+    d.className = "rowcard";
+    d.style.borderLeftColor = "#795548";
+    d.innerHTML =
+      '<div class="rowhead"><b>Item #' + (i+1) + '</b><span class="sp"></span>' +
+      '<button class="btn danger" onclick="removeRepairItem(' + i + ')">Remove</button></div>' +
+      '<div class="grid">' +
+      '<div class="fld"><label>Type</label><select data-i="' + i + '" data-f="type">' +
+        REPAIR_ITEM_TYPES.map(function(t){
+          return '<option' + (it.type === t ? " selected" : "") + '>' + t + '</option>';
+        }).join("") +
+      '</select></div>' +
+      '<div class="fld"><label>Quantity</label><input type="number" min="0" step="1" data-i="' + i + '" data-f="qty" value="' + esc(it.qty) + '"></div>' +
+      '</div>' +
+      '<div class="fld"><label>Notes / Location</label>' +
+      '<input type="text" data-i="' + i + '" data-f="notes" value="' + esc(it.notes) + '"></div>';
+    host.appendChild(d);
+  });
+  host.querySelectorAll("[data-f]").forEach(function(el){
+    el.addEventListener("input", function(){
+      repairItems[+el.dataset.i][el.dataset.f] = el.value;
+    });
+  });
+}
+
 var SIZE_PRESETS = {
   small:  { max: 900,  q: 0.62 },
   medium: { max: 1200, q: 0.72 },
@@ -1848,6 +1899,13 @@ function populateWoTypeSelect(){
 function onWoTypeChange(){
   var el = document.getElementById("wo-changeorder-card");
   if (el) el.style.display = (val("woType") === "Change Order") ? "" : "none";
+  var isRepair = val("woType") === "Repair";
+  var rc = document.getElementById("wo-repair-card");
+  if (rc) rc.style.display = isRepair ? "" : "none";
+  /* Repair is a project/scope report, not a leak diagnosis — findings
+     (leak pins/conditions) don't apply to it, per Mark. */
+  var fc = document.getElementById("wo-findings-card");
+  if (fc) fc.style.display = isRepair ? "none" : "";
 }
 
 /* ================= warranty guidelines (display-only reference) =================
@@ -1903,7 +1961,7 @@ function populateWarrantyGuidelines(){
 }
 var FIELD_IDS = ["jobName","location","serviceDate","jobNo","billTo","billContact","billPhone",
   "siteContact","technician","roofSystem","reportedArea","warrantable","nonWarrantable","summary",
-  "woCost","woManHours","woMaterials","woDescription","woPONumber","woDateCompleted"];
+  "woCost","woManHours","woMaterials","woDescription","woPONumber","woDateCompleted","repairDescription"];
 
 function collect(){
   var o = { id: currentId || ("wo_" + Date.now()) };
@@ -1916,6 +1974,7 @@ function collect(){
   o.woType = val("woType") || WORK_ORDER_TYPES[0];
   o.findings = findings.slice();
   o.repairs = repairs.slice();
+  o.repairItems = repairItems.slice();
   o.photos = photos.slice();
   o.companyCamProjectId = ccLinkedProjectId || null;
   o.companyCamProjectName = ccLinkedProjectName || "";
@@ -1939,11 +1998,12 @@ function fill(o){
     if (f.pin === undefined) f.pin = null;
   });
   repairs = (o.repairs || []).slice(); if (!repairs.length) repairs = [{repair:"",location:""}];
+  repairItems = (o.repairItems || []).slice(); /* Repair type only — no forced minimum row, optional */
   photos = (o.photos || []).slice();
   photos.forEach(function(p){ if (p.finding_id === undefined) p.finding_id = null; });
   ccLinkedProjectId = o.companyCamProjectId || null;
   ccLinkedProjectName = o.companyCamProjectName || "";
-  renderFindings(); renderRepairs(); renderPhotos(); renderCCLinkInfo();
+  renderFindings(); renderRepairs(); renderRepairItems(); renderPhotos(); renderCCLinkInfo();
 }
 function todayStr(){
   var d = new Date();
@@ -3172,21 +3232,25 @@ async function renderReportsList(){
 /* ================= document build ================= */
 function filledFindings(){ return findings.filter(function(f){ return f.condition || f.location; }); }
 function filledRepairs(){ return repairs.filter(function(r){ return r.repair || r.location; }); }
+function filledRepairItems(){ return repairItems.filter(function(it){ return it.qty || it.notes; }); }
 function filledPhotos(){ return photos.filter(function(p){ return p.img || (p.caption||"").trim(); }); }
 
 /* Routes by work order type — Change Order gets its own distinct
    document (buildChangeOrderText/renderChangeOrderDoc/
    generateChangeOrderPdf), not a bolted-on section of the leak report.
-   See "Change Order gets its own PDF template" in DEV_NOTES.md. Every
-   other type (including the Inspection/Repair/Warranty placeholders)
-   still uses the original leak-report format, unchanged. */
+   See "Change Order gets its own PDF template" in DEV_NOTES.md. Repair
+   reuses this same leak-report builder (see buildLeakReportText below) —
+   Mark asked for "most of the same info," just with the findings section
+   swapped for repair scope, not a fully separate template like Change
+   Order. Inspection/Warranty still use it completely unchanged. */
 function buildText(){
   var o = collect();
   return o.woType === "Change Order" ? buildChangeOrderText(o) : buildLeakReportText(o);
 }
 function buildLeakReportText(o){
+  var isRepair = o.woType === "Repair";
   var L = [];
-  L.push("LEAK WORK ORDER / REPAIR DOCUMENTATION");
+  L.push(isRepair ? "REPAIR / PROJECT REPORT" : "LEAK WORK ORDER / REPAIR DOCUMENTATION");
   L.push(o.jobName + (o.location ? " - " + o.location : ""));
   L.push("");
   L.push("JOB INFORMATION");
@@ -3203,10 +3267,22 @@ function buildLeakReportText(o){
   L.push("Reported Leak Area: " + o.reportedArea);
   L.push("Roof System: " + o.roofSystem);
   L.push("");
-  L.push("ROOF INVESTIGATION FINDINGS");
-  filledFindings().forEach(function(f,i){
-    L.push((i+1) + ". " + f.condition + (f.location ? " — " + f.location : "") + " [" + f.warranty + "]");
-  });
+  if (isRepair){
+    L.push("REPAIR SCOPE");
+    if (o.repairDescription) L.push(o.repairDescription);
+    var ri = filledRepairItems();
+    if (ri.length){
+      L.push("");
+      ri.forEach(function(it,i){
+        L.push((i+1) + ". " + it.type + (it.qty ? " x" + it.qty : "") + (it.notes ? " — " + it.notes : ""));
+      });
+    }
+  } else {
+    L.push("ROOF INVESTIGATION FINDINGS");
+    filledFindings().forEach(function(f,i){
+      L.push((i+1) + ". " + f.condition + (f.location ? " — " + f.location : "") + " [" + f.warranty + "]");
+    });
+  }
   L.push("");
   L.push("WORK PERFORMED");
   filledRepairs().forEach(function(r,i){
@@ -3285,10 +3361,11 @@ function renderDoc(){
     o.woType === "Change Order" ? renderChangeOrderDoc(o) : renderLeakReportDoc(o);
 }
 function renderLeakReportDoc(o){
+  var isRepair = o.woType === "Repair";
   var h = "";
   h += "<div class='dochead' style='display:flex;align-items:center;gap:16px'>" +
        "<img src='" + LOGO + "' alt='Watkins Roofing' style='height:72px;flex:none'>" +
-       "<div><div class='t1 cond'>Leak Work Order / Repair Documentation</div>" +
+       "<div><div class='t1 cond'>" + (isRepair ? "Repair / Project Report" : "Leak Work Order / Repair Documentation") + "</div>" +
        "<div class='t2'>" + esc(o.jobName) + (o.location ? " — " + esc(o.location) : "") + "</div></div></div>";
 
   h += "<h3 class='cond'>Job Information</h3>" + kvTable([
@@ -3298,15 +3375,31 @@ function renderLeakReportDoc(o){
     ["Contact Phone",o.billPhone],["Site Contact",o.siteContact],["Technician",o.technician],
     ["Reported Leak Area",o.reportedArea],["Roof System",o.roofSystem]]);
 
-  var ff = filledFindings();
-  if (ff.length){
-    h += "<h3 class='cond'>Roof Investigation Findings</h3><table><thead><tr>" +
-      "<th style='width:36px'>No.</th><th>Roof Condition Observed</th><th>Location / Detail</th>" +
-      "<th style='width:130px'>Warranty Opinion</th></tr></thead><tbody>" +
-      ff.map(function(f,i){
-        return "<tr><td>" + (i+1) + "</td><td>" + esc(f.condition) + "</td><td>" +
-          esc(f.location) + "</td><td>" + esc(f.warranty) + "</td></tr>";
-      }).join("") + "</tbody></table>";
+  if (isRepair){
+    if (o.repairDescription || filledRepairItems().length){
+      h += "<h3 class='cond'>Repair Scope</h3>";
+      if (o.repairDescription) h += "<p style='white-space:pre-wrap'>" + esc(o.repairDescription) + "</p>";
+      var fri = filledRepairItems();
+      if (fri.length){
+        h += "<table><thead><tr><th style='width:36px'>No.</th><th>Type</th>" +
+          "<th style='width:70px'>Qty</th><th>Notes / Location</th></tr></thead><tbody>" +
+          fri.map(function(it,i){
+            return "<tr><td>" + (i+1) + "</td><td>" + esc(it.type) + "</td><td>" +
+              esc(it.qty) + "</td><td>" + esc(it.notes) + "</td></tr>";
+          }).join("") + "</tbody></table>";
+      }
+    }
+  } else {
+    var ff = filledFindings();
+    if (ff.length){
+      h += "<h3 class='cond'>Roof Investigation Findings</h3><table><thead><tr>" +
+        "<th style='width:36px'>No.</th><th>Roof Condition Observed</th><th>Location / Detail</th>" +
+        "<th style='width:130px'>Warranty Opinion</th></tr></thead><tbody>" +
+        ff.map(function(f,i){
+          return "<tr><td>" + (i+1) + "</td><td>" + esc(f.condition) + "</td><td>" +
+            esc(f.location) + "</td><td>" + esc(f.warranty) + "</td></tr>";
+        }).join("") + "</tbody></table>";
+    }
   }
 
   var fr = filledRepairs();
@@ -3448,7 +3541,7 @@ function ensureDims(p){
 }
 function pdfFileName(){
   var o = collect();
-  var prefix = o.woType === "Change Order" ? "ChangeOrder" : "WorkOrder";
+  var prefix = o.woType === "Change Order" ? "ChangeOrder" : (o.woType === "Repair" ? "Repair" : "WorkOrder");
   var base = (prefix + "_" + (o.jobName || "") + "_" + (o.jobNo || ""))
     .replace(/[^A-Za-z0-9_-]+/g, "_").replace(/_+/g, "_").replace(/^_|_$/g, "");
   return (base || prefix) + ".pdf";
@@ -3456,9 +3549,12 @@ function pdfFileName(){
 /* Routes to a fully separate PDF builder per work order type — a Change
    Order is a work-authorization document, not a leak inspection report,
    so it gets its own generateChangeOrderPdf() rather than a bolted-on
-   section here. Every other type still uses this original leak-report
-   builder, byte-for-byte unchanged in its own logic. See "Change Order
-   gets its own PDF template" in DEV_NOTES.md. */
+   section here. Repair reuses generateLeakReportPdf() below (branches
+   internally on o.woType === "Repair" for the title + findings-vs-scope
+   section) since it's "most of the same info," not a separate template.
+   Every other type still uses this original leak-report builder,
+   byte-for-byte unchanged in its own logic. See "Change Order gets its
+   own PDF template" and "Repair work order type" in DEV_NOTES.md. */
 async function generatePdf(){
   if (!(window.jspdf && window.jspdf.jsPDF && window.jspdf.jsPDF.API && window.jspdf.jsPDF.API.autoTable)){
     toast("PDF tools couldn't load — check your internet connection, or use Print instead.");
@@ -3468,6 +3564,7 @@ async function generatePdf(){
   return o.woType === "Change Order" ? generateChangeOrderPdf(o) : generateLeakReportPdf(o);
 }
 async function generateLeakReportPdf(o){
+  var isRepair = o.woType === "Repair";
   var jsPDF = window.jspdf.jsPDF;
   var doc = new jsPDF({ unit: "pt", format: "letter" });
   var W = doc.internal.pageSize.getWidth();
@@ -3480,7 +3577,7 @@ async function generateLeakReportPdf(o){
   doc.setFont("helvetica", "bold");
   doc.setFontSize(15);
   doc.setTextColor(30, 39, 46);
-  doc.text("LEAK WORK ORDER / REPAIR DOCUMENTATION", M + 112, y + 20, { maxWidth: W - M * 2 - 112 });
+  doc.text(isRepair ? "REPAIR / PROJECT REPORT" : "LEAK WORK ORDER / REPAIR DOCUMENTATION", M + 112, y + 20, { maxWidth: W - M * 2 - 112 });
   doc.setFontSize(11);
   doc.text(String((o.jobName || "") + (o.location ? " \u2014 " + o.location : "")), M + 112, y + 42, { maxWidth: W - M * 2 - 112 });
   y += 66;
@@ -3531,20 +3628,42 @@ async function generateLeakReportPdf(o){
     ["Reported Leak Area", o.reportedArea], ["Roof System", o.roofSystem]
   ]);
 
-  var ff = filledFindings();
-  if (ff.length){
-    heading("Roof Investigation Findings");
-    doc.autoTable({
-      startY: y,
-      head: [["No.", "Roof Condition Observed", "Location / Detail", "Warranty Opinion"]],
-      body: ff.map(function(f, i){ return [i + 1, f.condition, f.location, f.warranty]; }),
-      theme: "grid",
-      headStyles: { fillColor: [38, 50, 56], fontSize: 8 },
-      styles: { fontSize: 9, cellPadding: 4, textColor: [30, 39, 46], lineColor: [154, 165, 172], lineWidth: 0.5 },
-      columnStyles: { 0: { cellWidth: 28 }, 3: { cellWidth: 110 } },
-      margin: { left: M, right: M }
-    });
-    y = doc.lastAutoTable.finalY + 18;
+  if (isRepair){
+    if (o.repairDescription){
+      heading("Repair Scope");
+      wrappedTextPdf(o.repairDescription);
+    }
+    var fri = filledRepairItems();
+    if (fri.length){
+      heading("Repair Items");
+      doc.autoTable({
+        startY: y,
+        head: [["No.", "Type", "Qty", "Notes / Location"]],
+        body: fri.map(function(it, i){ return [i + 1, it.type, it.qty, it.notes]; }),
+        theme: "grid",
+        headStyles: { fillColor: [38, 50, 56], fontSize: 8 },
+        styles: { fontSize: 9, cellPadding: 4, textColor: [30, 39, 46], lineColor: [154, 165, 172], lineWidth: 0.5 },
+        columnStyles: { 0: { cellWidth: 28 }, 2: { cellWidth: 50 } },
+        margin: { left: M, right: M }
+      });
+      y = doc.lastAutoTable.finalY + 18;
+    }
+  } else {
+    var ff = filledFindings();
+    if (ff.length){
+      heading("Roof Investigation Findings");
+      doc.autoTable({
+        startY: y,
+        head: [["No.", "Roof Condition Observed", "Location / Detail", "Warranty Opinion"]],
+        body: ff.map(function(f, i){ return [i + 1, f.condition, f.location, f.warranty]; }),
+        theme: "grid",
+        headStyles: { fillColor: [38, 50, 56], fontSize: 8 },
+        styles: { fontSize: 9, cellPadding: 4, textColor: [30, 39, 46], lineColor: [154, 165, 172], lineWidth: 0.5 },
+        columnStyles: { 0: { cellWidth: 28 }, 3: { cellWidth: 110 } },
+        margin: { left: M, right: M }
+      });
+      y = doc.lastAutoTable.finalY + 18;
+    }
   }
 
   var fr = filledRepairs();

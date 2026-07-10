@@ -71,6 +71,16 @@ Goal: preserve and harden the existing RoofOps Field / Watkins work order workfl
   form. Final version is display-only: no fields, no data capture, one editable
   constant (`WARRANTY_GUIDELINES`). See "Warranty guidelines reference" in
   `DEV_NOTES.md`.
+- ✅ **Shipped**: fleshed out the Repair work order type (project/small-project work —
+  flashing a curb, several curbs and boots — not a leak diagnosis). Hides Roof
+  Investigation Findings, adds a Repair Scope card (description + an itemized Repair
+  Items list with type/quantity/notes, worded to match the roof-asset vocabulary).
+  Everything else — job/work-order info, roof map context, Work Performed, Warranty
+  Determination, photos — is unchanged from Leak/Service. Its report/PDF reuses the
+  leak-report layout (not a separate template like Change Order), titled "Repair /
+  Project Report" with the findings section swapped for Repair Scope. Leak/Service and
+  Change Order are both unaffected. Inspection and Warranty remain on the base form
+  until Mark defines their fields. See "Repair work order type" in `DEV_NOTES.md`.
 - ❌ **Decided against (2026-07-09)**: pushing app-added phone photos to a matching
   CompanyCam project. CompanyCam's photo-upload API requires a publicly-fetchable URL
   per photo, which this app can't produce without paying for Firebase Storage or

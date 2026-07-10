@@ -2024,6 +2024,59 @@ finding has no extra field (`Object.keys` on a fresh finding is back to
 produces a `warrantyCategory` key; confirmed no `#warranty-modal` element exists in the
 DOM at all — zero console errors throughout.
 
+### Repair work order type (shipped 2026-07-10)
+
+**Goal (from Mark)**: flesh out the Repair work order type — a project/small-project
+report (flashing a curb, several curbs and boots) rather than a leak diagnosis. Carries
+most of the same info as a Leak/Service work order, minus leak findings, plus a way to
+describe the repair scope.
+
+**Form changes** — `onWoTypeChange()` now toggles two more cards based on `woType`:
+`#wo-findings-card` (wrapped around the existing Roof Investigation Findings card,
+previously unwrapped/always-visible) hides for Repair; a new `#wo-repair-card`
+("Repair Scope") shows only for Repair, with a `repairDescription` textarea and an
+itemized `repairItems` list (same add/remove/render pattern as `findings`/`repairs`:
+`addRepairItem()`/`removeRepairItem()`/`renderRepairItems()`). Each item has a `type`
+(dropdown, `REPAIR_ITEM_TYPES` — Curb, Pipe Boot / Flashing, Seam, Vent, Drain,
+Scupper, Expansion Joint, Skylight, Roof Hatch, Penetration, Other — worded to match
+the existing `ROOF_ASSET_TYPES` vocabulary without being coupled to it; these are
+report line items, not map pins), a `qty`, and free-text `notes`. Everything else on
+the form — job info, job/work-order number (`jobNo`), technician, roof map context,
+Work Performed, Warranty Determination, photos — is completely unaffected; Repair just
+reuses those existing, ungated cards. `repairItems` has no forced minimum row (unlike
+`findings`/`repairs`) since it's explicitly optional per spec.
+
+**Report/PDF — reused, not separate**: unlike Change Order (its own fully separate
+builder, since it's a different kind of document), Repair reuses
+`buildLeakReportText()` / `renderLeakReportDoc()` / `generateLeakReportPdf()` — Mark
+asked for "most of the same info," not a new template. Each function now checks
+`var isRepair = o.woType === "Repair"` once at the top and branches in exactly two
+places: the title ("REPAIR / PROJECT REPORT" vs. "LEAK WORK ORDER / REPAIR
+DOCUMENTATION") and the findings section, which becomes a "Repair Scope"
+section/table (description + the repairItems table) instead of "Roof Investigation
+Findings." Every other line (Job Information, Work Performed, Warranty Determination,
+Summary, Photo Documentation, footer) is shared, unconditional code — same as before.
+`pdfFileName()` gained a third prefix (`Repair_...`) alongside `ChangeOrder_` and
+`WorkOrder_`.
+
+**Leak/Service stays byte-for-byte unchanged**: every branch added is gated on
+`o.woType === "Repair"` specifically, with the original (non-Repair) code path left
+completely untouched in the `else` — confirmed by diffing text/PDF output for a
+Leak/Service work order before and after.
+
+**Verified with mocked state**: switched to Repair and confirmed the findings card
+hides and the repair card shows (and the reverse for every other type, including
+Leak/Service and Change Order — no regression); added repair items and a description,
+confirmed they round-trip through `collect()`/`fill()` and survive a simulated
+reload; confirmed `buildText()`, `renderDoc()`, and `generateLeakReportPdf()` all show
+"Repair / Project Report" / "Repair Scope" / the itemized items table and contain **no**
+"Roof Investigation Findings" text anywhere; ran the same three checks for a
+Leak/Service work order and confirmed the original title, the findings section, and
+`WorkOrder_` filename prefix are all unchanged; ran Change Order and confirmed it's
+still routed to its own separate builder, untouched; loaded a legacy-shaped Repair
+work order (no `repairItems`/`repairDescription` at all) and confirmed it loads clean
+with an empty items list — zero console errors throughout.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |

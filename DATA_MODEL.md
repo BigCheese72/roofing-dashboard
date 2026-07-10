@@ -329,6 +329,9 @@ Example fields:
           // building's first roof (implemented as currentRoofId in index.html).
   reportedArea,
   findings: [], // each: { id, condition, location, warranty, pin } — see DEV_NOTES.md
+                // Not applicable/hidden on the form for woType === "Repair", but the
+                // field itself is unchanged — a Repair work order just keeps an
+                // empty/unused findings array.
   repairs: [],
   warrantable,
   nonWarrantable,
@@ -341,6 +344,13 @@ Example fields:
   woDescription,    // free text — description of work performed
   woPONumber,       // free text, optional
   woDateCompleted,  // free text (same "M/D/YY" convention as serviceDate), optional
+  // Repair-only fields — blank/absent for every other type. Only rendered/
+  // editable in the form when woType === "Repair".
+  repairDescription, // free text — description of repair work performed
+  repairItems: [],   // each: { type, qty, notes } — type is one of REPAIR_ITEM_TYPES
+                      // in index.html (Curb, Pipe Boot / Flashing, Seam, Vent, Drain,
+                      // etc. — worded to align with ROOF_ASSET_TYPES but not coupled
+                      // to it, these are report line items, not map pins)
   status: "draft", // draft | completed | sent | archived
   companyCamProjectId,
   createdAt,

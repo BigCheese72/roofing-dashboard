@@ -68,8 +68,22 @@ document rather than the leak inspection report: "CHANGE ORDER" title in the Wat
 red, job info, a prominent Description of Work Performed, an itemized Materials list,
 a Cost Summary with a Total, and an Approved By / Date signature line. No findings
 table or warranty section — that framing belongs to the leak report, not a change
-order. Every other type (Inspection, Repair, Warranty) still uses the standard leak
-report format for now.
+order.
+
+**Repair** is for project/small-project work — flashing a curb, several curbs and
+boots, that kind of scope — rather than a leak diagnosis. It hides the Roof
+Investigation Findings section entirely (leak pins/conditions don't apply) and shows a
+**Repair Scope** card instead: a Description of Work Performed, plus an itemized
+Repair Items list (Type — Curb, Pipe Boot / Flashing, Seam, Vent, Drain, etc., worded
+to match the existing roof-asset vocabulary — with a Quantity and Notes/Location per
+item). Everything else on the form (job info, work order/job number, technician, roof
+map context, Work Performed, Warranty Determination, photos) stays exactly the same as
+a Leak/Service work order. Its report/PDF reuses the same leak-report layout — same
+job info, same photo documentation — just titled "Repair / Project Report" with the
+findings section swapped for Repair Scope.
+
+Inspection and Warranty still use the standard leak report format for now (Mark is
+defining their fields incrementally).
 
 The type also shows up on that building's Building History timeline and in the
 Reports tab (as a filterable "Work Order Type," alongside Report Type, Technician,
