@@ -1568,6 +1568,82 @@ top) but wasn't touched in this pass, per Mark's explicit "focus the fix" instru
 for the roof-asset flow specifically — worth applying the same pattern there if he
 reports it's affected too.
 
+### Modal-behind-the-map — the real, universal root cause (fixed 2026-07-10)
+
+**Mark's sharper report**: the "old map in the way" bug wasn't limited to "+ Add Roof
+Feature" — editing the Roof Profile showed the popup window rendering *behind* the
+Building History roof map/pins. That ruled out the transform-compositing theory above
+as the *whole* story (the roof profile modal has no map of its own, and I hadn't
+applied the "destroy the underlying map" workaround there) and pointed at something
+simpler and more universal.
+
+**Actual root cause**: every modal overlay in the app (`pin-modal`, `asset-modal`,
+`activity-modal`, `profile-modal`, `rm-save-modal`, `bp-modal`, `cc-modal`) used
+`z-index:40`. Leaflet's own internal panes/controls use z-index values from 200
+(tiles) up through 600 (markers), 700 (popups), and 1000 (zoom controls/attribution) —
+and Leaflet's `.leaflet-container` is only `position:relative` with no explicit
+z-index of its own, which means it does **not** establish a containing stacking
+context. Per the CSS stacking spec, that lets its high-z-index internal panes escape
+upward into whatever the nearest actual stacking-context ancestor is — which, walking
+up from `#building-map` through `.card` → `#history-detail` → `#view-history` →
+`.wrap` → `body`, is effectively the document root, the same context the `position:
+fixed` modal itself is placed into. Once both are competing in that same shared
+context, plain ascending z-index order applies: 200/600/700/1000 (Leaflet) is greater
+than 40 (the modal), so Leaflet's tiles/markers/popups/controls legitimately painted
+*above* the modal — a real, spec-correct, browser-independent CSS outcome, not a
+mobile-only rendering quirk. This fully explains both reports with one mechanism.
+
+**Fix**: bumped every modal's z-index from `40` to `9999` — comfortably above
+Leaflet's highest internal value (1000) — in one pass across all 7 modal overlays.
+Left the earlier "destroy `buildingMap` while `asset-modal` is open" workaround in
+place too (harmless, and a reasonable extra defense layer for any remaining
+mobile-specific compositing edge case), but it's no longer load-bearing — the pin
+modal, which never got that workaround, is confirmed fixed by the z-index change
+alone.
+
+**Verified against an in-memory mock Firestore client (never touched real production
+Firestore)**, mobile viewport, on a building with a real map and a visible pin:
+scrolled the page so the pin was on-screen, then opened the Roof Profile modal and
+confirmed via `elementFromPoint` at the *exact* former pin-marker pixel that a modal
+form field is now on top (previously would have been the map/pin). Repeated the same
+check for the asset modal (still correct) and, critically, the **pin modal** — which
+never had the buildingMap-destroying workaround — confirming the z-index fix alone is
+suf­ficient and is the true general-purpose fix. Zero console errors throughout.
+
+### Admin base-map empty state was confusing for a non-developer (fixed 2026-07-10)
+
+**Problem (reported by Mark, with a screenshot)**: the "Roof Base Map (admin)" card's
+empty state led with the raw building ID and a `tools/geotiff_to_webmap.py --upload`
+CLI reference — before explaining what a base map even is, and even though that CLI
+tool is only ever needed for ONE of the two supported base map paths (Drone
+Orthomosaic). Roof Plan and Sketch have always been a plain in-app image upload with
+no external tool required at all — the old copy didn't make that distinction, so it
+read as if every base map needed the Python script.
+
+**Fix** (`renderBaseMapAdminCard()`, `toggleBaseMapBoundsFields()`) — no functional
+change, no new backend action, purely clearer copy and reordering:
+- Leads with a plain-language explanation: pins default to a live satellite photo;
+  a custom base map replaces that with your own image, useful when satellite detail
+  isn't good enough.
+- The Type dropdown's own option labels now say which path is which: "Roof Plan —
+  upload an image, ready to use," "Sketch — upload an image, ready to use," "Drone
+  Orthomosaic — needs an extra step first, see below."
+- Selecting Roof Plan/Sketch shows a short "just upload the image, no extra tools
+  needed" hint. Selecting Drone Orthomosaic swaps to an explanation of *why* that one
+  needs the companion script, then the CLI/building-ID/bounds-paste instructions —
+  previously always shown regardless of which type was even selected.
+- The "no CompanyCam project linked yet" state now explains *why* (the image is
+  stored as a CompanyCam document, same as generated PDF reports) and exactly what to
+  do (import photos from any work order for the building) instead of a bare
+  instruction with no reasoning.
+
+**Verified against an in-memory mock Firestore client**: confirmed the empty state no
+longer shows any CLI/geotiff text up front; confirmed the CompanyCam-project-required
+explanation states the reason; confirmed the type-select toggle correctly swaps
+between the "simple upload" hint and the drone/CLI instructions in both directions;
+confirmed the already-has-a-base-map state (unchanged functionality) still renders
+correctly. Zero console errors.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |

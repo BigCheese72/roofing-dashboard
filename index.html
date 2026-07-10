@@ -398,7 +398,7 @@
 
 </div>
 
-<div id="cc-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:40" onclick="if(event.target===this)closeCC()">
+<div id="cc-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)closeCC()">
   <div style="background:#fff;max-width:740px;margin:4vh auto;border-radius:8px;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;width:94%">
     <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
       <b class="cond" style="font-size:17px" id="cc-title">Import from CompanyCam</b>
@@ -409,7 +409,7 @@
   </div>
 </div>
 
-<div id="pin-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:40" onclick="if(event.target===this)closePinModal()">
+<div id="pin-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)closePinModal()">
   <div style="background:#fff;max-width:760px;margin:3vh auto;border-radius:8px;max-height:94vh;display:flex;flex-direction:column;overflow:hidden;width:96%">
     <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
       <b class="cond" style="font-size:17px">Place Pin on Roof Map</b>
@@ -430,7 +430,7 @@
   </div>
 </div>
 
-<div id="asset-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:40" onclick="if(event.target===this)closeAssetModal()">
+<div id="asset-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)closeAssetModal()">
   <div style="background:#fff;max-width:760px;margin:3vh auto;border-radius:8px;max-height:94vh;display:flex;flex-direction:column;overflow:hidden;width:96%">
     <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
       <b class="cond" style="font-size:17px" id="asset-modal-title">Add Roof Feature</b>
@@ -463,7 +463,7 @@
   </div>
 </div>
 
-<div id="bp-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:40" onclick="if(event.target===this)closeBuildingPicker()">
+<div id="bp-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)closeBuildingPicker()">
   <div style="background:#fff;max-width:640px;margin:4vh auto;border-radius:8px;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;width:94%">
     <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
       <b class="cond" style="font-size:17px">Select Existing Building</b>
@@ -477,7 +477,7 @@
   </div>
 </div>
 
-<div id="rm-save-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:40" onclick="if(event.target===this)closeRmSaveModal()">
+<div id="rm-save-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)closeRmSaveModal()">
   <div style="background:#fff;max-width:640px;margin:4vh auto;border-radius:8px;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;width:94%">
     <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
       <b class="cond" style="font-size:17px">Save Roof Outline to Building</b>
@@ -501,7 +501,7 @@
   </div>
 </div>
 
-<div id="activity-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:40" onclick="if(event.target===this)closeActivityModal()">
+<div id="activity-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)closeActivityModal()">
   <div style="background:#fff;max-width:520px;margin:6vh auto;border-radius:8px;max-height:88vh;display:flex;flex-direction:column;overflow:hidden;width:94%">
     <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
       <b class="cond" style="font-size:17px">Log Activity</b>
@@ -524,7 +524,7 @@
   </div>
 </div>
 
-<div id="profile-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:40" onclick="if(event.target===this)closeRoofProfileModal()">
+<div id="profile-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)closeRoofProfileModal()">
   <div style="background:#fff;max-width:640px;margin:4vh auto;border-radius:8px;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;width:94%">
     <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
       <b class="cond" style="font-size:17px">Edit Roof Profile</b>
@@ -2295,27 +2295,40 @@ function renderBaseMapAdminCard(buildingId, roof, companyCamProjectId){
   var safeId = buildingId.replace(/[^A-Za-z0-9_-]/g, "") + "_" + roof.id.replace(/[^A-Za-z0-9_-]/g, "");
   var b = roof.roof_base_map_bounds;
   return '<div class="card"><h2 class="cond">Roof Base Map (admin)</h2>' +
-    '<p class="hint">Building ID (for <code>tools/geotiff_to_webmap.py --upload</code>): ' +
-      '<code>' + esc(buildingId) + '</code> ' +
-      '<button class="btn" style="padding:2px 8px;font-size:11px" onclick="copyBuildingId(\'' + buildingId + '\')">Copy</button></p>' +
+    '<p class="hint">By default, pins on this roof are placed on a live satellite photo. A ' +
+      'custom base map replaces that with your own image instead — useful when satellite ' +
+      'detail isn’t good enough (heavy rooftop equipment, complex multi-section roofs, etc).</p>' +
     (hasMap ?
-      '<p class="hint">Current: ' + esc(roof.roof_base_map_type.replace("_"," ")) +
+      '<p class="hint">Current base map: ' + esc(roof.roof_base_map_type.replace("_"," ")) +
         ' — <a href="' + esc(roof.roof_base_map_url) + '" target="_blank" rel="noopener">view image</a>' +
         (b ? ' (bounds: N ' + b.north.toFixed(5) + ', S ' + b.south.toFixed(5) + ', E ' + b.east.toFixed(5) + ', W ' + b.west.toFixed(5) + ')' : '') +
         '</p>' +
-      '<div class="btnrow"><button class="btn danger" onclick="clearRoofBaseMap(\'' + buildingId + '\', \'' + roof.id + '\')">Clear Base Map</button></div>'
-      : '<p class="hint">No custom base map set — pins default to satellite.</p>') +
+      '<div class="btnrow"><button class="btn danger" onclick="clearRoofBaseMap(\'' + buildingId + '\', \'' + roof.id + '\')">Clear Base Map</button> ' +
+        '<span class="hint">Clearing goes back to satellite.</span></div>'
+      : '<p class="hint"><b>No base map set — this roof is using satellite.</b></p>') +
     (hasProject ?
       '<input type="file" id="basemap-file-' + safeId + '" accept="image/*" style="display:none" ' +
         'onchange="uploadRoofBaseMap(\'' + buildingId + '\', this.files, \'' + roof.id + '\'); this.value=\'\';">' +
-      '<div class="fld" style="max-width:260px">' +
+      '<p class="hint" style="margin-bottom:4px">Two ways to add one:</p>' +
+      '<div class="fld" style="max-width:320px">' +
+        '<label>Type</label>' +
         '<select id="basemap-type-' + safeId + '" onchange="toggleBaseMapBoundsFields(\'' + safeId + '\')">' +
-          '<option value="roof_plan">Roof Plan</option>' +
-          '<option value="sketch">Sketch</option>' +
-          '<option value="drone_ortho">Drone Orthomosaic</option>' +
+          '<option value="roof_plan">Roof Plan — upload an image, ready to use</option>' +
+          '<option value="sketch">Sketch — upload an image, ready to use</option>' +
+          '<option value="drone_ortho">Drone Orthomosaic — needs an extra step first, see below</option>' +
         '</select></div>' +
+      '<div id="basemap-simple-hint-' + safeId + '">' +
+        '<p class="hint">Just a photo of the roof plan or a hand-drawn sketch. Tap ' +
+          '<b>Upload Base Map</b> below and pick the image — that’s it, no extra tools needed.</p>' +
+      '</div>' +
       '<div id="basemap-bounds-' + safeId + '" style="display:none">' +
-        '<p class="hint">Paste the bounds printed by <code>tools/geotiff_to_webmap.py</code>:</p>' +
+        '<p class="hint">A drone orthomosaic gives pin placement real GPS accuracy, but the raw ' +
+          'file is too large for the app to read directly. First, on a computer, run the ' +
+          'companion tool (<code>tools/geotiff_to_webmap.py</code>) against the raw drone file — ' +
+          'it prints the exact North/South/East/West numbers below and produces a smaller image ' +
+          'to upload. This building’s ID for that tool: <code>' + esc(buildingId) + '</code> ' +
+          '<button class="btn" style="padding:2px 8px;font-size:11px" onclick="copyBuildingId(\'' + buildingId + '\')">Copy</button></p>' +
+        '<p class="hint">Then paste the bounds it printed here:</p>' +
         '<div class="grid">' +
           '<div class="fld"><label>North</label><input type="text" id="basemap-north-' + safeId + '"></div>' +
           '<div class="fld"><label>South</label><input type="text" id="basemap-south-' + safeId + '"></div>' +
@@ -2325,7 +2338,11 @@ function renderBaseMapAdminCard(buildingId, roof, companyCamProjectId){
       '<div class="btnrow">' +
         '<button class="btn" onclick="document.getElementById(\'basemap-file-' + safeId + '\').click()">Upload Base Map</button>' +
       '</div>'
-      : '<p class="hint">Link a CompanyCam project to this building first (import photos from a work order for it) before uploading a custom base map — it’s stored as a CompanyCam document.</p>') +
+      : '<p class="hint">Uploading a base map needs a CompanyCam project linked to this building ' +
+        'first — the image itself is stored as a CompanyCam document, the same way generated ' +
+        'PDF reports are. Import photos from any work order for this building via ' +
+        '<b>Import from CompanyCam</b> and it’ll link automatically — then this card will let ' +
+        'you upload here.</p>') +
     '</div>';
 }
 /* Visible to everyone (read-only) — every field falls back to a muted
@@ -2370,8 +2387,11 @@ function renderRoofProfileCard(buildingId, roof){
 }
 function toggleBaseMapBoundsFields(safeId){
   var typeSel = document.getElementById("basemap-type-" + safeId);
+  var isDrone = typeSel && typeSel.value === "drone_ortho";
   var boundsDiv = document.getElementById("basemap-bounds-" + safeId);
-  if (boundsDiv) boundsDiv.style.display = (typeSel && typeSel.value === "drone_ortho") ? "" : "none";
+  if (boundsDiv) boundsDiv.style.display = isDrone ? "" : "none";
+  var simpleHintDiv = document.getElementById("basemap-simple-hint-" + safeId);
+  if (simpleHintDiv) simpleHintDiv.style.display = isDrone ? "none" : "";
 }
 function copyBuildingId(id){
   function fallback(){
