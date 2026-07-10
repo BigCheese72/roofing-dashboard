@@ -390,6 +390,10 @@ reveals:
   something tied to whatever work order happens to be open. Setting it applies to
   every user's *new* photos from that point on; it doesn't reprocess anything already
   saved. Defaults to small (email-friendly) if never set.
+- **Export** and **Delete** on each saved work order in the Saved tab, plus **Import
+  Work Order File**. A non-admin's Saved tab only offers **Open** — everything else
+  about managing saved work orders (exporting one to hand off, deleting one, or
+  importing one from a file) is admin-only.
 
 The timeline also auto-flags **possible duplicate entries** — same work order + same
 report type logged within 5 minutes of each other, almost always a double-click or a

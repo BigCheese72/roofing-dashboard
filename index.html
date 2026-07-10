@@ -427,10 +427,10 @@
       <button class="btn" onclick="newOrder()">+ New Work Order</button>
       <input type="file" id="importInput" accept=".json,application/json" style="display:none"
         onchange="importOrderFile(this.files); this.value='';">
-      <button class="btn" onclick="document.getElementById('importInput').click()">Import Work Order File</button>
+      <button class="btn" id="saved-import-btn" style="display:none" onclick="document.getElementById('importInput').click()">Import Work Order File</button>
     </div>
     <p class="hint" id="cloud-status"></p>
-    <p class="hint">Export a work order on one device, send the file to yourself (email/text), then Import it here on another device.</p>
+    <p class="hint" id="saved-export-hint" style="display:none">Export a work order on one device, send the file to yourself (email/text), then Import it here on another device.</p>
     <div id="saved-list"></div>
   </div>
 
@@ -1124,6 +1124,17 @@ function updateAdminUI(){
     var sel = document.getElementById("adminPhotoSize");
     if (isAdmin && sel) sel.value = globalPhotoSizePref;
   }
+  /* Saved view access control (Mark) — Import Work Order File and, per
+     saved work order, Export/Delete are admin-only. Toggling admin mode
+     re-draws the Saved list immediately (drawSaved() itself checks
+     isAdmin for the per-row buttons) so switching modes doesn't need a
+     tab change to take effect. See "Saved view access control" in
+     DEV_NOTES.md. */
+  var importBtn = document.getElementById("saved-import-btn");
+  if (importBtn) importBtn.style.display = isAdmin ? "" : "none";
+  var exportHint = document.getElementById("saved-export-hint");
+  if (exportHint) exportHint.style.display = isAdmin ? "" : "none";
+  if (document.getElementById("saved-list")) drawSaved();
   renderCCLinkInfo();
   if (document.getElementById("view-history") && document.getElementById("view-history").style.display !== "none"){
     renderHistoryList();
@@ -2563,7 +2574,15 @@ function loadOrder(id){
   }
   toast("Could not find that work order");
 }
+/* Admin-only (Mark's access-control change to the Saved view — see
+   "Saved view access control" in DEV_NOTES.md). The button that calls this
+   is already hidden for non-admins (see drawSaved()), but this check is
+   the real gate — same defense-in-depth pattern as deleteBuildingAdmin()
+   and every other admin-only action in this file: someone opening
+   devtools and calling this directly should hit the same wall a hidden
+   button would. */
 function deleteOrder(id){
+  if (!isAdmin){ toast("Admin mode required to delete."); return; }
   if (!confirm("Delete this work order everywhere? This can't be undone.")) return;
   var db = loadDb();
   delete db.orders[id];
@@ -2576,7 +2595,10 @@ function deleteOrder(id){
       .catch(function(){ toast("Deleted on this device \u2014 cloud copy may remain (check internet)"); });
   } else toast("Deleted on this device");
 }
+/* Admin-only — see deleteOrder() above for why the check lives here too,
+   not just on the button. */
 function exportOrder(id){
+  if (!isAdmin){ toast("Admin mode required to export."); return; }
   var db = loadDb();
   var o = db.orders[id];
   if (!o && fdb){
@@ -2600,7 +2622,10 @@ function exportOrder(id){
   setTimeout(function(){ URL.revokeObjectURL(a.href); }, 5000);
   toast("Exported — send this file to your other device, then Import it there.");
 }
+/* Admin-only — see deleteOrder() above for why the check lives here too,
+   not just on the button. */
 function importOrderFile(files){
+  if (!isAdmin){ toast("Admin mode required to import."); return; }
   var f = files && files[0];
   if (!f) return;
   var r = new FileReader();
@@ -2655,8 +2680,12 @@ function drawSaved(){
       (e.cloud ? ' \u00B7 \u2601' : '') +
       (e.lastEmailedAt ? ' \u00B7 \uD83D\uDCE7 Emailed ' + fmtTs(e.lastEmailedAt) : '') + '</div></div>' +
       '<button class="btn" onclick="loadOrder(\'' + e.id + '\')">Open</button>' +
-      '<button class="btn" onclick="exportOrder(\'' + e.id + '\')">Export</button>' +
-      '<button class="btn danger" onclick="deleteOrder(\'' + e.id + '\')">Delete</button></div>';
+      /* Export/Delete are admin-only (Mark's access-control change) \u2014 a
+         non-admin's Saved view only ever offers Open. See "Saved view
+         access control" in DEV_NOTES.md. */
+      (isAdmin ? '<button class="btn" onclick="exportOrder(\'' + e.id + '\')">Export</button>' : '') +
+      (isAdmin ? '<button class="btn danger" onclick="deleteOrder(\'' + e.id + '\')">Delete</button>' : '') +
+      '</div>';
   }).join("");
 }
 function renderSaved(){

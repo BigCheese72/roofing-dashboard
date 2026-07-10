@@ -129,6 +129,16 @@ Goal: preserve and harden the existing RoofOps Field / Watkins work order workfl
   (`app_settings/global` in Firestore, admin-PIN-gated write via `admin.js`),
   defaulting to small for everyone. See "Change Order form cleanup" and "Global photo
   size setting" in `DEV_NOTES.md`.
+- ✅ **Shipped (dev only)**: Saved-tab access control. Delete, Export ("for the tax" —
+  actually the device-to-device `.workorder.json` transfer mechanism, not an
+  accounting export), and Import Work Order File are now all admin-only — a
+  non-admin's Saved tab only offers Open. Delete was previously not gated at all
+  (any user could delete any saved work order); all three are now dual-gated
+  (hidden button + a function-level check), same pattern as every other admin-only
+  action in the app. **Open still puts a non-admin into the fully-editable Edit
+  form** (same as creating/editing any work order, complete with Save) — there is no
+  read-only "review" mode yet; that's a decision still pending with Mark, not
+  something this pass changed. See "Saved view access control" in `DEV_NOTES.md`.
 - ❌ **Decided against (2026-07-09)**: pushing app-added phone photos to a matching
   CompanyCam project. CompanyCam's photo-upload API requires a publicly-fetchable URL
   per photo, which this app can't produce without paying for Firebase Storage or

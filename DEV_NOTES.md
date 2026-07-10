@@ -2456,6 +2456,61 @@ mocked `callAdminApi` and confirmed the right action/value is sent and the local
 preset updates immediately; confirmed the save is a no-op when `isAdmin` is false.
 Zero console errors throughout.
 
+### Saved view access control (shipped 2026-07-10, dev only)
+
+**Goal (from Mark)**: a non-admin should only be able to Open a saved work order to
+review it — Delete, Export, and Import Work Order File all become admin-only.
+
+**Identified before gating anything**, per spec:
+- **Delete** — per-row "Delete" button in the Saved list, calls `deleteOrder(id)`.
+  Removes the work order everywhere (local + cloud). Was **not** admin-gated at all
+  before this — any user could delete any saved work order.
+- **"Export" (Mark: "for the tax")** — per-row "Export" button, calls `exportOrder(id)`.
+  Downloads that work order as a `.workorder.json` file ("Export a work order on one
+  device, send the file to yourself, then Import it on another" — a manual
+  device-to-device transfer mechanism, not an accounting/CSV export despite the "for
+  the tax" description). Was not admin-gated.
+- **"Input work order file"** — the "Import Work Order File" button (+ its hidden
+  file input), calls `importOrderFile(files)`. Reads a `.workorder.json` file back in
+  and saves it as a new/replacement local + cloud work order. Was not admin-gated.
+
+**All three now dual-gated** — same defense-in-depth pattern as every other
+admin-only action in this file (`deleteBuildingAdmin()`, etc.): the button itself
+only renders/shows for `isAdmin` (`drawSaved()` for the per-row Export/Delete
+buttons; `#saved-import-btn`/`#saved-export-hint` toggled in `updateAdminUI()` for
+Import), **and** `deleteOrder()`/`exportOrder()`/`importOrderFile()` each check
+`isAdmin` themselves and bail with a toast if it's off — so calling any of them
+directly (e.g. from devtools) hits the same wall a hidden button would, not just a
+missing button. Toggling admin mode re-draws the Saved list immediately
+(`updateAdminUI()` now calls `drawSaved()`), so switching modes takes effect without
+changing tabs.
+
+**Open/review behavior — reported, not changed, per spec**: `loadOrder()` (what
+"Open" calls) does `fill(o); showView("edit");` — the exact same fully-editable Edit
+form used for creating or editing any work order, complete with its own Save button.
+**There is currently no read-only/view mode at all.** A non-admin opening a
+submitted work order "to review" it can fully edit every field and re-save,
+overwriting the original — indistinguishable from editing a draft. Mark needs to
+decide whether that's acceptable or whether Open should become read-only for
+non-admins; nothing about this was changed in this pass.
+
+**Verified — no real Firestore/CompanyCam writes left behind**: confirmed a non-admin
+Saved view shows only "Open" per row, with Import and its explanatory hint both
+hidden; confirmed admin mode shows Open/Export/Delete per row and the Import button;
+confirmed toggling admin mode live-updates the list without a tab change; confirmed
+all three functions correctly no-op with a toast when called directly while
+`isAdmin` is false (including a real import attempt with an actual file, proving the
+block, then flipping `isAdmin` true and confirming the identical call succeeds —
+proving the gate is specifically the `isAdmin` check). **One real mistake made and
+corrected during this pass**: an early test round ran against the real `fdb` (it
+initializes automatically against production Firestore, not a mock, unless
+explicitly nulled out) instead of a mocked one — the admin-mode import test briefly
+wrote a real `workorders/wo_should_not_import` test document to production. Caught
+immediately by checking `fdb === null` after the fact, confirmed the document existed
+via a direct Firestore read, deleted it, and confirmed the delete with a follow-up
+read (404). All remaining verification was redone with `fdb` explicitly set to
+`null`. No trace of test data remains in production Firestore or local storage.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |
