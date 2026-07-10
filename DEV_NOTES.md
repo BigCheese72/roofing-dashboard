@@ -2268,6 +2268,55 @@ library-style (no `gps` key at all) photo correctly does **not**; confirmed
 errors throughout. No real backend was touched at any point in this testing — nothing
 to clean up.
 
+### Photo-capture rework — Increment 2: photo-in-finding UI (shipped 2026-07-10, dev only)
+
+**Goal**: capture a photo right inside the finding it belongs to — caption, finding
+link, and auto-pin all in one action — instead of adding it in the separate global
+Photo Documentation section and then manually picking the finding from a dropdown.
+
+**No data model change — two views of the same array.** `photos[]` already had
+`finding_id`; that field is the entire backward-compat story here. Each finding's
+card (`findingPhotoGalleryHtml()`, called from `renderFindings()`) now has its own
+"📷 Take Photo" / "+ Add Photos" buttons and a small photo strip — but it's built by
+*filtering* the existing global `photos[]` array down to `p.finding_id === f.id`,
+not a second array. The global Photo Documentation section is completely unchanged
+(still every photo, still where reorder/print-order and "General / no specific
+finding" happen) because it's reading the exact same array. A work order saved
+before this shipped already has `finding_id` set (or `null`) on its photos exactly
+the way it always did, so it just displays correctly in both places with zero
+migration — confirmed by loading a legacy-shaped object directly (see Verified below).
+
+**`addPhotosFromCamera()`/`addPhotosFromFiles()` gained an optional `findingId`
+param** (increment 1's versions untouched otherwise — existing call sites just don't
+pass it, identical behavior to before). When a finding's card calls them, the new
+photo gets `finding_id` set at creation instead of needing the dropdown afterward,
+and — for camera captures — `maybeAutoPinFinding()` now fires **immediately** rather
+than waiting for a later dropdown change, since the photo already belongs to the
+finding the moment it's captured. That's the actual "caption/finding/pin all attach
+in one action" Mark asked for.
+
+**Thumbnail/remove/caption in the embedded gallery reuse the existing global-index
+functions** (`openPhotoLightbox(i)`, `removePhoto(i)`) rather than parallel
+finding-scoped versions — `findingPhotoGalleryHtml()` just looks up each matching
+photo's real index in the global array first. One source of truth, one set of
+functions; `removePhoto()` now also calls `renderFindings()` when the removed photo
+had a `finding_id`, so it disappears from the embedded strip too, not just the
+global list.
+
+**Verified — no real Firestore/CompanyCam writes, everything local/in-memory**:
+captured a photo inside a finding's card with mocked GPS and confirmed the pin
+auto-dropped immediately (no dropdown step needed) and the photo appeared correctly
+in that finding's strip; added a library photo inside a finding and confirmed no GPS
+key and no auto-pin; confirmed the global section shows the same photo with the
+correct finding pre-selected in its dropdown (same object, not a copy); edited a
+caption from the embedded gallery and confirmed it's reflected identically in the
+global section; removed a photo from the embedded gallery and confirmed it's gone
+from both places with no orphaned entries. **Backward compatibility**: loaded a
+legacy-shaped work order object (findings with an existing manual pin and one with
+no `pin` key at all, photos with `finding_id` set and one with none, no `gps` key
+anywhere) and confirmed it displays correctly in both the embedded and global views
+with no errors, no data loss, no duplication. Zero console errors throughout.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |

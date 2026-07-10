@@ -77,6 +77,13 @@
   @media (max-width:480px){ .photo-finding-row{padding-left:0} }
   .photo-lightbox-img{max-width:94vw;max-height:90vh;object-fit:contain;position:absolute;
     top:50%;left:50%;transform:translate(-50%,-50%);border-radius:4px}
+  .finding-photos{margin:8px 0 12px}
+  .finding-photo-strip{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+  .finding-photo-item{width:104px;flex:none}
+  .finding-photo-item img.thumb{width:104px;height:78px;object-fit:cover;border:1px solid var(--line);
+    border-radius:4px;cursor:pointer;display:block}
+  .finding-photo-item input[type=text]{width:104px;font-size:12px;padding:4px 6px;margin-top:4px}
+  .finding-photo-item .btn.danger{width:104px;margin-top:4px;padding:2px 0;font-size:12px}
 
   /* CompanyCam picker */
   .cc-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:8px;margin-top:10px}
@@ -341,7 +348,7 @@
 
     <div class="card">
       <h2 class="cond">Photo Documentation</h2>
-      <p class="hint">Add job photos straight from your camera roll or files, then caption each one. Photos print into the PDF document automatically.</p>
+      <p class="hint">Tip: for a photo tied to a specific finding, it's usually faster to capture it right in that finding above — caption, finding, and pin all attach in one step. This section shows every photo on the job, and controls the order they print into the PDF.</p>
       <div class="fld" style="max-width:300px">
         <label>Photo Size</label>
         <select id="photoSize" onchange="savePhotoSizePref()">
@@ -1163,6 +1170,42 @@ function removeFinding(i){
   }
   renderFindings();
 }
+/* Photo-capture rework, increment 2: photos captured/added here are
+   associated with this finding from the moment they're added (via the
+   findingId param on addPhotosFromCamera()/addPhotosFromFiles()) --
+   caption, GPS-derived pin, and the photo itself all attach in one
+   action, no separate section to link up afterward. This reads from and
+   writes to the SAME global `photos[]` array the Photo Documentation
+   section always has (just filtered to this finding's id), so it's
+   fully backward compatible: a work order saved before this shipped
+   already has finding_id set (or null) on its photos exactly the same
+   way, and displays correctly here with zero migration. The global
+   section remains the place for reordering/print-order and any
+   "General / no specific finding" photos -- this is a second view onto
+   the same data, not a second copy of it. */
+function findingPhotoGalleryHtml(f){
+  var safeId = esc(f.id);
+  var items = photos.map(function(p, gi){ return { p: p, gi: gi }; })
+    .filter(function(x){ return x.p.finding_id === f.id; });
+  var strip = items.map(function(x){
+    return '<div class="finding-photo-item">' +
+      (x.p.img ? '<img class="thumb" src="' + x.p.img + '" onclick="openPhotoLightbox(' + x.gi + ')" title="Tap to enlarge">' : '') +
+      '<input type="text" placeholder="Caption" data-findingphoto="' + x.gi + '" value="' + esc(x.p.caption) + '">' +
+      '<button class="btn danger" onclick="removePhoto(' + x.gi + ')">✕ Remove</button>' +
+      '</div>';
+  }).join("");
+  return '<div class="finding-photos">' +
+    '<div class="btnrow" style="margin:0">' +
+      '<button class="btn primary" onclick="document.getElementById(\'fcam-' + safeId + '\').click()">📷 Take Photo</button>' +
+      '<button class="btn" onclick="document.getElementById(\'flib-' + safeId + '\').click()">+ Add Photos</button>' +
+    '</div>' +
+    '<input type="file" id="fcam-' + safeId + '" accept="image/*" capture="environment" style="display:none" ' +
+      'onchange="addPhotosFromCamera(this.files, \'' + safeId + '\'); this.value=\'\';">' +
+    '<input type="file" id="flib-' + safeId + '" accept="image/*" multiple style="display:none" ' +
+      'onchange="addPhotosFromFiles(this.files, \'' + safeId + '\'); this.value=\'\';">' +
+    (strip ? '<div class="finding-photo-strip">' + strip + '</div>' : '') +
+    '</div>';
+}
 function renderFindings(){
   var host = document.getElementById("findings-list");
   host.innerHTML = "";
@@ -1182,6 +1225,7 @@ function renderFindings(){
           return '<option' + (f.warranty === o ? " selected" : "") + '>' + o + '</option>';
         }).join("") +
       '</select></div>' +
+      findingPhotoGalleryHtml(f) +
       '<div class="btnrow" style="margin:-4px 0 12px">' +
         '<button class="btn" onclick="openPinModal(\'' + f.id + '\')">' +
           (f.pin ? '📍 Pinned — move' : '📍 Place on Map') +
@@ -1192,6 +1236,11 @@ function renderFindings(){
     el.addEventListener("input", function(){
       findings[+el.dataset.i][el.dataset.f] = el.value;
       if (el.dataset.f === "warranty") renderFindings();
+    });
+  });
+  host.querySelectorAll("[data-findingphoto]").forEach(function(el){
+    el.addEventListener("input", function(){
+      photos[+el.dataset.findingphoto].caption = el.value;
     });
   });
 }
@@ -1781,7 +1830,13 @@ function photoPreset(){
 function savePhotoSizePref(){
   try{ localStorage.setItem("photo-size-pref", document.getElementById("photoSize").value); }catch(e){}
 }
-function addPhotosFromFiles(files){
+/* findingId (optional) -- passed when this is called from a finding's own
+   card (increment 2 of the photo-capture rework) so the photo is
+   associated with that finding from the moment it's added, instead of
+   needing the separate dropdown in the global Photo Documentation
+   section. Omitted (existing call sites) behaves exactly as before --
+   finding_id: null, "General / no specific finding". */
+function addPhotosFromFiles(files, findingId){
   var list = Array.prototype.slice.call(files || []);
   if (!list.length) return;
   var results = new Array(list.length);
@@ -1791,6 +1846,7 @@ function addPhotosFromFiles(files){
     if (pending === 0){
       results.forEach(function(r){ if (r) photos.push(r); });
       renderPhotos();
+      if (findingId) renderFindings();
     }
   }
   list.forEach(function(file, idx){
@@ -1807,7 +1863,7 @@ function addPhotosFromFiles(files){
         var c = document.createElement("canvas");
         c.width = w; c.height = h;
         c.getContext("2d").drawImage(img, 0, 0, w, h);
-        results[idx] = { caption:"", img: c.toDataURL("image/jpeg", preset.q), w: w, h: h, finding_id: null };
+        results[idx] = { caption:"", img: c.toDataURL("image/jpeg", preset.q), w: w, h: h, finding_id: findingId || null };
         done();
       };
       img.onerror = function(){ toast("Couldn't read one of the photos"); done(); };
@@ -1844,8 +1900,12 @@ function captureDeviceGps(){
    taken right now, standing at the job, gets the device's current GPS
    attached; a photo picked from the library could be old or from
    somewhere else entirely, so that path is intentionally left untouched
-   with no GPS guess attached. Same resize/compress pipeline either way. */
-function addPhotosFromCamera(files){
+   with no GPS guess attached. Same resize/compress pipeline either way.
+   findingId (optional) -- same meaning as on addPhotosFromFiles() above.
+   When present, auto-pin fires immediately (the photo already belongs to
+   the finding the moment it's captured), instead of only once a tech
+   later picks the finding from the global section's dropdown. */
+function addPhotosFromCamera(files, findingId){
   var list = Array.prototype.slice.call(files || []);
   if (!list.length) return;
   captureDeviceGps().then(function(gps){
@@ -1855,8 +1915,13 @@ function addPhotosFromCamera(files){
     function done(){
       pending--;
       if (pending === 0){
-        results.forEach(function(r){ if (r) photos.push(r); });
+        results.forEach(function(r){
+          if (!r) return;
+          photos.push(r);
+          if (findingId) maybeAutoPinFinding(r);
+        });
         renderPhotos();
+        if (findingId) renderFindings();
       }
     }
     list.forEach(function(file, idx){
@@ -1873,7 +1938,7 @@ function addPhotosFromCamera(files){
           var c = document.createElement("canvas");
           c.width = w; c.height = h;
           c.getContext("2d").drawImage(img, 0, 0, w, h);
-          results[idx] = { caption:"", img: c.toDataURL("image/jpeg", preset.q), w: w, h: h, finding_id: null, gps: gps };
+          results[idx] = { caption:"", img: c.toDataURL("image/jpeg", preset.q), w: w, h: h, finding_id: findingId || null, gps: gps };
           done();
         };
         img.onerror = function(){ toast("Couldn't read the photo"); done(); };
@@ -1900,7 +1965,15 @@ function maybeAutoPinFinding(photo){
   renderFindings();
   toast("📍 Pin auto-placed on the roof map from the photo's location — drag to fine-tune if needed.");
 }
-function removePhoto(i){ photos.splice(i,1); renderPhotos(); }
+function removePhoto(i){
+  var removed = photos[i];
+  photos.splice(i,1);
+  renderPhotos();
+  /* A removed photo might have been shown in its finding's embedded
+     gallery (increment 2 of the photo-capture rework) -- refresh that
+     too so it doesn't linger there after being removed globally. */
+  if (removed && removed.finding_id) renderFindings();
+}
 /* Swaps two photos in place — works identically for a device-uploaded photo
    or a CompanyCam import, since both end up in the same photos[] shape
    (caption/img/w/h/finding_id, +ccPhotoId/gps for CompanyCam ones). The

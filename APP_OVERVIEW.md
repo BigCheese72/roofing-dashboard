@@ -120,13 +120,25 @@ prints on the leak report alongside Warrantable/Non-Warrantable Repairs.
 
 **📷 Take Photo** opens the device camera directly (not a file picker) and, if
 location access is available, grabs the device's current GPS at the moment of
-capture. If that photo then gets linked to a finding (see below), a pin is
-auto-dropped on the roof map at that location — consumer GPS is only accurate to
-~10-30ft, so treat it as a starting point and drag to fine-tune, same as a manually
-placed pin. No GPS available (denied, unsupported, or timed out) just means no
-auto-pin — the photo itself always saves either way. **+ Add Photos** (choose from
-library) is unchanged and never attaches a location guess, since a library photo
-could be old or from somewhere else.
+capture. **+ Add Photos** (choose from library) never attaches a location guess,
+since a library photo could be old or from somewhere else.
+
+**Capture right in the finding it belongs to.** Each finding in Roof Investigation
+Findings has its own "📷 Take Photo" / "+ Add Photos" buttons and a small photo
+strip, right there in the finding's card — this is the fast path, since caption,
+finding link, and map pin all attach in one action: capture the photo, and if GPS
+was available, the pin drops on the roof map immediately, no extra step. Consumer
+GPS is only accurate to ~10-30ft, so treat the pin as a starting point and drag to
+fine-tune (from "📍 Pinned — move" on that finding) rather than a final placement.
+No GPS available (denied, unsupported, or timed out) just means no auto-pin — the
+photo itself always saves either way. A pin that's already been placed — manually or
+from an earlier photo — is never overwritten by a later one.
+
+The global **Photo Documentation** section (bottom of the form) still shows *every*
+photo on the job — from a finding, general, or imported from CompanyCam — and is
+where reordering (print order) and reassigning a photo's finding both happen. Adding
+a photo there instead of inside a finding works exactly as before: it's just not
+linked to a finding until you pick one from its dropdown.
 
 Every photo — whether taken with the camera, added from the device library, or
 imported from CompanyCam — shows up the same way in the Photo Documentation section,
