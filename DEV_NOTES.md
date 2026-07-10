@@ -2913,6 +2913,63 @@ clean baseline; no test work orders were saved (real save/PDF/CompanyCam/
 history-log functions were stubbed out for this test, not exercised for
 real).
 
+### Email Send-to corrections: Charlotte/Mark restored, guaranteed BCC, name-on-add (shipped 2026-07-10, dev only)
+
+Mark clarified the previous pass misread his intent, plus two new asks:
+
+- **Charlotte and Mark restored to the quick-pick list.** "Remove the
+  Office/Manager presets" meant drop the ROLE LABELS ("Office —", "Manager
+  —") in front of their names, not drop the people. `EMAIL_RECIPIENTS_SEED`
+  is back to five entries: Charlotte Washburn, Mark Sheppard, Chris Gravits,
+  Nathan Dietiker, Mark Emms — all plain named quick-picks now, no role
+  prefixes on anyone. **One-time backfill in `getEmailRecipients()`**: if a
+  device already saved the briefly-live buggy list (missing Charlotte/Mark)
+  before this fix, any seed entries missing from the stored list are
+  prepended and the fixed list is persisted back, without disturbing
+  anything the device had already auto-grown onto it. The Leak/Service and
+  default-marks@ pre-fill behavior from the previous pass is unchanged.
+- **Guaranteed BCC to marks@ on every send.** `netlify/functions/
+  send-workorder.js` now always sets `bcc: ["marks@" + domain]` on the
+  Resend payload, unconditionally — enforced server-side so it can't be
+  skipped by omitting it from the client call, and applies no matter who's
+  already in To/Reply-To. The two client-built `mailto:` links (`emailDoc()`,
+  and `sharePdf()`'s desktop branch) now also append `&bcc=` for the same
+  address (`EMAIL_ALWAYS_BCC` constant) so the guarantee holds through those
+  paths too. `sharePdf()`'s mobile branch uses the Web Share API when
+  available, which has no BCC (or To/CC) concept at all — not applicable
+  there, unchanged.
+- **Name prompt on auto-add.** `rememberEmailRecipients()` now asks (native
+  `prompt()`) for a name the first time a genuinely new address is
+  remembered — "New recipient "&lt;addr&gt;" isn't on your Send-to list yet
+  — name them for next time?" A name is stored as `"Name <email>"` in the
+  quick-pick's label; leaving it blank/canceling falls back to the bare
+  email, same as before this ask. Still fires once per new address per
+  `sendEmailNow()` call (multiple genuinely-new addresses in one send = one
+  prompt each), still skips entirely for anything already on the list
+  (case-insensitive).
+
+**Flagged, not changed**: marks@ is now both a default To recipient (every
+type) and always BCC'd — and on Leak/Service he's a To recipient twice over
+(default To list + the guaranteed BCC). He'll get some emails twice (once as
+a visible To, once as a blind copy) until/unless the defaults are simplified
+(e.g. drop him from the To defaults and rely on the BCC alone). Not changed
+here — Mark's call to make later.
+
+Tested with `fdb` null, `fetch`/save/PDF/logging mocked, and `window.prompt`
+stubbed (captures the prompt text, returns a scripted answer) — no real
+Firestore writes, no real Resend calls, no real dialogs blocking automated
+testing. Confirmed: the dropdown includes Charlotte Washburn and Mark
+Sheppard as plain names (no "Office —"/"Manager —"); the one-time backfill
+correctly prepends missing seed entries onto an already-stored list without
+losing a previously auto-grown address; Leak/Service still defaults to
+`charlottew@watkinsroofing.net, marks@watkinsroofing.net` and other types to
+`marks@watkinsroofing.net` alone; the name prompt fires with the expected
+message and stores `"Name <email>"` when answered, falls back to a bare
+email when left blank, and does not fire at all for an address already on
+the list (including a same-address-different-case check). All test
+recipients and the `email-recipients-v1` key were removed before finishing;
+page reloaded clean.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |

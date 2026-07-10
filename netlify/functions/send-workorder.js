@@ -42,9 +42,14 @@ exports.handler = async function (event) {
   const replyTo = process.env.REPLY_TO_EMAIL
     ? process.env.REPLY_TO_EMAIL.split(",").map(s => s.trim()).filter(Boolean)
     : ["marks@" + domain, "charlottew@" + domain];
+  // Mark wants a guaranteed blind copy of every outgoing work-order email,
+  // regardless of who else it's addressed to (including when he's already
+  // a To/Reply-To recipient) — enforced here server-side so it can't be
+  // dropped by omitting it from the client payload.
   const payload = {
     from: from,
     to: to,
+    bcc: ["marks@" + domain],
     reply_to: replyTo,
     subject: String(data.subject || "Leak Work Order").slice(0, 200),
     text: String(data.body || "Work order attached.").slice(0, 10000),

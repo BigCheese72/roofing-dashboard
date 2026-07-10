@@ -389,9 +389,15 @@ This means the user should not have to remember to manually save before sending.
 `marks@watkinsroofing.net` for any work order, or both `charlottew@watkinsroofing.net`
 and `marks@watkinsroofing.net` for Leak / Service specifically — no manual pick
 needed, though it can still be edited or added to. The "Send to…" dropdown next to
-it is a growing quick-pick list: it starts with a few named office contacts, and
-any address someone actually sends a report to gets remembered there automatically
-for next time.
+it is a growing quick-pick list: it starts with the office's named contacts
+(Charlotte Washburn, Mark Sheppard, Chris Gravits, Nathan Dietiker, Mark Emms),
+and any address someone actually sends a report to gets remembered there
+automatically for next time — you'll be asked to give a brand-new address a name
+so it shows up as something recognizable instead of a bare email.
+
+**Every outgoing email is always blind-copied to marks@watkinsroofing.net**, no
+matter the work order type or who else it's addressed to — a standing guarantee,
+not something that can be turned off per-send.
 
 After **Send Email Now** succeeds, that work order shows **"📧 Emailed [date/time]"**
 right on its card in the **Saved** tab — so anyone (office or tech) can tell at a

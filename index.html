@@ -1206,28 +1206,53 @@ function rememberFieldValue(key, value){
 
 /* Email "Send to" recipient quick-pick list (the report-email TO field) --
    separate from the fixed server-side Reply-To (marks@ + charlottew@, set
-   in netlify/functions/send-workorder.js, unaffected by any of this). No
-   more hardcoded "Office"/"Manager" role-labeled presets -- those addresses
-   are now automatic defaults instead (see renderDoc()) so there's nothing
-   to manually pick for them. Seeded with the office's other known named
-   contacts; any address actually confirmed-sent-to via "Send Email Now"
-   gets remembered here automatically (deduped, case-insensitive) so it's a
+   in netlify/functions/send-workorder.js, unaffected by any of this). The
+   dropdown no longer has hardcoded "Office —"/"Manager —" ROLE LABELS in
+   front of Charlotte's and Mark's names -- Mark's correction: he meant drop
+   the role labels, not drop the people, so they're plain named quick-picks
+   here like everyone else. Seeded with the office's known named contacts;
+   any address actually confirmed-sent-to via "Send Email Now" gets
+   remembered here automatically (deduped, case-insensitive) so it's a
    quick-pick next time. See "Email Send-to recipient defaults" in
    DEV_NOTES.md. */
 var EMAIL_RECIPIENTS_KEY = "email-recipients-v1";
 var EMAIL_RECIPIENTS_SEED = [
+  { email: "charlottew@watkinsroofing.net", label: "Charlotte Washburn" },
+  { email: "marks@watkinsroofing.net", label: "Mark Sheppard" },
   { email: "ChrisG@watkinsroofing.net", label: "Chris Gravits" },
   { email: "NathanD@watkinsroofing.net", label: "Nathan Dietiker" },
   { email: "MarkE@watkinsroofing.net", label: "Mark Emms" }
 ];
 var EMAIL_DEFAULT_TO = ["marks@watkinsroofing.net"];
 var EMAIL_DEFAULT_TO_LEAK = ["charlottew@watkinsroofing.net", "marks@watkinsroofing.net"];
+/* Mark wants a guaranteed blind copy of every outgoing work-order email, no
+   matter the type or who else it's addressed to. "Send Email Now" enforces
+   this server-side and unconditionally (netlify/functions/send-workorder.js
+   hardcodes the bcc itself — nothing to pass from here, and nothing the
+   client could omit to skip it). This constant is for the OTHER send paths
+   that build their own mailto: link client-side (emailDoc(), sharePdf()'s
+   desktop branch) so they honor the same guarantee. sharePdf()'s mobile Web
+   Share sheet has no BCC concept at all — not applicable there, same as it
+   has no To/CC either. */
+var EMAIL_ALWAYS_BCC = "marks@watkinsroofing.net";
 function getEmailRecipients(){
   try{
     var raw = localStorage.getItem(EMAIL_RECIPIENTS_KEY);
     if (!raw) return EMAIL_RECIPIENTS_SEED.slice();
     var arr = JSON.parse(raw);
-    return Array.isArray(arr) ? arr : EMAIL_RECIPIENTS_SEED.slice();
+    if (!Array.isArray(arr)) return EMAIL_RECIPIENTS_SEED.slice();
+    /* One-time backfill: an earlier build's seed briefly dropped Charlotte
+       and Mark entirely (since corrected) -- if a device already saved that
+       list before this fix landed, put them back without disturbing
+       anything the device has since auto-grown onto the list. */
+    var have = {};
+    arr.forEach(function(r){ have[(r.email || "").toLowerCase()] = true; });
+    var missing = EMAIL_RECIPIENTS_SEED.filter(function(r){ return !have[r.email.toLowerCase()]; });
+    if (missing.length){
+      arr = missing.concat(arr);
+      try{ localStorage.setItem(EMAIL_RECIPIENTS_KEY, JSON.stringify(arr)); }catch(e){}
+    }
+    return arr;
   }catch(e){ return EMAIL_RECIPIENTS_SEED.slice(); }
 }
 function populateEmailPick(){
@@ -1249,7 +1274,12 @@ function rememberEmailRecipients(addrs){
     (addrs || []).forEach(function(addr){
       addr = (addr || "").trim();
       if (!addr || known[addr.toLowerCase()]) return;
-      list.push({ email: addr, label: addr });
+      /* Genuinely new address -- ask who it is so it shows up as a named
+         quick-pick next time instead of just a bare address. Blank/canceled
+         falls back to storing the bare email, same as before this ask. */
+      var name = "";
+      try{ name = (prompt('New recipient "' + addr + '" isn\'t on your Send-to list yet -- name them for next time? (leave blank to just save the email)') || "").trim(); }catch(e){}
+      list.push({ email: addr, label: name ? (name + " <" + addr + ">") : addr });
       known[addr.toLowerCase()] = true;
       changed = true;
     });
@@ -4053,7 +4083,8 @@ async function emailDoc(){
     .map(encodeURIComponent).join(",");
   var href = "mailto:" + addrs +
     "?subject=" + encodeURIComponent(subject) +
-    "&body=" + encodeURIComponent(buildText());
+    "&body=" + encodeURIComponent(buildText()) +
+    "&bcc=" + encodeURIComponent(EMAIL_ALWAYS_BCC);
   window.location.href = href;
   toast("Opening your email app… If nothing opens or it's cut off, use Copy Document Text.");
 }
@@ -4837,7 +4868,8 @@ async function sharePdf(){
       .map(encodeURIComponent).join(",");
     window.location.href = "mailto:" + addrs +
       "?subject=" + encodeURIComponent(subject) +
-      "&body=" + encodeURIComponent(body);
+      "&body=" + encodeURIComponent(body) +
+      "&bcc=" + encodeURIComponent(EMAIL_ALWAYS_BCC);
   }
   toast("Building PDF\u2026");
   var d = await generatePdf();
