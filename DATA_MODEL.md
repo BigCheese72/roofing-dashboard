@@ -575,6 +575,33 @@ Notes:
 - Secrets should not live in Firestore client-readable settings.
 - API keys should remain in Netlify environment variables or a future secure backend secret store.
 
+### `app_settings` (currently implemented — distinct from the proposed `settings` above)
+
+A small, currently-real collection for app-wide settings that every client needs to
+read on load — not the future account-level `settings` model above, which remains
+proposed/unimplemented. Currently just one document.
+
+```js
+// app_settings/global
+{
+  photoSizePref, // "small" | "medium" | "large" — see "Global photo size setting"
+                 // in DEV_NOTES.md. Read by every client on load
+                 // (loadGlobalPhotoSizePref()); written only via
+                 // netlify/functions/admin.js's set_photo_size_pref action
+                 // (admin-PIN-gated, Admin SDK). Missing/unreadable defaults
+                 // to "small" client-side — never a hard error.
+  updatedAt
+}
+```
+
+Notes:
+
+- `firestore.rules` (reference file) allows open read, blocks all client-side write —
+  the only write path is the Admin SDK in `admin.js`, same pattern as the
+  delete-only-via-admin.js rule used for `buildings`/`reports`/etc. above.
+- Deliberately not gated by `accountId` yet, since there's no multi-account model in
+  production — a single global doc is intentional for now, not an oversight.
+
 ## Migration Notes
 
 - Keep current `workorders` behavior stable until Phase 2 data cleanup is complete.

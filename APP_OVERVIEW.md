@@ -71,7 +71,11 @@ work-authorization document rather than the leak inspection report: "CHANGE ORDE
 title in the Watkins red, job info, a prominent Description of Work Performed, an
 itemized Materials list, a Cost Summary with a Total, an Approved By / Date signature
 line, and those photos as a secondary grid at the end. No findings table or warranty
-section — that framing belongs to the leak report, not a change order.
+section — that framing belongs to the leak report, not a change order. The form
+itself shows only what a Change Order needs: Roof Investigation Findings, the plain
+"Work Performed" list, and the global Photo Documentation section are all hidden for
+this type — its own Change Order Details card (with its own photo box) covers
+everything, so nothing is duplicated or irrelevant.
 
 **Repair** is for project/small-project work — flashing a curb, several curbs and
 boots, that kind of scope — rather than a leak diagnosis. It hides the Roof
@@ -141,7 +145,13 @@ The global **Photo Documentation** section (bottom of the form) still shows *eve
 photo on the job — from a finding, general, or imported from CompanyCam — and is
 where reordering (print order) and reassigning a photo's finding both happen. Adding
 a photo there instead of inside a finding works exactly as before: it's just not
-linked to a finding until you pick one from its dropdown.
+linked to a finding until you pick one from its dropdown. **Hidden for Change Order**
+specifically, since that type has its own in-scope photo box instead (see "Work Order
+Types" above) — showing both would just be the same photos twice.
+
+Photo size (small/medium/large — how much a photo gets compressed/downscaled before
+saving) isn't a per-user choice anymore — it's one setting for everyone, defaulting
+to small (email-friendly), changeable only by an admin. See "Admin Mode" below.
 
 Every photo — whether taken with the camera, added from the device library, or
 imported from CompanyCam — shows up the same way in the Photo Documentation section,
@@ -375,6 +385,11 @@ reveals:
 - **Edit Profile** on a roof's Roof Profile card — age, warranty, condition, and the
   rest of that roof's permanent facts.
 - Uploading/clearing a roof's custom base map.
+- An **app-wide Photo Size setting** (small/medium/large) — a small bar at the top of
+  every screen while admin mode is on, since it's a global setting rather than
+  something tied to whatever work order happens to be open. Setting it applies to
+  every user's *new* photos from that point on; it doesn't reprocess anything already
+  saved. Defaults to small (email-friendly) if never set.
 
 The timeline also auto-flags **possible duplicate entries** — same work order + same
 report type logged within 5 minutes of each other, almost always a double-click or a

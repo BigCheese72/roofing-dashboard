@@ -2370,6 +2370,92 @@ legacy-shaped Change Order work order (a photo with no `gps`/`pin` key at all) a
 confirmed it displays correctly with "No location," no errors. Zero console errors
 throughout.
 
+### Change Order form cleanup (shipped 2026-07-10, dev only)
+
+**Goal (from Mark's review)**: a Change Order was showing sections that don't apply
+to it — Roof Investigation Findings, the generic Work Performed list, and (since
+Increment 3 of the photo-capture rework) photos twice: once in its own in-scope photo
+box and again in the separate global Photo Documentation section below.
+
+**All three now hide for Change Order specifically, via `onWoTypeChange()`**:
+- `#wo-findings-card` — already hid for Repair; now also hides for Change Order
+  (`(isRepair || isCO)`).
+- `#wo-repairsperformed-card` (the plain "Work Performed" list, previously had no
+  id at all — added one so it could be targeted) — hides for Change Order only.
+  Repair keeps it, unchanged, per "Repair work order type" in this file (it carries
+  most of the same info as Leak/Service).
+- `#wo-globalphotos-card` (the "Photo Documentation" section, also newly given an
+  id) — hides for Change Order only, since `#co-photos-host` (inside
+  `wo-changeorder-card`) is the exact same `photos[]` array with its own capture UI;
+  showing both was showing the same photos twice. Every other type keeps the global
+  section exactly as before.
+
+**Pure UI de-duplication, no data change**: hiding the global photos card doesn't
+stop `renderPhotos()` from running (it still writes into the hidden `#photos-list`
+and still drives `renderChangeOrderPhotos()` at its end) — photos captured through
+the Change Order's own box still land in the same `photos[]` array, still collect()
+into the saved work order, and still print into the change-order PDF exactly as
+before. Confirmed by capturing a photo on a Change Order with the global section
+hidden and generating the actual PDF.
+
+**Verified — no real Firestore/CompanyCam writes**: cycled through all five work
+order types and confirmed exactly the right cards show/hide for each (Change Order:
+only its own card + Warranty Determination + Summary; Repair, Leak/Service,
+Inspection, Warranty: all sections shown as before, unaffected); captured a photo on
+a Change Order and confirmed it's in `collect()`'s output and in the generated PDF.
+Zero console errors.
+
+### Global photo size setting (shipped 2026-07-10, dev only)
+
+**Goal (from Mark's review)**: photo size shouldn't be a per-user toggle each tech
+sets for themselves — it should default to small (email-friendly) for everyone, with
+one admin-controlled override that applies globally.
+
+**`globalPhotoSizePref`** (default `"small"`) replaces the old per-user
+`localStorage`-backed preference entirely. `photoPreset()` now just reads this one
+variable — no more `localStorage.getItem("photo-size-pref")` anywhere. A tech's
+device that still has that old key sitting in `localStorage` is harmless: nothing
+reads it anymore, confirmed by explicitly setting it and checking `photoPreset()`
+ignores it.
+
+**`app_settings/global`** (new Firestore doc, one field: `photoSizePref`) is the
+single source of truth. `loadGlobalPhotoSizePref()` reads it once on app startup —
+no doc yet, offline, Firestore rules not yet applied, or any other failure all just
+mean "keep the small default," never a hard error (confirmed all three failure
+modes explicitly). **Read is open to everyone** (every user needs it on load);
+**write only ever happens through `netlify/functions/admin.js`'s new
+`set_photo_size_pref` action**, same admin-PIN-gated-server-side pattern as every
+other admin mutation in that file (`delete_building`, `set_roof_profile`, etc.) —
+not a client-side-only `isAdmin` check, since this affects every user's photos going
+forward, not just the admin's own session. `firestore.rules` (reference file) now
+has an `app_settings` match block: `allow read: if true; allow write: if false;` —
+**Mark needs to apply this rule update in the Firebase Console** (same manual step
+any `firestore.rules` change here has always needed) for the read to succeed in
+production; until then it silently falls back to "small," so nothing breaks either
+way, it just won't reflect an admin-set override yet.
+
+**Admin control** — a new bar (`#admin-settings-bar`), visible on every view (not
+just the work order Edit form) whenever admin mode is on, since this is an app-wide
+setting rather than something tied to the currently-open work order or type (Change
+Order hiding the global photos card, above, made that coupling a real problem — a
+photo-size control tucked inside a per-work-order card would've been unreachable
+whenever admin happened to have a Change Order open). `saveGlobalPhotoSizePref()` is
+blocked client-side if `isAdmin` is false (defense in depth — the real gate is the
+PIN check in `admin.js`) and updates `globalPhotoSizePref` locally on success, so a
+newly-set size applies immediately without needing a reload.
+
+**Verified — mocked Firestore and mocked `callAdminApi`, no real writes**: confirmed
+the old `#photoSize` select is gone from the DOM and the default preset matches
+`SIZE_PRESETS.small`; loaded a mocked `app_settings/global` doc with
+`photoSizePref: "large"` and confirmed `globalPhotoSizePref`/`photoPreset()` picked
+it up; confirmed a mocked Firestore rejection and a missing-`fdb` case both fall back
+to "small" without throwing; confirmed the admin settings bar is hidden by default,
+appears when `isAdmin` is set and disappears when it's cleared, and the select
+pre-populates to the current global value; ran `saveGlobalPhotoSizePref()` with a
+mocked `callAdminApi` and confirmed the right action/value is sent and the local
+preset updates immediately; confirmed the save is a no-op when `isAdmin` is false.
+Zero console errors throughout.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |

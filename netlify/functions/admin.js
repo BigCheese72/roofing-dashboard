@@ -197,6 +197,22 @@ exports.handler = async function (event) {
       return resp(200, { ok: true });
     }
 
+    if (body.action === "set_photo_size_pref") {
+      // Global (not per-user, not per-work-order) photo size — used to be
+      // a client-only localStorage preference; now a single admin-set
+      // value everyone picks up on load (see loadGlobalPhotoSizePref() in
+      // index.html). Same admin-PIN-gated pattern as the settings above,
+      // even though this one isn't destructive — it affects every photo
+      // every user takes from here on, so it shouldn't be a client-side-
+      // only check either.
+      const ALLOWED_SIZES = ["small", "medium", "large"];
+      const value = String(body.value || "");
+      if (ALLOWED_SIZES.indexOf(value) === -1) return resp(400, { error: "Invalid photo size value" });
+      await db.collection("app_settings").doc("global").set(
+        { photoSizePref: value, updatedAt: Date.now() }, { merge: true });
+      return resp(200, { ok: true });
+    }
+
     return resp(400, { error: "Unknown action" });
   } catch (e) {
     return resp(500, { error: "Server error: " + (e && e.message ? e.message : "unknown") });

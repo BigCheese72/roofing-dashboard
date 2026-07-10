@@ -235,6 +235,22 @@
 
 <div class="wrap">
 
+  <!-- Admin-only, global (not per-work-order) settings — visible on every
+       view/type while admin mode is on, not just Edit, since it's an
+       app-wide setting rather than something tied to the current work
+       order. Toggled by updateAdminUI(). See "Global photo size setting"
+       in DEV_NOTES.md. -->
+  <div class="card" id="admin-settings-bar" style="display:none;padding:10px 14px;margin-bottom:12px;background:#FFF4E5;border:1px solid #E8A33D">
+    <div class="fld" style="max-width:300px;margin:0">
+      <label style="font-size:12px">Admin: Photo Size (applies to every user)</label>
+      <select id="adminPhotoSize" onchange="saveGlobalPhotoSizePref()">
+        <option value="small">Small — email-friendly (recommended)</option>
+        <option value="medium">Medium — more detail</option>
+        <option value="large">Large — max detail, big files</option>
+      </select>
+    </div>
+  </div>
+
   <!-- ================= HOME / LAUNCHER VIEW ================= -->
   <div id="view-home" style="display:none">
     <div class="card home-hero">
@@ -307,7 +323,7 @@
       <div class="btnrow"><button class="btn" onclick="addRepairItem()">+ Add Repair Item</button></div>
     </div>
 
-    <div class="card">
+    <div class="card" id="wo-repairsperformed-card">
       <h2 class="cond">Work Performed</h2>
       <div id="repairs-list"></div>
       <div class="btnrow"><button class="btn" onclick="addRepair()">+ Add Repair</button></div>
@@ -358,17 +374,9 @@
       <div class="fld"><textarea id="summary" rows="5"></textarea></div>
     </div>
 
-    <div class="card">
+    <div class="card" id="wo-globalphotos-card">
       <h2 class="cond">Photo Documentation</h2>
       <p class="hint">Tip: for a photo tied to a specific finding, it's usually faster to capture it right in that finding above — caption, finding, and pin all attach in one step. This section shows every photo on the job, and controls the order they print into the PDF.</p>
-      <div class="fld" style="max-width:300px">
-        <label>Photo Size</label>
-        <select id="photoSize" onchange="savePhotoSizePref()">
-          <option value="small">Small — email-friendly (recommended)</option>
-          <option value="medium">Medium — more detail</option>
-          <option value="large">Large — max detail, big files</option>
-        </select>
-      </div>
       <input type="file" id="photoInput" accept="image/*" multiple style="display:none"
         onchange="addPhotosFromFiles(this.files); this.value='';">
       <input type="file" id="cameraInput" accept="image/*" capture="environment" style="display:none"
@@ -1110,6 +1118,12 @@ function updateAdminUI(){
     btn.classList.toggle("active", isAdmin);
     btn.textContent = isAdmin ? "Admin: ON" : "Admin";
   }
+  var settingsBar = document.getElementById("admin-settings-bar");
+  if (settingsBar){
+    settingsBar.style.display = isAdmin ? "" : "none";
+    var sel = document.getElementById("adminPhotoSize");
+    if (isAdmin && sel) sel.value = globalPhotoSizePref;
+  }
   renderCCLinkInfo();
   if (document.getElementById("view-history") && document.getElementById("view-history").style.display !== "none"){
     renderHistoryList();
@@ -1834,13 +1848,46 @@ var SIZE_PRESETS = {
   medium: { max: 1200, q: 0.72 },
   large:  { max: 1600, q: 0.80 }
 };
+/* Photo size used to be a per-user localStorage preference (photoSize
+   select in the Photo Documentation card) — now it's a single
+   admin-controlled global setting (app_settings/global in Firestore, via
+   netlify/functions/admin.js's set_photo_size_pref action) so every
+   user's photos come out the same size. globalPhotoSizePref defaults to
+   "small" and is only ever changed by loadGlobalPhotoSizePref() (on
+   startup) or saveGlobalPhotoSizePref() (admin only) below — see "Global
+   photo size setting" in DEV_NOTES.md. The old "photo-size-pref"
+   localStorage key is simply never read anymore; an existing value left
+   over on a tech's device is harmless, orphaned data, not an error. */
+var globalPhotoSizePref = "small";
 function photoPreset(){
-  var v = "small";
-  try{ v = localStorage.getItem("photo-size-pref") || "small"; }catch(e){}
-  return SIZE_PRESETS[v] || SIZE_PRESETS.small;
+  return SIZE_PRESETS[globalPhotoSizePref] || SIZE_PRESETS.small;
 }
-function savePhotoSizePref(){
-  try{ localStorage.setItem("photo-size-pref", document.getElementById("photoSize").value); }catch(e){}
+async function loadGlobalPhotoSizePref(){
+  if (!fdb) return;
+  try{
+    var snap = await fdb.collection("app_settings").doc("global").get();
+    if (snap.exists && snap.data().photoSizePref && SIZE_PRESETS[snap.data().photoSizePref]){
+      globalPhotoSizePref = snap.data().photoSizePref;
+    }
+  }catch(e){
+    /* No app_settings/global doc yet, offline, or Firestore rules for
+       this collection haven't been applied in this environment yet —
+       any of those just mean "keep the small default," never a hard
+       error the user needs to see. */
+  }
+  var sel = document.getElementById("adminPhotoSize");
+  if (sel) sel.value = globalPhotoSizePref;
+}
+async function saveGlobalPhotoSizePref(){
+  if (!isAdmin) return;
+  var v = document.getElementById("adminPhotoSize").value;
+  try{
+    await callAdminApi({ action: "set_photo_size_pref", value: v });
+    globalPhotoSizePref = v;
+    toast("Photo size updated for everyone ✓ (applies to new photos going forward)");
+  }catch(e){
+    toast("Couldn't update photo size: " + e.message);
+  }
 }
 /* findingId (optional) -- passed when this is called from a finding's own
    card (increment 2 of the photo-capture rework) so the photo is
@@ -2154,16 +2201,32 @@ function populateWoTypeSelect(){
   });
 }
 function onWoTypeChange(){
+  var isCO = val("woType") === "Change Order";
   var el = document.getElementById("wo-changeorder-card");
-  if (el) el.style.display = (val("woType") === "Change Order") ? "" : "none";
-  if (val("woType") === "Change Order") renderChangeOrderPhotos();
+  if (el) el.style.display = isCO ? "" : "none";
+  if (isCO) renderChangeOrderPhotos();
   var isRepair = val("woType") === "Repair";
   var rc = document.getElementById("wo-repair-card");
   if (rc) rc.style.display = isRepair ? "" : "none";
   /* Repair is a project/scope report, not a leak diagnosis — findings
-     (leak pins/conditions) don't apply to it, per Mark. */
+     (leak pins/conditions) don't apply to it, per Mark. Change Order is a
+     scope of work, not a leak diagnosis either — same reasoning. */
   var fc = document.getElementById("wo-findings-card");
-  if (fc) fc.style.display = isRepair ? "none" : "";
+  if (fc) fc.style.display = (isRepair || isCO) ? "none" : "";
+  /* Change Order has no repairs-made concept (it IS the work being
+     authorized, described in its own Description field) — hide the
+     generic "Work Performed" section for it. Repair keeps this card
+     (per "Repair work order type" in DEV_NOTES.md — carries most of the
+     same info as Leak/Service). */
+  var rpc = document.getElementById("wo-repairsperformed-card");
+  if (rpc) rpc.style.display = isCO ? "none" : "";
+  /* Change Order has its own in-scope photo box (#co-photos-host, inside
+     wo-changeorder-card) — the global Photo Documentation section would
+     just be a second, redundant place to add the exact same photos[]
+     array, so hide it for Change Order only. Every other type keeps it
+     exactly as before. */
+  var gpc = document.getElementById("wo-globalphotos-card");
+  if (gpc) gpc.style.display = isCO ? "none" : "";
   /* Warranty guideline reference + Manufacturer Service # are leak-specific
      (per Mark: guideline lists are "for leaks and leaks only"; the
      manufacturer service # is what a warrantable leak usually also has a
@@ -5641,7 +5704,7 @@ function rmDeleteLocalOutline(id){
 
 /* ================= init ================= */
 document.getElementById("hdr-logo").src = LOGO;
-try{ document.getElementById("photoSize").value = localStorage.getItem("photo-size-pref") || "small"; }catch(e){}
+loadGlobalPhotoSizePref();
 /* App opens on the home/launcher screen now, not straight into a blank
    Leak/Service form — see "Home / launcher screen" in DEV_NOTES.md.
    populateWoTypeSelect() runs here too (not just inside fill()) so the

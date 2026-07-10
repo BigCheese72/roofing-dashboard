@@ -58,5 +58,17 @@ service cloud.firestore {
       allow read, create, update: if true;
       allow delete: if false;
     }
+
+    // App-wide settings (currently just the global photo-size preference —
+    // see "Global photo size setting" in DEV_NOTES.md). Every client needs
+    // to READ this on load, but only netlify/functions/admin.js (Admin
+    // PIN-gated, Admin SDK) is allowed to write it — unlike the
+    // read/create/update collections above, there's no client-side write
+    // path here at all, matching the delete-only-via-admin.js pattern for
+    // deletes elsewhere in this file.
+    match /app_settings/{settingId} {
+      allow read: if true;
+      allow write: if false;
+    }
   }
 }

@@ -120,6 +120,15 @@ Goal: preserve and harden the existing RoofOps Field / Watkins work order workfl
   read from the same array. The global Photo Documentation section is unchanged
   throughout all three increments — still shows everything, still controls print
   order. See "Photo-capture rework" in `DEV_NOTES.md`.
+- ✅ **Shipped (dev only)**: two cleanup items from Mark's review of the above. (1)
+  Change Order's form now shows only what it needs — Roof Investigation Findings, the
+  plain Work Performed list, and the global Photo Documentation section (which was
+  showing the same photos twice, since Change Order has its own in-scope photo box)
+  are all hidden for that type; every other type is unaffected. (2) Photo size is no
+  longer a per-user toggle — it's one admin-controlled global setting
+  (`app_settings/global` in Firestore, admin-PIN-gated write via `admin.js`),
+  defaulting to small for everyone. See "Change Order form cleanup" and "Global photo
+  size setting" in `DEV_NOTES.md`.
 - ❌ **Decided against (2026-07-09)**: pushing app-added phone photos to a matching
   CompanyCam project. CompanyCam's photo-upload API requires a publicly-fetchable URL
   per photo, which this app can't produce without paying for Firebase Storage or
