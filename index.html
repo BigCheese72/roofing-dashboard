@@ -1414,6 +1414,17 @@ async function openAssetModal(buildingId, assetId, roofId){
   document.getElementById("asset-modal").style.display = "";
   lockBodyScroll();
   if (assetMap){ assetMap.remove(); assetMap = null; assetMarker = null; }
+  /* Leaflet's tile panes use transform:translate3d for pan/zoom animation
+     — on some mobile browsers that can composite ABOVE a position:fixed
+     modal despite a lower z-index (a known Leaflet/mobile-Safari
+     stacking-context quirk), which is what let the underlying Building
+     History roof map visibly bleed through this modal's backdrop.
+     Destroying it outright while this modal is open removes the
+     compositing layer entirely rather than just trying to out-z-index
+     it — closeAssetModal() rebuilds it via openBuildingHistory() every
+     time this modal closes, save or not, so there's nothing left blank
+     underneath once it's gone. */
+  if (buildingMap){ buildingMap.remove(); buildingMap = null; }
 
   var bldSnap = await fdb.collection("buildings").doc(buildingId).get();
   var bld = bldSnap.exists ? bldSnap.data() : {};
@@ -1502,6 +1513,7 @@ document.getElementById("asset-type") && document.getElementById("asset-type").a
   if (assetMarker) assetMarker.setIcon(assetIcon(this.value));
 });
 function closeAssetModal(){
+  var buildingId = assetModalBuildingId;
   document.getElementById("asset-modal").style.display = "none";
   unlockBodyScroll();
   if (assetMap){ assetMap.remove(); assetMap = null; assetMarker = null; }
@@ -1509,6 +1521,11 @@ function closeAssetModal(){
   assetModalAssetId = null;
   assetModalRoofId = null;
   assetXYSize = null;
+  /* openAssetModal() destroyed the underlying Building History map
+     entirely (see the comment there) — rebuild it every time this modal
+     closes, save/delete or plain Cancel/Close alike, so the page never
+     sits there with the map missing underneath. */
+  if (buildingId) openBuildingHistory(buildingId);
 }
 async function saveAssetFromModal(){
   if (!assetMarker || !assetModalBuildingId) return;
@@ -1542,8 +1559,7 @@ async function saveAssetFromModal(){
     if (roofIdx >= 0) roofs[roofIdx] = roof; else roofs.push(roof);
     await saveBuildingRoofs(buildingId, roofs);
     toast("Roof feature saved ✓");
-    closeAssetModal();
-    openBuildingHistory(buildingId);
+    closeAssetModal(); /* also rebuilds the underlying map — see closeAssetModal() */
   }catch(e){ toast("Couldn't save: " + e.message); }
 }
 async function deleteAssetFromModal(){
@@ -1559,8 +1575,7 @@ async function deleteAssetFromModal(){
     if (roofIdx >= 0) roofs[roofIdx] = roof; else roofs.push(roof);
     await saveBuildingRoofs(buildingId, roofs);
     toast("Roof feature removed");
-    closeAssetModal();
-    openBuildingHistory(buildingId);
+    closeAssetModal(); /* also rebuilds the underlying map — see closeAssetModal() */
   }catch(e){ toast("Couldn't remove: " + e.message); }
 }
 

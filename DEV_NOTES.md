@@ -1524,6 +1524,50 @@ exceeds 1 and returns to 0 on close). Confirmed no regression to actual placemen
 saving a roof asset through the modal after this change still writes the correct
 type/label/coordinates. Zero console errors throughout.
 
+**Follow-up (2026-07-10, same day) — Mark confirmed the scroll-lock fix above wasn't
+enough for "+ Add Roof Feature" specifically**: the underlying Building History roof
+map was still visibly showing through the asset-placement modal. Re-investigated with
+Mark's narrower repro. Direct DOM inspection (`elementsFromPoint` at the new map's
+exact coordinates, mobile viewport) confirmed the z-index stacking was correct — the
+scroll-lock genuinely wasn't the (whole) story here.
+
+**Real root cause**: Leaflet's tile panes use `transform: translate3d(...)` heavily
+for pan/zoom. On some mobile browsers, an element using `transform` can end up
+compositing on its own GPU layer that renders *above* a `position:fixed` ancestor
+despite a lower z-index — a known Leaflet/mobile-Safari stacking-context quirk. The
+underlying `buildingMap` (Building History's Roof Map, sitting directly behind the
+asset modal) is exactly this kind of element, so its compositing layer could bleed
+through the modal's backdrop regardless of correct z-index math. This is a real
+mobile-rendering behavior, not something a desktop-Chrome DOM inspection alone would
+necessarily catch.
+
+**Fix**: rather than trying to out-z-index a GPU-compositing quirk, `openAssetModal()`
+now destroys the underlying map outright (`buildingMap.remove(); buildingMap = null`)
+the moment the modal opens — no compositing layer left to bleed through at all, not
+just a z-index fix. `closeAssetModal()` was restructured to always call
+`openBuildingHistory(buildingId)` itself (captured before the modal's state is reset)
+regardless of *how* the modal closes — Save, Delete, Cancel, the header Close button,
+or tapping the dimmed backdrop — so the roof map is reliably rebuilt every time, not
+just after a successful save. `saveAssetFromModal()`/`deleteAssetFromModal()`'s
+previously-separate `openBuildingHistory(buildingId)` calls were removed as redundant
+now that `closeAssetModal()` always does it.
+
+**Verified against an in-memory mock Firestore client (never touched real production
+Firestore)**, mobile viewport: confirmed `buildingMap` is `null` (fully destroyed, not
+just hidden) the moment the asset modal opens, and the `elementsFromPoint` stack at
+the new map's coordinates is clean; confirmed the Cancel/Close path (no save) still
+correctly rebuilds the roof map (previously would have been a real regression risk
+introduced by only handling the save path); confirmed the Save path still works end
+to end (asset written with correct type/label/coordinates, map rebuilds after); ran
+several rapid open/close cycles with no orphaned Leaflet instances, no "already
+initialized" errors, and `scrollLockCount` returning to 0 every time; confirmed the
+(untouched) pin modal still opens/closes/locks scroll correctly, unaffected by this
+change. Zero console errors throughout. The pin modal shares the same
+transform-compositing risk in principle (same kind of map, same kind of fixed modal on
+top) but wasn't touched in this pass, per Mark's explicit "focus the fix" instruction
+for the roof-asset flow specifically — worth applying the same pattern there if he
+reports it's affected too.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |
