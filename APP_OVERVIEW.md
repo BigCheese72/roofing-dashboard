@@ -76,6 +76,40 @@ Reports tab (as a filterable "Work Order Type," alongside Report Type, Technicia
 etc.) — so, for example, "every Change Order this month across every building" is a
 real question the Reports tab can answer.
 
+**Warranty** reveals a "📖 Open Warranty Assessment Guide" card. See "Warranty
+Assessment" below.
+
+## Warranty Assessment
+
+Reference guidance for Red Shield / Elevate manufacturer warranty coverage, built into
+the app so a tech doesn't have to remember (or look up elsewhere) what's typically
+covered. Opens from three places: the Warranty work order type's card, a "📖 Guide"
+button on the Warranty Determination card (every work order type), and a "📖 Guide"
+button on each finding's Warranty Opinion field. It shows two lists —
+
+- **Typically Warrantable**: membrane seam failures, failed factory flashings,
+  premature material defects, membrane splits/cracks from material defects, failures
+  from warranted workmanship, water leaks from covered roofing system defects.
+- **Typically Not Warrantable**: damage from other trades, foot traffic, dropped tools/
+  punctures, cuts/gouges, vandalism, storm damage (unless covered), hail (unless
+  purchased), animal damage, chemical contamination, lack of maintenance, clogged
+  drains, settlement ponding, post-install modifications, unauthorized repairs, normal
+  aging, cosmetic-only issues.
+
+— plus a compliance note: repairs that become part of the Red Shield warranty must be
+performed by an Elevate Licensed Applicator and approved by an Elevate/Amrize
+representative.
+
+Each finding in Roof Investigation Findings can be tagged with a specific **Warranty
+Reason** picked from those same two lists (in addition to the existing Warrantable /
+Warrantable condition noted / Non-warrantable / Undetermined "Warranty Opinion").
+Picking a reason automatically sets the matching Opinion, which is what colors that
+finding's pin on the roof map (green/red) — so tagging a reason from the guide and
+seeing the correct pin color is a single action, not two. This guidance is
+manufacturer-specific (currently only Red Shield/Elevate is modeled); the app is built
+so another manufacturer's program can be added later without changing how it's stored
+or displayed.
+
 ## Managing Photos
 
 Every photo — whether added from the device or imported from CompanyCam — shows up

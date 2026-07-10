@@ -62,6 +62,18 @@ Goal: preserve and harden the existing RoofOps Field / Watkins work order workfl
   (tap anywhere on the map to search that exact point) was evaluated and deliberately
   deferred — real risk of firing an Overpass request on every stray/accidental tap.
   See "RoofMapper: recovering from a wrong GPS fix" in `DEV_NOTES.md`.
+- ✅ **Shipped**: Warranty Assessment guide, built from Red Shield/Elevate manufacturer
+  warranty domain knowledge Mark provided. A "📖 Warranty Assessment Guide" (reachable
+  from the Warranty work order type, the Warranty Determination card on every type, and
+  each finding) shows a Typically Warrantable list, a Typically Not Warrantable list,
+  and the Elevate Licensed Applicator / Amrize-approval compliance note. Each finding
+  can now be tagged with a specific Warranty Reason picked straight from those lists;
+  picking one auto-sets the finding's existing Warranty Opinion to match, which is what
+  already drives that finding's pin color on the roof map — so the classification and
+  the map coloring stay in sync automatically. Reference data lives in one constant
+  (`WARRANTY_PROGRAMS`) designed so a second manufacturer's program can be added later
+  without touching how it's stored. See "Warranty Assessment guide + finding
+  classification" in `DEV_NOTES.md`.
 - ❌ **Decided against (2026-07-09)**: pushing app-added phone photos to a matching
   CompanyCam project. CompanyCam's photo-upload API requires a publicly-fetchable URL
   per photo, which this app can't produce without paying for Firebase Storage or
