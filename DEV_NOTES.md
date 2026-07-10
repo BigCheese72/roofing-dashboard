@@ -1113,6 +1113,22 @@ part I could do directly, and a manual part left for Mark:
   other 3 unaffected work orders. No data was lost except the one recipient noted above,
   which was already gone before this cleanup touched anything.
 
+**Follow-up: `reports`-only orphans (2026-07-09)** — a broader read-only sweep of the
+`reports` collection (prompted by checking whether the Reports tab had the same
+duplication) found a third, separate case: **wo_1783535195243 ("Westminster")** had 3
+`reports` docs but only 1 `building_history_events` doc — 2 of its `reports` docs
+(`RP2XlBAODDwetYLOmcee`, `ePEKp4cEhbq1OEv2Anty`) had no matching timeline entry at all,
+so they weren't reachable from Building History's "Delete (admin)" and the Reports tab
+has no delete control of its own — genuinely stuck data, unrelated to the two work
+orders above. Mark explicitly authorized deleting exactly those 2 doc ids and provided
+the admin PIN for that one operation. Re-confirmed read-only immediately beforehand that
+both were the Westminster orphans with no paired timeline entry, deleted both via
+`delete_history_event`, then verified read-only afterward: both ids no longer exist,
+Westminster now has exactly 1 `reports` doc and 1 `building_history_events` doc (same id,
+`QHfSr0GyrCLnGnOtlf0W`), and every other work order's `reports`/`building_history_events`
+counts are unchanged (Planet fitness still 5/5, St. Mary's still 2/2, the other two
+singles still 1/1 — nothing else was touched).
+
 **Verified against an in-memory mock Firestore client (never touched real production
 Firestore)**: first save+send for a work order creates exactly one entry; a resend to 2
 more recipients + a reshare + a resave all against the *same* work order still leaves
