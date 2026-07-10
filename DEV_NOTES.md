@@ -1129,6 +1129,21 @@ Westminster now has exactly 1 `reports` doc and 1 `building_history_events` doc 
 counts are unchanged (Planet fitness still 5/5, St. Mary's still 2/2, the other two
 singles still 1/1 — nothing else was touched).
 
+**Cleanup completed (2026-07-09)** — Mark finished the cleanup himself and authorized
+deleting the remaining old duplicate ids for the 2 originally-affected work orders.
+Re-confirmed read-only beforehand that each id was an old duplicate for the right work
+order (not one of the canonical `evt_` docs), then deleted via `delete_history_event`:
+- Planet fitness (`wo_1783623513874`): `5PPAV7KhSHadDdcUPRW2`, `7YYtjwFHvHycIZTwlIOD`,
+  `V4obeTd5WY62Vy1SEyMr`, `iqSgMjoJOIXx7c3dOs48`.
+- St. Mary's (`wo_1783627175735`): `UsZ7RmCZ7rsWBdjwb8gr`.
+
+Verified read-only afterward: all 5 ids no longer exist in either collection; the
+canonical `evt_wo_1783623513874` and `evt_wo_1783627175735` docs remain, with their
+merged recipients intact. Full-collection sweep confirms **all 5 work orders now have
+exactly 1 `reports` doc and 1 `building_history_events` doc each** (10 total docs across
+both collections, one pair per work order) — the duplicate-timeline issue is fully
+cleaned up in production, with the forward fix preventing recurrence.
+
 **Verified against an in-memory mock Firestore client (never touched real production
 Firestore)**: first save+send for a work order creates exactly one entry; a resend to 2
 more recipients + a reshare + a resave all against the *same* work order still leaves
