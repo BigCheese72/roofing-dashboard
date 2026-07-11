@@ -6343,6 +6343,44 @@ original never-saved flow (a fresh, unlinked trace, split and saved) —
 confirmed it still opens the building picker modal exactly as before,
 untouched. All test state cleared, console clean throughout.
 
+## Save-modal: move roof naming up (shipped 2026-07-11, dev only)
+
+Mark, hitting this every save: "need to move the name of roof when saving
+up so when you click save here on the job it allows you to name roof
+then." Naming a new roof used to be deferred to a native `prompt()` popup
+that only appeared AFTER tapping "Save Outline" — a separate step, easy to
+miss/dislike. Now the name field renders inline in the SAME picker screen,
+the moment "+ Add a new roof…" is selected (`rmOnRoofSelectChange()`,
+wired to the `<select>`'s own `onchange` and also called once right after
+the picker renders, so a brand-new building whose ONLY option is "+ Add a
+new roof…" starts with the field already showing) — one screen, in order:
+pick the building → name the roof right there → Save.
+
+Pre-filled with a real unique default, not a placeholder — `rmNextDefaultRoofLabel()`
+picks "Roof N" for the smallest N not already used by that building's
+roofs (so "Roof 1"/"Roof 3" existing yields "Roof 2", not "Roof 4"), so
+the common case is tap-through, and typing over it is still one field
+away. `rmConfirmSaveToChosenRoof()` now reads the inline input instead of
+a `prompt()` return value; `rmAddRoofAndSave()` (unchanged) still runs the
+name through `rmResolveUniqueRoofLabel()` at save time as the real
+backstop — the default rarely collides, but a manually-typed name still
+gets caught and auto-suggested exactly like every other roof-naming path
+in the app. `rmRenderRoofPickerFor()` is the ONE shared picker (Save
+Outline, the CompanyCam-project-link flow, and "Continuing on X" all
+already route through it), so this fix applies everywhere a roof gets
+named, not just one entry point.
+
+Tested in the browser with a mocked `fdb` (no real writes): rendered the
+picker for a building with 2 existing roofs ("Roof 1", "Roof 3") —
+confirmed the name field starts hidden, selecting "+ Add a new roof…"
+reveals it immediately pre-filled with "Roof 2" (correctly skipping both
+taken numbers); confirmed switching back to an existing roof hides the
+field again; saved a new roof with a custom typed name ("Loading Dock
+Canopy") — confirmed it saved correctly with that exact label, no popup
+ever appeared; saved another with a deliberately colliding name ("Roof
+1") — confirmed the existing duplicate guard still fired and
+auto-suffixed to "Roof 1 (2)". All test state cleared, console clean.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |

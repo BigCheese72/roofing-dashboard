@@ -9968,15 +9968,52 @@ function rmRenderRoofPickerFor(buildingId, b){
       '\')">Save All ' + sections.length + ' Sections</button></div>';
     return;
   }
+  /* Mark, hitting this every save: "need to move the name of roof when
+     saving up so when you click save here on the job it allows you to
+     name roof then." Naming used to be deferred to a native prompt()
+     popup that only appeared AFTER tapping Save (rmConfirmSaveToChosenRoof()
+     below, previously). Now the name field renders inline, right here,
+     the moment "+ Add a new roof…" is picked -- one screen, in order:
+     pick the building (already done, this whole modal) -> pick/name the
+     roof -> Save. Pre-filled with a sensible unique default ("Roof N",
+     skipping any already used) so he can just tap through, or type over
+     it right there. See "Save-modal: move roof naming up" in DEV_NOTES.md. */
   var roofs = getBuildingRoofs(b || {});
+  var defaultLabel = rmNextDefaultRoofLabel(roofs);
   document.getElementById("rm-roof-picker").innerHTML =
     '<div class="fld" style="max-width:260px"><label>Which roof is this outline for?</label>' +
-    '<select id="rm-roof-select">' +
+    '<select id="rm-roof-select" onchange="rmOnRoofSelectChange()">' +
     roofs.map(function(r){ return '<option value="' + esc(r.id) + '">' + esc(r.label || "Roof") + '</option>'; }).join('') +
     '<option value="__new__">+ Add a new roof…</option>' +
     '</select></div>' +
+    '<div class="fld" id="rm-new-roof-name-fld" style="max-width:260px;display:none">' +
+    '<label>Name this roof</label>' +
+    '<input type="text" id="rm-new-roof-name" value="' + esc(defaultLabel) + '"></div>' +
     '<div class="btnrow"><button class="btn primary" onclick="rmConfirmSaveToChosenRoof(\'' + buildingId +
     '\')">Save Outline</button></div>';
+  rmOnRoofSelectChange();
+}
+/* "Roof N" for the smallest N not already used by this building's roofs
+   (case/whitespace-insensitive) -- e.g. existing "Roof 1"/"Roof 3" yields
+   "Roof 2", not "Roof 4", so the default itself never trips the duplicate
+   guard in the ordinary case. rmResolveUniqueRoofLabel() at save time is
+   still the real backstop (handles a manually-typed collision, or a roof
+   added by someone else in the meantime). */
+function rmNextDefaultRoofLabel(roofs){
+  var taken = (roofs || []).map(function(r){ return String(r.label || "").trim().toLowerCase(); });
+  var n = 1;
+  while (taken.indexOf(("roof " + n).toLowerCase()) !== -1) n++;
+  return "Roof " + n;
+}
+/* Shows/hides the inline name field to match the select -- called on
+   render (so "+ Add a new roof…" being the ONLY option, e.g. a brand-new
+   building's picker, starts with the field already visible) and on every
+   manual change. */
+function rmOnRoofSelectChange(){
+  var sel = document.getElementById("rm-roof-select");
+  var fld = document.getElementById("rm-new-roof-name-fld");
+  if (!sel || !fld) return;
+  fld.style.display = sel.value === "__new__" ? "" : "none";
 }
 function rmChooseBuildingForSave(buildingId){
   var b = (rmBpCache || []).find(function(x){ return x.id === buildingId; }) || {};
@@ -9985,9 +10022,7 @@ function rmChooseBuildingForSave(buildingId){
 function rmConfirmSaveToChosenRoof(buildingId){
   var sel = document.getElementById("rm-roof-select").value;
   if (sel === "__new__"){
-    var label = prompt("Name for this new roof (e.g. \"Main Roof\", \"North Wing\", \"Warehouse\"):");
-    if (label === null) return;
-    label = label.trim();
+    var label = val("rm-new-roof-name").trim();
     if (!label){ toast("Enter a name for the roof."); return; }
     rmAddRoofAndSave(buildingId, label);
     return;
