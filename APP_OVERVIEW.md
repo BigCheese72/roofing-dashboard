@@ -346,7 +346,10 @@ helps a tech capture a clean roof outline for a building on the spot:
    no popup, no separate screen — with a small Type/Label/Notes form right below it;
    drag the marker or tap the map to position it, then Save. Existing features for
    that roof are already drawn on the map — tap one to edit or delete it the same
-   inline way.
+   inline way. Have several of the same thing to place (multiple RTUs, a run of roof
+   fence, etc.)? Double-tap an existing marker, or tap **"📋 Duplicate"** in its edit
+   form — it copies with the same type/label/notes, dropped just next to the original
+   so you can drag it straight into position instead of re-entering it from scratch.
 8. Export **SVG**, **PNG**, or **PDF** any time — all generated on the device, no
    internet required once the outline exists. Once linked to a building, exports
    include everything marked up on the roof (features + any leak/repair pins from past

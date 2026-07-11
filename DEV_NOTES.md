@@ -4622,6 +4622,61 @@ both `rmClearGeneratedOutline()` and `rmDrawFinalOutline()` reset any
 stale Square-Up UI state left over from a previous outline. All test
 state cleared, page reloaded, console clean.
 
+## Duplicate roof feature (shipped 2026-07-10, dev only)
+
+Mark: "point is speed when a roof has several of the same thing" — multiple
+RTUs, a run of roof-fence sections, etc. Works for every placeable feature
+type in `ROOF_ASSET_TYPES` (drains, HVAC/RTU, vents, hatches, curbs,
+penetrations, and everything else in that map) — not type-specific, since
+`rmDuplicateFeature()` just copies whatever `.type`/`.label`/`.notes` the
+original asset had. (Findings/pins from a work order — leaks, repairs — are
+a different system entirely, tied to a specific report, not a roof-wide
+permanent feature; out of scope here, not something this touches.)
+
+**Two reachable paths, both calling the same `rmDuplicateFeature(assetId)`**:
+a new "📋 Duplicate" button in the inline feature-edit form (shown only
+when editing an existing feature, same visibility gate as Delete), and
+double-clicking a placed marker directly (`rmDrawLinkedAssets()`'s new
+`dblclick` handler, `L.DomEvent.stopPropagation()`'d so it doesn't also
+trigger the map's own double-click-to-zoom underneath). The dblclick path
+has one accepted, documented quirk: a double-click is preceded by two
+ordinary `click` events (standard DOM behavior, not a Leaflet or app bug),
+so the single-click edit-form handler fires first and briefly opens the
+form before the duplicate itself completes and closes it again — a minor
+visual blip, not a functional issue, and the form's own Duplicate button
+sidesteps it entirely for anyone who finds that distracting.
+
+**The copy** gets a fresh `genId("ast")` id, the exact same
+type/label/notes as the original, and is offset 12ft in both lat and lng
+(≈17ft diagonal — verified) from the original position so it doesn't land
+exactly on top of it — same drag-to-reposition interaction as any newly
+placed feature, nothing new to learn. Persists through the exact same
+`persistRoofAsset()` every other roof-asset write already uses (Building
+History's asset modal, RoofMapper's own add/edit form) — no new data path,
+no new Firestore write shape.
+
+**Guards**: no-ops (no Firestore call) if nothing is linked, if the asset
+id isn't found, or if the source asset only has x/y coordinates (placed on
+a building's custom `roof_plan`/`sketch` base map — RoofMapper's own map is
+always lat/lng-only, same pre-existing limitation as the outline itself, so
+those assets never get a marker here to double-click in the first place;
+the guard is defensive, not reachable via the dblclick path, only kept in
+case the form button is ever invoked in a state that shouldn't be possible
+today).
+
+Tested with a real Leaflet map instance and mocked `fdb` (no real writes):
+confirmed a duplicated asset's type/label/notes matched the original
+exactly with a different id, at the expected ~17ft offset; confirmed all
+three guards correctly skip the Firestore call (unlinked, unknown id,
+x/y-only); confirmed the marker's `dblclick` handler routes to
+`rmDuplicateFeature()` with the right asset id; confirmed the form's
+Duplicate/Delete buttons are both hidden when adding a brand-new feature
+and both visible when editing an existing one; confirmed the form button's
+`rmDuplicateFeature(rmFeatureEditingId)` call correctly targets whichever
+feature is currently being edited; regression-checked that
+`rmEditFeature()`/`rmCancelFeatureForm()` still populate and close the form
+exactly as before. All test state cleared, page reloaded, console clean.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |

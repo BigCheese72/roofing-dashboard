@@ -588,6 +588,7 @@
         </div>
         <div class="btnrow" style="margin:8px 0 0">
           <button class="btn primary" onclick="rmSaveFeature()">Save Feature</button>
+          <button class="btn" id="rm-feature-dup-btn" onclick="rmDuplicateFeature(rmFeatureEditingId)" style="display:none">📋 Duplicate</button>
           <button class="btn danger" id="rm-feature-delete-btn" onclick="rmDeleteFeature()" style="display:none">Delete</button>
           <button class="btn" onclick="rmCancelFeatureForm()">Cancel</button>
         </div>
@@ -8088,6 +8089,21 @@ function rmDrawLinkedAssets(assets){
     var m = L.marker([a.lat, a.lng], { icon: assetIcon(a.type) }).addTo(rmState.assetLayerGroup);
     m._rmAssetId = a.id; /* so rmOpenFeatureForm can hide this exact marker while it's being edited */
     m.on("click", function(){ rmEditFeature(a.id); });
+    /* Fast duplicate path (Mark: "point is speed when a roof has several of
+       the same thing" -- multiple RTUs, a run of roof-fence sections,
+       etc.) -- alongside the "📋 Duplicate" button in the edit form below,
+       which is the more discoverable path for the same action. A dblclick
+       is preceded by two ordinary click events (standard DOM behavior,
+       not Leaflet-specific) so the edit form will briefly open/re-open
+       before the duplicate itself fires and closes it again -- a minor
+       visual blip, not a functional issue, and the form button avoids it
+       entirely. stopPropagation keeps the double-click from ALSO
+       triggering the map's own double-click-to-zoom underneath. See
+       "Duplicate roof feature" in DEV_NOTES.md. */
+    m.on("dblclick", function(e){
+      L.DomEvent.stopPropagation(e);
+      rmDuplicateFeature(a.id);
+    });
   });
 }
 
@@ -8119,6 +8135,7 @@ function rmOpenFeatureForm(existingAsset){
   document.getElementById("rm-feature-label").value = existingAsset ? (existingAsset.label || "") : "";
   document.getElementById("rm-feature-notes").value = existingAsset ? (existingAsset.notes || "") : "";
   document.getElementById("rm-feature-delete-btn").style.display = existingAsset ? "" : "none";
+  document.getElementById("rm-feature-dup-btn").style.display = existingAsset ? "" : "none";
   document.getElementById("rm-feature-form").style.display = "";
   document.getElementById("rm-features-actions").style.display = "none";
   var map = rmEnsureMap();
@@ -8207,6 +8224,37 @@ async function rmDeleteFeature(){
     toast("Roof feature removed");
     rmCloseFeatureForm(true);
   }catch(e){ toast("Couldn't remove: " + e.message); }
+}
+/* Mark: "point is speed when a roof has several of the same thing" --
+   multiple RTUs, a run of roof-fence sections, etc. Copies EVERY field
+   (type/label/notes) of any placeable feature type with a fresh id, offset
+   a short distance from the original so the copy doesn't sit exactly on
+   top of it -- drag it the rest of the way into position, same as placing
+   any feature. Reachable two ways: the "📋 Duplicate" button in the edit
+   form, and double-clicking a placed marker directly (rmDrawLinkedAssets()
+   above). Goes through the same persistRoofAsset() every other roof-asset
+   write already uses -- no new data path. See "Duplicate roof feature" in
+   DEV_NOTES.md. */
+async function rmDuplicateFeature(assetId){
+  var asset = (rmState.linkedAssetsCache || []).find(function(a){ return a.id === assetId; });
+  if (!asset || !rmState.linkedBuildingId || !rmState.linkedRoofId) return;
+  if (typeof asset.lat !== "number" || typeof asset.lng !== "number"){
+    toast("Can't duplicate this feature here — it's placed on a custom base map, not on this satellite map.");
+    return;
+  }
+  var offsetFt = 12;
+  var mPerDegLat = 111320, mPerDegLng = 111320 * Math.cos(asset.lat * Math.PI / 180);
+  var offsetM = offsetFt / 3.28084;
+  var copy = Object.assign({}, asset, {
+    id: genId("ast"),
+    lat: asset.lat + offsetM / mPerDegLat,
+    lng: asset.lng + offsetM / mPerDegLng
+  });
+  try{
+    await persistRoofAsset(rmState.linkedBuildingId, rmState.linkedRoofId, copy);
+    toast("Feature duplicated ✓ — drag it into place");
+    rmCloseFeatureForm(true);
+  }catch(e){ toast("Couldn't duplicate: " + e.message); }
 }
 
 /* ---- save locally (localStorage fallback — offline or not linked yet) ---- */

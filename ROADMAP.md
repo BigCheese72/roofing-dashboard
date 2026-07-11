@@ -504,6 +504,14 @@ Goal: turn each building into a long-term roof record.
   custom (x/y) base-map assets still can't place/show inline (lat/lng
   only). Photo auto-pin is untouched — separate code path entirely. See
   "RoofMapper Phase 2.5" in `DEV_NOTES.md`.
+- ✅ **Shipped (dev only, 2026-07-10)**: duplicate a placed roof feature —
+  Mark: "point is speed when a roof has several of the same thing" (multiple
+  RTUs, a run of roof-fence sections, etc.). Double-click a placed marker,
+  or tap "📋 Duplicate" in its edit form, and it's copied (same type/label/
+  notes) with a small nearby offset to drag into place — works for every
+  feature type, not just one. Same `persistRoofAsset()` write path every
+  other roof-asset edit already uses. See "Duplicate roof feature" in
+  `DEV_NOTES.md`.
 - ✅ **Shipped (dev only), part 1 of 3**: RoofMapper ↔ Roof Map unification —
   Phase 3, satellite view + manual trace. Lets a tech map a roof even where
   OpenStreetMap has no building footprint at all (the real case that
