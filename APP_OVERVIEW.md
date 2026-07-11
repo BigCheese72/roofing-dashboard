@@ -421,6 +421,24 @@ screen: tap the roof's own label on the map (it shows a small "✏️"), or tap
 duplicate-name check applies to renames too. (It can also still be renamed from the
 **"✏️ Rename"** button next to the roof picker in Building History.)
 
+**One traced outline is really several roofs?** (A warehouse traced as one blob that's
+actually a main building plus an office annex, several buildings on one property
+pulled in as a single footprint, etc.) Before saving, tap **"✂️ Split Into Roof
+Sections"**, then tap two points on the outline's own edge to draw a straight split
+line between them — the outline divides into two independently colored, labeled
+sections ("Roof A" / "Roof B") right on the map. Not happy with the name? Type over it
+right in the list below the map. Need more than two pieces? Tap **"✂️ Split
+Further"** on any section to split it again (as many times as you need — splitting
+"Roof A" further gives you "Roof A1" and "Roof A2"). The same duplicate-name warning
+from renaming applies here too, right in the list, before you can save. When it looks
+right, **"💾 Save All N Sections as Roofs"** creates every section as its own real,
+separately-labeled roof on the building in one step — pick or create the building
+once, same as a normal save. Changed your mind? **"✕ Discard Split, Keep Single
+Outline"** goes back to treating it as one roof. (Splitting only applies before the
+first save — an already-saved roof isn't split this way; if a split section's shape
+needs a small correction, save it first, then use **"✏️ Edit Shape"** on it like any
+other roof.)
+
 **No OpenStreetMap footprint for this building?** (Happens — some buildings, like
 hospitals, are only mapped as a whole property parcel, or not mapped at all.) Tap
 **"🛰️ Satellite View"** to see real imagery instead of the street map, and

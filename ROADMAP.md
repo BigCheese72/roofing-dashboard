@@ -605,6 +605,26 @@ Goal: turn each building into a long-term roof record.
   live (map, roof picker, Building History, exports) — none of it is a
   cached copy. See "Rename a roof, discoverable from RoofMapper" in
   `DEV_NOTES.md`.
+- ✅ **Shipped (dev only, 2026-07-11)**: split a roof outline into multiple
+  labeled sections ("blob-splitting") — an auto-pulled OSM footprint or
+  hand trace is often really several distinct roof sections at once (a
+  warehouse + office annex, several buildings on one parcel). Tap
+  **"✂️ Split Into Roof Sections"** before saving, then tap two points on
+  the outline's own boundary to draw a straight split line — each
+  resulting section is independently re-splittable (unlimited times),
+  individually labeled ("Roof A"/"Roof B", or "Roof A1"/"Roof A2" when
+  splitting a section further), shown in its own color on the map, and
+  becomes its own real roof (own roofId/label/area/features) in one batch
+  save. The same duplicate-name guard from the rename fix above applies
+  here too. Geometry validated against synthetic test polygons (a plain
+  rectangle and an L-shape, including a chord that correctly gets rejected
+  for cutting outside the L-shape's own notch) before any UI was built.
+  Deliberately out of scope: splitting an ALREADY-saved single roof (a
+  more involved operation, replacing one roof's real history with
+  several); adjusting a pending section's shape before saving (once saved,
+  the existing Edit Shape / vertex dragging already covers it like any
+  other roof). See "Split a roof outline into labeled sections" in
+  `DEV_NOTES.md`.
 - 🐛 **Fixed (dev only, 2026-07-11), HIGH PRIORITY**: RoofMapper export was
   badly broken — Mark's actual exported file showed the outline missing
   entirely, features as unlabeled floating dots, layout crammed into one

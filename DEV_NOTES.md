@@ -5702,6 +5702,137 @@ mocked `prompt`) drives the whole save-and-redraw flow correctly, marker
 text updating from "Roof 1 ✏️" to "North Wing ✏️" in place. All test
 state cleared, page reloaded, console clean.
 
+## Split a roof outline into labeled sections ("blob-splitting", shipped 2026-07-11, dev only)
+
+Mark: an auto-pulled OSM footprint (or a hand trace) is often really
+several distinct roof sections captured as one blob — a warehouse + office
+annex, several buildings on one parcel. This lets him draw a straight
+split line between two points on the outline's own boundary and get two
+independent sections back, each individually re-splittable, each becoming
+its own real roof (own roofId/label/area/features) on save. Only offered
+BEFORE the outline is saved — `#rm-split-btn` (next to "Save Outline to
+Building") is hidden once linked, same gating style as the rename button's
+inverse condition, both in `rmUpdateControlVisibility()`.
+
+**Geometry, validated with synthetic test polygons before wiring up any
+UI** (same "prove it works before building on it" discipline as the
+GeoTIFF investigation): standard "split a simple polygon by two boundary
+points" technique — `rmNearestRingBoundaryPoint()` snaps each tap exactly
+onto the ring's own boundary (which edge, and how far along it);
+`rmSplitInsertVertex()` inserts it as a real vertex (or reuses an existing
+one within ~2% of an edge's length, avoiding degenerate zero-length
+edges); `rmSplitRingByChord()` then walks the vertex list both directions
+between the two inserted points — each direction is a complete, valid
+sub-polygon sharing the new chord as an edge. Two safety checks, since a
+tech can tap two boundary points however they like: the resulting arcs
+must each have ≥3 vertices (rejects "the same spot" or "practically
+adjacent corners" as too degenerate to be a real section), and the
+chord's midpoint must land inside the ORIGINAL shape (`rmGeomPointInRing()`,
+ray casting) — catches a straight line that would cut outside a
+non-convex outline, e.g. corner-to-corner across an L-shaped roof through
+its own missing notch. Verified against a plain rectangle (exact 50/50
+area split, sums back to the total) AND an L-shaped polygon (both a
+correctly-rejected corner-to-corner chord that exits the shape, and a
+correctly-accepted straight-down-the-middle chord that stays inside,
+areas summing back to the total either way).
+
+**State**: `rmSplitState` (deliberately a separate top-level var, not
+nested in `rmState` — this is a self-contained sub-workflow with its own
+lifecycle, matching the existing `rmTraceState` precedent). `sections` is
+`null` until the first split is confirmed, then an array of
+`{id,label,ring,areaSqFt,perimeterFt,center}` — pending, NOT yet real
+roofs. `targetIndex` tracks whether the split-in-progress is against the
+original outline (`-1`) or re-splitting one existing pending section
+further (its index) — splitting section "Roof A" further produces "Roof
+A1"/"Roof A2", replacing it in place (`sections.splice(targetIndex, 1,
+sectionA, sectionB)`), so re-splitting is unlimited and each section's
+lineage stays readable in its own name. Point-picking reuses the map
+click-handler bind/unbind pattern already established by
+`rmFeatureMapClickHandler`/`rmTraceClickHandler` (bind on enter, `map.off()`
+on exit) rather than a shared global dispatcher, matching this codebase's
+existing per-mode-handler convention. Precision cursor
+(`rmSetPrecisionMode()`) is on while picking split points, same as
+tracing/vertex-editing/feature-placement.
+
+**UI**: each pending section gets a distinct color (an 8-color cycling
+palette, none of which collide with any existing map meaning — orange is
+the base/active outline, blue is a linked roof's label, slate-gray is the
+reference layer, yellow is the snap indicator) drawn as a filled polygon
++ its own label directly on the map (`rmDrawSplitSections()`), plus a
+review card below the outline panel (`#rm-split-panel`) listing every
+section with an editable label input, its area, a "✂️ Split Further"
+button, and finally "💾 Save All N Sections as Roofs" / "✕ Discard
+Split, Keep Single Outline". A duplicate-name warning
+(`rmSplitFindDuplicateLabels()`, same case/whitespace-insensitive logic as
+`rmSuggestUniqueRoofLabel()`) shows inline and actively BLOCKS opening the
+save modal — real-time and actionable since the tech is looking at both
+conflicting names right there, unlike a collision against a roof already
+saved on the target building (see below).
+
+**Save flow reuses the existing building-picker modal (`rm-save-modal`)
+rather than building a parallel one**: `rmSaveAllSplitSections()` sets
+`rmSplitState.savingAll = true` then calls the same `openRmSaveModal()`
+every single-outline save uses. `rmRenderRoofPickerFor()` and
+`rmCreateBuildingAndSave()` both branch on that flag — instead of the
+normal "which existing roof is this for?" dropdown (meaningless here,
+since this is creating N BRAND NEW roofs at once, not picking one), the
+picker shows a plain summary ("This will create 3 new roofs: Roof A1,
+Roof A2, Roof B") and a single confirm button. `closeRmSaveModal()` always
+resets the flag back to `false`, so a later, unrelated normal save is
+never accidentally treated as a batch. New `rmSaveSplitSectionsToBuilding()`
+mirrors `rmAddRoofAndSave()`'s roof shape for each section but batches all
+of them into ONE `saveBuildingRoofs()` write rather than N round-trips.
+Collisions against roofs that ALREADY exist on the target building (not
+visible to the tech until they actually pick it, so a blocking dialog
+isn't actionable at that point) are auto-resolved silently via
+`rmSuggestUniqueRoofLabel()`'s suggestion, then reported by name in the
+final toast (e.g. "Roof A1 → Roof A1 (2) — already used on this
+building") rather than interrupting a batch save with N confirm dialogs.
+
+**Lands on the LAST created roof**, same "stay in RoofMapper, no
+navigation away" pattern the rest of this cluster follows — redraws the
+outline layer to that ONE section's actual shape (not the original full
+blob, which would be misleading once it's been split), draws its edge
+dimensions and label, shows the Features panel, loads its assets. The
+other N-1 new roofs are saved and fully real (their own roofId, visible
+in Building History's roof map and the roof-select dropdown) but not
+individually highlighted on screen after landing — matching how any other
+multi-roof creation already works today (Building History's Roof Map is
+the existing place to see every roof on a building at once).
+
+**Deliberately out of scope, not built this pass**: splitting an
+ALREADY-saved single roof into several (a different, more involved
+operation — replacing one real roof's existing history with several new
+ones) — this feature only applies before the first save, matching Mark's
+original ask about an auto-pulled OSM footprint. Adjusting a PENDING
+section's shape before saving (e.g. dragging a corner to fix a split line
+that's close but not quite right) isn't built as its own step — but once
+ANY section is saved as a real roof, the existing Edit Shape / vertex
+dragging (already built, reused as-is) applies to it immediately like any
+other roof, so "adjust corners" is already covered for the realistic case
+of noticing something's slightly off after saving and reopening that roof.
+
+Tested extensively in the browser, no live writes except the final mocked
+batch-save: a plain rectangle split down the middle (exact 50/50 area,
+verified against `rmGeomPolygonAreaSqMeters()` directly); re-splitting one
+of the two resulting sections again (3 total: "Roof A1"/"Roof A2"/"Roof
+B", areas summing back to the original half); a genuinely degenerate tap
+(both points snapping to the same corner) correctly toasting "too close to
+a corner" and leaving state untouched; the duplicate-name warning blocking
+`rmSaveAllSplitSections()` from even opening the save modal, then clearing
+once fixed; button visibility gating confirmed both directions (shown
+unlinked, hidden once linked, and vice versa for Rename); the full
+map-click → point-picking → confirm flow driven through REAL Leaflet
+`map.fire("click", ...)` events and a real DOM `button.click()` (not just
+direct function calls) to confirm the actual wiring, not just the
+underlying logic; discard flow confirmed to remove the colored map layers
+and clear the review panel; and the full batch save against a mocked
+`fdb` — reproduced a real collision (target building already has a roof
+named the same as one pending section) and confirmed it auto-resolved to
+"(2)" and was reported in the final toast, all N sections landed as real
+roofs with their own outline entries, and the screen landed correctly on
+the last one. All test state cleared, page reloaded, console clean.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |

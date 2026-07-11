@@ -754,8 +754,20 @@
       <div class="rm-actions">
         <button class="btn primary rm-bigbtn" onclick="openRmSaveModal()">💾 Save Outline to Building</button>
         <button class="btn rm-bigbtn" onclick="rmSaveLocally()">📱 Save on This Device Only</button>
+        <!-- Only offered before this outline is saved to a real roof -- an
+             auto-pulled OSM footprint or hand trace is often really several
+             distinct roof sections at once (a warehouse + office annex,
+             several buildings on one parcel), each of which should become
+             its OWN roof. Splitting an ALREADY-saved single roof into
+             several is a different, more involved operation (replacing one
+             real roof's history with several) and deliberately out of
+             scope here -- see "Split a roof outline into labeled sections"
+             in DEV_NOTES.md. Hidden alongside "saved" state the same way
+             as the rest of this row's siblings, via rmUpdateControlVisibility(). -->
+        <button class="btn rm-bigbtn" id="rm-split-btn" onclick="rmStartSplitting(-1)">✂️ Split Into Roof Sections</button>
         <button class="btn danger rm-bigbtn" onclick="rmDeleteOutline()">🗑️ Delete Outline</button>
       </div>
+      <div id="rm-split-panel"></div>
       <div class="btnrow">
         <button class="btn" onclick="rmZoomToOutline()">🔍 Zoom to Roof</button>
         <button class="btn primary" onclick="rmPreviewExport()">👁️ Preview Export</button>
@@ -6933,6 +6945,114 @@ function rmGeomPolygonPerimeterMeters(ring){
   for (var i = 0; i < ring.length - 1; i++) total += rmGeomHaversineMeters(ring[i], ring[i + 1]);
   return total;
 }
+/* ---- Split a roof outline into multiple labeled sections ("blob-splitting")
+   Mark: an auto-pulled OSM footprint (or a hand trace) is often really
+   several distinct roof sections -- a warehouse + office annex, several
+   buildings on one parcel -- captured as one blob. This lets him draw a
+   straight split line between two points on the outline's own boundary
+   and get two independent sections back, each re-splittable again, each
+   becoming its own real roof (own roofId/label/area/features) on save.
+   See "Split a roof outline into labeled sections" in DEV_NOTES.md and
+   rmStartSplitting() below for the interactive/UI side. */
+
+/* Point-in-polygon (ray casting), same flat-earth local-XY approximation
+   as every other roof-scale geometry helper above -- used only as a
+   sanity check that a proposed split line's midpoint actually lies inside
+   the shape being split (rejects a chord that would cut outside it, e.g.
+   corner-to-corner across an L-shaped outline). */
+function rmGeomPointInRing(pt, ring){
+  var origin = rmGeomRingCentroid(ring);
+  var p = rmGeomToLocalXY(pt, origin);
+  var verts = ring.map(function(v){ return rmGeomToLocalXY(v, origin); });
+  var inside = false;
+  for (var i = 0, j = verts.length - 1; i < verts.length; j = i++){
+    var vi = verts[i], vj = verts[j];
+    var intersects = ((vi.y > p.y) !== (vj.y > p.y)) &&
+      (p.x < (vj.x - vi.x) * (p.y - vi.y) / (vj.y - vi.y) + vi.x);
+    if (intersects) inside = !inside;
+  }
+  return inside;
+}
+/* Nearest point ON the ring's own boundary (any edge) to latlng, plus
+   which edge it's on and how far along it (t: 0 = exactly ring[edgeIndex],
+   1 = exactly ring[edgeIndex+1]) -- distinct from rmFindSnapTarget() above
+   (which searches OTHER roofs' rings within a fixed screen-pixel radius
+   and can return "nothing close enough"); this always returns a result,
+   snapped exactly onto the boundary so rmSplitInsertVertex() can cleanly
+   insert it as a new vertex. */
+function rmNearestRingBoundaryPoint(ring, latlng){
+  var origin = rmGeomRingCentroid(ring);
+  var p = rmGeomToLocalXY(latlng, origin);
+  var best = null, bestDist = Infinity, bestEdge = -1, bestT = 0;
+  for (var i = 0; i < ring.length - 1; i++){
+    var a = rmGeomToLocalXY(ring[i], origin), b = rmGeomToLocalXY(ring[i + 1], origin);
+    var abx = b.x - a.x, aby = b.y - a.y;
+    var lenSq = abx * abx + aby * aby;
+    var t = lenSq === 0 ? 0 : Math.max(0, Math.min(1, ((p.x - a.x) * abx + (p.y - a.y) * aby) / lenSq));
+    var projX = a.x + t * abx, projY = a.y + t * aby;
+    var d = Math.sqrt((p.x - projX) * (p.x - projX) + (p.y - projY) * (p.y - projY));
+    if (d < bestDist){
+      bestDist = d; bestEdge = i; bestT = t;
+      best = rmGeomFromLocalXY({ x: projX, y: projY }, origin);
+    }
+  }
+  return { lat: best.lat, lng: best.lng, edgeIndex: bestEdge, t: bestT };
+}
+/* Inserts a split point onto verts (an OPEN vertex list, no closing
+   duplicate) at the correct position, snapping onto an existing vertex
+   instead of inserting a near-duplicate one if it landed within ~2% of an
+   edge's own length of that vertex -- avoids degenerate zero-length edges
+   in the resulting sections. Returns the vertex's index in the (possibly
+   now longer) array. */
+function rmSplitInsertVertex(verts, hit){
+  var EPS_T = 0.02;
+  if (hit.t <= EPS_T) return hit.edgeIndex;
+  if (hit.t >= 1 - EPS_T) return (hit.edgeIndex + 1) % verts.length;
+  verts.splice(hit.edgeIndex + 1, 0, { lat: hit.lat, lng: hit.lng });
+  return hit.edgeIndex + 1;
+}
+/* The actual split: given a CLOSED ring (ring[0]===ring[last]) and two
+   points (not necessarily already on the boundary -- they're snapped onto
+   it here), returns { ringA, ringB } -- two new closed rings sharing the
+   p1->p2 chord as a new edge -- or { error } if the two points resolve to
+   the same vertex, land too close to a corner to form a real section, or
+   the chord's midpoint falls outside the original shape. Standard
+   "split a simple polygon by two boundary points" technique: insert both
+   points as real vertices, then the two arcs between them (walked each
+   direction around the ring) are the two resulting polygons. */
+function rmSplitRingByChord(ring, p1, p2){
+  var verts = ring.slice(0, ring.length - 1);
+  var hit1 = rmNearestRingBoundaryPoint(ring, p1);
+  var i1 = rmSplitInsertVertex(verts, hit1);
+  /* Re-locate p2 against the ring AS UPDATED so far (now possibly one
+     vertex longer) so its edgeIndex lines up with the current `verts`. */
+  var ringSoFar = verts.concat([verts[0]]);
+  var hit2 = rmNearestRingBoundaryPoint(ringSoFar, p2);
+  var i2 = rmSplitInsertVertex(verts, hit2);
+  if (i1 === i2) return { error: "Those two points are the same spot — tap two different points on the outline." };
+  var lo = Math.min(i1, i2), hi = Math.max(i1, i2);
+  var arcA = verts.slice(lo, hi + 1);
+  var arcB = verts.slice(hi).concat(verts.slice(0, lo + 1));
+  if (arcA.length < 3 || arcB.length < 3){
+    return { error: "That split line is too close to a corner — tap two points further apart." };
+  }
+  var mid = { lat: (p1.lat + p2.lat) / 2, lng: (p1.lng + p2.lng) / 2 };
+  if (!rmGeomPointInRing(mid, ring)){
+    return { error: "That split line goes outside the roof outline — pick two points where a straight line between them stays inside the shape." };
+  }
+  return { ringA: arcA.concat([arcA[0]]), ringB: arcB.concat([arcB[0]]) };
+}
+/* Builds a pending-section object (not yet a saved roof) from a ring --
+   same area/perimeter math every saved outline uses, so the numbers shown
+   in the split review panel match exactly what gets saved. */
+function rmMakeSplitSection(ring, label){
+  return {
+    id: genId("split"), label: label, ring: ring,
+    areaSqFt: rmGeomPolygonAreaSqMeters(ring) * 10.7639,
+    perimeterFt: rmGeomPolygonPerimeterMeters(ring) * 3.28084,
+    center: rmGeomRingCentroid(ring)
+  };
+}
 /* ---- Square Up (orthogonal snapping) ----
    Mark: roofs are mostly rectilinear, so a traced outline should "look
    square" -- snap near-90° corners and near-axis edges clean, UNLESS a
@@ -7764,6 +7884,9 @@ function rmUpdateControlVisibility(){
   /* Rename control: only meaningful once this outline belongs to an
      actual saved/linked roof (see rmRenameLinkedRoof()). */
   rmSetDisp("rm-rename-roof-btn", !!rmState.linkedRoofId);
+  /* Split control: the inverse -- only meaningful BEFORE this outline is
+     saved to a real roof (see rmStartSplitting()). */
+  rmSetDisp("rm-split-btn", !saved);
 }
 function rmUseMyLocation(){
   var btn = document.getElementById("rm-locate-btn");
@@ -7882,6 +8005,7 @@ function rmClearGeneratedOutline(){
   if (squareStatus) squareStatus.textContent = "";
   if (rmState.vertexEditActive) rmExitVertexEdit(false); /* discard, nothing left to save it to */
   rmClearLinkedFeatures();
+  rmClearSplitState(); /* a torn-down outline takes any pending split sections of it down too */
   document.getElementById("rm-outline-panel").style.display = "none";
   rmUpdateExportHint();
   rmUpdateControlVisibility();
@@ -8242,6 +8366,7 @@ async function rmPersistVertexEdit(){
 function rmDrawFinalOutline(outline){
   rmState.outline = outline;
   rmClearLinkedFeatures(); /* a freshly captured outline is never linked yet */
+  rmClearSplitState(); /* and never has a pending split from whatever outline was showing before */
   rmState.preSquareRing = null; /* a fresh outline was never squared -- no stale Undo button */
   var undoBtn = document.getElementById("rm-undo-square-btn");
   if (undoBtn) undoBtn.style.display = "none";
@@ -9090,6 +9215,7 @@ function closeRmSaveModal(){
   document.getElementById("rm-save-modal").style.display = "none";
   unlockBodyScroll();
   if (rmBpCcDebounceTimer) clearTimeout(rmBpCcDebounceTimer);
+  rmSplitState.savingAll = false;
 }
 /* Multi-roof fast path -- Mark: shouldn't have to search for the same
    building again when saving roof #2/#3/etc right after roof #1.
@@ -9237,6 +9363,18 @@ async function rmBpSelectCompanyCamProject(i){
    DEV_NOTES.md. (rmCreateBuildingAndSave(), for a BRAND-NEW building, is
    unaffected -- its first roof is unambiguous, no picker needed there.) */
 function rmRenderRoofPickerFor(buildingId, b){
+  /* Batch path: rmSaveAllSplitSections() is saving N pending split
+     sections as N brand-new roofs at once, not picking a single existing
+     roof for one outline -- the normal picker below doesn't apply. */
+  if (rmSplitState.savingAll){
+    var sections = rmSplitState.sections || [];
+    document.getElementById("rm-roof-picker").innerHTML =
+      '<div class="rm-footprint-info" style="margin-bottom:10px">This will create <b>' + sections.length +
+      '</b> new roofs on this building: ' + sections.map(function(s){ return esc(s.label); }).join(", ") + '.</div>' +
+      '<div class="btnrow"><button class="btn primary" onclick="rmSaveSplitSectionsToBuilding(\'' + buildingId +
+      '\')">Save All ' + sections.length + ' Sections</button></div>';
+    return;
+  }
   var roofs = getBuildingRoofs(b || {});
   document.getElementById("rm-roof-picker").innerHTML =
     '<div class="fld" style="max-width:260px"><label>Which roof is this outline for?</label>' +
@@ -9332,6 +9470,277 @@ async function rmRenameLinkedRoof(){
     toast("Roof renamed ✓");
   }catch(e){ toast("Couldn't rename roof: " + e.message); }
 }
+
+/* ---- Split a roof outline into multiple labeled roof sections
+   ("blob-splitting") -- interactive/UI side. See rmSplitRingByChord() and
+   its neighboring geometry helpers above for the actual math, and "Split
+   a roof outline into labeled sections" in DEV_NOTES.md for the full
+   picture. Only offered BEFORE an outline is saved to a real roof --
+   #rm-split-btn is hidden once linked (rmUpdateControlVisibility()). */
+var rmSplitState = {
+  active: false,     /* currently picking the two boundary points for a split-in-progress */
+  targetIndex: -1,   /* -1 = splitting rmState.outline itself (the very first split); >=0 = splitting sections[targetIndex] further */
+  points: [],        /* 0-2 {lat,lng} points tapped so far for the split-in-progress, already snapped onto the boundary */
+  pointMarkers: [],
+  chordLine: null,
+  clickHandler: null,
+  sections: null,    /* null until the first split is confirmed; then an array of {id,label,ring,areaSqFt,perimeterFt,center} */
+  displayLayerGroup: null,
+  savingAll: false   /* true only while rm-save-modal is open FOR a "Save All Sections" action -- see rmSaveAllSplitSections() */
+};
+var RM_SPLIT_COLORS = ["#8E24AA", "#00897B", "#3949AB", "#C0CA33", "#D81B60", "#546E7A", "#6D4C41", "#00ACC1"];
+function rmSplitCurrentRing(){
+  return rmSplitState.targetIndex === -1 ? rmState.outline.ring : rmSplitState.sections[rmSplitState.targetIndex].ring;
+}
+function rmStartSplitting(targetIndex){
+  if (!rmState.outline){ toast("Generate a roof outline first."); return; }
+  if (targetIndex === -1 && rmSplitState.sections){
+    toast('Already splitting this outline — use "Split Further" on one of the sections below.');
+    return;
+  }
+  rmSplitCancelPicking(); /* clean up any stray in-progress state from a previous attempt */
+  rmSplitState.active = true;
+  rmSplitState.targetIndex = targetIndex;
+  rmSplitState.points = [];
+  var map = rmEnsureMap();
+  rmSplitState.clickHandler = function(e){ rmSplitAddPoint(e.latlng); };
+  map.on("click", rmSplitState.clickHandler);
+  rmSetPrecisionMode(true);
+  rmRenderSplitPanel();
+}
+function rmSplitAddPoint(latlng){
+  var ring = rmSplitCurrentRing();
+  var hit = rmNearestRingBoundaryPoint(ring, latlng);
+  rmSplitState.points.push({ lat: hit.lat, lng: hit.lng });
+  var marker = L.circleMarker([hit.lat, hit.lng], {
+    radius: 8, color: "#fff", weight: 2, fillColor: "#212121", fillOpacity: 1
+  }).addTo(rmState.map);
+  rmSplitState.pointMarkers.push(marker);
+  if (rmSplitState.points.length === 2){
+    var p1 = rmSplitState.points[0], p2 = rmSplitState.points[1];
+    if (rmSplitState.chordLine) rmState.map.removeLayer(rmSplitState.chordLine);
+    rmSplitState.chordLine = L.polyline([[p1.lat, p1.lng], [p2.lat, p2.lng]], {
+      color: "#212121", weight: 3, dashArray: "8,6"
+    }).addTo(rmState.map);
+  }
+  rmRenderSplitPanel();
+}
+function rmSplitUndoPoint(){
+  if (!rmSplitState.points.length) return;
+  rmSplitState.points.pop();
+  var marker = rmSplitState.pointMarkers.pop();
+  if (marker && rmState.map) rmState.map.removeLayer(marker);
+  if (rmSplitState.chordLine){ rmState.map.removeLayer(rmSplitState.chordLine); rmSplitState.chordLine = null; }
+  rmRenderSplitPanel();
+}
+function rmSplitCancelPicking(){
+  if (rmSplitState.clickHandler && rmState.map) rmState.map.off("click", rmSplitState.clickHandler);
+  rmSplitState.clickHandler = null;
+  rmSplitState.active = false;
+  rmSplitState.points = [];
+  if (rmState.map){
+    rmSplitState.pointMarkers.forEach(function(m){ rmState.map.removeLayer(m); });
+    if (rmSplitState.chordLine) rmState.map.removeLayer(rmSplitState.chordLine);
+  }
+  rmSplitState.pointMarkers = [];
+  rmSplitState.chordLine = null;
+  rmSetPrecisionMode(false);
+  rmRenderSplitPanel();
+}
+function rmConfirmSplit(){
+  if (rmSplitState.points.length !== 2){ toast("Tap two points on the outline first."); return; }
+  var ring = rmSplitCurrentRing();
+  var result = rmSplitRingByChord(ring, rmSplitState.points[0], rmSplitState.points[1]);
+  if (result.error){ toast(result.error); return; }
+  var baseLabel = rmSplitState.targetIndex === -1 ? null : rmSplitState.sections[rmSplitState.targetIndex].label;
+  var labelA = baseLabel === null ? "Roof A" : (baseLabel + "1");
+  var labelB = baseLabel === null ? "Roof B" : (baseLabel + "2");
+  var sectionA = rmMakeSplitSection(result.ringA, labelA);
+  var sectionB = rmMakeSplitSection(result.ringB, labelB);
+  if (rmSplitState.targetIndex === -1) rmSplitState.sections = [sectionA, sectionB];
+  else rmSplitState.sections.splice(rmSplitState.targetIndex, 1, sectionA, sectionB);
+  rmSplitCancelPicking(); /* clears points/handler; leaves rmSplitState.sections intact */
+  rmDrawSplitSections();
+  toast("Split into " + rmSplitState.sections.length + " sections ✓");
+}
+function rmSplitSetLabel(index, value){
+  if (!rmSplitState.sections || !rmSplitState.sections[index]) return;
+  rmSplitState.sections[index].label = value;
+}
+function rmDiscardSplit(){
+  rmSplitCancelPicking();
+  rmSplitState.sections = null;
+  rmSplitState.targetIndex = -1;
+  if (rmState.map && rmSplitState.displayLayerGroup) rmState.map.removeLayer(rmSplitState.displayLayerGroup);
+  rmSplitState.displayLayerGroup = null;
+  rmRenderSplitPanel();
+}
+/* Full reset -- called whenever a fresh outline is captured/loaded or the
+   working outline is torn down (same principle as rmClearLinkedFeatures()),
+   and after a split-sections save completes, so stale split state never
+   bleeds into an unrelated later outline. */
+function rmClearSplitState(){
+  rmSplitCancelPicking();
+  rmSplitState.sections = null;
+  rmSplitState.targetIndex = -1;
+  rmSplitState.savingAll = false;
+  if (rmState.map && rmSplitState.displayLayerGroup) rmState.map.removeLayer(rmSplitState.displayLayerGroup);
+  rmSplitState.displayLayerGroup = null;
+  var panel = document.getElementById("rm-split-panel");
+  if (panel) panel.innerHTML = "";
+}
+function rmDrawSplitSections(){
+  var map = rmState.map;
+  if (!map || !rmSplitState.sections) return;
+  if (rmSplitState.displayLayerGroup) map.removeLayer(rmSplitState.displayLayerGroup);
+  rmSplitState.displayLayerGroup = L.layerGroup().addTo(map);
+  rmSplitState.sections.forEach(function(sec, i){
+    var color = RM_SPLIT_COLORS[i % RM_SPLIT_COLORS.length];
+    L.polygon(sec.ring.map(function(p){ return [p.lat, p.lng]; }), {
+      color: color, weight: 3, fillColor: color, fillOpacity: 0.35
+    }).addTo(rmSplitState.displayLayerGroup);
+    L.marker([sec.center.lat, sec.center.lng], {
+      icon: L.divIcon({
+        className: "", iconSize: null,
+        html: '<div style="background:' + color + ';color:#fff;padding:3px 8px;border-radius:5px;' +
+          'font-size:11px;font-weight:700;white-space:nowrap;transform:translate(-50%,-50%);' +
+          'box-shadow:0 1px 4px rgba(0,0,0,.45);border:1.5px solid rgba(255,255,255,.85)">' +
+          esc(sec.label) + '</div>'
+      }),
+      interactive: false
+    }).addTo(rmSplitState.displayLayerGroup);
+  });
+}
+/* Case/whitespace-insensitive duplicate check among the PENDING sections
+   themselves -- nothing in Firestore to compare against yet at this point.
+   rmSuggestUniqueRoofLabel() is reused for the same collision logic once
+   they're actually being saved to a building's EXISTING roofs, see
+   rmSaveSplitSectionsToBuilding() below. */
+function rmSplitFindDuplicateLabels(){
+  if (!rmSplitState.sections) return [];
+  var seen = {}, dupes = [];
+  rmSplitState.sections.forEach(function(sec){
+    var key = String(sec.label || "").trim().toLowerCase();
+    if (seen[key]) dupes.push(sec.label);
+    seen[key] = true;
+  });
+  return dupes;
+}
+function rmRenderSplitPanel(){
+  var panel = document.getElementById("rm-split-panel");
+  if (!panel) return;
+  if (rmSplitState.active){
+    var n = rmSplitState.points.length;
+    panel.innerHTML = '<div class="card" style="margin-top:10px">' +
+      '<p class="hint" style="margin:0 0 8px">✂️ Tap two points on the roof’s outline to draw a split line (' +
+      n + '/2 picked).</p>' +
+      '<div class="btnrow" style="margin:0">' +
+      (n > 0 ? '<button class="btn" onclick="rmSplitUndoPoint()">↩️ Undo Last Point</button>' : '') +
+      (n === 2 ? '<button class="btn primary" onclick="rmConfirmSplit()">✓ Confirm Split</button>' : '') +
+      '<button class="btn" onclick="rmSplitCancelPicking()">✕ Cancel</button>' +
+      '</div></div>';
+    return;
+  }
+  if (!rmSplitState.sections){ panel.innerHTML = ""; return; }
+  var dupes = rmSplitFindDuplicateLabels();
+  panel.innerHTML = '<div class="card" style="margin-top:10px">' +
+    '<h2 class="cond" style="font-size:15px;margin:0 0 8px">Roof Sections (' + rmSplitState.sections.length + ')</h2>' +
+    (dupes.length ? '<p class="rm-status warn" style="margin:0 0 8px">⚠️ Two or more sections are named "' +
+      esc(dupes[0]) + '" — rename one before saving.</p>' : '') +
+    rmSplitState.sections.map(function(sec, i){
+      var color = RM_SPLIT_COLORS[i % RM_SPLIT_COLORS.length];
+      return '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">' +
+        '<span style="width:14px;height:14px;border-radius:3px;background:' + color + ';flex:none"></span>' +
+        '<input type="text" value="' + esc(sec.label) + '" style="flex:1;min-width:120px" ' +
+        'onchange="rmSplitSetLabel(' + i + ', this.value)">' +
+        '<span class="hint" style="margin:0">' + sec.areaSqFt.toFixed(0) + ' sq ft</span>' +
+        '<button class="btn" onclick="rmStartSplitting(' + i + ')">✂️ Split Further</button>' +
+        '</div>';
+    }).join('') +
+    '<div class="btnrow" style="margin-top:8px">' +
+    '<button class="btn primary" onclick="rmSaveAllSplitSections()">💾 Save All ' + rmSplitState.sections.length +
+    ' Sections as Roofs</button>' +
+    '<button class="btn" onclick="rmDiscardSplit()">✕ Discard Split, Keep Single Outline</button>' +
+    '</div></div>';
+}
+function rmSaveAllSplitSections(){
+  if (!rmSplitState.sections || !rmSplitState.sections.length){ toast("Nothing to save — split the outline first."); return; }
+  var dupes = rmSplitFindDuplicateLabels();
+  if (dupes.length){ toast('Two sections are named "' + dupes[0] + '" — rename one before saving.'); return; }
+  rmSplitState.savingAll = true;
+  openRmSaveModal();
+}
+/* Saves every pending section as its OWN new roof on buildingId, in one
+   Firestore write (mirrors rmAddRoofAndSave()'s shape for each roof, but
+   batched -- one saveBuildingRoofs() call for all of them rather than N
+   separate round-trips). Duplicate-name collisions against roofs that
+   ALREADY exist on this building (not visible to the tech until they pick
+   it) are auto-resolved silently via the same rmSuggestUniqueRoofLabel()
+   used everywhere else, then reported by name in the final toast rather
+   than interrupting a batch save with N blocking dialogs -- collisions
+   among the pending sections THEMSELVES are still caught up front by
+   rmSplitFindDuplicateLabels() in rmSaveAllSplitSections(), where a
+   blocking dialog is actually actionable (the tech is looking right at
+   both names). */
+async function rmSaveSplitSectionsToBuilding(buildingId){
+  var sections = rmSplitState.sections;
+  if (!sections || !sections.length){ toast("Nothing to save."); return; }
+  toast("Saving " + sections.length + " roof sections…");
+  try{
+    var snap = await fdb.collection("buildings").doc(buildingId).get();
+    var bld = snap.exists ? snap.data() : {};
+    var roofs = getBuildingRoofs(bld);
+    var baseOutline = rmState.outline || {};
+    var renamed = [];
+    var created = sections.map(function(sec){
+      var check = rmSuggestUniqueRoofLabel(roofs, sec.label, null);
+      var label = check.isDuplicate ? check.suggestion : sec.label;
+      if (check.isDuplicate) renamed.push(sec.label + " → " + label);
+      var outlineEntry = {
+        id: genId("rmo"), ring: sec.ring, areaSqFt: sec.areaSqFt, perimeterFt: sec.perimeterFt,
+        center: sec.center, source: baseOutline.source, tags: baseOutline.tags || {},
+        isSiteBoundary: false, calibration: baseOutline.calibration || null, createdAt: Date.now()
+      };
+      var newRoof = {
+        id: genId("roof"), label: label, roofSystem: "",
+        roof_base_map_type: null, roof_base_map_url: null, roof_base_map_bounds: null,
+        roof_assets: [], roof_outlines: [outlineEntry], createdAt: Date.now(), updatedAt: Date.now()
+      };
+      roofs.push(newRoof); /* so later sections' dup-check sees earlier ones from THIS SAME batch too */
+      return { roof: newRoof, outlineEntry: outlineEntry };
+    });
+    await saveBuildingRoofs(buildingId, roofs);
+    toast(sections.length + " roof sections saved" +
+      (renamed.length ? " (" + renamed.join(", ") + " — already used on this building)" : "") + " ✓");
+    closeRmSaveModal();
+    /* Land on the LAST new roof -- same "stay in RoofMapper" pattern as a
+       normal single-outline save (rmSaveOutlineToBuilding()). */
+    var last = created[created.length - 1];
+    rmState.linkedBuildingId = buildingId;
+    rmState.linkedRoofId = last.roof.id;
+    rmState.pendingBuildingId = null;
+    rmState.pendingBuildingName = null;
+    rmState.outline = Object.assign({}, last.outlineEntry);
+    if (rmState.map){
+      if (rmState.outlineLayer) rmState.map.removeLayer(rmState.outlineLayer);
+      rmState.outlineLayer = L.polygon(last.outlineEntry.ring.map(function(p){ return [p.lat, p.lng]; }), {
+        color: "#E8600A", weight: 3, fillColor: "#E8600A", fillOpacity: 0.15
+      }).addTo(rmState.map);
+      rmDrawEdgeDimensions(rmState.outline);
+      if (rmState.roofLabelLayer) rmState.map.removeLayer(rmState.roofLabelLayer);
+      rmState.roofLabelLayer = roofLabelMarker(
+        last.outlineEntry.center.lat, last.outlineEntry.center.lng, last.roof.label, rmRenameLinkedRoof
+      ).addTo(rmState.map);
+    }
+    rmClearSplitState();
+    rmRenderOutlineStats(rmState.outline);
+    rmShowFeaturePanel(bld.name);
+    await rmLoadLinkedAssets();
+    rmUpdateExportHint();
+    rmUpdateControlVisibility();
+  }catch(e){ toast("Couldn't save the split sections: " + e.message); }
+}
+
 function rmConfirmSiteBoundarySave(){
   if (!rmState.outline || !rmState.outline.isSiteBoundary) return true;
   return confirm("This outline is the property/site boundary, not an individual building roof — " +
@@ -9363,6 +9772,7 @@ async function rmSaveOutlineToBuilding(buildingId, roofId){
     await saveBuildingRoofs(buildingId, roofs);
     toast("Roof outline saved — add features to it right here ✓");
     closeRmSaveModal();
+    rmClearSplitState(); /* this outline is now itself a saved roof -- any pending split of it (a different way of saving the same shape) no longer applies */
     /* Phase 2 of the RoofMapper <-> Roof Map unification: RoofMapper is now
        the unified surface, so stay right here instead of routing away to
        Building History (Phase 1's behavior, superseded) -- map the roof,
@@ -9424,7 +9834,8 @@ async function rmCreateBuildingAndSave(){
   try{
     var ids = await ensureCustomerAndBuilding({ jobName: jobName, billTo: billTo, location: addr });
     if (!ids.buildingId) throw new Error("couldn't create building (need internet connection)");
-    await rmSaveOutlineToBuilding(ids.buildingId);
+    if (rmSplitState.savingAll) await rmSaveSplitSectionsToBuilding(ids.buildingId);
+    else await rmSaveOutlineToBuilding(ids.buildingId);
   }catch(e){ toast("Couldn't create building: " + e.message); }
 }
 

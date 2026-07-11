@@ -477,6 +477,16 @@ leak was" and "where the roof drain has always been."
 }
 ```
 
+**Blob-splitting** (shipped 2026-07-11 — see "Split a roof outline into labeled
+sections" in `DEV_NOTES.md`): no new field or `source` value — splitting one traced
+outline into several roof sections happens entirely in client-side state
+(`rmSplitState`, never persisted) BEFORE the first save. Once a tech confirms and
+saves, each resulting section becomes an entirely ordinary `roofs[]` entry with its
+own ordinary `roof_outlines[]` entry — `source`/`tags`/`calibration` are copied
+straight from the ORIGINAL (pre-split) outline, since splitting doesn't change how
+the shape was originally captured, only subdivides it. `rmSaveSplitSectionsToBuilding()`
+writes all N new roofs in one `saveBuildingRoofs()` call rather than N round-trips.
+
 A building can have more than one — re-surveyed later, multiple roof sections, a
 correction — the array is append-only; the newest entry is the current one. Real
 lat/lng in every case except `source: "ortho_trace"` (synthetic Null Island origin,
