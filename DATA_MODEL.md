@@ -400,6 +400,22 @@ Example fields:
   woDescription,    // free text — description of work performed
   woPONumber,       // free text, optional
   woDateCompleted,  // free text (same "M/D/YY" convention as serviceDate), optional
+  changeOrderSignature: null, // Change Order-only. null until signed, else
+                // { img (base64 PNG data-URL, drawn on-device), printName (typed
+                // text), date ("M/D/YY", auto-set to today at signing time) }.
+                // Captured via the reusable signature-pad component
+                // (openSignaturePad()/sigPadState in index.html — canvas +
+                // pointer events, PNG not JPEG since it's sparse ink strokes not
+                // a photo) opened from "✍️ Get Signature" on the Change Order
+                // form. Renders into all three Change Order outputs (PDF via
+                // doc.addImage(), HTML preview, plain-text) as a real
+                // Signature/Print Name/Date block when present, else the
+                // original blank "Approved By ___ Date ___" line — fully
+                // backward-compatible, absent/null on every pre-existing order.
+                // Built reusable on purpose so other forms (e.g. leak/
+                // non-warranty service-order signing) can call
+                // openSignaturePad({title, existing, onSave}) later — see
+                // "In-app signature capture" in DEV_NOTES.md.
   // Repair-only fields — blank/absent for every other type. Only rendered/
   // editable in the form when woType === "Repair".
   repairDescription, // free text — description of repair work performed

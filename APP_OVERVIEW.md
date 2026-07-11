@@ -81,13 +81,24 @@ itself; each gets its own auto-pin from GPS the same way a finding's photo does)
 generates a **completely separate PDF**, styled like a real change-order/
 work-authorization document rather than the leak inspection report: "CHANGE ORDER"
 title in the Watkins red, job info, a prominent Description of Work Performed, an
-itemized Materials list, a Cost Summary with a Total, an Approved By / Date signature
-line, and those photos as a secondary grid at the end. No findings table or warranty
+itemized Materials list, a Cost Summary with a Total, a signature block, and those
+photos as a secondary grid at the end. No findings table or warranty
 section — that framing belongs to the leak report, not a change order. The form
 itself shows only what a Change Order needs: Roof Investigation Findings, the plain
 "Work Performed" list, Warranty Determination, and the global Photo Documentation
 section are all hidden for this type — its own Change Order Details card (with its
 own photo box) covers everything, so nothing is duplicated or irrelevant.
+
+**Getting it signed**: the Change Order card has a "✍️ Get Signature" button. Tap it
+and a signature pad opens right on the device — draw the signature with a finger or
+stylus, type the signer's name into "Print Name," and the date fills in automatically.
+Save it, and the change order shows "✅ Signed by &lt;name&gt; on &lt;date&gt;" with a
+small thumbnail of the signature. From there you can "Re-sign" (opens the pad again
+with the same signature and name pre-filled, in case it needs correcting) or "Clear
+Signature" to remove it. The captured signature — the drawn image, the printed name,
+and the date — prints directly into the Change Order PDF as a real signature block,
+replacing the old blank "Approved By / Date" line. If no signature has been captured,
+the PDF just keeps the blank line, so nothing about an unsigned change order changes.
 
 **Repair** is for project/small-project work — flashing a curb, several curbs and
 boots, that kind of scope — rather than a leak diagnosis. It hides the Roof

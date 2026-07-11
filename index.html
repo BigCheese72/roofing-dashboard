@@ -361,6 +361,12 @@
           onchange="addPhotosFromFiles(this.files); this.value='';">
         <div id="co-photos-host"></div>
       </div>
+      <div class="fld">
+        <label>Signature</label>
+        <p class="hint" style="margin:0 0 8px">Capture the customer's signature right on the device — it prints
+          into the Change Order PDF.</p>
+        <div id="co-signature-status"></div>
+      </div>
     </div>
 
     <div class="card" id="wo-warrantydetermination-card">
@@ -621,6 +627,38 @@
         <button class="btn primary" onclick="savePinFromModal()">Save Pin</button>
         <button class="btn danger" id="pin-clear-btn" onclick="clearPinFromModal()" style="display:none">Clear Pin</button>
         <button class="btn" onclick="closePinModal()">Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Reusable signature-capture modal -- draw a signature, printed name +
+     auto date. Not tied to any one form; openSignaturePad({title, onSave,
+     existing}) is the generic entry point, first wired up for the Change
+     Order flow -- see "In-app signature capture" in DEV_NOTES.md. -->
+<div id="signature-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)closeSignaturePad()">
+  <div style="background:#fff;max-width:560px;margin:3vh auto;border-radius:8px;max-height:94vh;display:flex;flex-direction:column;overflow:hidden;width:96%">
+    <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
+      <b class="cond" style="font-size:17px" id="signature-modal-title">Signature</b>
+      <span style="flex:1"></span>
+      <button class="btn" onclick="closeSignaturePad()">Close</button>
+    </div>
+    <div style="padding:12px 16px">
+      <p class="hint" style="margin:0 0 8px">Sign with a finger or stylus below.</p>
+      <div style="border:1px solid var(--line);border-radius:6px;overflow:hidden;touch-action:none">
+        <canvas id="signature-canvas" style="display:block;width:100%;height:200px;background:#fff"></canvas>
+      </div>
+      <div class="btnrow" style="margin:8px 0 0">
+        <button class="btn" onclick="sigPadClear()">Clear</button>
+      </div>
+      <div class="fld" style="margin-top:12px">
+        <label>Print Name</label>
+        <input type="text" id="signature-print-name" placeholder="Signer's printed name">
+      </div>
+      <p class="hint" style="margin:6px 0 0">Date: <b id="signature-date-display"></b></p>
+      <div class="btnrow" style="margin:12px 0 0">
+        <button class="btn primary" onclick="sigPadSave()">Save Signature</button>
+        <button class="btn" onclick="closeSignaturePad()">Cancel</button>
       </div>
     </div>
   </div>
@@ -1158,6 +1196,13 @@ var inspectionChecklist = [];
 var photos = [];
 var ccLinkedProjectId = null;
 var ccLinkedProjectName = "";
+/* Change Order-only for now -- { img (PNG data URL), printName, date } or
+   null. Captured via the reusable openSignaturePad() (see its definition
+   below) -- the SAME modal/component is meant to be reused for other
+   forms later (leak-form/non-warranty service-order signing), this is
+   just the one field the Change Order flow happens to store its result
+   in. See "In-app signature capture" in DEV_NOTES.md. */
+var changeOrderSignature = null;
 /* Which of the building's roofs (see getBuildingRoofs/DATA_MODEL.md) this
    work order's findings/pins belong to. null means "not chosen yet" —
    treated as the building's first/default roof ("roof_default")
@@ -1908,6 +1953,157 @@ function closePinModal(){
   pinModalFindingId = null;
   pinXYSize = null;
 }
+
+/* ================= reusable signature capture ================= *
+   A generic canvas-based signature pad -- draw a signature, capture a
+   printed name + auto date alongside it, get back
+   { img (PNG data URL), printName, date } via a callback. NOT tied to the
+   Change Order flow specifically -- openSignaturePad({title, onSave,
+   existing}) is the reusable entry point; changeOrderSignature/
+   renderChangeOrderSignature()/openChangeOrderSignaturePad() below are
+   just its first consumer. To wire this into another form (e.g. leak-form/
+   non-warranty service-order signing), call openSignaturePad() with a
+   different onSave callback that stores the result wherever that form
+   keeps it, following the exact same collect()/fill() + PDF-rendering
+   pattern the Change Order wiring uses. See "In-app signature capture" in
+   DEV_NOTES.md. */
+var sigPadState = { canvas: null, ctx: null, drawing: false, hasStrokes: false, lastX: 0, lastY: 0, onSaveCallback: null };
+function openSignaturePad(opts){
+  opts = opts || {};
+  sigPadState.onSaveCallback = opts.onSave || null;
+  document.getElementById("signature-modal-title").textContent = opts.title || "Signature";
+  document.getElementById("signature-print-name").value = (opts.existing && opts.existing.printName) || "";
+  document.getElementById("signature-date-display").textContent = todayStr();
+  var modal = document.getElementById("signature-modal");
+  lockBodyScroll();
+  modal.style.display = "";
+  var canvas = document.getElementById("signature-canvas");
+  sigPadState.canvas = canvas;
+  sigPadState.hasStrokes = false;
+  /* Size the backing canvas to its actual on-screen size x devicePixelRatio
+     for crisp strokes on a retina/mobile screen -- deferred a tick so the
+     modal has actually laid out and getBoundingClientRect() is accurate,
+     same reasoning other modals here use setTimeout for map/canvas sizing
+     right after display is toggled on. */
+  setTimeout(function(){
+    var rect = canvas.getBoundingClientRect();
+    var dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.round(rect.width * dpr);
+    canvas.height = Math.round(rect.height * dpr);
+    var ctx = canvas.getContext("2d");
+    ctx.scale(dpr, dpr);
+    ctx.lineWidth = 2.2;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.strokeStyle = "#1a1a1a";
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, rect.width, rect.height);
+    sigPadState.ctx = ctx;
+    /* Pre-load an existing signature (re-signing/editing) so Save without
+       redrawing just keeps what was already there. */
+    if (opts.existing && opts.existing.img){
+      var img = new Image();
+      img.onload = function(){ ctx.drawImage(img, 0, 0, rect.width, rect.height); sigPadState.hasStrokes = true; };
+      img.src = opts.existing.img;
+    }
+  }, 30);
+  canvas.onpointerdown = sigPadPointerDown;
+  canvas.onpointermove = sigPadPointerMove;
+  canvas.onpointerup = sigPadPointerUp;
+  canvas.onpointerleave = sigPadPointerUp;
+}
+function sigPadPointerDown(e){
+  e.preventDefault();
+  sigPadState.drawing = true;
+  var rect = sigPadState.canvas.getBoundingClientRect();
+  sigPadState.lastX = e.clientX - rect.left;
+  sigPadState.lastY = e.clientY - rect.top;
+}
+function sigPadPointerMove(e){
+  if (!sigPadState.drawing || !sigPadState.ctx) return;
+  e.preventDefault();
+  var rect = sigPadState.canvas.getBoundingClientRect();
+  var x = e.clientX - rect.left, y = e.clientY - rect.top;
+  var ctx = sigPadState.ctx;
+  ctx.beginPath();
+  ctx.moveTo(sigPadState.lastX, sigPadState.lastY);
+  ctx.lineTo(x, y);
+  ctx.stroke();
+  sigPadState.lastX = x; sigPadState.lastY = y;
+  sigPadState.hasStrokes = true;
+}
+function sigPadPointerUp(){
+  sigPadState.drawing = false;
+}
+function sigPadClear(){
+  if (!sigPadState.ctx || !sigPadState.canvas) return;
+  var rect = sigPadState.canvas.getBoundingClientRect();
+  sigPadState.ctx.fillStyle = "#fff";
+  sigPadState.ctx.fillRect(0, 0, rect.width, rect.height);
+  sigPadState.hasStrokes = false;
+}
+function sigPadSave(){
+  if (!sigPadState.hasStrokes){ toast("Draw a signature first."); return; }
+  var printName = val("signature-print-name").trim();
+  if (!printName){ toast("Enter the signer's printed name."); return; }
+  /* PNG, not JPEG -- a signature is sparse black strokes on white, PNG
+     compresses that tiny already, and JPEG's lossy artifacts are wrong for
+     thin ink lines (same reasoning photo capture uses JPEG for photos but
+     this is deliberately different -- see resizeImageFile()/
+     addPhotosFromFiles() for the photo convention this intentionally
+     doesn't follow). Canvas is already sized modestly (CSS ~560px wide x
+     200px tall x devicePixelRatio) so the resulting data URL stays small,
+     not a full-photo-sized payload added to the work order doc. */
+  var img = sigPadState.canvas.toDataURL("image/png");
+  var sigData = { img: img, printName: printName, date: todayStr() };
+  var cb = sigPadState.onSaveCallback;
+  closeSignaturePad();
+  if (cb) cb(sigData);
+}
+function closeSignaturePad(){
+  document.getElementById("signature-modal").style.display = "none";
+  unlockBodyScroll();
+  var canvas = sigPadState.canvas;
+  if (canvas){
+    canvas.onpointerdown = null; canvas.onpointermove = null;
+    canvas.onpointerup = null; canvas.onpointerleave = null;
+  }
+  sigPadState.canvas = null; sigPadState.ctx = null;
+  sigPadState.onSaveCallback = null; sigPadState.hasStrokes = false; sigPadState.drawing = false;
+}
+
+/* ---- Change Order's own use of the signature pad above ---- */
+function renderChangeOrderSignature(){
+  var host = document.getElementById("co-signature-status");
+  if (!host) return;
+  if (changeOrderSignature && changeOrderSignature.img){
+    host.innerHTML = "<p class=\"hint\" style=\"margin:0 0 8px\">✅ Signed by <b>" + esc(changeOrderSignature.printName) +
+      "</b> on " + esc(changeOrderSignature.date) + "</p>" +
+      "<img src=\"" + changeOrderSignature.img + "\" style=\"max-width:220px;max-height:70px;display:block;border:1px solid var(--line);border-radius:4px;margin-bottom:8px\">" +
+      "<div class=\"btnrow\" style=\"margin:0\">" +
+      "<button class=\"btn\" onclick=\"openChangeOrderSignaturePad()\">Re-sign</button>" +
+      "<button class=\"btn danger\" onclick=\"clearChangeOrderSignature()\">Clear Signature</button></div>";
+  } else {
+    host.innerHTML = '<button class="btn primary" onclick="openChangeOrderSignaturePad()">✍️ Get Signature</button>';
+  }
+}
+function openChangeOrderSignaturePad(){
+  openSignaturePad({
+    title: "Change Order Signature",
+    existing: changeOrderSignature,
+    onSave: function(sigData){
+      changeOrderSignature = sigData;
+      renderChangeOrderSignature();
+      toast("Signature captured ✓");
+    }
+  });
+}
+function clearChangeOrderSignature(){
+  if (!confirm("Remove this signature?")) return;
+  changeOrderSignature = null;
+  renderChangeOrderSignature();
+}
+
 /* Lets a tech standing at the actual spot drop a precise pin from the
    device's own GPS, instead of relying on an old photo's GPS or a
    geocoded street address. Only offered in satellite/lat-lng mode — a
@@ -2841,6 +3037,7 @@ function collect(){
   o.companyCamProjectId = ccLinkedProjectId || null;
   o.companyCamProjectName = ccLinkedProjectName || "";
   o.roofId = currentRoofId || null;
+  o.changeOrderSignature = changeOrderSignature || null;
   return o;
 }
 function fill(o){
@@ -2870,7 +3067,8 @@ function fill(o){
   photos.forEach(function(p){ if (p.finding_id === undefined) p.finding_id = null; });
   ccLinkedProjectId = o.companyCamProjectId || null;
   ccLinkedProjectName = o.companyCamProjectName || "";
-  renderFindings(); renderRepairs(); renderRepairItems(); renderPhotos(); renderCCLinkInfo();
+  changeOrderSignature = o.changeOrderSignature || null;
+  renderFindings(); renderRepairs(); renderRepairItems(); renderPhotos(); renderCCLinkInfo(); renderChangeOrderSignature();
   /* Re-render the checklist now that photos[]/findings[] are the truly
      loaded values, not whatever onWoTypeChange() saw mid-load above --
      otherwise a checklist item's photo gallery could briefly reflect the
@@ -4267,7 +4465,12 @@ function buildChangeOrderText(o){
     L.push("(" + caps.length + " photo" + (caps.length > 1 ? "s" : "") + " — see attached PDF for images)");
   }
   L.push("");
-  L.push("Approved by: _______________________________   Date: ______________");
+  if (o.changeOrderSignature && o.changeOrderSignature.img){
+    L.push("Signed by: " + o.changeOrderSignature.printName + "   Date: " + o.changeOrderSignature.date +
+      "  (signature captured on device — see attached PDF)");
+  } else {
+    L.push("Approved by: _______________________________   Date: ______________");
+  }
   L.push("");
   L.push(o.jobName + " - " + o.location + " | Job No. " + o.jobNo + " | Date: " + o.serviceDate);
   return L.join("\n");
@@ -4423,9 +4626,15 @@ function renderChangeOrderDoc(o){
       }).join("") + "</div>";
   }
 
-  h += "<div class='co-sig'>" +
-    "<div class='co-sig-line'>Approved By: <span></span></div>" +
-    "<div class='co-sig-line'>Date: <span></span></div></div>";
+  h += (o.changeOrderSignature && o.changeOrderSignature.img) ?
+    "<div class='co-sig'>" +
+      "<div class='co-sig-line' style='flex-basis:100%'>Signature<br>" +
+      "<img src='" + o.changeOrderSignature.img + "' style='max-width:220px;max-height:70px;display:block;border-bottom:1px solid #37474F;margin-top:4px'></div>" +
+      "<div class='co-sig-line'>Print Name: " + esc(o.changeOrderSignature.printName) + "</div>" +
+      "<div class='co-sig-line'>Date: " + esc(o.changeOrderSignature.date) + "</div></div>" :
+    "<div class='co-sig'>" +
+      "<div class='co-sig-line'>Approved By: <span></span></div>" +
+      "<div class='co-sig-line'>Date: <span></span></div></div>";
 
   h += "<div class='docfoot'>" + esc(o.jobName) + " — " + esc(o.location) +
        " | Job No. " + esc(o.jobNo) + " | Date: " + esc(o.serviceDate) + "</div>";
@@ -4865,18 +5074,39 @@ async function generateChangeOrderPdf(o){
     }
   }
 
-  /* approval / signature line — common on a real change order */
-  if (y > H - M - 70){ doc.addPage(); y = M; }
+  /* approval / signature line — common on a real change order. When a
+     signature was actually captured (openSignaturePad(), see "In-app
+     signature capture" in DEV_NOTES.md), render the real drawn signature
+     image plus Print Name + Date -- otherwise keep the EXACT original
+     blank underline unchanged, so an un-signed Change Order's PDF stays
+     byte-for-byte what it always was. */
+  if (y > H - M - 100){ doc.addPage(); y = M; }
   y += 20;
-  doc.setDrawColor(55, 71, 79);
-  doc.setLineWidth(1);
-  doc.line(M, y, M + 260, y);
-  doc.line(M + 300, y, M + 460, y);
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(9);
-  doc.setTextColor(38, 50, 56);
-  doc.text("Approved By", M, y + 12);
-  doc.text("Date", M + 300, y + 12);
+  if (o.changeOrderSignature && o.changeOrderSignature.img){
+    var sigBoxW = 220, sigBoxH = 50;
+    try{ doc.addImage(o.changeOrderSignature.img, "PNG", M, y - sigBoxH, sigBoxW, sigBoxH); }catch(e){}
+    doc.setDrawColor(55, 71, 79);
+    doc.setLineWidth(1);
+    doc.line(M, y, M + sigBoxW, y);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9);
+    doc.setTextColor(38, 50, 56);
+    doc.text("Signature", M, y + 12);
+    y += 28;
+    doc.setFontSize(10);
+    doc.text("Print Name: " + o.changeOrderSignature.printName, M, y);
+    doc.text("Date: " + o.changeOrderSignature.date, M + 260, y);
+  } else {
+    doc.setDrawColor(55, 71, 79);
+    doc.setLineWidth(1);
+    doc.line(M, y, M + 260, y);
+    doc.line(M + 300, y, M + 460, y);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9);
+    doc.setTextColor(38, 50, 56);
+    doc.text("Approved By", M, y + 12);
+    doc.text("Date", M + 300, y + 12);
+  }
 
   /* footer on every page */
   var footTxt = (o.jobName || "") + " — " + (o.location || "") +

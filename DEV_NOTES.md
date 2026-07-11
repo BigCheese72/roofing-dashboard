@@ -3875,6 +3875,103 @@ goes through the identical trace-panel/dimension pipeline (source tagged
 `walk_corners`, correct label count). All test state removed, page reloaded
 clean.
 
+### In-app signature capture (shipped 2026-07-10, dev only)
+
+Goal: capture a real signature on the device screen and embed it into a PDF,
+starting with the Change Order, built as a reusable component so other forms
+(leak/non-warranty service-order signing) can adopt it later.
+
+**Reusable signature-pad component** — `sigPadState` + `openSignaturePad(opts)`/
+`closeSignaturePad()`/`sigPadClear()`/`sigPadSave()`, plumbing-agnostic about
+what calls it:
+- `#signature-modal` — same `position:fixed;inset:0;z-index:9999` modal
+  pattern as `#pin-modal`/`#asset-modal`, with a `<canvas id="signature-canvas">`
+  the signer draws on (pointer events — `pointerdown`/`pointermove`/`pointerup`/
+  `pointerleave` — covers touch, pen, and mouse in one handler set, no separate
+  touch listeners needed), a Clear button, a "Print Name" text input, and an
+  auto-filled date display (`todayStr()`, the same `M/D/YY` helper photos/work
+  orders already use).
+- Canvas backing store is sized to `getBoundingClientRect() × devicePixelRatio`
+  (set in a `setTimeout(…, 30)` after the modal becomes visible, since
+  `getBoundingClientRect()` returns zeros on a `display:none` element) —
+  crisp strokes at any pixel density. This is a different pattern from photo
+  handling (`resizeImageFile()` etc.), which resizes FROM an arbitrary source
+  image; here there's no source image, just a blank drawing surface to size.
+- Saved as **PNG**, not JPEG — deliberate: a signature is sparse black ink
+  strokes on white, and JPEG's lossy compression puts visible artifacts around
+  thin lines for no size benefit (PNG compresses this content tiny anyway —
+  measured ~6KB for a real test signature vs. a full-photo JPEG in the tens of
+  KB).
+- `openSignaturePad(opts)` takes `{ title, existing: {img, printName}, onSave }`
+  — `title` sets the modal header per calling form, `existing` pre-fills the
+  canvas (draws the prior signature image onto it) and the Print Name field
+  for a "re-sign" flow, and `onSave` is a callback invoked with
+  `{img, printName, date}` once the user saves (validated: won't save with an
+  empty canvas or a blank Print Name). Nothing in the pad itself knows about
+  Change Orders — a future caller just passes its own `title`/`existing`/
+  `onSave`.
+
+**Change Order wiring** — thin consumer layer on top of the reusable pad:
+`changeOrderSignature` (module var, `null` until signed, else
+`{img, printName, date}` — see `DATA_MODEL.md`), `renderChangeOrderSignature()`
+(swaps `#co-signature-status` between a "✍️ Get Signature" button and a
+signed-state summary + thumbnail + Re-sign/Clear Signature buttons),
+`openChangeOrderSignaturePad()` (calls `openSignaturePad()` with
+`title: "Change Order Signature"`, `existing: changeOrderSignature`, and an
+`onSave` that sets `changeOrderSignature` and re-renders), and
+`clearChangeOrderSignature()` (confirm-gated removal, matching the
+confirm-before-destroy convention used elsewhere for findings/repairs/photos).
+Round-trips through `collect()`/`fill()` exactly like `companyCamProjectId` —
+one line each, additive.
+
+**All three Change Order outputs updated, each with a signed/unsigned
+branch, unsigned branch byte-for-byte the original markup**:
+- `generateChangeOrderPdf(o)` — `doc.addImage(o.changeOrderSignature.img,
+  "PNG", …)` at a fixed 220×50 box above the Print Name/Date line, wrapped in
+  try/catch (same defensive pattern as the logo image already in this
+  function) so a corrupt/oversized data-URL can't break PDF generation
+  entirely — falls through to no image rather than throwing. Page-break
+  threshold at this point bumped from `H - M - 70` to `H - M - 100` to make
+  room for the taller signed block. Unsigned: unchanged blank
+  `Approved By ___  Date ___` lines.
+- `renderChangeOrderDoc(o)` (HTML preview) — signed renders an `<img>` plus
+  "Print Name: …" and "Date: …" lines in `.co-sig`; unsigned renders the
+  original `Approved By: <span></span>` / `Date: <span></span>` markup
+  unchanged.
+- `buildChangeOrderText(o)` (plain-text/email body) — signed renders
+  `"Signed by: <name>   Date: <date>  (signature captured on device — see
+  attached PDF)"`; unsigned renders the original
+  `"Approved by: _______________________________   Date: ______________"`
+  line unchanged.
+
+**Reusability note for future wiring**: to add signing to another form (e.g.
+leak/non-warranty service-order signing, once email-doc-attach lands), call
+`openSignaturePad({title, existing, onSave})` from that form's own action
+button, store the result under a form-appropriate field name (mirroring
+`changeOrderSignature`'s shape), and add the same signed/unsigned branch to
+that form's own PDF/HTML/text builders — the pad itself needs no changes.
+
+Tested with mocked data, no real Firestore writes: drew a real signature via
+dispatched `PointerEvent`s on the canvas, entered a Print Name, saved, and
+confirmed `changeOrderSignature` held the expected `{img, printName, date}`
+shape (`~6KB` PNG data-URL); confirmed a `collect()` → switch to a different
+work order type (clearing module state) → `fill()` round-trip restored the
+exact same signature data and re-rendered the signed-state UI; generated a
+real PDF with a signature present (640KB output, `doc.addImage` succeeded,
+still 1 page — no page-break regression) and with `changeOrderSignature:
+null` (78KB output, confirming the image is what drove the size difference,
+still 1 page); confirmed the unsigned PDF, HTML doc, and plain text all
+produce byte-for-byte the original blank-signature-line markup (isolated the
+`.co-sig` block specifically to rule out an unrelated `<img>` elsewhere in
+the doc, e.g. the logo); confirmed Re-sign pre-fills both the canvas
+(drawing the existing signature image onto it) and the Print Name field;
+confirmed Clear Signature is confirm-gated and correctly nulls
+`changeOrderSignature`; confirmed the signature section only ever renders
+inside `#wo-changeorder-card`, which stays `display:none` for every
+non-Change-Order work order type (checked Leak/Service and Inspection) — no
+signature UI leaks onto other forms. All test state cleared, page reloaded,
+console clean.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |

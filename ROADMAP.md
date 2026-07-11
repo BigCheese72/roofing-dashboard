@@ -45,6 +45,18 @@ Goal: preserve and harden the existing RoofOps Field / Watkins work order workfl
   still use the standard leak-report format for now. The type is also a filterable
   dimension on the Building History timeline and the Reports tab. See "Work order
   type" and "Change Order gets its own PDF template" in `DEV_NOTES.md`.
+- ✅ **Shipped (dev only, 2026-07-10)**: in-app signature capture. That blank
+  signature line on the Change Order PDF is now a real captured signature — a
+  "✍️ Get Signature" action opens an on-device signature pad (canvas, finger/
+  stylus/mouse) alongside a required "Print Name" field and an auto-filled
+  date; saving embeds the drawn signature image, printed name, and date into
+  the Change Order PDF, HTML preview, and plain-text output (a standard
+  Signature/Print Name/Date block), replacing the blank line — no signature
+  captured still falls back to the original blank line, unchanged. Built as a
+  standalone reusable component (`openSignaturePad()`), not Change-Order-
+  specific, so it can be wired into other forms later — e.g. leak/
+  non-warranty service-order signing, once the email-doc-attach feature
+  lands. See "In-app signature capture" in `DEV_NOTES.md`.
 - ✅ **Shipped**: Home / launcher screen — the app now opens to a tile-based launcher
   (one tile per work order type + RoofMapper/Building History/Reports) instead of
   dropping straight into a blank Leak/Service form. Existing tabs and navigation are
