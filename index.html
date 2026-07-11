@@ -4527,7 +4527,13 @@ function saveOrder(opts){
       renderSaved();
       return true;
     }).catch(function(e){
-      if (!opts.quiet) toast(cloudErrMsg(e));
+      /* A cloud-save failure must never be silent, even on a quiet autosave
+         (e.g. ccImport()'s post-import saveOrder({quiet:true})) -- quiet
+         only means "don't announce success," never "hide a real failure."
+         Previously this toast was gated behind !opts.quiet, so a failed
+         quiet autosave left the tech thinking their work synced when it
+         hadn't. See "Silent cloud-save failure" in DEV_NOTES.md. */
+      toast(cloudErrMsg(e));
       return localOk;
     });
   } else if (localOk){
