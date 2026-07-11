@@ -6904,6 +6904,83 @@ near the new trace's own first point → bit-for-bit exact self-close. Also
 verified the toggle: with `snapEnabled = false`, the same near-corner tap
 returns no snap target at all.
 
+### Export layout pass, part 1: fit-to-page, larger type, label de-collision (shipped)
+
+Mark sent a real 11-roof PDF export (Tri-Delta) with four concrete
+problems. This ships fixes for three of them (base-image/ortho toggle is a
+separate follow-up):
+
+1. **Didn't fill the page** (huge empty margins top/bottom, content in a
+   squeezed middle band). `rmExportPDF` always built a portrait-only
+   jsPDF doc regardless of the drawing's own shape. A wide site plan
+   (multiple roofs side by side) forced onto a portrait page shrinks to
+   fit the narrower dimension, leaving the rest empty. Fixed by picking
+   page orientation from the drawing's own aspect ratio
+   (`built.width/built.height > 1` → landscape, else portrait) before
+   constructing the jsPDF doc, so the fit-to-available-area math maxes out
+   both dimensions instead of just one. Verified with two synthetic
+   layouts: a near-square 11-roof cluster (aspect 1.07) picks landscape
+   and fills 73%/88% of page width/height; a realistic wide single-row
+   layout (aspect 3.80, more representative of adjoined roof sections)
+   picks landscape and fills 91% width / 31% height, versus 88%/18% under
+   the old forced-portrait math for the same drawing — a real, if
+   page-shape-limited, improvement (no fixed letter-size page can fully
+   fill an extremely elongated drawing; matching orientation is the
+   correct fix within that constraint).
+2. **Text far too small at print size, dimensions especially.** Bumped
+   font sizes across both `rmBuildOutlineSvg` (single-roof) and
+   `rmBuildMultiRoofOutlineSvg`: edge dimension labels 9.5–10.5px → 13–14px
+   (with taller pill backgrounds to match), roof name labels 13px → 17px,
+   roof area text 11px → 13px, asset labels 10.5px → 12px, title 18px →
+   20px, address/stats 12px → 13px, legend 11px → 12px, scale bar/north
+   arrow 11–12px → 12–13px. Disclaimer line left at 9.5px (boilerplate,
+   not something Mark needs to read at a glance).
+3. **Label collisions**: named examples were "Pebble Beach" (roof name)
+   overlapping "Roof 2", an HVAC Unit/Vent/Pipe Flashing asset-label
+   cluster stacked unreadable, "Roof 1"/"Roof 10" colliding in a tight
+   cluster of small sections. Draggable per-roof labels don't scale to
+   fixing 11 roofs by hand on every export, so added an automatic
+   declutter pass: `rmDeconflictLabels(items, svgW, svgH, obstacles)`
+   (new, shared helper) takes each label's fixed anchor (a roof's
+   centroid/dragged position, or an asset marker's real point — anchors
+   never move) plus its natural desired label-box position, tries that
+   natural spot first, and on collision walks an expanding ring of
+   candidate positions AROUND THE ANCHOR until it finds one that overlaps
+   neither another label nor a fixed marker-dot obstacle (see below).
+   Roof-name labels are placed before asset labels (first claim on their
+   natural spot, since Mark's named collisions were mostly roof-vs-roof).
+   A thin dashed leader line is drawn from anchor to label whenever a
+   label had to move. Both export paths now render in two passes: shapes/
+   markers first (nothing here can move — real coordinates), then run the
+   declutter pass once over every collected label, then render labels
+   + leader lines on top.
+
+   Caught a real second-order bug while testing this with a synthetic
+   tight 3-asset cluster (HVAC/Vent/Pipe Flashing a few feet apart, same
+   as Mark's named example): labels correctly stopped overlapping EACH
+   OTHER but a label could still land on top of a NEIGHBORING asset's
+   marker glyph, since the original version of `rmDeconflictLabels` only
+   checked label-vs-label, not label-vs-marker. Fixed by adding an
+   `obstacles` param (`[{x,y,r}]`, one per asset marker's true footprint)
+   that seeds the collision grid up front as an always-there blocker
+   nothing can be placed on — markers still never move, but labels now
+   route around them too.
+
+**Tested** by building actual SVGs (not just reading the code) with two
+synthetic scenarios and checking every rendered `<text>` element's real
+`getBBox()` for pairwise overlap (more precise than eyeballing a
+screenshot, and the screenshot tool was unavailable this session): (1) an
+11-roof cluster replicating Mark's named collisions — 0 label-text
+collisions after the fix (down from label-vs-label AND label-vs-marker
+collisions before it); the only 2 remaining overlaps are between marker
+GLYPHS themselves in a deliberately extreme 3-feature cluster, which is
+correct/expected (markers show true GPS position and can't move without
+misrepresenting the actual feature location — not a labeling bug); (2) a
+bare single-roof export with no overlay, confirming the base case still
+renders untouched. Font-size bump confirmed via the rendered SVG's actual
+`font-size` attributes (17px roof names ×11, 13px dimensions ×58, 20px
+title, etc., all present as expected).
+
 ## Roadmap (not built yet, foundation only)
 
 - **RoofOps Dashboard**: cross-building reporting, search, filters — reads from

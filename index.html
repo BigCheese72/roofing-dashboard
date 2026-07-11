@@ -8269,6 +8269,69 @@ var RM_EXPORT_MAX_SCALE = 20; /* px per foot */
    rather than risk drifting out of sync the way the old hand-rolled jsPDF
    vector drawing did. See "RoofMapper export: single shared render path"
    in DEV_NOTES.md. */
+/* Label declutter pass, shared by the single- and multi-roof export
+   renderers. Mark's real Tri-Delta export (11 roofs) had bad label
+   collisions: "Pebble Beach" (a roof name) overlapping "Roof 2", an
+   HVAC/Vent/Pipe Flashing cluster stacked unreadable, "Roof 1"/"Roof 10"
+   colliding in a tight cluster of small sections. Draggable per-roof
+   labels don't scale to fixing 11 roofs by hand every export, so this is
+   an automatic pass: each label has a fixed ANCHOR (a roof's centroid/
+   dragged position, or an asset marker's real lat/lng -- never moves) and
+   a natural desired label-box position relative to that anchor. Tries the
+   natural spot first; if it collides with an already-placed label, walks
+   an expanding ring of candidate offsets AROUND THE ANCHOR (not around the
+   natural spot, so leader lines radiate cleanly outward from the true
+   point rather than compounding drift) until a free spot is found or the
+   search gives up and falls back to the natural spot anyway (rare, only
+   with extremely dense clusters -- an accepted overlap beats vanishing or
+   drifting off the page). Order matters: earlier items get first claim on
+   their natural position, so callers should list higher-priority labels
+   (roof names) before lower-priority ones (asset labels). Returns each
+   item's final label-box CENTER plus `moved` so the caller knows whether
+   to draw a leader line back to the anchor. Pure geometry, no rendering --
+   testable in isolation.
+
+   `obstacles` (optional, [{x,y,r}]) are fixed circular footprints -- asset
+   marker dots -- that participate in collision-avoidance but are never
+   themselves placed or returned. Without this, a label could win against
+   every OTHER label yet still land squarely on top of a neighboring
+   asset's marker glyph, which is exactly what a real tight cluster (an
+   HVAC unit, a vent, and a pipe flashing a couple feet apart) produced in
+   testing: labels correctly avoided each other but still overlapped a
+   nearby marker's emoji icon. */
+function rmDeconflictLabels(items, svgW, svgH, obstacles){
+  var placedBoxes = (obstacles || []).map(function(o){
+    return { x0: o.x - o.r, x1: o.x + o.r, y0: o.y - o.r, y1: o.y + o.r };
+  });
+  function fits(cx, cy, w, h){
+    var x0 = cx - w / 2, x1 = cx + w / 2, y0 = cy - h / 2, y1 = cy + h / 2;
+    if (x0 < 2 || x1 > svgW - 2 || y0 < 2 || y1 > svgH - 2) return false;
+    for (var i = 0; i < placedBoxes.length; i++){
+      var p = placedBoxes[i];
+      if (x0 < p.x1 + 3 && x1 > p.x0 - 3 && y0 < p.y1 + 3 && y1 > p.y0 - 3) return false;
+    }
+    return true;
+  }
+  return items.map(function(it){
+    var w = it.width, h = it.height;
+    var naturalCx = it.anchorX + it.dx, naturalCy = it.anchorY + it.dy;
+    var finalPos = fits(naturalCx, naturalCy, w, h) ? { x: naturalCx, y: naturalCy } : null;
+    if (!finalPos){
+      for (var ring = 1; ring <= 7 && !finalPos; ring++){
+        var radius = ring * 18;
+        for (var a = 0; a < 12 && !finalPos; a++){
+          var ang = (a / 12) * Math.PI * 2;
+          var cx = it.anchorX + Math.cos(ang) * radius, cy = it.anchorY + Math.sin(ang) * radius;
+          if (fits(cx, cy, w, h)) finalPos = { x: cx, y: cy };
+        }
+      }
+    }
+    if (!finalPos) finalPos = { x: naturalCx, y: naturalCy };
+    placedBoxes.push({ x0: finalPos.x - w / 2, x1: finalPos.x + w / 2, y0: finalPos.y - h / 2, y1: finalPos.y + h / 2 });
+    var moved = Math.abs(finalPos.x - naturalCx) > 1 || Math.abs(finalPos.y - naturalCy) > 1;
+    return Object.assign({}, it, { x: finalPos.x, y: finalPos.y, moved: moved });
+  });
+}
 function rmBuildOutlineSvg(outline, overlay){
   var origin = rmGeomRingCentroid(outline.ring);
   var pts = outline.ring.map(function(p){ return rmExportProjectPoint(p, origin); });
@@ -8327,29 +8390,48 @@ function rmBuildOutlineSvg(outline, overlay){
     var svgMid = toSvg(midFeet);
     var isCal = i === calibratedIdx;
     var dimLabel = (isCal ? "✓ " : "") + Math.round(distFt) + " ft";
-    var dimW = Math.max(30, dimLabel.length * 6.4 + 10);
-    dimSvg += '<rect x="' + (svgMid.x - dimW / 2).toFixed(1) + '" y="' + (svgMid.y - 9).toFixed(1) + '" width="' +
-      dimW.toFixed(1) + '" height="18" rx="4" fill="' + (isCal ? "#2E7D32" : "#263238") + '"/>' +
-      '<text x="' + svgMid.x.toFixed(1) + '" y="' + (svgMid.y + 4).toFixed(1) +
-      '" font-family="Arial, sans-serif" font-size="10.5" font-weight="700" fill="#fff" text-anchor="middle">' +
+    var dimW = Math.max(38, dimLabel.length * 8 + 12);
+    dimSvg += '<rect x="' + (svgMid.x - dimW / 2).toFixed(1) + '" y="' + (svgMid.y - 12).toFixed(1) + '" width="' +
+      dimW.toFixed(1) + '" height="24" rx="5" fill="' + (isCal ? "#2E7D32" : "#263238") + '"/>' +
+      '<text x="' + svgMid.x.toFixed(1) + '" y="' + (svgMid.y + 5).toFixed(1) +
+      '" font-family="Arial, sans-serif" font-size="14" font-weight="700" fill="#fff" text-anchor="middle">' +
       rmEscXml(dimLabel) + '</text>';
   }
+  /* Asset markers stay pinned at their exact real position; only the
+     TEXT label next to each one is free to move for de-collision (a
+     marker without its label reading "HVAC Unit" instead of "Vent" would
+     be worse than a slightly-offset label with a leader line back to the
+     real marker). See rmDeconflictLabels() above -- same helper the
+     multi-roof export uses for its roof-name labels. */
   var markersSvg = "";
-  assetPts.forEach(function(a){
+  var assetLabelItems = [], markerObstacles = [];
+  assetPts.forEach(function(a, ai){
     var svgP = toSvg(a);
     var t = ROOF_ASSET_TYPES[a.type] || ROOF_ASSET_TYPES.other;
     var labelText = a.label || t.label;
     markersSvg += '<circle cx="' + svgP.x.toFixed(1) + '" cy="' + svgP.y.toFixed(1) + '" r="9" fill="' + t.color +
       '" stroke="#fff" stroke-width="2"/><text x="' + svgP.x.toFixed(1) + '" y="' + (svgP.y + 4).toFixed(1) +
-      '" font-family="Arial, sans-serif" font-size="11" text-anchor="middle">' + rmEscXml(t.emoji) + '</text>' +
-      /* stroke+paint-order gives the label text a white halo so it stays
-         readable over the orange outline fill or any marker it crosses,
-         without needing a separate background pill like the dimension
-         labels get (markers are already small and numerous; a halo reads
-         cleaner than N more boxes). */
-      '<text x="' + (svgP.x + 13).toFixed(1) + '" y="' + (svgP.y + 4).toFixed(1) +
-      '" font-family="Arial, sans-serif" font-size="10.5" font-weight="600" fill="#263238" ' +
-      'stroke="#ffffff" stroke-width="3" paint-order="stroke fill">' + rmEscXml(labelText) + '</text>';
+      '" font-family="Arial, sans-serif" font-size="11" text-anchor="middle">' + rmEscXml(t.emoji) + '</text>';
+    markerObstacles.push({ x: svgP.x, y: svgP.y, r: 9 });
+    var labelW = labelText.length * 12 * 0.58 + 6;
+    assetLabelItems.push({
+      id: "asset-" + ai, text: labelText, anchorX: svgP.x, anchorY: svgP.y,
+      dx: 15 + labelW / 2, dy: 0, width: labelW, height: 17
+    });
+  });
+  var placedAssetLabels = rmDeconflictLabels(assetLabelItems, svgW, svgH, markerObstacles);
+  placedAssetLabels.forEach(function(pl){
+    if (pl.moved){
+      markersSvg += '<line x1="' + pl.anchorX.toFixed(1) + '" y1="' + pl.anchorY.toFixed(1) + '" x2="' + pl.x.toFixed(1) + '" y2="' + pl.y.toFixed(1) +
+        '" stroke="#8a8f93" stroke-width="1" stroke-dasharray="2,2"/>';
+    }
+    /* stroke+paint-order gives the label text a white halo so it stays
+       readable over the orange outline fill or any marker it crosses,
+       without needing a separate background pill like the dimension
+       labels get. */
+    markersSvg += '<text x="' + pl.x.toFixed(1) + '" y="' + (pl.y + 4).toFixed(1) +
+      '" font-family="Arial, sans-serif" font-size="12" font-weight="600" fill="#263238" text-anchor="middle" ' +
+      'stroke="#ffffff" stroke-width="3" paint-order="stroke fill">' + rmEscXml(pl.text) + '</text>';
   });
   pinPts.forEach(function(p){
     var svgP = toSvg(p);
@@ -8365,18 +8447,18 @@ function rmBuildOutlineSvg(outline, overlay){
     });
     if (pinPts.length) legendParts.push("● Finding pin (color = warranty status)");
     if (legendParts.length){
-      legendSvg = '<text x="16" y="' + (svgH - footerH + 14) + '" font-family="Arial, sans-serif" font-size="11" fill="#5B6770">' +
+      legendSvg = '<text x="16" y="' + (svgH - footerH + 16) + '" font-family="Arial, sans-serif" font-size="12" fill="#5B6770">' +
         rmEscXml(legendParts.join("   ·   ")) + '</text>';
     }
   }
-  var statsY = hasBuildingInfo ? 60 : 44;
-  var headerSvg = '<text x="16" y="26" font-family="Arial, sans-serif" font-size="18" font-weight="700" fill="#263238">' +
+  var statsY = hasBuildingInfo ? 62 : 46;
+  var headerSvg = '<text x="16" y="27" font-family="Arial, sans-serif" font-size="20" font-weight="700" fill="#263238">' +
     rmEscXml(title) + '</text>';
   if (hasBuildingInfo && overlay.buildingAddress){
-    headerSvg += '<text x="16" y="44" font-family="Arial, sans-serif" font-size="12" fill="#5B6770">' +
+    headerSvg += '<text x="16" y="46" font-family="Arial, sans-serif" font-size="13" fill="#5B6770">' +
       rmEscXml(overlay.buildingAddress) + '</text>';
   }
-  headerSvg += '<text x="16" y="' + statsY + '" font-family="Arial, sans-serif" font-size="12" fill="#5B6770">Area: ' +
+  headerSvg += '<text x="16" y="' + statsY + '" font-family="Arial, sans-serif" font-size="13" fill="#5B6770">Area: ' +
     outline.areaSqFt.toFixed(0) + ' sq ft &#183; Perimeter: ' + outline.perimeterFt.toFixed(0) + ' ft &#183; Generated ' +
     rmEscXml(new Date(outline.createdAt || Date.now()).toLocaleDateString()) + '</text>';
   var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + svgW + '" height="' + svgH + '" viewBox="0 0 ' + svgW + ' ' + svgH + '">' +
@@ -8388,7 +8470,7 @@ function rmBuildOutlineSvg(outline, overlay){
       '<line x1="0" y1="0" x2="' + scaleBarPx + '" y2="0" stroke="#263238" stroke-width="2"/>' +
       '<line x1="0" y1="-4" x2="0" y2="4" stroke="#263238" stroke-width="2"/>' +
       '<line x1="' + scaleBarPx + '" y1="-4" x2="' + scaleBarPx + '" y2="4" stroke="#263238" stroke-width="2"/>' +
-      '<text x="' + (scaleBarPx / 2) + '" y="-8" font-family="Arial, sans-serif" font-size="11" fill="#263238" text-anchor="middle">' + scaleBarFt + ' ft</text>' +
+      '<text x="' + (scaleBarPx / 2) + '" y="-8" font-family="Arial, sans-serif" font-size="12" fill="#263238" text-anchor="middle">' + scaleBarFt + ' ft</text>' +
     '</g>' +
   '</svg>';
   return { svg: svg, width: svgW, height: svgH };
@@ -8482,18 +8564,29 @@ function rmBuildMultiRoofOutlineSvg(data){
   var w = (maxX - minX) + padFt * 2, h = (maxY - minY) + padFt * 2;
   var scale = Math.min(RM_EXPORT_MAX_SCALE, RM_EXPORT_MAX_CANVAS_DIM / Math.max(w, h)); /* see the same fix + explanation in rmBuildOutlineSvg() above */
   var hasBuildingInfo = !!(data.buildingName || data.buildingAddress);
-  var headerH = hasBuildingInfo ? 76 : 60;
-  var footerH = 78; /* legend + disclaimer, taller than the single-roof footer */
+  var headerH = hasBuildingInfo ? 84 : 66;
+  var footerH = 84; /* legend + disclaimer, taller than the single-roof footer */
   var svgW = Math.max(240, w * scale), svgH = Math.max(240, h * scale) + headerH + footerH;
   function toSvg(p){
     return { x: (p.x - minX + padFt) * scale, y: headerH + (h * scale) - ((p.y - minY + padFt) * scale) };
   }
   var totalAreaSqFt = data.roofs.reduce(function(sum, r){ return sum + (r.outline.areaSqFt || 0); }, 0);
-  var bodySvg = "", legendTypesPresent = {}, anyPins = false;
+  /* Two passes: first draw every fixed shape (outlines, dimension pills,
+     asset/pin markers -- none of these can move, they're pinned to real
+     coordinates), collecting label items as we go. THEN run
+     rmDeconflictLabels() once over every label from every roof combined
+     (roof names before asset labels, so roof names -- Mark's worst
+     collisions, "Pebble Beach"/"Roof 2", "Roof 1"/"Roof 10" -- get first
+     claim on their natural spot) and render the labels last, on top,
+     with leader lines back to whichever roof/asset a displaced label
+     belongs to. See rmDeconflictLabels() above and "Vertex + edge
+     snapping fix" / "Export layout pass" in DEV_NOTES.md. */
+  var shapeSvg = "", legendTypesPresent = {}, anyPins = false;
+  var roofLabelItems = [], assetLabelItems = [], markerObstacles = [];
   roofsProjected.forEach(function(r, i){
     var pathPts = r.pts.map(toSvg);
     var pathD = "M " + pathPts.map(function(p){ return p.x.toFixed(1) + "," + p.y.toFixed(1); }).join(" L ") + " Z";
-    bodySvg += '<path d="' + pathD + '" fill="rgba(232,96,10,0.15)" stroke="#E8600A" stroke-width="2.5" stroke-linejoin="round"/>';
+    shapeSvg += '<path d="' + pathD + '" fill="rgba(232,96,10,0.15)" stroke="#E8600A" stroke-width="2.5" stroke-linejoin="round"/>';
     /* Edge dimensions, same real-world haversine lengths the single-roof
        export/live map both use. */
     var calibratedIdx = r.outline.calibration ? r.outline.calibration.edgeIndex : -1;
@@ -8506,62 +8599,94 @@ function rmBuildMultiRoofOutlineSvg(data){
       var svgMid = toSvg(midFeet);
       var isCal = e === calibratedIdx;
       var dimLabel = (isCal ? "✓ " : "") + Math.round(distFt) + " ft";
-      var dimW = Math.max(28, dimLabel.length * 6 + 8);
-      bodySvg += '<rect x="' + (svgMid.x - dimW / 2).toFixed(1) + '" y="' + (svgMid.y - 8).toFixed(1) + '" width="' +
-        dimW.toFixed(1) + '" height="16" rx="4" fill="' + (isCal ? "#2E7D32" : "#263238") + '"/>' +
-        '<text x="' + svgMid.x.toFixed(1) + '" y="' + (svgMid.y + 3.5).toFixed(1) +
-        '" font-family="Arial, sans-serif" font-size="9.5" font-weight="700" fill="#fff" text-anchor="middle">' +
+      var dimW = Math.max(36, dimLabel.length * 8 + 12);
+      shapeSvg += '<rect x="' + (svgMid.x - dimW / 2).toFixed(1) + '" y="' + (svgMid.y - 11).toFixed(1) + '" width="' +
+        dimW.toFixed(1) + '" height="22" rx="5" fill="' + (isCal ? "#2E7D32" : "#263238") + '"/>' +
+        '<text x="' + svgMid.x.toFixed(1) + '" y="' + (svgMid.y + 5).toFixed(1) +
+        '" font-family="Arial, sans-serif" font-size="13" font-weight="700" fill="#fff" text-anchor="middle">' +
         rmEscXml(dimLabel) + '</text>';
     }
-    r.assetPts.forEach(function(a){
+    r.assetPts.forEach(function(a, ai){
       var svgP = toSvg(a);
       var t = ROOF_ASSET_TYPES[a.type] || ROOF_ASSET_TYPES.other;
       legendTypesPresent[a.type] = true;
       var labelText = a.label || t.label;
-      bodySvg += '<circle cx="' + svgP.x.toFixed(1) + '" cy="' + svgP.y.toFixed(1) + '" r="9" fill="' + t.color +
+      shapeSvg += '<circle cx="' + svgP.x.toFixed(1) + '" cy="' + svgP.y.toFixed(1) + '" r="9" fill="' + t.color +
         '" stroke="#fff" stroke-width="2"/><text x="' + svgP.x.toFixed(1) + '" y="' + (svgP.y + 4).toFixed(1) +
-        '" font-family="Arial, sans-serif" font-size="11" text-anchor="middle">' + rmEscXml(t.emoji) + '</text>' +
-        '<text x="' + (svgP.x + 13).toFixed(1) + '" y="' + (svgP.y + 4).toFixed(1) +
-        '" font-family="Arial, sans-serif" font-size="10.5" font-weight="600" fill="#263238" ' +
-        'stroke="#ffffff" stroke-width="3" paint-order="stroke fill">' + rmEscXml(labelText) + '</text>';
+        '" font-family="Arial, sans-serif" font-size="11" text-anchor="middle">' + rmEscXml(t.emoji) + '</text>';
+      markerObstacles.push({ x: svgP.x, y: svgP.y, r: 9 });
+      var labelW = labelText.length * 12 * 0.58 + 6;
+      assetLabelItems.push({
+        id: "asset-" + i + "-" + ai, kind: "asset", text: labelText,
+        anchorX: svgP.x, anchorY: svgP.y, dx: 15 + labelW / 2, dy: 0, width: labelW, height: 17
+      });
     });
     r.pinPts.forEach(function(p){
       anyPins = true;
       var svgP = toSvg(p);
-      bodySvg += '<circle cx="' + svgP.x.toFixed(1) + '" cy="' + svgP.y.toFixed(1) + '" r="7" fill="' +
+      shapeSvg += '<circle cx="' + svgP.x.toFixed(1) + '" cy="' + svgP.y.toFixed(1) + '" r="7" fill="' +
         warrantyColor(p.warranty) + '" stroke="#fff" stroke-width="2"/>';
     });
-    /* Roof label + its own area, at its outline's centroid -- "each
-       selected roof drawn, labeled, with its area/dimensions" per Mark's
-       exact ask. White-halo text (not a background pill like the roof
-       label marker on the live map) so it sits cleanly over the outline
-       fill regardless of roof size/shape. */
+    /* Roof label + its own area, anchored at its outline's centroid (or
+       wherever Mark dragged it) -- "each selected roof drawn, labeled,
+       with its area/dimensions" per Mark's exact ask. */
     var lp = toSvg(r.labelPt);
-    bodySvg += '<text x="' + lp.x.toFixed(1) + '" y="' + (lp.y - 4).toFixed(1) +
-      '" font-family="Arial, sans-serif" font-size="13" font-weight="700" fill="#263238" text-anchor="middle" ' +
-      'stroke="#ffffff" stroke-width="4" paint-order="stroke fill">' + rmEscXml(r.label) + '</text>' +
-      '<text x="' + lp.x.toFixed(1) + '" y="' + (lp.y + 12).toFixed(1) +
-      '" font-family="Arial, sans-serif" font-size="11" fill="#263238" text-anchor="middle" ' +
-      'stroke="#ffffff" stroke-width="4" paint-order="stroke fill">' + Math.round(r.outline.areaSqFt || 0) + ' sq ft</text>';
+    var areaText = Math.round(r.outline.areaSqFt || 0) + ' sq ft';
+    var labelBoxW = Math.max(r.label.length * 17 * 0.6, areaText.length * 13 * 0.55) + 6;
+    roofLabelItems.push({
+      id: "roof-" + i, kind: "roof", name: r.label, areaText: areaText,
+      anchorX: lp.x, anchorY: lp.y, dx: 0, dy: 0, width: labelBoxW, height: 38
+    });
   });
+  /* Roof labels first (higher priority, get first claim on their natural
+     spot), then asset labels -- see the two-pass comment above. */
+  var placedLabels = rmDeconflictLabels(roofLabelItems.concat(assetLabelItems), svgW, svgH, markerObstacles);
+  var labelSvg = "";
+  placedLabels.forEach(function(pl){
+    if (pl.kind === "roof"){
+      if (pl.moved){
+        labelSvg += '<line x1="' + pl.anchorX.toFixed(1) + '" y1="' + pl.anchorY.toFixed(1) + '" x2="' + pl.x.toFixed(1) + '" y2="' + pl.y.toFixed(1) +
+          '" stroke="#8a8f93" stroke-width="1" stroke-dasharray="2,2"/>' +
+          '<circle cx="' + pl.anchorX.toFixed(1) + '" cy="' + pl.anchorY.toFixed(1) + '" r="3" fill="#263238"/>';
+      }
+      /* White-halo text (not a background pill like the roof label marker
+         on the live map) so it sits cleanly over the outline fill or a
+         leader line regardless of roof size/shape. */
+      labelSvg += '<text x="' + pl.x.toFixed(1) + '" y="' + (pl.y - 5).toFixed(1) +
+        '" font-family="Arial, sans-serif" font-size="17" font-weight="700" fill="#263238" text-anchor="middle" ' +
+        'stroke="#ffffff" stroke-width="4" paint-order="stroke fill">' + rmEscXml(pl.name) + '</text>' +
+        '<text x="' + pl.x.toFixed(1) + '" y="' + (pl.y + 14).toFixed(1) +
+        '" font-family="Arial, sans-serif" font-size="13" fill="#263238" text-anchor="middle" ' +
+        'stroke="#ffffff" stroke-width="4" paint-order="stroke fill">' + rmEscXml(pl.areaText) + '</text>';
+    } else {
+      if (pl.moved){
+        labelSvg += '<line x1="' + pl.anchorX.toFixed(1) + '" y1="' + pl.anchorY.toFixed(1) + '" x2="' + pl.x.toFixed(1) + '" y2="' + pl.y.toFixed(1) +
+          '" stroke="#8a8f93" stroke-width="1" stroke-dasharray="2,2"/>';
+      }
+      labelSvg += '<text x="' + pl.x.toFixed(1) + '" y="' + (pl.y + 4).toFixed(1) +
+        '" font-family="Arial, sans-serif" font-size="12" font-weight="600" fill="#263238" text-anchor="middle" ' +
+        'stroke="#ffffff" stroke-width="3" paint-order="stroke fill">' + rmEscXml(pl.text) + '</text>';
+    }
+  });
+  var bodySvg = shapeSvg + labelSvg;
   var legendParts = Object.keys(legendTypesPresent).map(function(k){
     var t = ROOF_ASSET_TYPES[k] || ROOF_ASSET_TYPES.other; return t.emoji + " " + t.label;
   });
   if (anyPins) legendParts.push("● Finding pin (color = warranty status)");
   var legendSvg = legendParts.length ?
-    '<text x="16" y="' + (svgH - footerH + 16) + '" font-family="Arial, sans-serif" font-size="11" fill="#5B6770">' +
+    '<text x="16" y="' + (svgH - footerH + 18) + '" font-family="Arial, sans-serif" font-size="12" fill="#5B6770">' +
       rmEscXml(legendParts.join("   ·   ")) + '</text>' : '';
   var disclaimerSvg = '<text x="16" y="' + (svgH - 12) + '" font-family="Arial, sans-serif" font-size="9.5" fill="#8a8f93" font-style="italic">' +
     'Measurements are derived from GPS/mapped data and are approximate -- verify critical dimensions in the field before ordering materials.</text>';
   var title = (data.buildingName || "Roof Export") + " — " + data.roofs.length + " Roof" + (data.roofs.length === 1 ? "" : "s");
-  var headerSvg = '<text x="16" y="26" font-family="Arial, sans-serif" font-size="18" font-weight="700" fill="#263238">' +
+  var headerSvg = '<text x="16" y="27" font-family="Arial, sans-serif" font-size="20" font-weight="700" fill="#263238">' +
     rmEscXml(title) + '</text>';
-  var statsY = hasBuildingInfo ? 60 : 44;
+  var statsY = hasBuildingInfo ? 62 : 46;
   if (hasBuildingInfo && data.buildingAddress){
-    headerSvg += '<text x="16" y="44" font-family="Arial, sans-serif" font-size="12" fill="#5B6770">' +
+    headerSvg += '<text x="16" y="46" font-family="Arial, sans-serif" font-size="13" fill="#5B6770">' +
       rmEscXml(data.buildingAddress) + '</text>';
   }
-  headerSvg += '<text x="16" y="' + statsY + '" font-family="Arial, sans-serif" font-size="12" fill="#5B6770">Total area: ' +
+  headerSvg += '<text x="16" y="' + statsY + '" font-family="Arial, sans-serif" font-size="13" fill="#5B6770">Total area: ' +
     Math.round(totalAreaSqFt) + ' sq ft &#183; Generated ' + rmEscXml(new Date().toLocaleDateString()) + '</text>';
   var scaleBarFt = 20, scaleBarPx = scaleBarFt * scale;
   /* North arrow -- this projection's "up" (toSvg's y flip) genuinely is
@@ -8573,7 +8698,7 @@ function rmBuildMultiRoofOutlineSvg(data){
   var northArrowSvg = '<g transform="translate(' + naX + ',' + naY + ')">' +
     '<line x1="0" y1="26" x2="0" y2="0" stroke="#263238" stroke-width="2.5"/>' +
     '<path d="M -6,8 L 0,0 L 6,8 Z" fill="#263238"/>' +
-    '<text x="0" y="40" font-family="Arial, sans-serif" font-size="12" font-weight="700" fill="#263238" text-anchor="middle">N</text>' +
+    '<text x="0" y="40" font-family="Arial, sans-serif" font-size="13" font-weight="700" fill="#263238" text-anchor="middle">N</text>' +
     '</g>';
   var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + svgW + '" height="' + svgH + '" viewBox="0 0 ' + svgW + ' ' + svgH + '">' +
     '<rect width="100%" height="100%" fill="#ffffff"/>' +
@@ -8582,7 +8707,7 @@ function rmBuildMultiRoofOutlineSvg(data){
       '<line x1="0" y1="0" x2="' + scaleBarPx + '" y2="0" stroke="#263238" stroke-width="2"/>' +
       '<line x1="0" y1="-4" x2="0" y2="4" stroke="#263238" stroke-width="2"/>' +
       '<line x1="' + scaleBarPx + '" y1="-4" x2="' + scaleBarPx + '" y2="4" stroke="#263238" stroke-width="2"/>' +
-      '<text x="' + (scaleBarPx / 2) + '" y="-8" font-family="Arial, sans-serif" font-size="11" fill="#263238" text-anchor="middle">' + scaleBarFt + ' ft</text>' +
+      '<text x="' + (scaleBarPx / 2) + '" y="-8" font-family="Arial, sans-serif" font-size="12" fill="#263238" text-anchor="middle">' + scaleBarFt + ' ft</text>' +
     '</g>' +
   '</svg>';
   return { svg: svg, width: svgW, height: svgH };
@@ -8667,11 +8792,21 @@ async function rmExportPDF(){
        set, which turned a ~110KB PNG into a ~22MB PDF in testing (a mostly-
        white 2200x1865 image stored byte-for-byte uncompressed). With it,
        the same export comes out under 100KB. */
-    var doc = new JsPdf({ unit: "pt", format: "letter", compress: true });
-    var pageW = doc.internal.pageSize.getWidth(), pageH = doc.internal.pageSize.getHeight();
-    var margin = 40;
-    var availW = pageW - margin * 2, availH = pageH - margin * 2;
+    /* Orientation picked to match the drawing's own aspect ratio, not
+       hardcoded portrait. Mark's real Tri-Delta export (11 roofs, wider
+       than tall) came out on a portrait page with the drawing shrunk to
+       fit the narrower dimension, leaving huge empty margins top/bottom
+       and the actual content occupying a squeezed band in the middle --
+       exactly what you'd get forcing a landscape-shaped drawing onto a
+       portrait page. Choosing landscape for a wide drawing (and portrait
+       for a tall one) means the fit-to-available-area math below almost
+       always maxes out BOTH dimensions instead of just one. */
     var aspect = built.width / built.height;
+    var orientation = aspect > 1 ? "landscape" : "portrait";
+    var doc = new JsPdf({ unit: "pt", format: "letter", orientation: orientation, compress: true });
+    var pageW = doc.internal.pageSize.getWidth(), pageH = doc.internal.pageSize.getHeight();
+    var margin = 36;
+    var availW = pageW - margin * 2, availH = pageH - margin * 2;
     var drawW = availW, drawH = drawW / aspect;
     if (drawH > availH){ drawH = availH; drawW = drawH * aspect; }
     var offX = margin + (availW - drawW) / 2, offY = margin + (availH - drawH) / 2;
