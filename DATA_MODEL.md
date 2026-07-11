@@ -35,39 +35,125 @@ Notes:
 - This becomes the tenant boundary in Phase 5.
 - Existing Watkins-only data can later be migrated under one account.
 
-### `users`
+### `users` (implemented, Phase 1 of the auth build — see `docs/AUTH_DESIGN.md`)
 
-Application users and role metadata.
-
-Example fields:
+Per-user privilege **mirror** — non-authoritative. The Firebase custom claims on
+the user's ID token (`{ owner, role, mfaOk }`, deliberately small — see "Custom
+claims size" in `docs/AUTH_DESIGN.md`) are the real enforcement truth; this doc
+exists for display/query only. **No client write path at all, for any field** —
+every write goes through `netlify/functions/auth.js` via the Admin SDK
+(`firestore.rules`: `allow write: if false`, unconditionally). A user can never
+modify their own privilege record, not even their own `displayName`.
 
 ```js
+// users/{uid}  (uid matches the Firebase Auth user's uid)
 {
-  accountId,
+  uid,
   email,
   displayName,
-  role: "admin", // admin | manager | technician | viewer
-  active: true,
-  createdAt,
-  updatedAt,
-  lastLoginAt
+  role,             // roleId, e.g. "field_tech" — matches a roles/{roleId} doc.
+                     // "owner" is set only by bootstrap_owner/transfer_owner.
+  permissions: {},   // resolved snapshot for display/query only, NOT authoritative
+                      // — real checks always re-read the live roles/{role} doc.
+                      // Currently written as {} (unused) — Phase 2+ may populate
+                      // it for a role-management UI's convenience.
+  projectRoles: {},  // placeholder for project-scoped access (superintendent/
+                      // project_manager's "proj"-valued permissions) — shape not
+                      // finalized until Phase 2/3 build the scoping resolution
+  status,            // "active" | "disabled" (Phase 4: disable/recovery flows)
+  mfaEnrolled,        // bool (Phase 4: MFA build-out)
+  owner,             // bool — true only for the current owner; mirrors the
+                      // claims field of the same name
+  createdAt, updatedAt,
+  createdBy,          // "bootstrap" for the first owner, else the assigning
+                      // admin/owner's uid
+  lastLoginAt         // not yet populated — no code currently writes this
 }
 ```
 
-Notes:
+Read access (`firestore.rules`): a user may read their own doc; an owner or admin
+may read anyone's — checked directly against the caller's own verified token
+(`request.auth.token.owner`/`.role`), no extra Firestore lookup needed.
 
-- Authentication provider details can live here or in a related auth profile.
-- Role names should map to Firestore security rules.
-- **Interim state**: the current app does not have real user accounts yet. It ships a
-  PIN-based "admin mode" — the PIN itself is verified server-side
-  (`netlify/functions/admin.js`, `ADMIN_PIN` env var) and destructive Firestore
-  operations run through that function via the Firebase Admin SDK, with
-  `firestore.rules` blocking client-side deletes on the affected collections
-  entirely. It's real enforcement, just not real *identity* — there's one shared PIN,
-  not per-user accounts, so it can't tell techs apart or produce a real audit trail of
-  who deleted what. Replace with this `users`/`role` model (paired with Firebase Auth
-  and rules keyed to `request.auth`) rather than extending the PIN approach further,
-  once per-user accounts are worth the added complexity.
+**PIN-based admin mode (`netlify/functions/admin.js`, `ADMIN_PIN`) is untouched
+and still fully functional** — this auth system is layered alongside it, not
+replacing it yet. The PIN toggle continues to gate exactly what it always has
+until a later phase formally migrates those actions onto claims-based checks.
+
+### `roles` (implemented, Phase 1 — see `docs/AUTH_DESIGN.md`)
+
+Data-driven role → permission grid. Adding a role is a data change (add a doc);
+adding a permission *key* is a deliberate code change
+(`netlify/functions/lib/permissions.js`'s `PERMISSION_KEYS`). Seeded with 9
+approved roles via `netlify/functions/auth.js`'s `seed_roles` action, not written
+directly.
+
+```js
+// roles/{roleId}
+{
+  id,            // matches the doc id, e.g. "field_tech"
+  label,         // "Field Tech"
+  description,
+  permissions: {
+    // permKey -> true | false | "proj" | "own" | "billing"
+    // true    = granted, unconditionally
+    // false   = not granted (also the default for any key not present)
+    // "proj"  = granted, scoped to the user's assigned projects (projectRoles)
+    // "own"   = granted, scoped to records the user themself created
+    // "billing" = granted, scoped to billing-relevant fields/records only
+    // Scope-string enforcement (resolving "proj"/"own"/"billing" against a
+    // specific document) is Phase 2/3 work — this doc only defines the data.
+  },
+  isSystem,      // true for "owner"/"admin" only — protected, cannot be edited
+                 // or deleted (not yet enforced by a role-editor UI, since one
+                 // doesn't exist yet; the two isSystem roles just aren't
+                 // touched by anything currently built)
+  rank,          // display-ordering hint only, not used for enforcement
+  createdAt, updatedAt
+}
+```
+
+`firestore.rules`: readable by any signed-in user, `write: if false` always —
+every write goes through `seed_roles` (Admin SDK).
+
+### `audit_logs` (implemented, Phase 1 foundation — see `docs/AUTH_DESIGN.md`)
+
+Append-only. **Immutable by design**: `firestore.rules` denies `update`/`delete`
+to every client without exception, including the owner. Written by server
+functions only (Admin SDK, not subject to rules) — started in Phase 1 for the
+highest-risk actions (`bootstrap_owner`, `assign_role`, `transfer_owner`); Phase 2
+formalizes coverage across every other privileged action in the app.
+
+```js
+// audit_logs/{genId}
+{
+  actorUid, actorRole,  // who did it, and what role they held at the time
+  ts,                    // Date.now() — server-set, not client-supplied
+  target: { collection, id }, // what was acted on
+  action,                 // e.g. "assign_role", "bootstrap_owner", "transfer_owner"
+  before, after           // shallow before/after snapshot of the changed field(s)
+}
+```
+
+Read access: gated by the caller's live `roles/{role}.permissions['audit.view']`
+(a rules `get()` on the caller's own role doc — the same resolve-at-check-time
+pattern `netlify/functions/lib/authGuard.js` uses server-side), or unconditionally
+for the owner.
+
+### `app_settings/auth_bootstrap` (new doc under the existing `app_settings`
+collection — see "Global photo size setting" above for the collection's other
+use)
+
+```js
+{
+  ownerBootstrapped, // bool — flips true exactly once, on the first successful
+                     // bootstrap_owner call. Refuses every subsequent
+                     // bootstrap_owner attempt once true — not a standing
+                     // backdoor, a single-use setup step.
+  bootstrappedAt,
+  ownerUid
+}
+```
 
 ### `customers`
 

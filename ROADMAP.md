@@ -742,7 +742,32 @@ Goal: support office/admin workflows and controlled access.
   rules) rather than just hidden in the UI. Real enforcement, but one shared PIN
   rather than per-user accounts — replace with real accounts/roles below rather
   than extending it further.
-- Add user accounts, roles, and permissions.
+- 🔄 **In progress (dev only, Phase 1 of 5 shipped 2026-07-10)**: real user
+  accounts, data-driven roles, and permissions — this is that line, underway.
+  Full 5-phase plan and design in `docs/AUTH_DESIGN.md`. **Phase 1 shipped**:
+  Firebase Auth (email+password) added alongside the existing PIN-based admin
+  mode (PIN untouched, still fully functional); a data-driven `roles`
+  collection seeded with the 9 approved roles (owner/admin/service_manager/
+  superintendent/ops_manager/project_manager/estimator/field_tech/billing) and
+  their full permission grid (34 keys); a `users/{uid}` privilege mirror with
+  **no client write path at all** — every write goes through
+  `netlify/functions/auth.js`'s Admin-SDK-only actions
+  (`bootstrap_owner`/`assign_role`/`transfer_owner`/`seed_roles`); a "🔐
+  Account" sign-in UI (separate from the PIN toggle, controls nothing yet).
+  **Real deviation from the original spec, documented**: custom claims carry
+  only `{owner, role, mfaOk}`, not the full resolved permission grid —
+  Firebase's 1000-byte claims cap made embedding the full 34-key grid
+  fragile (owner/admin were already at ~95%+ of the limit with zero room for
+  future permission keys); permissions now resolve from the live `roles` doc
+  at check time instead, server-side (`authGuard.js`) and in Firestore rules
+  alike, via `request.auth.token.role`. **Mandatory negative tests passed**
+  (10 scenarios, including "admin attempts to lock out the owner" and "a
+  field_tech attempts to self-promote") — see `docs/AUTH_DESIGN.md` for the
+  full results table. Phases 2-5 (dual rules+function enforcement + immutable
+  audit log; archive/void/restore + 5-stage change-order workflow; MFA +
+  session/recovery; hardening + the app actually requiring login) not yet
+  built. **Dev only — production's PIN-based admin mode is completely
+  unaffected**, and the app does not require login anywhere yet.
 - Add an admin/dashboard experience for searching customers, buildings, work orders, reports, and history events.
 - Add account/company settings for branding, default emails, report templates, and integration settings.
 - Add user assignment, technician tracking, and audit metadata.

@@ -226,6 +226,7 @@
 </style>
 <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-auth-compat.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
@@ -247,6 +248,7 @@
   <button class="tab cond" id="tab-reports" onclick="showView('reports')">Reports</button>
   <button class="tab cond" id="tab-roofmapper" onclick="showView('roofmapper')">🗺️ RoofMapper</button>
   <button class="tab cond" id="admin-toggle" onclick="toggleAdminMode()" style="font-size:11px">Admin</button>
+  <button class="tab cond" id="account-toggle" onclick="openAccountModal()" style="font-size:11px">🔐 Account</button>
 </header>
 
 <div class="wrap">
@@ -818,6 +820,20 @@
   </div>
 </div>
 
+<!-- ================= Account (Phase 1 of the auth build -- see
+     docs/AUTH_DESIGN.md). Layered alongside the existing PIN-based Admin
+     toggle above -- neither replaces the other yet. ================= -->
+<div id="account-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)closeAccountModal()">
+  <div style="background:#fff;max-width:420px;margin:10vh auto;border-radius:8px;overflow:hidden;width:94%">
+    <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
+      <b class="cond" style="font-size:17px">Account</b>
+      <span style="flex:1"></span>
+      <button class="btn" onclick="closeAccountModal()">Close</button>
+    </div>
+    <div style="padding:14px 16px" id="account-modal-body"></div>
+  </div>
+</div>
+
 <div id="activity-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)closeActivityModal()">
   <div style="background:#fff;max-width:520px;margin:6vh auto;border-radius:8px;max-height:88vh;display:flex;flex-direction:column;overflow:hidden;width:94%">
     <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
@@ -966,13 +982,121 @@ var FIREBASE_CONFIG = {
   appId: "1:806263881954:web:16fb8f9cfac591dce25ebb"
 };
 var fdb = null;
+/* fauth (Firebase Authentication, Phase 1 of the auth build -- see
+   docs/AUTH_DESIGN.md) is layered ALONGSIDE the existing PIN-based admin
+   mode below, not replacing it yet. Requires the "Email/Password"
+   sign-in provider to be enabled for this project in the Firebase
+   Console (Authentication > Sign-in method) -- a manual one-time step,
+   same pattern as firestore.rules needing a manual publish; nothing here
+   enables it automatically. fauth stays null (same graceful-degrade
+   pattern as fdb) if the SDK didn't load or the project isn't set up
+   for it yet -- login UI simply won't work until then, nothing else in
+   the app is affected. */
+var fauth = null;
 try{
   if (window.firebase && firebase.initializeApp){
     firebase.initializeApp(FIREBASE_CONFIG);
     fdb = firebase.firestore();
+    if (firebase.auth) fauth = firebase.auth();
   }
-}catch(e){ fdb = null; }
+}catch(e){ fdb = null; fauth = null; }
 var cloudIndexCache = [];
+
+/* ================= Account / login (auth Phase 1) =================
+   Reachable via the header's "🔐 Account" button, entirely separate from
+   the PIN-based Admin toggle above -- neither gates the app yet. Role/
+   permission display below reads straight off the signed-in user's ID
+   token (getIdTokenResult().claims), NOT a Firestore read -- the token
+   already carries { owner, role, mfaOk } once signed in (see "Custom
+   claims size" in docs/AUTH_DESIGN.md for why claims stay this small),
+   so this works before any Firestore rule for `users`/`roles` exists at
+   all (that's Phase 2). currentAuthClaims is display-only here in Phase 1
+   -- nothing in the app CHECKS it to gate any action yet. */
+var currentAuthUser = null;
+var currentAuthClaims = null;
+if (fauth){
+  fauth.onAuthStateChanged(function(user){
+    currentAuthUser = user;
+    if (user){
+      user.getIdTokenResult().then(function(res){
+        currentAuthClaims = res.claims;
+        updateAccountUI();
+      }).catch(function(){ currentAuthClaims = null; updateAccountUI(); });
+    } else {
+      currentAuthClaims = null;
+      updateAccountUI();
+    }
+  });
+}
+function updateAccountUI(){
+  var btn = document.getElementById("account-toggle");
+  if (!btn) return;
+  btn.textContent = currentAuthUser ? "🔐 " + (currentAuthUser.email || "Account") : "🔐 Account";
+  if (document.getElementById("account-modal").style.display !== "none") renderAccountModal();
+}
+function openAccountModal(){
+  document.getElementById("account-modal").style.display = "";
+  lockBodyScroll();
+  renderAccountModal();
+}
+function closeAccountModal(){
+  document.getElementById("account-modal").style.display = "none";
+  unlockBodyScroll();
+}
+function renderAccountModal(){
+  var host = document.getElementById("account-modal-body");
+  if (!host) return;
+  if (!fauth){
+    host.innerHTML = '<p class="hint">Sign-in isn\'t available right now (Firebase Auth didn\'t load, or the ' +
+      'Email/Password sign-in provider isn\'t enabled for this project yet).</p>';
+    return;
+  }
+  if (currentAuthUser){
+    var roleLine = currentAuthClaims && currentAuthClaims.role ?
+      ' — role: <b>' + esc(currentAuthClaims.role) + '</b>' + (currentAuthClaims.owner ? ' (owner)' : '') :
+      ' — no role assigned yet';
+    host.innerHTML =
+      '<p class="hint" style="margin:0 0 10px">Signed in as <b>' + esc(currentAuthUser.email || "") + '</b>' + roleLine + '</p>' +
+      '<p class="hint" style="margin:0 0 10px">This account doesn\'t control anything in the app yet — Admin mode\'s ' +
+      'PIN still works exactly as before.</p>' +
+      '<div class="btnrow"><button class="btn danger" onclick="signOutUser()">Sign Out</button></div>';
+  } else {
+    host.innerHTML =
+      '<div class="fld"><label>Email</label><input type="email" id="login-email" autocomplete="username"></div>' +
+      '<div class="fld"><label>Password</label><input type="password" id="login-password" autocomplete="current-password"></div>' +
+      '<div class="btnrow"><button class="btn primary" onclick="signInWithEmail()">Sign In</button>' +
+      '<button class="btn" onclick="sendPasswordReset()">Forgot Password?</button></div>' +
+      '<p class="hint" style="margin-top:10px">Separate from Admin mode\'s PIN, which still works exactly as before — ' +
+      'this doesn\'t control anything in the app yet.</p>';
+  }
+}
+async function signInWithEmail(){
+  if (!fauth) return;
+  var email = val("login-email").trim();
+  var password = val("login-password");
+  if (!email || !password){ toast("Enter email and password."); return; }
+  toast("Signing in…");
+  try{
+    await fauth.signInWithEmailAndPassword(email, password);
+    toast("Signed in ✓");
+  }catch(e){ toast("Sign-in failed: " + e.message); }
+}
+async function signOutUser(){
+  if (!fauth) return;
+  try{
+    await fauth.signOut();
+    toast("Signed out");
+  }catch(e){ toast("Sign-out failed: " + e.message); }
+}
+async function sendPasswordReset(){
+  if (!fauth) return;
+  var email = val("login-email").trim();
+  if (!email){ toast("Enter your email first."); return; }
+  try{
+    await fauth.sendPasswordResetEmail(email);
+    toast("Password reset email sent (if that account exists) ✓");
+  }catch(e){ toast("Couldn't send reset email: " + e.message); }
+}
 
 async function cloudSaveOrder(o){
   if (!fdb) throw new Error("cloud not available");
