@@ -3705,6 +3705,90 @@ specced it; wiring an actual feature on top (starting with the 33-rule
 inbox-rules spec drafted in the app-only section above, once delegated
 auth is confirmed live) is the next phase, not this one.
 
+### Inspection checklist photo pinning (shipped 2026-07-10, dev only)
+
+Mark testing the Inspection form live on dev: refined how each checklist
+item's photo capture should work.
+
+1. **Removed "+ Add Photos" (library) and "Import from CompanyCam"** from
+   every checklist item — only **"📷 Take Photo"** (in-app camera) remains.
+   Mark: the tech is photographing the specific condition they're looking
+   at and rating right there, not attaching photos from elsewhere. New
+   `inspectionItemPhotoGalleryHtml(item)` — a copy of the existing
+   `findingPhotoGalleryHtml(f)` with the library-add and CompanyCam-import
+   buttons/inputs removed, everything else (thumbnail strip, caption,
+   Remove) unchanged. `renderInspectionChecklist()` calls this instead of
+   `findingPhotoGalleryHtml()` now; findings themselves are completely
+   unaffected (still get all three options).
+2. **Auto-pin on capture.** Each checklist item now has its own `pin`
+   field (`{lat,lng,x,y,source}`, same shape `finding.pin` already uses),
+   independent of `linkedFindingId`/`findings[]` entirely — so it's set
+   regardless of rating, not just when a condition is below Good. New
+   `maybeAutoPinInspectionItem(photo)` mirrors `maybeAutoPinFinding()`
+   exactly (same never-overwrite rule: a tech's first photo sets it, later
+   photos never move it): checks `inspectionChecklistItemById(photo.
+   finding_id)` instead of `findingById()`. `addPhotosFromCamera()`'s
+   completion callback now calls both `maybeAutoPinFinding(r)` and
+   `maybeAutoPinInspectionItem(r)` whenever a `findingId` was passed —
+   exactly one of them ever actually does anything, since each checks its
+   own array and no-ops otherwise. (`addPhotosFromFiles()`, the library-add
+   path, was NOT touched here since checklist items no longer have a UI
+   path into it at all.)
+3. **Pin shows on the Roof Map, not just saved data.** `buildPinsForHistoryEvent(o)`
+   — the function that turns a saved work order's pins into what
+   `building_history_events[].pins[]` (and from there, the building's Roof
+   Map) actually renders — now also pulls pins from `o.inspectionChecklist`
+   alongside `o.findings`, synthesizing the same pin shape (`condition` =
+   "`<component label>`: `<rating>`", `warranty: ""` since that's not a
+   checklist concept — `warrantyColor("")` already falls through to the
+   same neutral/yellow default other non-warranty-rated pins get). This is
+   what makes a checklist photo's pin "reviewable by someone else" — it's
+   not just stored on the work order, it shows up on the building's roof
+   map exactly like a finding's pin would.
+4. **Found and fixed two related pre-existing-pattern gaps** while
+   building this: (a) `removePhoto()` only called `renderFindings()` when
+   a removed photo had a `finding_id` — extended to also check
+   `inspectionChecklistItemById()` and call `renderInspectionChecklist()`,
+   otherwise a checklist item's photo strip (and its "📍 Pinned..." hint)
+   would go stale after removing one of its photos. (b) `renderPhotos()`'s
+   global Photo Documentation section has a "Finding:" reassignment
+   dropdown per photo, built only from `findings[]` — a checklist item's
+   photo would fall through to showing "General / no specific finding"
+   there (misleading) and risked being reassigned away by accident.
+   Extended `findingOptions` to also list checklist items ("Checklist:
+   `<component>`"), and the dropdown's change handler now calls
+   `maybeAutoPinInspectionItem(p)` alongside `maybeAutoPinFinding(p)` too,
+   for the same "exactly one actually does something" reasoning as above.
+5. **`ensureInspectionChecklist()`** now also seeds `pin: null` on newly
+   created items and self-heals it (`if (item.pin === undefined) item.pin
+   = null;`) for any item saved before this shipped — same defensive
+   pattern `fill()` already uses for findings' `pin` field.
+
+**Roadmap note, not built here**: this pin is explicitly the "before" half
+of a before/after comparison capability — see "Inspection checklist
+photo pinning: before/after-at-a-pin" in `ROADMAP.md`. The pin is the
+anchor; an actual side-by-side before/after comparison view (matching a
+later repair photo at the same pin against this inspection photo) is
+future work, not attempted here.
+
+Tested with `navigator.geolocation.getCurrentPosition` and a real 1x1 PNG
+`File` mocked (no real GPS/camera needed): confirmed a checklist item's
+photo gallery shows only Take Photo, no Add Photos/Import from CompanyCam;
+confirmed capturing a photo via `addPhotosFromCamera()` correctly sets the
+item's `pin` from the mocked GPS coords; confirmed the "📍 Pinned on the
+roof map..." hint and photo thumbnail both appear after capture; confirmed
+a SECOND photo capture with different mocked GPS does NOT move the
+already-set pin (never-overwrite rule holds); confirmed
+`buildPinsForHistoryEvent()` correctly includes the checklist item's pin
+with the right condition text/coordinates; confirmed removing one of a
+checklist item's two photos correctly refreshes its gallery and leaves the
+pin untouched; confirmed the global photo section's Finding dropdown lists
+the checklist item as "Checklist: Membrane / Field"; confirmed a full
+`collect()`/`fill()` round-trip preserves a checklist item's `pin`
+correctly; confirmed findings (Leak/Service) are completely unaffected --
+still show all three photo options. All test state removed, page reloaded
+clean.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |

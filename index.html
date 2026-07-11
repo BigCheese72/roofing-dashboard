@@ -1499,6 +1499,35 @@ function findingPhotoGalleryHtml(f){
     (strip ? '<div class="finding-photo-strip">' + strip + '</div>' : '') +
     '</div>';
 }
+/* Checklist items only get in-app camera capture -- no library add, no
+   CompanyCam import (Mark: doesn't want those on the checklist). The tech
+   is photographing the specific condition they're looking at and rating
+   right there, not attaching photos from elsewhere. Every capture here
+   auto-pins (see maybeAutoPinInspectionItem()) -- the pin is what makes
+   this photo a "before" reference a later repair photo at the same spot
+   can be compared against (before/after-at-a-pin -- see "Inspection
+   checklist photo pinning" in ROADMAP.md/DEV_NOTES.md). */
+function inspectionItemPhotoGalleryHtml(item){
+  var safeId = esc(item.id);
+  var items = photos.map(function(p, gi){ return { p: p, gi: gi }; })
+    .filter(function(x){ return x.p.finding_id === item.id; });
+  var strip = items.map(function(x){
+    return '<div class="finding-photo-item">' +
+      (x.p.img ? '<img class="thumb" src="' + x.p.img + '" onclick="openPhotoLightbox(' + x.gi + ')" title="Tap to enlarge">' : '') +
+      '<input type="text" placeholder="Caption" data-findingphoto="' + x.gi + '" value="' + esc(x.p.caption) + '" list="dl-photoCaption" onblur="rememberFieldValue(\'photoCaption\', this.value)">' +
+      '<button class="btn danger" onclick="removePhoto(' + x.gi + ')">✕ Remove</button>' +
+      '</div>';
+  }).join("");
+  return '<div class="finding-photos">' +
+    '<div class="btnrow" style="margin:0">' +
+      '<button class="btn primary" onclick="document.getElementById(\'fcam-' + safeId + '\').click()">📷 Take Photo</button>' +
+    '</div>' +
+    '<input type="file" id="fcam-' + safeId + '" accept="image/*" capture="environment" style="display:none" ' +
+      'onchange="addPhotosFromCamera(this.files, \'' + safeId + '\'); this.value=\'\';">' +
+    (strip ? '<div class="finding-photo-strip">' + strip + '</div>' : '') +
+    (item.pin ? '<p class="hint" style="margin:6px 0 0">📍 Pinned on the roof map from this photo\'s location.</p>' : '') +
+    '</div>';
+}
 function renderFindings(){
   var host = document.getElementById("findings-list");
   host.innerHTML = "";
@@ -1579,9 +1608,13 @@ function inspectionComponentLabel(key){
 function ensureInspectionChecklist(){
   INSPECTION_CHECKLIST_COMPONENTS.forEach(function(c){
     if (!inspectionChecklist.some(function(item){ return item.key === c.key; })){
-      inspectionChecklist.push({ id: genId("chk"), key: c.key, rating: "N/A", notes: "", linkedFindingId: null });
+      inspectionChecklist.push({ id: genId("chk"), key: c.key, rating: "N/A", notes: "", linkedFindingId: null, pin: null });
     }
   });
+  /* Self-heals items saved before `pin` existed -- never fabricates a
+     location, just ensures the field is there going forward (same pattern
+     fill() already uses for findings' pin field). */
+  inspectionChecklist.forEach(function(item){ if (item.pin === undefined) item.pin = null; });
   inspectionChecklist.sort(function(a, b){
     var ia = INSPECTION_CHECKLIST_COMPONENTS.findIndex(function(c){ return c.key === a.key; });
     var ib = INSPECTION_CHECKLIST_COMPONENTS.findIndex(function(c){ return c.key === b.key; });
@@ -1633,7 +1666,7 @@ function renderInspectionChecklist(){
       '</select></div>' +
       '<div class="fld"><label>Notes (optional)</label>' +
       '<textarea rows="2" data-ci="' + i + '" data-cf="notes">' + esc(item.notes) + '</textarea></div>' +
-      findingPhotoGalleryHtml(item) +
+      inspectionItemPhotoGalleryHtml(item) +
       '</div>';
   }).join("");
   host.querySelectorAll("[data-cf]").forEach(function(el){
@@ -2386,7 +2419,13 @@ function addPhotosFromCamera(files, findingId){
         results.forEach(function(r){
           if (!r) return;
           photos.push(r);
-          if (findingId) maybeAutoPinFinding(r);
+          if (findingId){
+            /* Exactly one of these actually does anything -- each checks
+               its own array (findings[] vs inspectionChecklist[]) and
+               no-ops if findingId doesn't match anything there. */
+            maybeAutoPinFinding(r);
+            maybeAutoPinInspectionItem(r);
+          }
           /* Change Order has no findings to hang a pin off of, so a
              photo captured while editing a Change Order gets its own
              pin instead (see maybeAutoPinPhoto() below) -- scoped to
@@ -2443,6 +2482,23 @@ function maybeAutoPinFinding(photo){
   renderFindings();
   toast("📍 Pin auto-placed on the roof map from the photo's location — drag to fine-tune if needed.");
 }
+/* Inspection-checklist equivalent of maybeAutoPinFinding() above -- a
+   checklist item's own `pin` field (independent of linkedFindingId/
+   findings[], see ensureInspectionChecklist()), same shape/source
+   convention, same never-overwrite rule. This is the anchor for
+   before/after comparison: the inspection photo is the "before" at this
+   pin, a later repair photo at the same spot is the "after" -- see
+   "Inspection checklist photo pinning" in DEV_NOTES.md/ROADMAP.md. No
+   manual drag-to-adjust UI for a checklist item's pin (unlike findings) --
+   scoped to "captures, auto-pins" per spec, not full pin-modal parity. */
+function maybeAutoPinInspectionItem(photo){
+  if (!photo || !photo.gps || !photo.finding_id) return;
+  var item = inspectionChecklistItemById(photo.finding_id);
+  if (!item || item.pin) return;
+  item.pin = { lat: photo.gps.lat, lng: photo.gps.lng, x: null, y: null, source: "device_gps" };
+  renderInspectionChecklist();
+  toast("📍 Pin auto-placed on the roof map from the photo's location.");
+}
 /* Change Order equivalent of maybeAutoPinFinding() above -- a Change
    Order has no findings, so each photo carries its own pin instead of
    sharing one. Same shape/source convention, same never-overwrite rule.
@@ -2460,10 +2516,13 @@ function removePhoto(i){
   var removed = photos[i];
   photos.splice(i,1);
   renderPhotos();
-  /* A removed photo might have been shown in its finding's embedded
-     gallery (increment 2 of the photo-capture rework) -- refresh that
-     too so it doesn't linger there after being removed globally. */
-  if (removed && removed.finding_id) renderFindings();
+  /* A removed photo might have been shown in its finding's (or inspection
+     checklist item's) embedded gallery -- refresh whichever one so it
+     doesn't linger there after being removed globally. */
+  if (removed && removed.finding_id){
+    if (findingById(removed.finding_id)) renderFindings();
+    if (inspectionChecklistItemById(removed.finding_id)) renderInspectionChecklist();
+  }
 }
 /* Swaps two photos in place — works identically for a device-uploaded photo
    or a CompanyCam import, since both end up in the same photos[] shape
@@ -2516,7 +2575,18 @@ function renderPhotos(){
   var findingOptions = findings.map(function(f,fi){
     var label = "Finding #" + (fi+1) + (f.condition ? ": " + f.condition.slice(0,40) : "");
     return { id: f.id, label: label };
-  }).filter(function(o){ return o.id; });
+  }).filter(function(o){ return o.id; }).concat(
+    /* Inspection checklist items are a separate array from findings[] but
+       share the same generic photo.finding_id linking mechanism (see
+       inspectionItemPhotoGalleryHtml()) -- listed here too so the global
+       Photo Documentation section's dropdown correctly shows/preserves a
+       checklist photo's assignment instead of it falling through to
+       "General / no specific finding" and risking getting reassigned away
+       by accident. Empty/no-op for every non-Inspection work order. */
+    inspectionChecklist.map(function(item){
+      return { id: item.id, label: "Checklist: " + inspectionComponentLabel(item.key) };
+    })
+  );
   photos.forEach(function(p,i){
     var d = document.createElement("div");
     d.className = "photo-card";
@@ -2550,6 +2620,7 @@ function renderPhotos(){
       var p = photos[+el.dataset.photoFinding];
       p.finding_id = el.value || null;
       maybeAutoPinFinding(p);
+      maybeAutoPinInspectionItem(p);
     });
   });
   renderChangeOrderPhotos();
@@ -4878,7 +4949,7 @@ function buildPinsForHistoryEvent(o){
      for a building's first/only roof (see getBuildingRoofs/DATA_MODEL.md),
      so this is a no-op for every still-single-roof building. */
   var roofId = o.roofId || "roof_default";
-  return (o.findings || []).filter(function(f){ return f.pin && typeof f.pin.lat === "number"; }).map(function(f){
+  var findingPins = (o.findings || []).filter(function(f){ return f.pin && typeof f.pin.lat === "number"; }).map(function(f){
     return {
       finding_id: f.id, condition: f.condition || "", warranty: f.warranty || "",
       lat: f.pin.lat, lng: f.pin.lng, x: f.pin.x, y: f.pin.y, source: f.pin.source,
@@ -4887,6 +4958,23 @@ function buildPinsForHistoryEvent(o){
       roofId: roofId
     };
   });
+  /* Inspection checklist items pin the same way findings do (their own
+     `pin` field, set by maybeAutoPinInspectionItem() on camera capture) --
+     included here too so a checklist item's photo shows up on the roof
+     map exactly like a finding's would, "reviewable by someone else" per
+     Mark, not just saved data with no visible anchor. This is the "before"
+     half of before/after-at-a-pin -- see "Inspection checklist photo
+     pinning" in DEV_NOTES.md/ROADMAP.md. */
+  var checklistPins = (o.inspectionChecklist || []).filter(function(item){ return item.pin && typeof item.pin.lat === "number"; }).map(function(item){
+    return {
+      finding_id: item.id, condition: inspectionComponentLabel(item.key) + ": " + item.rating, warranty: "",
+      lat: item.pin.lat, lng: item.pin.lng, x: item.pin.x, y: item.pin.y, source: item.pin.source,
+      work_order_id: o.id, work_order_no: o.jobNo || "", service_date: o.serviceDate || "",
+      photo_ids: (o.photos || []).filter(function(p){ return p.finding_id === item.id && p.ccPhotoId; }).map(function(p){ return p.ccPhotoId; }),
+      roofId: roofId
+    };
+  });
+  return findingPins.concat(checklistPins);
 }
 /* ccUploadResult is the return value of uploadLinkedPdfToCompanyCam() —
    { ok:true } | { ok:false, error } | { skipped:true } (no linked

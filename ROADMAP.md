@@ -232,6 +232,21 @@ Goal: preserve and harden the existing RoofOps Field / Watkins work order workfl
   weighted health-score rollup across components (flagged as a natural
   follow-up if it grows into something bigger). See "Inspection form
   overhaul" in `DEV_NOTES.md`.
+- ✅ **Shipped**: Inspection checklist photo pinning — checklist items
+  (Membrane/Field, etc.) now capture a photo via in-app camera ONLY (no
+  library add, no CompanyCam import — Mark: the tech is photographing the
+  exact condition they're rating, right there), and that capture
+  **auto-drops a pin** at the tech's GPS location on the roof map, reusing
+  the same auto-pin mechanism findings already use. The pin shows up on
+  the building's Roof Map "reviewable by someone else," not just saved on
+  the work order. **The payoff, captured here rather than built yet**:
+  this pin is the anchor for **before/after comparison** — the inspection
+  photo is the "before" at that exact spot, and when a repair is later
+  made there, a repair photo at the same pin becomes the "after." The pin
+  itself is what's shipped now; an actual side-by-side before/after
+  comparison VIEW (matching a later repair photo against this inspection
+  photo at the same location) is future work — the anchor has to exist
+  first. See "Inspection checklist photo pinning" in `DEV_NOTES.md`.
 
 ## Phase 2: Building/Site History Foundation
 

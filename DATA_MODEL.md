@@ -347,7 +347,7 @@ Example fields:
                 // DEV_NOTES.md) — both write the identical shape, so nothing reading
                 // a pin can tell which one it was.
   inspectionChecklist: [], // Inspection-only — each:
-                // { id, key, rating, notes, linkedFindingId }. key is one of the 8
+                // { id, key, rating, notes, linkedFindingId, pin }. key is one of the 8
                 // fixed INSPECTION_CHECKLIST_COMPONENTS in index.html (membrane,
                 // flashings, penetrations, drainage, equipment, perimeter, interior,
                 // safety) — always exactly these 8, backfilled by
@@ -356,10 +356,20 @@ Example fields:
                 // Fair | Poor | Critical | N/A. linkedFindingId points at the
                 // auto-surfaced entry in findings[] above when rating is below Good
                 // (null when Good/N/A — nothing to surface). Each item can also carry
-                // an optional photo the same way a finding does — photo.finding_id
-                // doubles as a generic "owning row id," works unmodified for a
-                // checklist item's id too (see "Inspection form overhaul" in
-                // DEV_NOTES.md).
+                // an optional photo — camera capture ONLY (no library add, no
+                // CompanyCam import, per Mark — the tech photographs the exact
+                // condition they're rating, right there), via the same generic
+                // photo.finding_id "owning row id" mechanism a finding's photo uses.
+                // pin ({lat,lng,x,y,source}, same shape as finding.pin) is
+                // auto-dropped from the photo's GPS the moment a checklist item's
+                // first photo is captured (maybeAutoPinInspectionItem(), never
+                // overwrites an existing pin) — independent of linkedFindingId, so
+                // it's set regardless of rating (even a "Good" condition gets a
+                // location-anchored photo). Included in buildPinsForHistoryEvent()
+                // alongside finding pins, so it shows on the building's Roof Map
+                // like any other pin — the "before" half of before/after-at-a-pin
+                // (see "Inspection checklist photo pinning" in DEV_NOTES.md and
+                // ROADMAP.md).
   photos: [], // each: { caption, img (base64), w, h, finding_id, ccPhotoId }. gps
               // (optional: {lat,lng,accuracy}) is set either by a CompanyCam import
               // (photo's own EXIF-derived location) or by in-app camera capture

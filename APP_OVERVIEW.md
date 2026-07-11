@@ -109,9 +109,15 @@ Leak/Service. The centerpiece is the new **Inspection Checklist**: eight fixed r
 components — Membrane/Field, Flashings & Terminations, Penetrations, Drainage
 (incl. Ponding), Rooftop Equipment, Perimeter/Edge, Interior (if accessible), Safety
 Hazards — each rated **Good / Fair / Poor / Critical / N/A** with optional notes and
-an optional photo. Rate something Fair, Poor, or Critical and it **automatically
-shows up in Findings too** — no need to write it twice — and if the rating goes back
-to Good it disappears from Findings again just as automatically. If the building has
+an optional photo (**📷 Take Photo only** — the in-app camera, no adding from your
+library and no CompanyCam import on checklist items, since you're photographing the
+exact condition you're rating, right there). Taking that photo **auto-drops a pin**
+on the building's Roof Map at your GPS location, the same way a finding's photo
+already does — so the condition you just rated is pinned and visible to anyone
+looking at that roof later, not just written down. Rate something Fair, Poor, or
+Critical and it **automatically shows up in Findings too** — no need to write it
+twice — and if the rating goes back to Good it disappears from Findings again just
+as automatically. If the building has
 more than one roof, a roof picker appears right on the form (the first place in the
 app a work order lets you pick a roof directly, rather than only indirectly through
 where a pin gets placed). The report/PDF gets its own "Roofing Inspection Report"
