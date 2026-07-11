@@ -97,6 +97,59 @@
     .btn{padding:8px 11px}
   }
 
+  /* ================= Responsive desktop layout (2026-07-11) =================
+     Mark, using the app on his PC: it renders as a narrow mobile column with
+     large dead margins on either side, and asked if there were "two modes" --
+     there weren't. This is purely ADDITIVE at a min-width breakpoint on top
+     of everything above -- nothing in the mobile-first base styles or the
+     max-width:640px block above changes at all, so the mobile/field
+     experience (the whole point of the recent mobile pass) is completely
+     unaffected below 1024px. See "Responsive desktop layout" in
+     DEV_NOTES.md. */
+  @media (min-width:1024px){
+    /* General lists/forms get real breathing room instead of a phone-width
+       column with empty margins either side -- capped well short of full
+       ultra-wide-monitor width ("don't stretch inputs to absurd widths").
+       .grid's existing repeat(auto-fit,minmax(210px,1fr)) already picks up
+       more columns for free at this width -- no separate change needed for
+       ordinary multi-field forms. */
+    .wrap{max-width:1200px}
+
+    /* RoofMapper: the biggest win -- Mark is doing precision tracing work,
+       and needs the map to dominate instead of being squeezed into a small
+       slice above a long scroll of tools. #view-roofmapper's two direct
+       children are the map/search/trace card (unlabeled, first) and
+       #rm-desktop-sidebar (roof switcher, Roof Features, Roof Outline
+       incl. the export checklist, Saved On This Device) -- a plain CSS
+       Grid places them side by side with zero HTML/JS restructuring inside
+       either one; every element keeps its existing id, so no
+       getElementById() call anywhere needed to change. The sidebar is its
+       own independently-scrollable, sticky column so scrolling the (now
+       much taller) map out of view never happens while working the tools
+       next to it. */
+    #view-roofmapper{display:grid;grid-template-columns:1fr 420px;gap:16px;align-items:start}
+    #rm-desktop-sidebar{position:sticky;top:16px;max-height:calc(100vh - 32px);overflow-y:auto;padding-right:2px}
+    /* !important needed to beat #rm-map's own inline height style, same
+       reasoning/precedent as the mobile block's #rm-map override above --
+       inline styles otherwise beat any external rule regardless of
+       selector specificity. Meaningfully taller AND (via the grid column
+       above) wider than the min(70vh,640px) every other width gets. */
+    #rm-map{height:min(82vh,900px)!important}
+
+    /* Building History: list (left) + detail (right) instead of a single
+       stacked column -- picking a building no longer means the list
+       scrolls away above the fold. List pane scrolls independently and
+       stays put while reading a long timeline on the right. */
+    #history-two-pane{display:grid;grid-template-columns:340px 1fr;gap:16px;align-items:start}
+    #history-list{position:sticky;top:16px;max-height:calc(100vh - 32px);overflow-y:auto}
+
+    /* Inspection checklist: 8 fixed components, always one per row
+       regardless of width before this -- two columns halves the scroll
+       for the same information, "multi-column where it genuinely helps"
+       per Mark's own example. */
+    #inspection-checklist-list{display:grid;grid-template-columns:1fr 1fr;gap:0 14px;align-items:start}
+  }
+
   .rowcard{border:1px solid #E2E7EA;border-left:4px solid #2E7D32;border-radius:4px;
     padding:12px 12px 2px;margin-bottom:12px;background:#FAFBFC}
   .rowcard.nonwar{border-left-color:#D64545}
@@ -554,8 +607,15 @@
       <p class="hint">Every roof remembers. Each building below is created automatically from the Job Name and
         Bill To fields when a work order is saved or a report is sent — its timeline fills in as reports go out.</p>
     </div>
-    <div id="history-list"></div>
-    <div id="history-detail"></div>
+    <!-- Desktop layout only -- see the #history-two-pane grid rule in the
+         responsive CSS block. Pure wrapping, no id/JS changes: below the
+         desktop breakpoint this has no layout effect and the list/detail
+         stack exactly as before. See "Responsive desktop layout" in
+         DEV_NOTES.md. -->
+    <div id="history-two-pane">
+      <div id="history-list"></div>
+      <div id="history-detail"></div>
+    </div>
   </div>
 
   <!-- ================= ALL REPORTS VIEW (read-only, cross-building) ================= -->
@@ -684,6 +744,18 @@
         its corners and tap to record each one — both work even where satellite imagery isn't good enough to trace.</p>
     </div>
 
+    <!-- Desktop layout only (see the #view-roofmapper grid rule in the
+         responsive CSS block) -- groups everything that isn't the map/
+         search/trace card above into a persistent side panel next to a
+         much bigger map, instead of a long scroll below it. Pure wrapping,
+         no id/JS changes: every element inside keeps the exact same id, so
+         every existing getElementById() call is completely unaffected.
+         Below the desktop breakpoint this is just a plain <div> with no
+         layout effect at all -- mobile's DOM order (and the discoverability
+         fix that put the roof switcher right after the map, before Roof
+         Features) is completely unchanged. See "Responsive desktop layout"
+         in DEV_NOTES.md. -->
+    <div id="rm-desktop-sidebar">
     <!-- Which roof (of possibly several on this building) RoofMapper is
          currently showing/editing -- Mark: "on a multi-roof building he
          must be able to clearly pick WHICH roof he's editing... not obvious
@@ -816,6 +888,7 @@
         time from here.</p>
       <div id="rm-local-list"></div>
     </div>
+    </div><!-- /rm-desktop-sidebar -->
   </div>
 
 </div>

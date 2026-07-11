@@ -6441,6 +6441,68 @@ same building — confirmed its own (non-interactive) map marker for that
 roof sits at the identical custom lat/lng, not the centroid. All test
 state cleared, console clean throughout.
 
+## Responsive desktop layout (shipped 2026-07-11, dev only)
+
+Mark, using the app on his PC: it rendered as a narrow mobile column with
+large dead margins on either side, and asked if there were "two modes" —
+there weren't, the app never adapted to a wide screen at all. Fixed
+purely additively, at a new `@media (min-width:1024px)` breakpoint, on
+top of everything already there — nothing in the mobile-first base styles
+or the existing `max-width:640px` mobile-pass block changes at all, so
+the field/mobile experience is untouched below 1024px (verified, not
+assumed — see testing below).
+
+- **General lists/forms**: `.wrap` widens from 860px to 1200px (capped
+  well short of full ultra-wide-monitor width, per "don't stretch inputs
+  to absurd widths"). `.grid`'s existing `repeat(auto-fit,minmax(210px,1fr))`
+  already picks up more columns for free at this width — no separate
+  change needed for ordinary multi-field forms.
+- **RoofMapper — the biggest win**, since Mark's doing precision tracing
+  work: `#view-roofmapper`'s two direct children (the map/search/trace
+  card, and a new `#rm-desktop-sidebar` wrapper around everything else —
+  roof switcher, Roof Features, Roof Outline incl. the export checklist,
+  Saved On This Device) become a CSS Grid, side by side, instead of one
+  long stacked column. Pure HTML wrapping (two new tags), zero id/JS
+  changes — every element inside the sidebar keeps its exact existing id,
+  so no `getElementById()` call anywhere needed to change, and mobile's
+  DOM order (including the earlier discoverability fix that put the roof
+  switcher right after the map, before Roof Features) is completely
+  unaffected since the wrapper has no layout effect below the breakpoint.
+  The sidebar is `position:sticky` and independently scrollable, so the
+  tools stay reachable without ever scrolling the map out of view. `#rm-map`
+  itself grows from `min(70vh,640px)` to `min(82vh,900px)` (`!important`,
+  same precedent as the mobile block's own override — an inline style
+  otherwise beats any external rule regardless of specificity) — a real
+  "much bigger tracing canvas," not just a wider page around the same map.
+- **Building History**: `#history-list`/`#history-detail` (already
+  independent sibling divs, no restructuring needed — just wrapped in one
+  new `#history-two-pane` container) become a 340px/1fr grid instead of
+  stacked — picking a building no longer scrolls the list away.
+- **Inspection checklist**: `#inspection-checklist-list`'s 8 fixed
+  components go from one always-stacked column to two — "multi-column
+  where it genuinely helps," Mark's own named example.
+
+Tested by actually rendering the app at real widths and looking at it
+(`preview_resize` + `preview_inspect` reading real computed styles, not
+just the CSS source) — not just adding media queries and assuming, per
+Mark's explicit ask: at 1440×900, confirmed `#view-roofmapper` computes
+`display:grid` with real `740px 420px` columns, `#rm-desktop-sidebar` is
+sticky/scrollable at the right computed height, and `#rm-map` renders at
+738px tall (vs. the old 640px cap) with the roof switcher/Roof
+Features/Roof Outline content genuinely present inside the sidebar;
+confirmed `#history-two-pane` computes `340px 1fr` with real building
+content in both panes; confirmed `#inspection-checklist-list` computes a
+real two-column grid. Then the regression half, same widths as the
+original mobile pass's own testing: at 375px, confirmed `#view-roofmapper`
+and `#inspection-checklist-list` are back to plain `display:block`
+(single column), `#rm-map` is back to the mobile-pass height formula
+(633px at this exact viewport height, matching `min(78vh,640px)`
+precisely), and the header is still ~55px tall — all identical to the
+mobile pass's own already-verified numbers; confirmed 768px (tablet)
+stays single-column too, same as before this change (the desktop grid
+only ever activates at 1024px+). All test state cleared, console clean
+throughout.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |
