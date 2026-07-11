@@ -11528,32 +11528,62 @@ function rmProjectPointOntoSegment(p, a, b){
 }
 /* Returns {lat, lng, type:"corner"|"edge"} for the closest snap candidate
    within RM_SNAP_PIXEL_THRESHOLD screen pixels of latlng, across every
-   ring in rmState.referenceRings, or null if nothing's close enough (the
-   normal case away from any existing roof -- most taps snap to nothing). */
+   ring in rmState.referenceRings PLUS the current in-progress trace's own
+   already-placed points (self-closure: Mark's own vertices need to lock
+   to each other too, most importantly closing the loop back to the first
+   point, but also any mid-trace point an outline happens to revisit), or
+   null if nothing's close enough (the normal case away from any existing
+   roof or own point -- most taps snap to nothing). */
 function rmFindSnapTarget(latlng){
-  if (!rmState.snapEnabled || !rmState.map || !rmState.referenceRings.length) return null;
+  if (!rmState.snapEnabled || !rmState.map) return null;
+  var ownPoints = (rmTraceState.active && rmTraceState.points) ? rmTraceState.points : [];
+  if (!rmState.referenceRings.length && !ownPoints.length) return null;
   var map = rmState.map;
   var tapPt = map.latLngToContainerPoint(latlng);
-  var best = null, bestDist = RM_SNAP_PIXEL_THRESHOLD;
+  /* Corners always win over edges when within threshold -- a tap near a
+     vertex must land on that vertex's exact stored {lat,lng}, not on a
+     numerically-nearby point re-derived from a pixel round-trip through
+     the edge projection. Without this, the edge candidate for the segment
+     touching that same corner (projected near its t=0/t=1 endpoint) can
+     come out fractionally closer than the corner due to floating-point
+     noise and win the "strictly less than" comparison, producing a snap
+     that LOOKS locked but is off by a hair -- exactly the kind of drift
+     that compounds into visible slivers/overlaps across many roof
+     sections. So: find the best corner first; only fall back to edge
+     search if no corner is within threshold at all. */
+  var bestCorner = null, bestCornerDist = RM_SNAP_PIXEL_THRESHOLD;
   rmState.referenceRings.forEach(function(ring){
     for (var i = 0; i < ring.length - 1; i++){ /* ring is closed: ring[length-1] === ring[0] */
+      var a = ring[i];
+      var aPt = map.latLngToContainerPoint([a.lat, a.lng]);
+      var dCorner = tapPt.distanceTo(aPt);
+      if (dCorner < bestCornerDist){ bestCornerDist = dCorner; bestCorner = { lat: a.lat, lng: a.lng, type: "corner" }; }
+    }
+  });
+  ownPoints.forEach(function(a){
+    var aPt = map.latLngToContainerPoint([a.lat, a.lng]);
+    var dCorner = tapPt.distanceTo(aPt);
+    if (dCorner < bestCornerDist){ bestCornerDist = dCorner; bestCorner = { lat: a.lat, lng: a.lng, type: "corner" }; }
+  });
+  if (bestCorner) return bestCorner;
+  var bestEdge = null, bestEdgeDist = RM_SNAP_PIXEL_THRESHOLD;
+  rmState.referenceRings.forEach(function(ring){
+    for (var i = 0; i < ring.length - 1; i++){
       var a = ring[i], b = ring[i + 1];
       var aPt = map.latLngToContainerPoint([a.lat, a.lng]);
       var bPt = map.latLngToContainerPoint([b.lat, b.lng]);
-      var dCorner = tapPt.distanceTo(aPt);
-      if (dCorner < bestDist){ bestDist = dCorner; best = { lat: a.lat, lng: a.lng, type: "corner" }; }
       var proj = rmProjectPointOntoSegment(tapPt, aPt, bPt);
       if (proj){
         var dEdge = tapPt.distanceTo(proj);
-        if (dEdge < bestDist){
-          bestDist = dEdge;
+        if (dEdge < bestEdgeDist){
+          bestEdgeDist = dEdge;
           var snappedLatLng = map.containerPointToLatLng(proj);
-          best = { lat: snappedLatLng.lat, lng: snappedLatLng.lng, type: "edge" };
+          bestEdge = { lat: snappedLatLng.lat, lng: snappedLatLng.lng, type: "edge" };
         }
       }
     }
   });
-  return best;
+  return bestEdge;
 }
 /* Brief visual confirmation of where a snap landed -- a distinct yellow
    ring (not orange/blue/gray, all already meaning something else on this

@@ -6845,6 +6845,65 @@ Firebase Auth and rules keyed to `request.auth`. This PIN + server-function appr
 is a deliberately smaller step that fits the existing "keep secrets in Netlify
 functions" pattern already used for CompanyCam/Resend, at no additional cost.
 
+### Vertex + edge snapping fix: corner priority + self-closure (shipped)
+
+Mark sent a real 11-roof PDF export (Tri-Delta) showing visibly irregular
+adjoining roof sections — slivers and overlaps between roofs that were
+traced right next to each other, corrupting the reported areas and making
+the drawing look unprofessional. The snapping mechanism already existed
+(`rmFindSnapTarget`, `RM_SNAP_PIXEL_THRESHOLD = 18px`, wired into
+`rmTraceAddPoint`) but had two real bugs, found by testing the actual
+mechanism end-to-end in the browser (mocked `fdb`, synthetic adjacent
+rectangles) rather than assuming the earlier implementation worked:
+
+1. **Corner/edge priority bug.** `rmFindSnapTarget` checked corner distance
+   and edge-projection distance in the same loop, both against a single
+   shrinking `bestDist`. When a tap landed near a vertex, the edge
+   projection for the segment touching that same vertex (evaluated near
+   its own t=0/t=1 endpoint) came out fractionally closer than the corner
+   distance due to floating-point noise from the pixel↔latlng round-trip,
+   so the *edge* branch won the "strictly less than" comparison instead of
+   the corner. The snap indicator still lit up and it *looked* locked, but
+   the placed point was off from the real corner by a fraction of a
+   meter — exactly the kind of drift that compounds into visible slivers
+   across many roof sections. Confirmed with a live test: tapping 5px from
+   a known corner `{35.0, -79.999}` landed at `{34.99999447,
+   -79.99900013}` instead. Fixed by splitting into two passes — find the
+   best corner across every reference ring first (whole-ring loop just for
+   corners), and only fall back to the edge-projection search if no corner
+   at all is within the pixel threshold. Corners now always win over edges
+   when both are in range. Re-tested the same tap after the fix: lands on
+   `{35.0, -79.999}` exactly (bit-for-bit).
+2. **Missing self-closure.** `rmState.referenceRings` (what
+   `rmFindSnapTarget` searches) was populated exclusively from *other*
+   already-saved roofs via `rmDrawReferenceRoofs()` — never from the
+   current in-progress trace's own already-placed points. So closing a new
+   outline's loop back to its own first point, or revisiting an earlier
+   point in the same trace, never snapped — confirmed by testing (tap 5px
+   from the trace's own first placed point stayed at the noisy tapped
+   location, not the exact first point). Fixed by having
+   `rmFindSnapTarget` also search `rmTraceState.points` (the active
+   trace's own placed points so far) in the same corner-priority pass,
+   gated on `rmTraceState.active`. Re-tested: a trace with 3 points placed,
+   tapped 5px from point[0], now lands on point[0] exactly.
+
+Both fixes are in the same function (`rmFindSnapTarget`, search for "Corner
+snapping" in `index.html`); no new state, no new UI — the existing
+toggle (`rmState.snapEnabled`, checkbox in the trace panel, on by default)
+and yellow snap-indicator ring cover both paths. Edge-snap results still
+carry a small (~1e-7°, sub-millimeter) floating-point wobble from the
+pixel-to-latlng round trip — inherent to screen-space snapping, far below
+anything visible on a roof, not something worth chasing further.
+
+**Tested** (mocked `fdb`, no real writes; state cleared after): seeded a
+building with one saved roof (rectangle), entered "Trace Another Roof",
+started a manual trace, and verified all three cases land exactly —
+(1) tap near the other roof's vertex → bit-for-bit exact corner match,
+(2) tap near the other roof's edge midpoint → on the edge line, (3) tap
+near the new trace's own first point → bit-for-bit exact self-close. Also
+verified the toggle: with `snapEnabled = false`, the same near-corner tap
+returns no snap target at all.
+
 ## Roadmap (not built yet, foundation only)
 
 - **RoofOps Dashboard**: cross-building reporting, search, filters — reads from
