@@ -4181,6 +4181,84 @@ display`) across all six views. All test state (`fdb`, `isAdmin`/
 stubbed `callAdminApi`/`fetch`/`toast`) cleared, page reloaded, console
 clean, no stray `localStorage` keys left behind.
 
+## Buildings Near Me (proximity / GPS building detection, shipped 2026-07-10, dev only)
+
+Realizes the "tech pulls up on site and the app already knows where they
+are" vision pillar (see ROADMAP.md). A "📍 Buildings Near Me" card at the
+top of the Building History tab gets the tech's current GPS, resolves every
+building's best-known coordinate, sorts by distance, and lets them tap the
+one they're at to jump straight into its full Building History — which
+already links CompanyCam, job numbers, past reports, and the roof map, so
+nothing extra was needed there.
+
+**Coordinate resolution, cheapest-first (`bnmCachedCoord()`)**: (1) a
+cached `geoCache.{lat,lng}` on the building doc, if a previous run already
+resolved one; (2) failing that, the most recently created `roof_outlines[]`
+entry's `.center` across all of the building's roofs — free (the building
+doc is already fetched) and usually more accurate than a street-address
+geocode, since it's GPS/geometry-derived; (3) failing that, a live geocode
+of the building's `location` address via the existing `geocodeAddress()`
+(Nominatim, already used by pin placement) — capped at
+`BUILDINGS_NEAR_ME_GEOCODE_CAP` (25) live calls per run, since Nominatim is
+a shared free service and a large mostly-uncached building list shouldn't
+turn into a slow bulk-geocoding scan. A building with none of the three
+(no location text either) is silently skipped — can't compute a distance
+for it, but it still shows up normally in the regular building search
+below.
+
+**Caching the geocode result (`bnmCacheGeocode()`)**: any building resolved
+via step 3 gets `{ geoCache: { lat, lng, source: "geocoded", updatedAt } }`
+written back with `.set(patch, { merge: true })` — a plain client write
+(buildings already allow open `update`, no admin gate needed), and `merge:
+true` means the patch can only ever add/overwrite the `geoCache` key,
+never touch anything else on the building doc. So the building "warms up"
+over time: the first tech near a given building pays one geocode call, and
+every tech (and every future run) after that reads the cached value
+instead. A failed cache write is swallowed (best-effort, in its own
+try/catch) — worst case, the next run just re-geocodes that one building
+again, nothing breaks.
+
+**Distance + results**: haversine via the existing `rmGeomHaversineMeters()`
+(not RoofMapper-specific in practice, just a general-purpose distance
+helper — reused as-is rather than duplicated), converted to miles, filtered
+to `BUILDINGS_NEAR_ME_RADIUS_MI` (25) and sorted ascending. A single result
+under ~800ft (0.15mi) gets a "You're here" highlight as a suggestion, but
+tapping is always required — it never auto-navigates on its own, matching
+the spec ("still let them confirm"). Tapping any result calls
+`openBuildingFromNearMe(id)`, which just does `showView("history")` +
+the existing `openBuildingHistory(id)` — no new building-detail rendering
+was needed, since Building History already shows everything (CompanyCam
+link, job numbers, reports, roof map) once opened.
+
+**Graceful fallbacks, all tested**: no `navigator.geolocation` at all, or
+the user denies the permission prompt (`getCurrentPosition`'s error
+callback) — both show a toast ("search below instead") and leave the
+regular Building History search/list working exactly as before, no crash,
+no wasted Firestore query (the buildings fetch never even starts if GPS
+fails first). No buildings resolve within the radius — a clear inline
+message in `#bnm-results`, same "search below instead" framing, with the
+normal building list still right there underneath.
+
+Tested with mocked `navigator.geolocation`/`fdb`/`geocodeAddress` (no real
+GPS, no real Nominatim calls, no real writes): confirmed
+`bnmCachedCoord()`'s three-tier priority (cached > most-recent-outline >
+null) picks the right coordinate, including correctly picking the more
+recent of two outlines by `createdAt`; ran the full
+`findBuildingsNearMe()` flow against five synthetic buildings (one
+geoCache-only, one outline-only, one needing a live geocode, one >25mi
+away, one with no location data at all) and confirmed exactly the three
+in-range buildings rendered, sorted nearest-first, the highlight applied
+correctly, and the geocode-needing building's result was correctly cached
+back with a merge-safe `{geoCache: {...}}`-only patch (verified the
+`{merge:true}` option was actually passed, and that a cache-write failure
+doesn't throw); confirmed tapping a result routes to the correct building
+id via `openBuildingHistory()` and switches to the History view; confirmed
+GPS-denied, no-geolocation-API, and zero-buildings-in-radius all produce
+the correct graceful message with no crash and (for the GPS-failure cases)
+zero Firestore reads. All test state (`fdb`, mocked `navigator.geolocation`
+via `Object.defineProperty`/restored, stubbed `geocodeAddress`/`toast`,
+`#bnm-results` contents) cleared, page reloaded, console clean.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |

@@ -223,6 +223,20 @@ in the order they'll print into the PDF:
   drag-and-drop is inconsistent across phones, so it's intentionally not the primary
   method).
 
+## Buildings Near Me
+
+Pull up on site and tap **"📍 Buildings Near Me"** at the top of the Building History
+tab — it uses your device's GPS to find the closest building(s) already in the system
+and lists them nearest first, with the distance to each. If one is clearly the one
+you're at, it's highlighted, but you still tap to confirm — nothing opens
+automatically on its own. Tap the right one and it opens straight into that
+building's full history: CompanyCam photos, job numbers, past reports, roof map, all
+of it, exactly like opening it any other way.
+
+If your device can't get a GPS fix, or nothing's nearby, it just tells you so and
+you're back to searching for the building by name like normal — nothing about the
+regular Building History list changes.
+
 ## How the Roof Map Works
 
 Every finding can get a pin showing where on the roof it was found. Tap **"📍 Place on

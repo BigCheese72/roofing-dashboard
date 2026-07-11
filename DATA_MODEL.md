@@ -112,6 +112,15 @@ Physical buildings/sites associated with a customer.
   companyCamProjectId,
   companyCamProjectName,
   roofs: [ /* see "roofs[] item shape" below */ ],
+  geoCache, // optional — { lat, lng, source: "geocoded", updatedAt }. Set the first
+            // time Buildings Near Me (see DEV_NOTES.md) has to geocode this
+            // building's `location` address (Nominatim), so every later run reads
+            // this instead of re-geocoding — a plain client `update`, same
+            // open-write permissions as every other field here. Absent for a
+            // building never resolved this way, e.g. one whose location was
+            // already known from a roof outline's centroid instead (checked
+            // first, since it's already-fetched and usually more accurate than a
+            // street-address geocode).
   createdAt,
   updatedAt,
 

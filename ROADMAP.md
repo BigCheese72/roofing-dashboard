@@ -338,6 +338,20 @@ Goal: turn each building into a long-term roof record.
   (`set_roof_profile`), matching the existing custom-base-map precedent. Closes gap #3
   from the 2026-07-09 vision gap analysis. See "Admin roof-profile fields" in
   `DEV_NOTES.md`.
+- ✅ **Shipped (dev only, 2026-07-10)**: Buildings Near Me — realizes the
+  vision's "GPS recognizes when the tech arrives and shows the building
+  history" pillar. A "📍 Buildings Near Me" card at the top of Building
+  History gets the tech's current GPS and lists the closest building(s)
+  already in the system, nearest first, each with its distance; tapping one
+  opens straight into its full Building History — which already links
+  CompanyCam, job numbers, past reports, and the roof map, so arriving on
+  site now means confirming a building rather than searching for one.
+  Resolves each building's location cheapest-first (a cached geocode, then
+  the most recent RoofMapper outline's centroid, then a live address
+  geocode as a last resort — cached afterward so it's a one-time cost per
+  building). GPS denied or unavailable, or nothing nearby, both fall back
+  cleanly to the existing search/list, unchanged. See "Buildings Near Me" in
+  `DEV_NOTES.md`.
 - ⚠️ **Scoped, partially addressed — not fully built, and part of it is
   deliberately blocked**:
   - **Photo source records**: found and fixed a real bug undermining the

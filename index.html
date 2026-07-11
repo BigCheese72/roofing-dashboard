@@ -448,6 +448,13 @@
   <!-- ================= BUILDING HISTORY VIEW (foundation) ================= -->
   <div id="view-history" style="display:none">
     <div class="card">
+      <h2 class="cond">📍 Buildings Near Me</h2>
+      <p class="hint">Pulled up on site? Find the closest building already in the system instead of searching by
+        name.</p>
+      <button class="btn primary" onclick="findBuildingsNearMe()">📍 Buildings Near Me</button>
+      <div id="bnm-results" style="margin-top:10px"></div>
+    </div>
+    <div class="card">
       <h2 class="cond">Building / Site History</h2>
       <p class="hint">Every roof remembers. Each building below is created automatically from the Job Name and
         Bill To fields when a work order is saved or a report is sent — its timeline fills in as reports go out.</p>
@@ -3745,6 +3752,120 @@ function flagPossibleDuplicateBuildings(list){
   }
 }
 var lastBuildingList = [];
+/* ================= Buildings Near Me (proximity / GPS building detection) =================
+   Realizes the "tech pulls up on site and the app already knows where they
+   are" vision pillar — see ROADMAP.md. Resolves each building's best-known
+   coordinate (cached geocode > most recent roof outline's centroid > a live
+   geocode of its address, which then gets cached back to Firestore so it's
+   a one-time cost), sorts by haversine distance from the tech's current GPS
+   fix, and opens straight into Building History (which already links
+   CompanyCam/job numbers/reports/roof map) on tap. */
+var BUILDINGS_NEAR_ME_RADIUS_MI = 25;
+var BUILDINGS_NEAR_ME_GEOCODE_CAP = 25; /* live geocode calls per run -- keeps a
+  large, mostly-uncached building list from turning into a slow scan (Nominatim
+  is a shared free service, not meant for bulk use). Buildings geocoded this
+  run get permanently cached via bnmCacheGeocode(), so later runs need fewer
+  live lookups as the building list "warms up" over time. */
+function bnmCachedCoord(b){
+  if (b.geoCache && typeof b.geoCache.lat === "number" && typeof b.geoCache.lng === "number"){
+    return { lat: b.geoCache.lat, lng: b.geoCache.lng };
+  }
+  /* Free, already-fetched, and (being GPS/geometry-derived, not a street
+     address centroid) usually more accurate than a geocoded address --
+     checked before ever spending a geocode call. Most recently created
+     outline across all of the building's roofs, if it has more than one. */
+  var bestOutline = null;
+  getBuildingRoofs(b).forEach(function(r){
+    (r.roof_outlines || []).forEach(function(o){
+      if (o.center && (!bestOutline || o.createdAt > bestOutline.createdAt)) bestOutline = o;
+    });
+  });
+  return bestOutline ? { lat: bestOutline.center.lat, lng: bestOutline.center.lng } : null;
+}
+async function bnmCacheGeocode(buildingId, coord){
+  try{
+    await fdb.collection("buildings").doc(buildingId).set({
+      geoCache: { lat: coord.lat, lng: coord.lng, source: "geocoded", updatedAt: Date.now() }
+    }, { merge: true });
+  }catch(e){ /* best-effort -- a failed cache write just means the next run re-geocodes this one */ }
+}
+async function findBuildingsNearMe(){
+  var host = document.getElementById("bnm-results");
+  if (!fdb){
+    toast("Buildings Near Me needs cloud sync (internet connection) — search below instead.");
+    return;
+  }
+  if (!navigator.geolocation){
+    toast("Location isn't available on this device/browser — search below instead.");
+    return;
+  }
+  if (host) host.innerHTML = '<p class="hint">Getting your location…</p>';
+  var pos;
+  try{
+    pos = await new Promise(function(resolve, reject){
+      navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 12000, enableHighAccuracy: true });
+    });
+  }catch(e){
+    if (host) host.innerHTML = "";
+    toast("Couldn't get your location — search below instead.");
+    return;
+  }
+  var here = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+  if (host) host.innerHTML = '<p class="hint">Locating nearby buildings…</p>';
+  try{
+    var qs = await fdb.collection("buildings").orderBy("updatedAt", "desc").limit(300).get();
+    var list = [];
+    qs.forEach(function(d){ list.push(Object.assign({ id: d.id }, d.data())); });
+    var geocodeBudget = BUILDINGS_NEAR_ME_GEOCODE_CAP;
+    var withCoords = [];
+    for (var i = 0; i < list.length; i++){
+      var b = list[i];
+      var coord = bnmCachedCoord(b);
+      if (!coord && b.location && geocodeBudget > 0){
+        geocodeBudget--;
+        coord = await geocodeAddress(b.location);
+        if (coord) await bnmCacheGeocode(b.id, coord);
+      }
+      if (coord) withCoords.push({ b: b, coord: coord });
+    }
+    var withDist = withCoords.map(function(x){
+      return { b: x.b, coord: x.coord, distMi: rmGeomHaversineMeters(here, x.coord) / 1609.344 };
+    }).filter(function(x){ return x.distMi <= BUILDINGS_NEAR_ME_RADIUS_MI; })
+      .sort(function(a, c){ return a.distMi - c.distMi; });
+    renderBuildingsNearMe(withDist);
+  }catch(e){
+    if (host) host.innerHTML = '<p class="hint">Couldn\'t search nearby buildings: ' + esc(e.message) + '</p>';
+  }
+}
+function renderBuildingsNearMe(results){
+  var host = document.getElementById("bnm-results");
+  if (!host) return;
+  if (!results.length){
+    host.innerHTML = '<p class="hint">No buildings found within ' + BUILDINGS_NEAR_ME_RADIUS_MI +
+      ' miles — search below instead.</p>';
+    return;
+  }
+  /* A single very-close match (under ~800ft) is highlighted as a suggestion,
+     but tapping is still required -- never auto-navigates away from the
+     tech's current screen on its own. */
+  var veryClose = results[0].distMi < 0.15;
+  host.innerHTML = results.map(function(x, i){
+    var highlight = veryClose && i === 0;
+    return '<div class="bld-item"' + (highlight ? ' style="border-left-color:var(--orange)"' : '') +
+      ' onclick="openBuildingFromNearMe(\'' + x.b.id + '\')"><div class="info">' +
+      '<div class="name">' + esc(x.b.name || "(unnamed building)") +
+      (highlight ? ' <span style="font-size:11px;font-weight:700;text-transform:uppercase;' +
+        'letter-spacing:.04em;background:#FFE0B2;color:#8a5000;border-radius:3px;padding:2px 6px;' +
+        'margin-left:6px">You’re here</span>' : '') + '</div>' +
+      '<div class="meta">' + esc(x.b.customerName || "") + (x.b.location ? ' · ' + esc(x.b.location) : "") +
+      ' · ' + x.distMi.toFixed(x.distMi < 1 ? 2 : 1) + ' mi away</div></div>' +
+      '<button class="btn">Open</button></div>';
+  }).join("");
+}
+function openBuildingFromNearMe(buildingId){
+  showView("history");
+  openBuildingHistory(buildingId);
+}
 async function renderHistoryList(){
   var host = document.getElementById("history-list");
   var detail = document.getElementById("history-detail");
