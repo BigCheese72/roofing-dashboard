@@ -1215,6 +1215,25 @@
   </div>
 </div>
 
+<!-- Manual counterpart to the automatic point-in-polygon retroactive pass
+     (rmAutoAssignExistingPinsToRoofs, the "🎯 Auto-Assign Photos to Roofs"
+     button) -- for whatever it flags ambiguous/outside-all, or simply gets
+     wrong, this lets Mark check several pins across ANY past report for
+     this building and move them to the right roof in one action, instead
+     of opening each finding's pin picker one at a time. Explicitly the one
+     piece flagged as not built in the original GPS auto-assign pass -- see
+     "GPS auto-assign photos to roofs" in DEV_NOTES.md. -->
+<div id="bulk-reassign-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)closeBulkReassignModal()">
+  <div style="background:#fff;max-width:640px;margin:4vh auto;border-radius:8px;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;width:94%">
+    <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
+      <b class="cond" style="font-size:17px">Bulk Reassign Pins to a Roof</b>
+      <span style="flex:1"></span>
+      <button class="btn" onclick="closeBulkReassignModal()">Close</button>
+    </div>
+    <div style="padding:14px 16px;overflow:auto" id="bulk-reassign-body"></div>
+  </div>
+</div>
+
 <div id="profile-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)closeRoofProfileModal()">
   <div style="background:#fff;max-width:640px;margin:4vh auto;border-radius:8px;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;width:94%">
     <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
@@ -5672,6 +5691,11 @@ async function openBuildingHistory(buildingId){
        roofs" in DEV_NOTES.md. */
     var autoAssignBtnHtml = roofs.length > 1 ?
       '<button class="btn" onclick="rmAutoAssignExistingPinsToRoofs(\'' + buildingId + '\')">🎯 Auto-Assign Photos to Roofs</button>' : '';
+    /* Manual counterpart to the automatic pass above -- see
+       openBulkReassignModal() and "GPS auto-assign photos to roofs" in
+       DEV_NOTES.md. Same multi-roof-only gating. */
+    var bulkReassignBtnHtml = roofs.length > 1 ?
+      '<button class="btn" onclick="openBulkReassignModal(\'' + buildingId + '\')">☑️ Bulk Reassign Pins</button>' : '';
     /* "Building History on Save" recovery ask: a work order Saved before
        this shipped (findings/pins/photos and all -- Mark's real Tri-Delta
        leak report from today, saved but never Downloaded/Emailed/Shared)
@@ -5687,7 +5711,7 @@ async function openBuildingHistory(buildingId){
       '<p class="hint">No pins placed yet — they’ll show up here as findings get pinned on future reports. ' +
       'Permanent features (drains, HVAC units, hatches, etc.) can be added any time.</p>' +
       '<div id="building-map" style="height:min(50vh,420px);border-radius:6px;overflow:hidden;margin-bottom:10px"></div>' +
-      addFeatureBtnHtml + ' ' + addRoofBtnHtml + ' ' + autoAssignBtnHtml + '</div>';
+      addFeatureBtnHtml + ' ' + addRoofBtnHtml + ' ' + autoAssignBtnHtml + ' ' + bulkReassignBtnHtml + '</div>';
     var qs = await fdb.collection("building_history_events")
       .where("buildingId", "==", buildingId).orderBy("createdAt", "desc").limit(50).get();
     var events = [];
@@ -5747,7 +5771,7 @@ async function openBuildingHistory(buildingId){
         'Every pinned finding across every report for this building, plus any permanent roof features below. Tap a pin for details.' :
         'No pins placed yet — they’ll show up here as findings get pinned on future reports.') + '</p>' +
       '<div id="building-map" style="height:min(50vh,420px);border-radius:6px;overflow:hidden;margin-bottom:10px"></div>' +
-      addFeatureBtnHtml + ' ' + addRoofBtnHtml + ' ' + autoAssignBtnHtml + '</div>';
+      addFeatureBtnHtml + ' ' + addRoofBtnHtml + ' ' + autoAssignBtnHtml + ' ' + bulkReassignBtnHtml + '</div>';
     detail.innerHTML = baseMapCardHtml + profileCardHtml + mapCardHtml +
       '<div class="card"><h2 class="cond">Timeline (' + events.length + ')</h2>' +
       '<div class="btnrow" style="margin:0 0 10px">' + addActivityBtnHtml + ' ' + recoverBtnHtml + '</div>' +
@@ -5851,6 +5875,100 @@ async function rmAutoAssignExistingPinsToRoofs(buildingId){
       (ambiguousCount ? " (" + ambiguousCount + " flagged — check the ⚠️ badge on those findings)" : "") + " ✓");
     openBuildingHistory(buildingId);
   }catch(e){ toast("Couldn't auto-assign pins: " + e.message); }
+}
+/* Manual counterpart to the automatic pass above -- for whatever it flags
+   ambiguous/outside-all, or simply gets wrong, lets Mark check several
+   pins across ANY past report for this building and move them to the
+   right roof in one action, instead of opening each finding's pin picker
+   one at a time (pinSelectFindingRoof() already covers that single-pin
+   case, but only for a finding on the work order currently open for
+   editing -- this reaches every already-saved pin on every past report).
+   See "GPS auto-assign photos to roofs" in DEV_NOTES.md. */
+var bulkReassignBuildingId = null;
+var bulkReassignRows = [];
+function openBulkReassignModal(buildingId){
+  bulkReassignBuildingId = buildingId;
+  renderBulkReassignBody();
+  document.getElementById("bulk-reassign-modal").style.display = "";
+  lockBodyScroll();
+}
+function closeBulkReassignModal(){
+  document.getElementById("bulk-reassign-modal").style.display = "none";
+  unlockBodyScroll();
+  bulkReassignBuildingId = null;
+}
+async function renderBulkReassignBody(){
+  var host = document.getElementById("bulk-reassign-body");
+  host.innerHTML = '<p class="hint">Loading pins…</p>';
+  var bldSnap = await fdb.collection("buildings").doc(bulkReassignBuildingId).get();
+  var bld = bldSnap.exists ? bldSnap.data() : {};
+  var roofs = getBuildingRoofs(bld);
+  var roofLabel = {};
+  roofs.forEach(function(r){ roofLabel[r.id] = r.label || "Roof"; });
+  var rows = [];
+  (historyEvents || []).forEach(function(e){
+    (e.pins || []).forEach(function(p, i){
+      if (typeof p.lat !== "number" && typeof p.x !== "number") return;
+      rows.push({ eventId: e._id, idx: i, roofId: p.roofId || "roof_default",
+        ambiguous: !!p.roofIdAmbiguous, label: p.condition || "(finding)",
+        date: e.date || "", workOrderNo: e.workOrderNo || "" });
+    });
+  });
+  bulkReassignRows = rows;
+  if (!rows.length){
+    host.innerHTML = '<p class="hint">No pins on this building yet.</p>';
+    return;
+  }
+  host.innerHTML =
+    '<p class="hint" style="margin:0 0 10px">Check the pins that are on the wrong roof, pick where they actually ' +
+    'belong, then Apply. For just one pin it’s usually faster to fix it right on that finding’s own pin picker.</p>' +
+    '<div style="max-height:40vh;overflow:auto;border:1px solid var(--line);border-radius:6px;margin-bottom:10px">' +
+    rows.map(function(r, ri){
+      return '<label style="display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid var(--line)">' +
+        '<input type="checkbox" data-bulk-idx="' + ri + '">' +
+        '<span style="flex:1">' + esc(r.label) + (r.workOrderNo ? ' — Job ' + esc(r.workOrderNo) : '') +
+        (r.date ? ' — ' + esc(r.date) : '') + '</span>' +
+        '<span class="evt-tag"' + (r.ambiguous ? ' style="background:#FBE2E2;color:#D64545"' : '') + '>' +
+        esc(roofLabel[r.roofId] || r.roofId) + (r.ambiguous ? ' ⚠️' : '') + '</span>' +
+        '</label>';
+    }).join('') +
+    '</div>' +
+    '<div class="btnrow" style="align-items:center">' +
+    '<label style="margin:0">Move checked to:</label>' +
+    '<select id="bulk-reassign-target">' +
+    roofs.map(function(r){ return '<option value="' + esc(r.id) + '"' +
+      (r.id === historySelectedRoofId ? ' selected' : '') + '>' + esc(r.label || "Roof") + '</option>'; }).join('') +
+    '</select>' +
+    '<button class="btn primary" onclick="applyBulkReassign()">Apply</button>' +
+    '</div>';
+}
+async function applyBulkReassign(){
+  var targetRoofId = val("bulk-reassign-target");
+  if (!targetRoofId) return;
+  var checked = Array.prototype.slice.call(document.querySelectorAll('#bulk-reassign-body [data-bulk-idx]:checked'))
+    .map(function(cb){ return bulkReassignRows[+cb.getAttribute("data-bulk-idx")]; });
+  if (!checked.length){ toast("Check at least one pin first."); return; }
+  var byEvent = {};
+  checked.forEach(function(r){ (byEvent[r.eventId] = byEvent[r.eventId] || []).push(r.idx); });
+  toast("Reassigning " + checked.length + " pin" + (checked.length === 1 ? "" : "s") + "…");
+  try{
+    var batch = fdb.batch();
+    Object.keys(byEvent).forEach(function(eventId){
+      var event = historyEvents.find(function(e){ return e._id === eventId; });
+      if (!event) return;
+      var idxSet = byEvent[eventId];
+      var newPins = (event.pins || []).map(function(p, i){
+        if (idxSet.indexOf(i) === -1) return p;
+        return Object.assign({}, p, { roofId: targetRoofId, roofIdAmbiguous: false });
+      });
+      batch.set(fdb.collection("building_history_events").doc(eventId), { pins: newPins }, { merge: true });
+      batch.set(fdb.collection("reports").doc(eventId), { pins: newPins }, { merge: true });
+    });
+    await batch.commit();
+    toast(checked.length + " pin" + (checked.length === 1 ? "" : "s") + " reassigned ✓");
+    closeBulkReassignModal();
+    openBuildingHistory(bulkReassignBuildingId);
+  }catch(e){ toast("Couldn't reassign: " + e.message); }
 }
 /* "Building History on Save" recovery pass -- Mark's real Tri-Delta case:
    a work order Saved (findings, pins, photos, GPS and all) before this
