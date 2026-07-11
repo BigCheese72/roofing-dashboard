@@ -887,6 +887,17 @@
         <button class="btn" id="rm-undo-square-btn" style="display:none" onclick="rmUndoSquareUp()">↩️ Undo Square Up</button>
       </div>
       <p class="hint" id="rm-square-status" style="margin:0 0 10px"></p>
+      <!-- Existing roof reopened via "Open in RoofMapper" that has sliver
+           gaps/overlaps against an adjoining roof (traced before vertex
+           snapping shipped) -- checks every corner of THIS roof against
+           every neighboring roof's already-traced corners and snaps
+           whichever are close enough. See rmSnapExistingOutlineToNeighbors()
+           and "Re-snap existing roof to neighbors" in DEV_NOTES.md. -->
+      <div class="btnrow" style="margin:0 0 6px">
+        <button class="btn" id="rm-resnap-btn" onclick="rmSnapExistingOutlineToNeighbors()">🧲 Re-Snap to Neighbors</button>
+        <button class="btn" id="rm-undo-resnap-btn" style="display:none" onclick="rmUndoResnapToNeighbors()">↩️ Undo Re-Snap</button>
+      </div>
+      <p class="hint" id="rm-resnap-status" style="margin:0 0 10px"></p>
       <div class="rm-actions">
         <button class="btn primary rm-bigbtn" onclick="openRmSaveModal()">💾 Save Outline to Building</button>
         <button class="btn rm-bigbtn" onclick="rmSaveLocally()">📱 Save on This Device Only</button>
@@ -9631,6 +9642,11 @@ function rmClearGeneratedOutline(){
   if (undoBtn) undoBtn.style.display = "none";
   var squareStatus = document.getElementById("rm-square-status");
   if (squareStatus) squareStatus.textContent = "";
+  rmState.preResnapRing = null;
+  var undoResnapBtn = document.getElementById("rm-undo-resnap-btn");
+  if (undoResnapBtn) undoResnapBtn.style.display = "none";
+  var resnapStatus = document.getElementById("rm-resnap-status");
+  if (resnapStatus) resnapStatus.textContent = "";
   if (rmState.vertexEditActive) rmExitVertexEdit(false); /* discard, nothing left to save it to */
   rmClearLinkedFeatures();
   rmClearSplitState(); /* a torn-down outline takes any pending split sections of it down too */
@@ -9870,6 +9886,7 @@ function rmEnterVertexEdit(){
   document.getElementById("rm-edit-shape-btn").textContent = "✓ Done Editing";
   document.getElementById("rm-edit-shape-hint").style.display = "";
   document.getElementById("rm-square-up-btn").disabled = true; /* two edit modes fighting over the same ring mid-drag is asking for trouble */
+  document.getElementById("rm-resnap-btn").disabled = true;
   rmSetPrecisionMode(true);
   rmDrawVertexHandles();
 }
@@ -9881,6 +9898,8 @@ function rmExitVertexEdit(persist){
   if (hint) hint.style.display = "none";
   var sqBtn = document.getElementById("rm-square-up-btn");
   if (sqBtn) sqBtn.disabled = false;
+  var resnapBtn = document.getElementById("rm-resnap-btn");
+  if (resnapBtn) resnapBtn.disabled = false;
   if (rmState.map && rmState.vertexHandleLayerGroup) rmState.map.removeLayer(rmState.vertexHandleLayerGroup);
   rmState.vertexHandleLayerGroup = null;
   rmClearSnapIndicator();
@@ -9952,13 +9971,17 @@ function rmOnVertexDragEnd(vertexIndex, droppedLatLng, marker){
   /* A manual point move invalidates any prior "this shape is square" /
      "this edge is calibrated" guarantee -- clearing both rather than
      silently leaving stale metadata that no longer matches the actual
-     shape. Also drops the Square Up undo snapshot, since "undo" against a
-     ring that's since been hand-edited wouldn't mean what it used to. */
+     shape. Also drops the Square Up and Re-Snap to Neighbors undo
+     snapshots, since "undo" against a ring that's since been hand-edited
+     wouldn't mean what either used to. */
   delete outline.squared;
   delete outline.calibration;
   rmState.preSquareRing = null;
   var undoBtn = document.getElementById("rm-undo-square-btn");
   if (undoBtn) undoBtn.style.display = "none";
+  rmState.preResnapRing = null;
+  var undoResnapBtn = document.getElementById("rm-undo-resnap-btn");
+  if (undoResnapBtn) undoResnapBtn.style.display = "none";
   rmDrawEdgeDimensions(outline);
   rmRenderOutlineStats(outline);
 }
@@ -10000,6 +10023,11 @@ function rmDrawFinalOutline(outline){
   if (undoBtn) undoBtn.style.display = "none";
   var squareStatus = document.getElementById("rm-square-status");
   if (squareStatus) squareStatus.textContent = "";
+  rmState.preResnapRing = null; /* a fresh outline was never re-snapped -- no stale Undo button */
+  var undoResnapBtn = document.getElementById("rm-undo-resnap-btn");
+  if (undoResnapBtn) undoResnapBtn.style.display = "none";
+  var resnapStatus = document.getElementById("rm-resnap-status");
+  if (resnapStatus) resnapStatus.textContent = "";
   if (rmState.vertexEditActive) rmExitVertexEdit(false); /* a fresh outline replaces whatever was being hand-edited */
   var map = rmEnsureMap();
   if (rmState.outlineLayer) map.removeLayer(rmState.outlineLayer);
@@ -10143,7 +10171,7 @@ function rmSquareUpOutline(){
     (result.curveEdgeCount ? " — " + result.curveEdgeCount + " curved/arc edge" + (result.curveEdgeCount === 1 ? "" : "s") + " left as traced" : "") + ".";
   document.getElementById("rm-square-status").textContent = msg;
   toast("Square Up applied ✓");
-  rmPersistSquareUp();
+  rmPersistOutlineGeometryEdit();
 }
 function rmUndoSquareUp(){
   var outline = rmState.outline;
@@ -10161,16 +10189,21 @@ function rmUndoSquareUp(){
   document.getElementById("rm-undo-square-btn").style.display = "none";
   document.getElementById("rm-square-status").textContent = "";
   toast("Square Up undone ✓");
-  rmPersistSquareUp();
+  rmPersistOutlineGeometryEdit();
 }
 /* Same "only writes if already saved" pattern as rmPersistCalibration() --
-   squaring an unsaved outline just updates rmState.outline in memory, the
+   editing an unsaved outline just updates rmState.outline in memory, the
    next Save Outline tap picks it up like any other edit. Deliberately does
    NOT touch roof_assets -- unlike calibration's uniform scale-about-
    centroid (a well-defined transform to also apply to placed features),
-   squaring moves vertices non-uniformly, so there's no unambiguous way to
-   carry that onto point features without real risk of misplacing them. */
-async function rmPersistSquareUp(){
+   both Square Up and Re-Snap to Neighbors move vertices non-uniformly, so
+   there's no unambiguous way to carry that onto point features without
+   real risk of misplacing them. Shared by rmSquareUpOutline()/
+   rmUndoSquareUp() above and rmSnapExistingOutlineToNeighbors()/
+   rmUndoResnapToNeighbors() below -- both are "edit the current outline's
+   ring, then persist it" in exactly the same shape, only the geometry
+   computation differs. */
+async function rmPersistOutlineGeometryEdit(){
   var outline = rmState.outline;
   if (!rmState.linkedBuildingId || !rmState.linkedRoofId || !outline.id){
     toast("Will save with the outline.");
@@ -10193,6 +10226,99 @@ async function rmPersistSquareUp(){
     roofs[roofIdx] = roof;
     await saveBuildingRoofs(rmState.linkedBuildingId, roofs);
   }catch(e){ toast("Updated on screen, but couldn't save: " + e.message); }
+}
+/* Mark's "can an EXISTING badly-traced roof be cleaned up in place?" ask
+   (11 roofs at Tri-Delta with sliver gaps/overlaps between adjoining
+   sections, traced before vertex snapping shipped). Square Up above
+   already applies to a REOPENED roof with zero new code -- it just
+   operates on whatever rmState.outline currently holds, new trace or
+   reopened save alike -- but it only fixes a roof's OWN angles, not gaps
+   against its neighbors. This is the other half: checks every corner of
+   the roof currently open against every neighboring roof's already-traced
+   corners (rmState.referenceRings -- populated for a reopened roof by
+   rmOpenRoofInMapper()'s rmDrawReferenceRoofs() call, same reference layer
+   live tracing already draws) and snaps whichever are close enough.
+
+   Deliberately scoped to the ONE roof currently open, never a blind
+   whole-building batch -- Mark reopens each of the 11, runs this, reviews
+   the result (or Undoes it), moves to the next. Deliberately real-world
+   METERS, not rmFindSnapTarget()'s screen PIXELS -- a one-shot batch pass
+   has no single "current zoom" to anchor a pixel threshold to, so this
+   reuses the same meters-based geometry rmDistanceToRingMeters() already
+   uses elsewhere in this file. Same "apply, then offer one-level Undo"
+   pattern as Square Up. See "Re-snap existing roof to neighbors" in
+   DEV_NOTES.md. */
+var RM_RESNAP_METERS = 2; /* Tight on purpose -- this answers "is this
+   probably the SAME corner, just hand-traced with a bit of drift," not
+   "which roof is this GPS point on" (RM_GPS_AMBIGUITY_METERS is 3x looser
+   and answers that different question). A vertex farther than this from
+   every neighbor is more likely a real, intentional jog in the roofline
+   than the same point -- left alone rather than guessed at, same
+   "flag/skip rather than silently guess" spirit as the GPS auto-assign
+   work. */
+function rmSnapExistingOutlineToNeighbors(){
+  var outline = rmState.outline;
+  if (!outline) return;
+  if (!rmState.referenceRings.length){
+    toast("No neighboring roofs on this building to snap to.");
+    return;
+  }
+  var ring = outline.ring;
+  var n = ring.length - 1; /* ring is closed: ring[n] === ring[0] */
+  var newRing = ring.map(function(p){ return { lat: p.lat, lng: p.lng }; });
+  var movedCount = 0;
+  for (var i = 0; i < n; i++){
+    var pt = ring[i];
+    var best = null, bestDist = RM_RESNAP_METERS;
+    rmState.referenceRings.forEach(function(refRing){
+      for (var j = 0; j < refRing.length - 1; j++){
+        var c = refRing[j];
+        var local = rmGeomToLocalXY(c, pt);
+        var dist = Math.sqrt(local.x * local.x + local.y * local.y);
+        if (dist < bestDist){ bestDist = dist; best = c; }
+      }
+    });
+    if (best && (best.lat !== pt.lat || best.lng !== pt.lng)){
+      newRing[i] = { lat: best.lat, lng: best.lng };
+      if (i === 0) newRing[n] = { lat: best.lat, lng: best.lng }; /* keep the ring explicitly closed */
+      movedCount++;
+    }
+  }
+  if (!movedCount){
+    toast("Checked every corner against neighboring roofs — nothing within " + RM_RESNAP_METERS + "m to snap.");
+    return;
+  }
+  rmState.preResnapRing = ring; /* one-level Undo, same simplicity as Square Up/Calibrate */
+  outline.ring = newRing;
+  outline.areaSqFt = rmGeomPolygonAreaSqMeters(newRing) * 10.7639;
+  outline.perimeterFt = rmGeomPolygonPerimeterMeters(newRing) * 3.28084;
+  outline.center = rmGeomRingCentroid(newRing);
+  if (rmState.outlineLayer) rmState.outlineLayer.setLatLngs(newRing.map(function(p){ return [p.lat, p.lng]; }));
+  rmDrawEdgeDimensions(outline);
+  rmRenderOutlineStats(outline);
+  rmUpdateExportHint();
+  document.getElementById("rm-undo-resnap-btn").style.display = "";
+  document.getElementById("rm-resnap-status").textContent =
+    "Snapped " + movedCount + " corner" + (movedCount === 1 ? "" : "s") + " to a neighboring roof's traced edge.";
+  toast("Re-Snap to Neighbors applied ✓");
+  rmPersistOutlineGeometryEdit();
+}
+function rmUndoResnapToNeighbors(){
+  var outline = rmState.outline;
+  if (!outline || !rmState.preResnapRing) return;
+  outline.ring = rmState.preResnapRing;
+  outline.areaSqFt = rmGeomPolygonAreaSqMeters(outline.ring) * 10.7639;
+  outline.perimeterFt = rmGeomPolygonPerimeterMeters(outline.ring) * 3.28084;
+  outline.center = rmGeomRingCentroid(outline.ring);
+  rmState.preResnapRing = null;
+  if (rmState.outlineLayer) rmState.outlineLayer.setLatLngs(outline.ring.map(function(p){ return [p.lat, p.lng]; }));
+  rmDrawEdgeDimensions(outline);
+  rmRenderOutlineStats(outline);
+  rmUpdateExportHint();
+  document.getElementById("rm-undo-resnap-btn").style.display = "none";
+  document.getElementById("rm-resnap-status").textContent = "";
+  toast("Re-Snap to Neighbors undone ✓");
+  rmPersistOutlineGeometryEdit();
 }
 function rmGenerateOutline(){
   var fp = rmState.footprints.find(function(f){ return f.id === rmState.selectedId; });
