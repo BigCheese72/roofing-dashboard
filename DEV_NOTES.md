@@ -6282,6 +6282,67 @@ building's Inspection — confirmed `roofIds`/`roofLabels` stay `null`, no
 findings table is the single unchanged list. All test state cleared,
 real `fdb` restored, console clean.
 
+## Split an already-saved roof (shipped 2026-07-11, dev only)
+
+Closes the gap the blob-splitting feature deliberately left open ("Split
+a roof outline into labeled sections" above): "Split Into Roof Sections"
+only ever worked on a pending, not-yet-saved outline — the button was
+hidden entirely (`rmSetDisp("rm-split-btn", !saved)`) once a roof was
+linked. Now shown whenever there's an outline to split at all.
+
+**Doesn't discard the existing roof and create N fresh ones** — that
+would orphan its `roof_assets[]`/`building_history_events` history for no
+reason. Instead, `rmSaveSplitSectionsToExistingRoof(buildingId, roofId)`:
+section 0 keeps the ALREADY-linked roof's id/label/history — its outline
+just gets a new `roof_outlines[]` entry (same append-only, "newest is
+current" convention every other outline edit already uses) reflecting the
+split shape, and the roof is renamed only if the split panel's label for
+section 0 actually differs from what it's already called (dup-checked
+against every OTHER roof, same `rmSuggestUniqueRoofLabel()` used
+everywhere else — confirmed to correctly catch a collision against an
+ALREADY-SAVED roof from an earlier split, not just the pending sections in
+the current batch). Sections 1..N become genuinely NEW roofs, same
+per-section shape `rmSaveSplitSectionsToBuilding()` (the never-saved case)
+already builds. `rmSaveAllSplitSections()` branches on
+`rmState.linkedBuildingId`/`linkedRoofId`: if set, straight to a confirm
+dialog and this new function (no building picker needed, already known);
+if not, the original `openRmSaveModal()` flow, byte-for-byte unchanged.
+
+**Explicitly flagged limitation, not a silent gap**: an existing
+feature/pin on the roof being split is NOT automatically reassigned to
+whichever resulting section it now geometrically sits in — the confirm
+dialog says so plainly ("stays with 《section 0's label》 — move it by
+hand afterward if it actually belongs on a different section"). Correctly
+figuring out which section an existing point now belongs to is a real
+point-in-polygon problem; the tech can already move a feature by hand via
+the existing asset editor, so this was deliberately not built for what's
+likely a rare case (splitting a roof that already has features placed on
+it, rather than before placing any).
+
+After saving, stays on the PRIMARY section (same roof id as before the
+split) with its outline/label redrawn in place, and refreshes the roof
+switcher, export checklist, and reference layer so the newly-created
+sibling roof(s) show up immediately without needing to reopen anything.
+
+Tested in the browser with a mocked `fdb` (no real writes): saved a
+rectangular roof with a placed HVAC feature, confirmed the Split button is
+now visible (previously hidden once saved); split it into "West Half"/
+"East Half" and saved — confirmed the ORIGINAL roof kept its id, got
+renamed to "West Half", gained a second `roof_outlines[]` entry (2 total,
+the original plus the split shape — nothing lost) and its HVAC feature
+count stayed at 1 (not orphaned); confirmed a brand-new roof was created
+for "East Half" with its own single outline and zero assets (correctly
+starting fresh); confirmed the roof switcher, export checklist, and map
+label all immediately reflected both roofs and the rename. Split "West
+Half" again, deliberately naming one new section "East Half" (colliding
+with the OTHER already-saved roof from the first split, not a pending
+section in this same batch) — confirmed the collision was caught and
+auto-suffixed to "East Half (2)", reported by name in the toast, exactly
+like the never-saved case's collision handling. Regression-checked the
+original never-saved flow (a fresh, unlinked trace, split and saved) —
+confirmed it still opens the building picker modal exactly as before,
+untouched. All test state cleared, console clean throughout.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |

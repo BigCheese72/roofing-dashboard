@@ -769,16 +769,14 @@
       <div class="rm-actions">
         <button class="btn primary rm-bigbtn" onclick="openRmSaveModal()">💾 Save Outline to Building</button>
         <button class="btn rm-bigbtn" onclick="rmSaveLocally()">📱 Save on This Device Only</button>
-        <!-- Only offered before this outline is saved to a real roof -- an
-             auto-pulled OSM footprint or hand trace is often really several
-             distinct roof sections at once (a warehouse + office annex,
-             several buildings on one parcel), each of which should become
-             its OWN roof. Splitting an ALREADY-saved single roof into
-             several is a different, more involved operation (replacing one
-             real roof's history with several) and deliberately out of
-             scope here -- see "Split a roof outline into labeled sections"
-             in DEV_NOTES.md. Hidden alongside "saved" state the same way
-             as the rest of this row's siblings, via rmUpdateControlVisibility(). -->
+        <!-- An auto-pulled OSM footprint or hand trace is often really
+             several distinct roof sections at once (a warehouse + office
+             annex, several buildings on one parcel), each of which should
+             become its OWN roof. Works both BEFORE saving (rmSaveAllSplitSections()
+             creates N brand-new roofs) and on an ALREADY-saved roof
+             (rmSaveSplitSectionsToExistingRoof() -- the first section keeps
+             the existing roof's id/label/history, later sections become new
+             roofs) -- see "Split an already-saved roof" in DEV_NOTES.md. -->
         <button class="btn rm-bigbtn" id="rm-split-btn" onclick="rmStartSplitting(-1)">✂️ Split Into Roof Sections</button>
         <button class="btn danger rm-bigbtn" onclick="rmDeleteOutline()">🗑️ Delete Outline</button>
       </div>
@@ -8457,9 +8455,11 @@ function rmUpdateControlVisibility(){
   /* Rename control: only meaningful once this outline belongs to an
      actual saved/linked roof (see rmRenameLinkedRoof()). */
   rmSetDisp("rm-rename-roof-btn", !!rmState.linkedRoofId);
-  /* Split control: the inverse -- only meaningful BEFORE this outline is
-     saved to a real roof (see rmStartSplitting()). */
-  rmSetDisp("rm-split-btn", !saved);
+  /* Split control: used to be hidden once saved -- splitting an ALREADY-
+     saved roof is now supported (rmSaveSplitSectionsToExistingRoof(), see
+     "Split an already-saved roof" in DEV_NOTES.md), so this now shows
+     whenever there's an outline to split at all, saved or not. */
+  rmSetDisp("rm-split-btn", hasOutline);
 }
 function rmUseMyLocation(){
   var btn = document.getElementById("rm-locate-btn");
@@ -10260,6 +10260,13 @@ function rmSaveAllSplitSections(){
   if (!rmSplitState.sections || !rmSplitState.sections.length){ toast("Nothing to save — split the outline first."); return; }
   var dupes = rmSplitFindDuplicateLabels();
   if (dupes.length){ toast('Two sections are named "' + dupes[0] + '" — rename one before saving.'); return; }
+  /* Splitting an outline that's ALREADY a saved, linked roof (opened via
+     rmOpenRoofInMapper() or just-saved) -- the building is already known,
+     no picker needed. See rmSaveSplitSectionsToExistingRoof() below. */
+  if (rmState.linkedBuildingId && rmState.linkedRoofId){
+    rmSaveSplitSectionsToExistingRoof(rmState.linkedBuildingId, rmState.linkedRoofId);
+    return;
+  }
   rmSplitState.savingAll = true;
   openRmSaveModal();
 }
@@ -10331,6 +10338,114 @@ async function rmSaveSplitSectionsToBuilding(buildingId){
     await rmLoadLinkedAssets();
     rmUpdateExportHint();
     rmUpdateControlVisibility();
+  }catch(e){ toast("Couldn't save the split sections: " + e.message); }
+}
+/* Splitting a roof that's ALREADY saved/linked -- the gap the previous
+   pass deliberately left ("replacing one real roof's history with several
+   is a different, more involved operation"). Rather than discard the
+   existing roof and create N fresh ones (which would orphan its
+   roof_assets[]/building_history_events history for no reason), the FIRST
+   section keeps the existing roof's id/label/history — its outline just
+   gets a new roof_outlines[] entry (same "append-only, newest is current"
+   convention every other outline edit uses) reflecting the split shape.
+   Only sections[1..] become genuinely NEW roofs, same per-section shape
+   rmSaveSplitSectionsToBuilding() already builds for the never-saved case.
+   Existing features/pins on the original roof are NOT reassigned to
+   whichever new section they might now geometrically sit in -- that's a
+   real, flagged limitation (see the confirm text below), not a silent
+   gap: automatically figuring out which section an existing pin now
+   belongs to is a materially harder point-in-polygon problem, and the
+   tech can already move a feature by hand via the existing asset editor
+   if a split roof needs it. See "Split an already-saved roof" in
+   DEV_NOTES.md. */
+async function rmSaveSplitSectionsToExistingRoof(buildingId, roofId){
+  var sections = rmSplitState.sections;
+  if (!sections || !sections.length){ toast("Nothing to save."); return; }
+  var extraCount = sections.length - 1;
+  if (!confirm("Split this roof into " + sections.length + " sections?\n\n" +
+    "“" + sections[0].label + "” keeps this roof's existing history/features. " +
+    extraCount + " new roof" + (extraCount === 1 ? "" : "s") + " " +
+    (extraCount === 1 ? "gets" : "get") + " created for the rest, starting with no history of " +
+    "its own. Any EXISTING feature/pin on this roof stays with “" + sections[0].label +
+    "” — move it by hand afterward (tap it → Edit) if it actually belongs on a different section.")) return;
+  toast("Saving " + sections.length + " roof sections…");
+  try{
+    var snap = await fdb.collection("buildings").doc(buildingId).get();
+    var bld = snap.exists ? snap.data() : {};
+    var roofs = getBuildingRoofs(bld);
+    var origIdx = roofs.findIndex(function(r){ return r.id === roofId; });
+    if (origIdx === -1) throw new Error("couldn't find the original roof");
+    var origRoof = roofs[origIdx];
+    var baseOutline = rmState.outline || {};
+
+    /* Section 0 -- update the EXISTING roof in place: new outline entry
+       appended (never overwrites/removes the old one -- append-only, same
+       as every other outline edit), rename only if the split panel's label
+       for this section actually differs from what the roof's already
+       called (dup-checked against every OTHER roof, excluding itself). */
+    var primaryOutline = {
+      id: genId("rmo"), ring: sections[0].ring, areaSqFt: sections[0].areaSqFt, perimeterFt: sections[0].perimeterFt,
+      center: sections[0].center, source: baseOutline.source, tags: baseOutline.tags || {},
+      isSiteBoundary: false, calibration: baseOutline.calibration || null, createdAt: Date.now()
+    };
+    origRoof.roof_outlines = (origRoof.roof_outlines || []).concat([primaryOutline]);
+    var renamed = [];
+    if ((origRoof.label || "Roof").trim() !== sections[0].label.trim()){
+      var otherRoofs = roofs.filter(function(r){ return r.id !== roofId; });
+      var check0 = rmSuggestUniqueRoofLabel(otherRoofs, sections[0].label, null);
+      var newLabel0 = check0.isDuplicate ? check0.suggestion : sections[0].label;
+      if (check0.isDuplicate) renamed.push(sections[0].label + " → " + newLabel0);
+      origRoof.label = newLabel0;
+    }
+    origRoof.updatedAt = Date.now();
+    roofs[origIdx] = origRoof;
+
+    /* Sections 1..N -- brand new roofs, same shape/dup-checking
+       rmSaveSplitSectionsToBuilding() already uses for the never-saved
+       case, just starting from index 1 instead of 0. */
+    var createdExtra = sections.slice(1).map(function(sec){
+      var check = rmSuggestUniqueRoofLabel(roofs, sec.label, null);
+      var label = check.isDuplicate ? check.suggestion : sec.label;
+      if (check.isDuplicate) renamed.push(sec.label + " → " + label);
+      var outlineEntry = {
+        id: genId("rmo"), ring: sec.ring, areaSqFt: sec.areaSqFt, perimeterFt: sec.perimeterFt,
+        center: sec.center, source: baseOutline.source, tags: baseOutline.tags || {},
+        isSiteBoundary: false, calibration: baseOutline.calibration || null, createdAt: Date.now()
+      };
+      var newRoof = {
+        id: genId("roof"), label: label, roofSystem: "",
+        roof_base_map_type: null, roof_base_map_url: null, roof_base_map_bounds: null,
+        roof_assets: [], roof_outlines: [outlineEntry], createdAt: Date.now(), updatedAt: Date.now()
+      };
+      roofs.push(newRoof);
+      return newRoof;
+    });
+
+    await saveBuildingRoofs(buildingId, roofs);
+    toast(sections.length + " roof sections saved" +
+      (renamed.length ? " (" + renamed.join(", ") + " — already used on this building)" : "") + " ✓");
+
+    /* Stay on the PRIMARY section (same roof id as before the split) --
+       redraw its (possibly renamed) label and updated outline in place. */
+    rmState.outline = Object.assign({}, primaryOutline);
+    var map = rmEnsureMap();
+    if (rmState.outlineLayer) map.removeLayer(rmState.outlineLayer);
+    rmState.outlineLayer = L.polygon(primaryOutline.ring.map(function(p){ return [p.lat, p.lng]; }), {
+      color: "#E8600A", weight: 3, fillColor: "#E8600A", fillOpacity: 0.15
+    }).addTo(map);
+    rmDrawEdgeDimensions(rmState.outline);
+    if (rmState.roofLabelLayer) map.removeLayer(rmState.roofLabelLayer);
+    rmState.roofLabelLayer = roofLabelMarker(
+      primaryOutline.center.lat, primaryOutline.center.lng, origRoof.label, rmRenameLinkedRoof
+    ).addTo(map);
+    rmClearSplitState();
+    rmRenderOutlineStats(rmState.outline);
+    await rmLoadLinkedAssets();
+    rmUpdateExportHint();
+    rmUpdateControlVisibility();
+    rmRenderRoofSwitcher(buildingId, roofs, roofId);
+    rmRenderExportRoofSelect(buildingId, roofs, roofId);
+    await rmDrawReferenceRoofs(buildingId, bld, roofId);
   }catch(e){ toast("Couldn't save the split sections: " + e.message); }
 }
 
