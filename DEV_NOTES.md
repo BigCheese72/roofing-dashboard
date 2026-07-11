@@ -4829,6 +4829,61 @@ confirmed the modal's three export buttons carry the exact same `onclick`
 handlers as the outline panel's own export buttons. All test state
 cleared, page reloaded, console clean.
 
+## RoofMapper save flow: full CompanyCam picker (shipped 2026-07-10, dev only)
+
+Mark: he could pick an existing app-created building when saving a traced
+outline, or type a brand-new job name, but there was no way to attach an
+outline to a building that only existed as a CompanyCam project (i.e.
+anything not already surfaced through a saved report). Mirrors the Change
+Order picker's CompanyCam merge exactly (`openBuildingPicker()` / commit
+`098ae77`) — same debounced search, same "dedupe against every already-
+linked app building, not just the currently-filtered ones" logic, same
+fix for the index-into-the-wrong-array bug caught during that earlier
+build. Kept as its own `rmBp*`-prefixed copy rather than extracting a
+shared helper, matching this file's existing precedent — `rmBpFilter`/
+`rmBpRender` already duplicate `bpFilter`/`bpRender` the same way for
+RoofMapper's save modal specifically.
+
+**New in this pick — a fresh-fetch, not the stale cache, feeds the roof
+picker.** `rmChooseBuildingForSave()` (the existing app-buildings path)
+still reads from `rmBpCache` (fetched once when the modal opened, fine —
+that data is current). But `rmBpSelectCompanyCamProject()` can't: the
+building it just created/linked via `ensureCustomerAndBuilding()` didn't
+exist in `rmBpCache` when that fetch ran, and in the edge case where the
+CompanyCam project's name happens to match an *existing* app building
+that already had real saved roofs, trusting the stale cache would render
+a synthesized generic "Roof 1" instead of that building's actual roofs.
+Fixed by pulling the roof-picker-rendering logic out into a new shared
+`rmRenderRoofPickerFor(buildingId, buildingData)` — `rmChooseBuildingForSave()`
+calls it with the cached data (unchanged behavior), `rmBpSelectCompanyCamProject()`
+calls it with a fresh `fdb` read of the just-linked building instead.
+
+**"+ Add a new roof…" already works from this path for free** — no new
+code needed, since `rmBpSelectCompanyCamProject()` routes into the exact
+same `rmRenderRoofPickerFor()`/`rmConfirmSaveToChosenRoof()`/
+`rmAddRoofAndSave()` chain the app-buildings path already uses (shipped in
+`be48b2f`). Selecting a CompanyCam-only project just means arriving at
+that same roof picker with a freshly-created building instead of an
+already-existing one — everything downstream is identical.
+
+Tested with mocked `fdb`/`ccApi` (no real network calls, no real writes):
+confirmed both lists (app buildings, CompanyCam-only) render on open;
+confirmed dedup correctly hides an already-linked CompanyCam project while
+leaving others — including a "Charlie Sheet Metal Co" fixture — selectable
+(no sheet-metal exclusion, per the explicit correction on that rule);
+confirmed selecting a CompanyCam-only project by its RENDERED position
+resolves to the correct project (re-verified the index-alignment fix
+specifically, same fixture pattern as the original bug); confirmed the
+critical edge case directly — a CompanyCam-only selection matching an
+existing app building's jobName+billTo correctly surfaces that building's
+REAL saved roofs ("Main Roof", "Annex") in the picker, not a stale
+synthesized "Roof 1"; confirmed the original app-buildings path
+(`rmChooseBuildingForSave`) is unaffected by the `rmRenderRoofPickerFor`
+extraction; confirmed rapid typing debounces to one CompanyCam search
+call, and a CompanyCam failure shows a fallback message without touching
+the app-buildings list. All test state cleared, page reloaded, console
+clean.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |

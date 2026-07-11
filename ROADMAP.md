@@ -512,6 +512,17 @@ Goal: turn each building into a long-term roof record.
   feature type, not just one. Same `persistRoofAsset()` write path every
   other roof-asset edit already uses. See "Duplicate roof feature" in
   `DEV_NOTES.md`.
+- ✅ **Shipped (dev only, 2026-07-10)**: RoofMapper's save flow gets the
+  full CompanyCam picker too — Mark: no way to attach a traced outline to a
+  building that only existed as a CompanyCam project (not yet a saved
+  report). Mirrors the Change Order picker's CompanyCam merge (`098ae77`)
+  exactly — search reaches the whole CompanyCam project file, dedupes
+  against every already-linked app building, sheet-metal included (not
+  excluded). Selecting a CompanyCam-only project creates/links the
+  building and lands on the same roof picker ("+ Add a new roof…"
+  included) the app-buildings path already used — that roof-add flow now
+  works from either origin for free, no new code needed there. See
+  "RoofMapper save flow: full CompanyCam picker" in `DEV_NOTES.md`.
 - ✅ **Shipped (dev only, 2026-07-10)**: easier map navigation — Mark found
   the map "a little hard to navigate." `touch-action:none` on the map
   container (the likely actual cause — without it the page's own scroll

@@ -333,9 +333,11 @@ helps a tech capture a clean roof outline for a building on the spot:
    field measurement. Best order: Edit Shape / Square Up first, then calibrate a
    measurement last — that way the edge you measure ends up exactly right no matter
    what else changed before it.
-6. Save it — **"💾 Save Outline to Building"** links it to an existing building (search
-   by name) or creates a new one on the spot, or **"📱 Save on This Device Only"** if
-   there's no signal or the building isn't in RoofOps yet (link it later from the
+6. Save it — **"💾 Save Outline to Building"** searches both your existing RoofOps
+   buildings AND your whole CompanyCam project file — a building doesn't have to
+   already exist here first. Pick a match, or a "☁️ From CompanyCam" result to
+   create/link that building on the spot, or create a brand-new one, or
+   **"📱 Save on This Device Only"** if there's no signal (link it later from the
    "Saved On This Device" list). If the building already has other roofs, pick which
    one this outline is for, or tap **"+ Add a new roof…"** to name a brand-new one
    right there — see "Buildings with more than one roof" below. Not happy with it?

@@ -785,8 +785,10 @@
     </div>
     <div style="padding:14px 16px;overflow:auto">
       <h2 class="cond" style="font-size:15px;margin:0 0 8px">Link to Existing Building</h2>
-      <input type="text" id="rm-bp-search" placeholder="Search by building, customer, or address…" style="width:100%;margin-bottom:10px;box-sizing:border-box" oninput="rmBpFilter()">
+      <input type="text" id="rm-bp-search" placeholder="Search by building, customer, or address…" style="width:100%;margin-bottom:10px;box-sizing:border-box" oninput="rmBpFilter(); rmBpDebouncedCcSearch();">
       <div id="rm-bp-list" class="hint">Loading…</div>
+      <h2 class="cond" style="font-size:14px;margin:14px 0 8px">☁️ From CompanyCam (not yet a building here)</h2>
+      <div id="rm-bp-cc-list" class="hint">Loading…</div>
       <div id="rm-roof-picker" style="margin-top:10px"></div>
       <h2 class="cond" style="font-size:15px;margin:18px 0 8px">Or Create a New Building</h2>
       <div class="grid">
@@ -8196,6 +8198,8 @@ function openRmSaveModal(){
   var list = document.getElementById("rm-bp-list");
   list.className = "hint";
   list.textContent = "Loading buildings…";
+  rmBpCcCache = [];
+  rmBpRenderCcList(); /* clears/resets the CC section's state from a previous open */
   if (!fdb){
     list.textContent = "Linking to a building needs cloud sync (internet connection). You can still Save on This Device Only.";
     return;
@@ -8208,10 +8212,16 @@ function openRmSaveModal(){
     list.className = "hint";
     list.textContent = "Couldn't load buildings: " + e.message;
   });
+  /* Independent of the app-buildings load above -- a slow/unavailable
+     CompanyCam API never holds up the (usually much faster) existing-
+     buildings list. See "RoofMapper save flow: full CompanyCam picker" in
+     DEV_NOTES.md. */
+  rmBpSearchCompanyCam("");
 }
 function closeRmSaveModal(){
   document.getElementById("rm-save-modal").style.display = "none";
   unlockBodyScroll();
+  if (rmBpCcDebounceTimer) clearTimeout(rmBpCcDebounceTimer);
 }
 function rmBpFilter(){
   if (!rmBpCache) return;
@@ -8235,6 +8245,90 @@ function rmBpRender(list){
       '<button class="btn">Save Here</button></div>';
   }).join("");
 }
+/* ---- CompanyCam merge (Mark: "no way to attach a traced outline to an
+   EXISTING CompanyCam project" -- this picker previously only searched
+   app-created buildings). Mirrors the Change Order picker's CompanyCam
+   merge (openBuildingPicker() / commit 098ae77) exactly -- same debounced
+   search, same dedupe-against-already-linked-buildings logic, same "index
+   into the deduped/VISIBLE list, not the raw fetch result" fix for the
+   bug caught in that earlier build. Kept as its own rm-prefixed copy
+   rather than a shared helper, matching this file's existing precedent of
+   a parallel rm-prefixed picker for RoofMapper's save flow (rmBpFilter/
+   rmBpRender already duplicate bpFilter/bpRender the same way). See
+   "RoofMapper save flow: full CompanyCam picker" in DEV_NOTES.md. */
+var rmBpCcCache = [];
+var rmBpCcVisibleCache = [];
+var rmBpCcDebounceTimer = null;
+function rmBpDebouncedCcSearch(){
+  if (rmBpCcDebounceTimer) clearTimeout(rmBpCcDebounceTimer);
+  var q = document.getElementById("rm-bp-search").value.trim();
+  rmBpCcDebounceTimer = setTimeout(function(){ rmBpSearchCompanyCam(q); }, 400);
+}
+async function rmBpSearchCompanyCam(q){
+  var host = document.getElementById("rm-bp-cc-list");
+  if (host){ host.className = "hint"; host.textContent = "Searching CompanyCam…"; }
+  try{
+    var out = await ccApi({ action: "projects", q: q || "" });
+    rmBpCcCache = out.projects || [];
+    rmBpRenderCcList();
+  }catch(e){
+    rmBpCcCache = [];
+    if (host){
+      host.className = "hint";
+      host.textContent = "Couldn't reach CompanyCam right now — showing existing buildings only.";
+    }
+  }
+}
+function rmBpRenderCcList(){
+  var host = document.getElementById("rm-bp-cc-list");
+  if (!host) return;
+  var linkedIds = {};
+  (rmBpCache || []).forEach(function(b){ if (b.companyCamProjectId) linkedIds[b.companyCamProjectId] = true; });
+  rmBpCcVisibleCache = rmBpCcCache.filter(function(p){ return !linkedIds[p.id]; });
+  if (!rmBpCcVisibleCache.length){
+    host.className = "hint";
+    host.textContent = "No other CompanyCam projects found.";
+    return;
+  }
+  host.className = "";
+  host.innerHTML = rmBpCcVisibleCache.map(function(p, i){
+    return '<div class="bld-item" onclick="rmBpSelectCompanyCamProject(' + i + ')"><div class="info">' +
+      '<div class="name">' + esc(p.name) + '</div>' +
+      '<div class="meta">' + (p.address ? esc(p.address) : "") + ' · ☁️ CompanyCam only</div></div>' +
+      '<button class="btn">Select</button></div>';
+  }).join("");
+}
+/* Selecting a CompanyCam-only project creates/links a real building record
+   right away (ensureCustomerAndBuilding() -- same idempotent upsert every
+   other CompanyCam-building linkage in this app uses), then goes straight
+   to the roof picker so Mark can pick or add a roof for THIS building --
+   unlike the Change Order picker (which just fills form fields and
+   closes), RoofMapper's flow still needs a roof chosen before the outline
+   actually saves. Deliberately does a FRESH Firestore read of the
+   just-created/linked building rather than trusting rmBpCache (which was
+   fetched before this building existed, or before it had this
+   CompanyCam link) -- matters if the jobName+billTo happened to already
+   match an existing app building with its own real roofs already saved;
+   the roof picker needs to see those, not a stale/empty synthesized
+   default. */
+async function rmBpSelectCompanyCamProject(i){
+  var p = rmBpCcVisibleCache[i];
+  if (!p) return;
+  toast("Linking CompanyCam project…");
+  try{
+    var ids = await ensureCustomerAndBuilding({
+      jobName: p.name || "", billTo: "", location: p.address || "", companyCamProjectId: p.id
+    });
+    if (!ids.buildingId) throw new Error("couldn't create/link building (need internet connection)");
+    var freshBld = {};
+    if (fdb){
+      var snap = await fdb.collection("buildings").doc(ids.buildingId).get();
+      freshBld = snap.exists ? snap.data() : {};
+    }
+    rmRenderRoofPickerFor(ids.buildingId, freshBld);
+    toast("Linked “" + p.name + "” — pick or add a roof below ✓");
+  }catch(e){ toast("Couldn't link CompanyCam project: " + e.message); }
+}
 /* Always shows a picker for an EXISTING building, even a currently
    single-roof one -- previously a single-roof building saved immediately
    with zero taps, which silently meant a second distinct roof traced later
@@ -8245,9 +8339,8 @@ function rmBpRender(list){
    RoofMapper first. See "Individual-roof tracing + labels" in
    DEV_NOTES.md. (rmCreateBuildingAndSave(), for a BRAND-NEW building, is
    unaffected -- its first roof is unambiguous, no picker needed there.) */
-function rmChooseBuildingForSave(buildingId){
-  var b = (rmBpCache || []).find(function(x){ return x.id === buildingId; }) || {};
-  var roofs = getBuildingRoofs(b);
+function rmRenderRoofPickerFor(buildingId, b){
+  var roofs = getBuildingRoofs(b || {});
   document.getElementById("rm-roof-picker").innerHTML =
     '<div class="fld" style="max-width:260px"><label>Which roof is this outline for?</label>' +
     '<select id="rm-roof-select">' +
@@ -8256,6 +8349,10 @@ function rmChooseBuildingForSave(buildingId){
     '</select></div>' +
     '<div class="btnrow"><button class="btn primary" onclick="rmConfirmSaveToChosenRoof(\'' + buildingId +
     '\')">Save Outline</button></div>';
+}
+function rmChooseBuildingForSave(buildingId){
+  var b = (rmBpCache || []).find(function(x){ return x.id === buildingId; }) || {};
+  rmRenderRoofPickerFor(buildingId, b);
 }
 function rmConfirmSaveToChosenRoof(buildingId){
   var sel = document.getElementById("rm-roof-select").value;
