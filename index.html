@@ -2457,6 +2457,28 @@ function removeFinding(i){
   }
   renderFindings();
 }
+/* Persistent per-photo indicator when a photo has no location data --
+   Mark's real Tri-Delta case: captureDeviceGps() already fired on every
+   camera capture, but a failure only ever showed as a transient toast,
+   easy to miss mid-shoot on a roof -- 11 of 12 photos on one real visit
+   had no gps at all and he never noticed until Building History/
+   auto-assign came up empty. This is the lasting, can't-miss version:
+   shows right on the photo for as long as it has no location, clickable
+   straight to that finding's own pin picker when there's a real finding
+   to place it on (checklist items and "General/no finding" photos have
+   no such picker to jump to, so the badge is informational-only there --
+   findingById() returning falsy for those covers this automatically).
+   See "Photo GPS capture" in DEV_NOTES.md. */
+function photoGpsBadgeHtml(p, findingId){
+  if (p.gps) return "";
+  var clickable = !!(findingId && findingById(findingId));
+  var reasonText = { denied: "location permission blocked", timeout: "no GPS fix in time",
+    unavailable: "location unavailable", unsupported: "location not supported" }[p.gpsFailReason] || "no location captured for this photo";
+  return '<div style="background:#FFF3E0;color:#8A5A00;font-size:11px;font-weight:600;padding:3px 7px;' +
+    'border-radius:4px;margin-top:3px;display:inline-block' + (clickable ? ';cursor:pointer' : '') + '"' +
+    (clickable ? ' onclick="openPinModal(\'' + esc(findingId) + '\')"' : '') +
+    ' title="' + esc(reasonText) + '">📍 No location' + (clickable ? ' — tap to place' : '') + '</div>';
+}
 /* Photo-capture rework, increment 2: photos captured/added here are
    associated with this finding from the moment they're added (via the
    findingId param on addPhotosFromCamera()/addPhotosFromFiles()) --
@@ -2479,6 +2501,7 @@ function findingPhotoGalleryHtml(f){
       (x.p.img ? '<img class="thumb" src="' + x.p.img + '" onclick="openPhotoLightbox(' + x.gi + ')" title="Tap to enlarge">' : '') +
       '<input type="text" placeholder="Caption" data-findingphoto="' + x.gi + '" value="' + esc(x.p.caption) + '" list="dl-photoCaption" onblur="rememberFieldValue(\'photoCaption\', this.value)">' +
       '<button class="btn danger" onclick="removePhoto(' + x.gi + ')">✕ Remove</button>' +
+      photoGpsBadgeHtml(x.p, x.p.finding_id) +
       '</div>';
   }).join("");
   return '<div class="finding-photos">' +
@@ -2511,6 +2534,7 @@ function inspectionItemPhotoGalleryHtml(item){
       (x.p.img ? '<img class="thumb" src="' + x.p.img + '" onclick="openPhotoLightbox(' + x.gi + ')" title="Tap to enlarge">' : '') +
       '<input type="text" placeholder="Caption" data-findingphoto="' + x.gi + '" value="' + esc(x.p.caption) + '" list="dl-photoCaption" onblur="rememberFieldValue(\'photoCaption\', this.value)">' +
       '<button class="btn danger" onclick="removePhoto(' + x.gi + ')">✕ Remove</button>' +
+      photoGpsBadgeHtml(x.p, x.p.finding_id) +
       '</div>';
   }).join("");
   return '<div class="finding-photos">' +
@@ -3690,27 +3714,58 @@ function addPhotosFromFiles(files, findingId){
     reader.readAsDataURL(file);
   });
 }
-/* Resolves to {lat,lng,accuracy} or null -- NEVER rejects, so a capture
-   flow can always just await this and keep going. "Handle no-GPS/denied
-   gracefully" per spec: the photo still saves either way, this only
-   decides whether there's anything to auto-pin from. Same accuracy
-   expectations as useMyLocationForPin() above (~10-30ft, consumer GPS) --
-   this is a starting point for the pin, not a final placement. */
-function captureDeviceGps(){
+/* Mark's real Tri-Delta leak report: 11 of 12 photos had NO gps at all --
+   confirmed against live data. captureDeviceGps() already fired on every
+   camera capture (addPhotosFromCamera() below), but every failure reason
+   (permission denied, no fix in time, position unavailable, no
+   geolocation API at all) collapsed to the same bare `null`, and the only
+   signal was a transient toast, easy to miss mid-shoot on a roof. A
+   DENIED permission is the critical case: once blocked, EVERY future
+   call on that device fails the exact same way, instantly, forever,
+   until the tech fixes it in browser/OS settings -- which is exactly
+   what a 100%-of-one-visit failure rate looks like. See "Photo GPS
+   capture: explicit permission + persistent no-location indicator" in
+   DEV_NOTES.md.
+
+   captureDeviceGpsRaw() resolves { ok:true, lat, lng, accuracy } or
+   { ok:false, reason } -- reason is "denied" | "timeout" | "unavailable" |
+   "unsupported", NEVER rejects, so a capture flow can always just await
+   it and keep going ("handle no-GPS/denied gracefully" per spec: the
+   photo still saves either way, this only decides whether there's
+   anything to auto-pin from / what to tell the tech). captureDeviceGps()
+   wraps it: a high-accuracy GPS fix can genuinely take several seconds
+   on a cold start (raised 8s -> RM_GPS_TIMEOUT_MS=12s to give it a real
+   chance) -- and specifically on a TIMEOUT (not denied/unsupported,
+   which will just fail identically again) retries ONCE at low accuracy
+   (fast WiFi/cell-tower fix, coarse but far better than nothing) before
+   giving up. Same accuracy expectations as useMyLocationForPin() above
+   (~10-30ft, consumer GPS) -- this is a starting point for the pin, not
+   a final placement. */
+var RM_GPS_TIMEOUT_MS = 12000;
+function captureDeviceGpsRaw(opts){
   return new Promise(function(resolve){
-    if (!navigator.geolocation){ resolve(null); return; }
+    if (!navigator.geolocation){ resolve({ ok: false, reason: "unsupported" }); return; }
     var settled = false;
+    var timeoutMs = (opts && opts.timeout) || RM_GPS_TIMEOUT_MS;
     var timer = setTimeout(function(){
-      if (settled) return; settled = true; resolve(null);
-    }, 8000);
+      if (settled) return; settled = true; resolve({ ok: false, reason: "timeout" });
+    }, timeoutMs);
     navigator.geolocation.getCurrentPosition(function(pos){
       if (settled) return; settled = true; clearTimeout(timer);
-      resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy });
-    }, function(){
+      resolve({ ok: true, lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy });
+    }, function(err){
       if (settled) return; settled = true; clearTimeout(timer);
-      resolve(null);
-    }, { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 });
+      /* GeolocationPositionError codes: 1=PERMISSION_DENIED, 2=POSITION_UNAVAILABLE, 3=TIMEOUT. */
+      var reason = (err && err.code === 1) ? "denied" : (err && err.code === 3) ? "timeout" : "unavailable";
+      resolve({ ok: false, reason: reason });
+    }, Object.assign({ enableHighAccuracy: true, timeout: timeoutMs, maximumAge: 0 }, opts || {}));
   });
+}
+async function captureDeviceGps(){
+  var result = await captureDeviceGpsRaw();
+  if (result.ok || result.reason !== "timeout") return result;
+  var fallback = await captureDeviceGpsRaw({ enableHighAccuracy: false, timeout: 5000 });
+  return fallback;
 }
 /* Camera capture (input[capture=environment]) -- a deliberate separate
    path from addPhotosFromFiles() above, not a shared refactor: a photo
@@ -3725,8 +3780,21 @@ function captureDeviceGps(){
 function addPhotosFromCamera(files, findingId){
   var list = Array.prototype.slice.call(files || []);
   if (!list.length) return;
-  captureDeviceGps().then(function(gps){
-    if (!gps) toast("Photo added — location wasn't available, place the pin manually if needed.");
+  captureDeviceGps().then(function(result){
+    var gps = result.ok ? { lat: result.lat, lng: result.lng, accuracy: result.accuracy } : null;
+    var gpsFailReason = result.ok ? null : result.reason;
+    /* "denied" gets its own, more direct message -- it's the persistent
+       case: every future photo on this device will fail the exact same
+       way until the tech fixes it in browser/OS settings, unlike a
+       one-off timeout/unavailable. The transient toast either way is
+       supplementary now, not the only signal -- see photoGpsBadgeHtml()
+       for the lasting per-photo indicator that doesn't disappear after a
+       few seconds. */
+    if (gpsFailReason === "denied"){
+      toast("📍 Location permission is blocked for this app — photos won't auto-place on the map. Enable location for this site in your browser/phone settings, then reopen the app.");
+    } else if (gpsFailReason){
+      toast("Photo added — location wasn't available, place the pin manually if needed.");
+    }
     var results = new Array(list.length);
     var pending = list.length;
     async function done(){
@@ -3778,7 +3846,7 @@ function addPhotosFromCamera(files, findingId){
           var c = document.createElement("canvas");
           c.width = w; c.height = h;
           c.getContext("2d").drawImage(img, 0, 0, w, h);
-          results[idx] = { caption:"", img: c.toDataURL("image/jpeg", preset.q), w: w, h: h, finding_id: findingId || null, gps: gps };
+          results[idx] = { caption:"", img: c.toDataURL("image/jpeg", preset.q), w: w, h: h, finding_id: findingId || null, gps: gps, gpsFailReason: gpsFailReason };
           done();
         };
         img.onerror = function(){ toast("Couldn't read the photo"); done(); };
@@ -4199,7 +4267,8 @@ function renderPhotos(){
         findingOptions.map(function(o){
           return '<option value="' + esc(o.id) + '"' + (p.finding_id === o.id ? " selected" : "") + '>' + esc(o.label) + '</option>';
         }).join("") +
-      '</select></div>';
+      '</select></div>' +
+      photoGpsBadgeHtml(p, p.finding_id);
     host.appendChild(d);
   });
   host.querySelectorAll("input[data-i]").forEach(function(el){
