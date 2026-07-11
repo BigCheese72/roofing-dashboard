@@ -302,6 +302,16 @@ Physical buildings/sites associated with a customer.
   profile: {}, // admin-editable roof facts — see "roof.profile shape" below.
                // Absent/undefined until an admin sets one — read via
                // getRoofProfile(roof), never directly.
+  labelPos, // optional {lat, lng} or null/absent (shipped 2026-07-11, see "Draggable
+            // roof labels" in DEV_NOTES.md) — a custom position the tech dragged this
+            // roof's map label to, overriding the default recomputed-centroid
+            // placement. Any plain client write (roofLabelMarker()'s onDragEnd via
+            // rmSaveRoofLabelPos()), same tier as roof_assets placement, not
+            // admin-gated. Reset to null (back to centroid) via rmResetRoofLabelPos().
+            // Cleared automatically when this roof is split (rmSaveSplitSectionsToExistingRoof())
+            // since the old position may no longer make sense on the new, smaller
+            // shape. Carries through to the multi-roof export (rmBuildMultiRoofOutlineSvg())
+            // and Building History's own read-only roof map, not just RoofMapper's.
   createdAt,
   updatedAt
 }

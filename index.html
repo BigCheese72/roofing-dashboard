@@ -758,6 +758,15 @@
              See rmRenameLinkedRoof() and "Rename a roof, discoverable from
              RoofMapper" in DEV_NOTES.md. -->
         <button class="btn" id="rm-rename-roof-btn" style="display:none" onclick="rmRenameLinkedRoof()">🏷️ Rename Roof</button>
+        <!-- Mark: "he must be able to MOVE THE ROOF LABEL AROUND" -- the
+             label itself is draggable right on the map (roofLabelMarker's
+             onDragEnd); this is the escape hatch back to the default
+             centroid, per his explicit "give a way to reset to default"
+             ask. Only shown once a custom position actually exists
+             (rmState.roofLabelHasCustomPos) -- see rmSaveRoofLabelPos()/
+             rmResetRoofLabelPos() and "Draggable roof labels" in
+             DEV_NOTES.md. -->
+        <button class="btn" id="rm-reset-label-btn" style="display:none" onclick="rmResetRoofLabelPos()">🎯 Reset Label Position</button>
       </div>
       <p class="hint" id="rm-edit-shape-hint" style="margin:0 0 10px;display:none">Drag any dot to move that corner —
         the shape, area, and dimensions update as you go. Tap <b>✓ Done Editing</b> when it looks right.</p>
@@ -4864,7 +4873,12 @@ function renderBuildingMap(pins, customBld, bldAddress, orthoOverlay, assets, bu
           color: "#E8600A", weight: 2, fillColor: "#E8600A", fillOpacity: 0.1
         }).addTo(buildingMap).bindPopup(outlinePopupHtml(o, o._roofLabel));
         if (o._roofLabel){
-          var labelCenter = o.center || rmGeomRingCentroid(o.ring);
+          /* Respects wherever the roof's label was dragged to in
+             RoofMapper (o._roofLabelPos, set alongside _roofLabel below)
+             -- read-only here (no onClick/onDragEnd), same as before, just
+             positioned correctly instead of always the recomputed
+             centroid. See "Draggable roof labels" in DEV_NOTES.md. */
+          var labelCenter = o._roofLabelPos || o.center || rmGeomRingCentroid(o.ring);
           roofLabelMarker(labelCenter.lat, labelCenter.lng, o._roofLabel).addTo(buildingMap);
         }
       });
@@ -5319,7 +5333,7 @@ async function openBuildingHistory(buildingId){
     var allRoofOutlinesForMap = hasCustomBaseMap ? [] : roofs.reduce(function(acc, r){
       var ol = r.roof_outlines || [];
       var latest = ol[ol.length - 1];
-      if (latest) acc.push(Object.assign({}, latest, { _roofLabel: r.label || "Roof" }));
+      if (latest) acc.push(Object.assign({}, latest, { _roofLabel: r.label || "Roof", _roofLabelPos: r.labelPos || null }));
       return acc;
     }, []);
     /* Roof selector only renders for a building with more than one real
@@ -7268,20 +7282,29 @@ function rmGeomRingCentroid(ring){
    History's own use of this same helper (renderBuildingMap(), viewing
    every roof on a building at once) omits onClick and stays exactly as
    before -- non-interactive, purely a label there. See "Rename a roof,
-   discoverable from RoofMapper" in DEV_NOTES.md. */
-function roofLabelMarker(lat, lng, text, onClick){
+   discoverable from RoofMapper" in DEV_NOTES.md.
+   onDragEnd is also optional (RoofMapper's own linked-roof label only,
+   same as onClick) -- Mark: "he must be able to MOVE THE ROOF LABEL
+   AROUND." Makes the marker Leaflet-draggable (cursor:move) and fires
+   onDragEnd({lat,lng}) with wherever it was dropped; Leaflet's own drag
+   handler already suppresses the click event for a real drag, so tap-to-
+   rename and drag-to-reposition coexist on the same marker with no extra
+   logic needed here. See "Draggable roof labels" in DEV_NOTES.md. */
+function roofLabelMarker(lat, lng, text, onClick, onDragEnd){
   var marker = L.marker([lat, lng], {
     icon: L.divIcon({
       className: "", iconSize: null,
       html: '<div style="background:#1976D2;color:#fff;padding:4px 10px;border-radius:5px;' +
         'font-size:12px;font-weight:700;white-space:nowrap;transform:translate(-50%,-50%);' +
         'box-shadow:0 1px 4px rgba(0,0,0,.45);border:1.5px solid rgba(255,255,255,.85)' +
-        (onClick ? ';cursor:pointer' : '') + '">' +
+        (onDragEnd ? ';cursor:move' : (onClick ? ';cursor:pointer' : '')) + '">' +
         esc(text) + (onClick ? ' ✏️' : '') + '</div>'
     }),
-    interactive: !!onClick
+    interactive: !!(onClick || onDragEnd),
+    draggable: !!onDragEnd
   });
   if (onClick) marker.on("click", onClick);
+  if (onDragEnd) marker.on("dragend", function(){ var p = marker.getLatLng(); onDragEnd({ lat: p.lat, lng: p.lng }); });
   return marker;
 }
 function rmGeomPolygonAreaSqMeters(ring){
@@ -7935,7 +7958,7 @@ async function rmFetchMultiRoofExportData(buildingId, roofIds){
     var outline = outlines[outlines.length - 1];
     if (!outline || !outline.ring || outline.ring.length < 3) return null;
     return {
-      roofId: roofId, label: roof.label || "Roof", outline: outline,
+      roofId: roofId, label: roof.label || "Roof", outline: outline, labelPos: roof.labelPos || null,
       assets: (roof.roof_assets || []).filter(function(a){ return typeof a.lat === "number" && typeof a.lng === "number"; }),
       pins: pinsByRoof[roofId] || []
     };
@@ -7960,7 +7983,12 @@ function rmBuildMultiRoofOutlineSvg(data){
     var pts = r.outline.ring.map(function(p){ return rmExportProjectPoint(p, origin); });
     var assetPts = r.assets.map(function(a){ return Object.assign({}, rmExportProjectPoint(a, origin), { type: a.type, label: a.label }); });
     var pinPts = r.pins.map(function(p){ return Object.assign({}, rmExportProjectPoint(p, origin), { warranty: p.warranty }); });
-    var labelPt = rmExportProjectPoint(r.outline.center || rmGeomRingCentroid(r.outline.ring), origin);
+    /* Mark: "the custom position must CARRY THROUGH TO THE EXPORT... not
+       at a recomputed centroid." Same wherever-he-dragged-it position the
+       live map uses, falling back to the recomputed centroid for a roof
+       that was never repositioned. See "Draggable roof labels" in
+       DEV_NOTES.md. */
+    var labelPt = rmExportProjectPoint(r.labelPos || r.outline.center || rmGeomRingCentroid(r.outline.ring), origin);
     return { label: r.label, outline: r.outline, pts: pts, assetPts: assetPts, pinPts: pinPts, labelPt: labelPt };
   });
   var allXs = [], allYs = [];
@@ -8214,6 +8242,11 @@ var rmState = {
   dimensionLayerGroup: null,
   /* This roof's persistent name label, once saved (roofLabelMarker()). */
   roofLabelLayer: null,
+  /* Whether the CURRENTLY linked roof has a custom dragged label position
+     (roof.labelPos on the Firestore record) -- drives rm-reset-label-btn's
+     visibility. See rmSaveRoofLabelPos()/"Draggable roof labels" in
+     DEV_NOTES.md. */
+  roofLabelHasCustomPos: false,
   /* Pre-Square-Up ring, kept only for Undo (rmSquareUpOutline()/
      rmUndoSquareUp()) -- null whenever the current outline hasn't been
      squared, or after an undo. */
@@ -8547,6 +8580,8 @@ function rmClearLinkedFeatures(){
   if (rmState.map && rmState.roofLabelLayer) rmState.map.removeLayer(rmState.roofLabelLayer);
   rmState.roofLabelLayer = null;
   rmSetDisp("rm-rename-roof-btn", false);
+  rmState.roofLabelHasCustomPos = false;
+  rmSetDisp("rm-reset-label-btn", false);
   var switcherHost = document.getElementById("rm-roof-switcher");
   if (switcherHost) switcherHost.innerHTML = "";
   var exportSelectHost = document.getElementById("rm-export-roof-select");
@@ -10061,6 +10096,61 @@ async function rmAddRoofAndSave(buildingId, label){
    -- the realistic path, since renaming requires the roof to be open in
    RoofMapper first (from Building History's "Continue" or a fresh trace).
    See "Rename a roof, discoverable from RoofMapper" in DEV_NOTES.md. */
+/* Mark: "he must be able to MOVE THE ROOF LABEL AROUND" -- off a cluttered
+   area, onto a clear part of the roof, wherever it reads best. Stored on
+   the ROOF record itself (roof.labelPos, {lat,lng} or null/absent =
+   "use the default centroid"), not per-outline -- a deliberate position
+   choice should survive Edit Shape/re-tracing the same roof, not silently
+   reset just because the shape changed. Same plain client write every
+   other roof-level tweak in this app uses (rename, feature placement) --
+   cosmetic metadata, not admin-gated. Called from roofLabelMarker()'s
+   onDragEnd wherever the currently-linked roof's label is drawn. See
+   "Draggable roof labels" in DEV_NOTES.md. */
+async function rmSaveRoofLabelPos(buildingId, roofId, pos){
+  if (!fdb) return;
+  try{
+    var snap = await fdb.collection("buildings").doc(buildingId).get();
+    var bld = snap.exists ? snap.data() : {};
+    var roofs = getBuildingRoofs(bld);
+    var idx = roofs.findIndex(function(r){ return r.id === roofId; });
+    if (idx === -1) return;
+    roofs[idx] = Object.assign({}, roofs[idx], { labelPos: { lat: pos.lat, lng: pos.lng }, updatedAt: Date.now() });
+    await saveBuildingRoofs(buildingId, roofs);
+    /* Surface the reset option immediately -- shouldn't take a reopen to
+       discover it after the very drag that created a custom position. */
+    if (rmState.linkedRoofId === roofId){
+      rmState.roofLabelHasCustomPos = true;
+      rmSetDisp("rm-reset-label-btn", true);
+    }
+  }catch(e){ toast("Label moved on screen, but couldn't save the position: " + e.message); }
+}
+/* Reset button (rm-reset-label-btn) -- only shown once a custom position
+   actually exists (rmState.roofLabelHasCustomPos). Clears labelPos and
+   redraws at the recomputed centroid, same as a roof that was never
+   dragged in the first place. */
+async function rmResetRoofLabelPos(){
+  var buildingId = rmState.linkedBuildingId, roofId = rmState.linkedRoofId;
+  if (!buildingId || !roofId || !rmState.outline) return;
+  toast("Resetting label position…");
+  try{
+    var snap = await fdb.collection("buildings").doc(buildingId).get();
+    var bld = snap.exists ? snap.data() : {};
+    var roofs = getBuildingRoofs(bld);
+    var idx = roofs.findIndex(function(r){ return r.id === roofId; });
+    if (idx === -1) return;
+    roofs[idx] = Object.assign({}, roofs[idx], { labelPos: null, updatedAt: Date.now() });
+    await saveBuildingRoofs(buildingId, roofs);
+    var center = rmState.outline.center || rmGeomRingCentroid(rmState.outline.ring);
+    if (rmState.map && rmState.roofLabelLayer){
+      rmState.map.removeLayer(rmState.roofLabelLayer);
+      rmState.roofLabelLayer = roofLabelMarker(center.lat, center.lng, roofs[idx].label || "Roof", rmRenameLinkedRoof,
+        function(pos){ rmSaveRoofLabelPos(buildingId, roofId, pos); }).addTo(rmState.map);
+    }
+    rmState.roofLabelHasCustomPos = false;
+    rmSetDisp("rm-reset-label-btn", false);
+    toast("Label reset to default position ✓");
+  }catch(e){ toast("Couldn't reset label position: " + e.message); }
+}
 async function rmRenameLinkedRoof(){
   var buildingId = rmState.linkedBuildingId, roofId = rmState.linkedRoofId;
   if (!buildingId || !roofId){ toast("Save this roof first, then you can rename it."); return; }
@@ -10088,7 +10178,8 @@ async function rmRenameLinkedRoof(){
     if (rmState.map && rmState.roofLabelLayer){
       var pos = rmState.roofLabelLayer.getLatLng();
       rmState.map.removeLayer(rmState.roofLabelLayer);
-      rmState.roofLabelLayer = roofLabelMarker(pos.lat, pos.lng, label, rmRenameLinkedRoof).addTo(rmState.map);
+      rmState.roofLabelLayer = roofLabelMarker(pos.lat, pos.lng, label, rmRenameLinkedRoof,
+        function(newPos){ rmSaveRoofLabelPos(buildingId, roofId, newPos); }).addTo(rmState.map);
     }
     var sel = document.getElementById("rm-roof-select");
     if (sel){
@@ -10364,9 +10455,12 @@ async function rmSaveSplitSectionsToBuilding(buildingId){
       rmDrawEdgeDimensions(rmState.outline);
       if (rmState.roofLabelLayer) rmState.map.removeLayer(rmState.roofLabelLayer);
       rmState.roofLabelLayer = roofLabelMarker(
-        last.outlineEntry.center.lat, last.outlineEntry.center.lng, last.roof.label, rmRenameLinkedRoof
+        last.outlineEntry.center.lat, last.outlineEntry.center.lng, last.roof.label, rmRenameLinkedRoof,
+        function(pos){ rmSaveRoofLabelPos(buildingId, last.roof.id, pos); }
       ).addTo(rmState.map);
     }
+    rmState.roofLabelHasCustomPos = false;
+    rmSetDisp("rm-reset-label-btn", false);
     rmClearSplitState();
     rmRenderOutlineStats(rmState.outline);
     rmShowFeaturePanel(bld.name);
@@ -10432,6 +10526,13 @@ async function rmSaveSplitSectionsToExistingRoof(buildingId, roofId){
       if (check0.isDuplicate) renamed.push(sections[0].label + " → " + newLabel0);
       origRoof.label = newLabel0;
     }
+    /* A split fundamentally changes this roof's shape/size -- any custom
+       label position dragged for the OLD (unsplit, larger) outline could
+       easily land outside or make no sense on the new, smaller section.
+       Reset to the recomputed centroid rather than carry over a
+       now-potentially-nonsensical position; still draggable again from
+       there if it needs a further nudge. */
+    origRoof.labelPos = null;
     origRoof.updatedAt = Date.now();
     roofs[origIdx] = origRoof;
 
@@ -10471,8 +10572,11 @@ async function rmSaveSplitSectionsToExistingRoof(buildingId, roofId){
     rmDrawEdgeDimensions(rmState.outline);
     if (rmState.roofLabelLayer) map.removeLayer(rmState.roofLabelLayer);
     rmState.roofLabelLayer = roofLabelMarker(
-      primaryOutline.center.lat, primaryOutline.center.lng, origRoof.label, rmRenameLinkedRoof
+      primaryOutline.center.lat, primaryOutline.center.lng, origRoof.label, rmRenameLinkedRoof,
+      function(pos){ rmSaveRoofLabelPos(buildingId, roofId, pos); }
     ).addTo(map);
+    rmState.roofLabelHasCustomPos = false;
+    rmSetDisp("rm-reset-label-btn", false);
     rmClearSplitState();
     rmRenderOutlineStats(rmState.outline);
     await rmLoadLinkedAssets();
@@ -10541,11 +10645,20 @@ async function rmSaveOutlineToBuilding(buildingId, roofId){
        labels" in DEV_NOTES.md. */
     if (rmState.map){
       if (rmState.roofLabelLayer) rmState.map.removeLayer(rmState.roofLabelLayer);
-      var labelCenter = rmState.outline.center || rmGeomRingCentroid(rmState.outline.ring);
+      /* Custom dragged position (roof.labelPos) wins over the recomputed
+         centroid if this roof already has one -- e.g. re-saving a new
+         outline version onto a roof that was already positioned/labeled
+         earlier. See rmSaveRoofLabelPos()/"Draggable roof labels" in
+         DEV_NOTES.md. */
+      var labelCenter = roof.labelPos || rmState.outline.center || rmGeomRingCentroid(rmState.outline.ring);
       /* onClick makes this specific label (RoofMapper's own linked-roof
          label, not Building History's read-only map) tappable to rename --
-         see rmRenameLinkedRoof() and roofLabelMarker()'s comment above. */
-      rmState.roofLabelLayer = roofLabelMarker(labelCenter.lat, labelCenter.lng, roof.label || "Roof", rmRenameLinkedRoof).addTo(rmState.map);
+         see rmRenameLinkedRoof() and roofLabelMarker()'s comment above.
+         onDragEnd makes it draggable, persisting the new position. */
+      rmState.roofLabelLayer = roofLabelMarker(labelCenter.lat, labelCenter.lng, roof.label || "Roof", rmRenameLinkedRoof,
+        function(pos){ rmSaveRoofLabelPos(buildingId, roof.id, pos); }).addTo(rmState.map);
+      rmState.roofLabelHasCustomPos = !!roof.labelPos;
+      rmSetDisp("rm-reset-label-btn", !!roof.labelPos);
     }
     rmRenderRoofSwitcher(buildingId, roofs, roof.id);
     rmRenderExportRoofSelect(buildingId, roofs, roof.id);
@@ -10651,8 +10764,13 @@ async function rmOpenRoofInMapper(buildingId, roofId){
     rmState.pendingBuildingId = null;
     rmState.pendingBuildingName = null;
     if (rmState.roofLabelLayer) map.removeLayer(rmState.roofLabelLayer);
-    var labelCenter = outline.center || rmGeomRingCentroid(outline.ring);
-    rmState.roofLabelLayer = roofLabelMarker(labelCenter.lat, labelCenter.lng, roof.label || "Roof", rmRenameLinkedRoof).addTo(map);
+    /* Restore wherever this roof's label was dragged to, if anywhere --
+       see rmSaveRoofLabelPos()/"Draggable roof labels" in DEV_NOTES.md. */
+    var labelCenter = roof.labelPos || outline.center || rmGeomRingCentroid(outline.ring);
+    rmState.roofLabelLayer = roofLabelMarker(labelCenter.lat, labelCenter.lng, roof.label || "Roof", rmRenameLinkedRoof,
+      function(pos){ rmSaveRoofLabelPos(buildingId, roof.id, pos); }).addTo(map);
+    rmState.roofLabelHasCustomPos = !!roof.labelPos;
+    rmSetDisp("rm-reset-label-btn", !!roof.labelPos);
     rmShowFeaturePanel(bld.name);
     await rmLoadLinkedAssets();
     rmUpdateExportHint();
@@ -10886,7 +11004,7 @@ async function rmDrawReferenceRoofs(buildingId, bld, excludeRoofId){
       L.polygon(outline.ring.map(function(p){ return [p.lat, p.lng]; }), {
         color: "#607D8B", weight: 2, dashArray: "6,4", fillColor: "#607D8B", fillOpacity: 0.08
       }).addTo(rmState.referenceLayerGroup);
-      var labelCenter = outline.center || rmGeomRingCentroid(outline.ring);
+      var labelCenter = roof.labelPos || outline.center || rmGeomRingCentroid(outline.ring);
       rmRefLabelMarker(labelCenter.lat, labelCenter.lng, roof.label || "Roof").addTo(rmState.referenceLayerGroup);
       outline.ring.forEach(function(p){ bounds.push([p.lat, p.lng]); });
       rmState.referenceRings.push(outline.ring); /* snap targets -- see rmFindSnapTarget() */

@@ -6381,6 +6381,66 @@ ever appeared; saved another with a deliberately colliding name ("Roof
 1") — confirmed the existing duplicate guard still fired and
 auto-suffixed to "Roof 1 (2)". All test state cleared, console clean.
 
+## Draggable roof labels (shipped 2026-07-11, dev only)
+
+Mark: "he must be able to MOVE THE ROOF LABEL AROUND" -- off a cluttered
+area, onto a clear part of the roof, wherever it reads best. `roofLabelMarker()`
+gained an optional `onDragEnd` parameter (alongside the existing `onClick`
+for rename) -- makes the marker Leaflet-draggable (`cursor:move`) and
+fires `onDragEnd({lat,lng})` on drop; Leaflet's own drag handler already
+suppresses the `click` event for a real drag, so tap-to-rename and
+drag-to-reposition coexist on the exact same marker with zero extra
+logic. Wired at all 6 places RoofMapper draws its OWN linked-roof label
+(save, reopen, rename-redraw, and all three split-save paths).
+
+**Stored on the roof record itself** (`roof.labelPos`, `{lat,lng}` or
+null/absent = default), not per-outline -- a deliberate position choice
+should survive Edit Shape or re-tracing the same roof, not silently reset
+just because the shape changed. `rmSaveRoofLabelPos()` is a plain client
+write (`saveBuildingRoofs()`), same tier as roof_assets placement, not
+admin-gated. A new "🎯 Reset Label Position" button (next to Rename,
+`rm-reset-label-btn`) clears it back to the recomputed centroid --
+shown/hidden by `rmState.roofLabelHasCustomPos`, which updates immediately
+after a drag (not just on the next reopen) so the reset option is
+discoverable the moment it becomes relevant. **Exception**: splitting a
+roof (`rmSaveSplitSectionsToExistingRoof()`) clears `labelPos` on the
+kept section -- a custom position calibrated for the OLD, larger shape
+could easily land outside or make no sense on the new, smaller one.
+
+**Carries through everywhere a roof's label renders**, not just
+RoofMapper's own map: Building History's read-only roof map (`_roofLabelPos`
+denormalized alongside the existing `_roofLabel` in `allRoofOutlinesForMap`),
+the dimmed reference layer shown while tracing a sibling roof
+(`rmDrawReferenceRoofs()`), and — per Mark's explicit ask, "the custom
+position must CARRY THROUGH TO THE EXPORT... not at a recomputed
+centroid" — the multi-roof export (`rmFetchMultiRoofExportData()` now
+returns each roof's `labelPos`, `rmBuildMultiRoofOutlineSvg()` uses it in
+place of the centroid for that roof's label+area text block, which move
+together as one unit since they're rendered as a single two-line block
+at one point, same as before). Building History's and the reference
+layer's uses stay read-only (no `onClick`/`onDragEnd` passed) — only
+RoofMapper's own linked-roof label is ever draggable.
+
+Tested in the browser with a mocked `fdb` (no real writes): saved a roof
+— confirmed its label starts draggable, at the default centroid, with the
+reset button hidden; dragged it (real `setLatLng()` + a fired `dragend`
+event, not a direct function call) — confirmed the new position saved to
+the roof record AND the reset button appeared immediately, no reopen
+needed; simulated a full reopen (`rmOpenRoofInMapper()` after clearing
+state) — confirmed the label reloaded at the CUSTOM position, not the
+centroid, and the reset button stayed correctly visible; tapped Reset —
+confirmed `labelPos` cleared to null, the on-screen marker snapped back to
+the exact recomputed centroid, and the reset button hid again. For export
+carry-through: added a second roof, dragged its label, then built the
+actual multi-roof export SVG twice (once with the real saved `labelPos`,
+once with it stripped) and diffed the two `<text>` elements' real x/y
+coordinates — confirmed they land at genuinely different pixel positions,
+not just different data, proving the drag actually moves the rendered
+export, not only the underlying record. Opened Building History for the
+same building — confirmed its own (non-interactive) map marker for that
+roof sits at the identical custom lat/lng, not the centroid. All test
+state cleared, console clean throughout.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |
