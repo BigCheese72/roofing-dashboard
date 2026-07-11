@@ -4943,6 +4943,103 @@ roof to confirm it still renders at the normal 20px/ft scale (well under
 the new cap, `RM_EXPORT_MIN_SCALE`/`MAX_SCALE` don't kick in unnecessarily). All
 test state cleared, page reloaded, console clean.
 
+## Mobile header/toolbar pass (shipped 2026-07-11, dev only)
+
+Mark: on mobile, the top banner and buttons take up way too much screen —
+generalizing his earlier "Use My Location button is oversized" note into
+"audit ALL the top-level buttons for size/padding on mobile."
+
+**Measured the actual problem before touching anything**: at a 375px phone
+width, `<header>` was **264–288px tall** — over a third of a 812px-tall
+screen consumed before any page content even starts. Root cause: 9 nav
+buttons (`+ New` / `Edit` / `Preview` / `Saved (N)` / `Building History` /
+`Reports` / `RoofMapper` / `Admin` / `Account`) in a `flex-wrap:wrap` row
+that, at phone width, wraps to ~4–5 rows.
+
+**Fix, scoped entirely to a `@media (max-width:640px)` block so desktop
+and tablet (768px+) are completely unchanged**:
+- **Icon-first, one non-wrapping row.** Every nav button now leads with an
+  emoji (added missing ones: ➕ New, ✏️ Edit, 👁️ Preview, 💾 Saved, 🏢
+  Building History, 📋 Reports, 🛠️ Admin — 🗺️ RoofMapper and 🔐 Account
+  already had one), with the text label wrapped in `<span class="tab-label">`
+  that's `display:none` on mobile. `header` switches from `flex-wrap:wrap`
+  to `flex-wrap:nowrap;overflow-x:auto` on mobile, so N buttons is always
+  ONE scrollable row, never N/3 rows — this (not just icon-only) is what
+  actually fixes the height, since icon-only buttons in a wrapping row
+  would still eventually wrap once enough of them exist. Result: header
+  height dropped from 264–288px to **~55px** (measured), with icon buttons
+  landing at 41×40px — comfortably over the ~40px finger-friendly tap
+  target minimum despite the huge space savings, achieved via padding
+  (12px 11px) not by shrinking font size to nothing.
+- **Slimmer header shell**: smaller logo (38px→28px), smaller title
+  (20px→14px), subtitle hidden, spacer collapsed (no longer needed once
+  the row scrolls instead of wrapping).
+- **General mobile spacing tightened** per "audit ALL the buttons":
+  `.wrap` padding, `.card` padding, `.btnrow` gap, `.btn` padding, and
+  `.rm-bigbtn` (RoofMapper's full-width primary actions) min-height/padding
+  all trimmed slightly on mobile — deliberately conservative (padding
+  only, not font-size) to keep every tap target comfortably above ~40px;
+  backed off an initial more-aggressive `.btn` padding cut after measuring
+  it would have dropped ordinary buttons to 33px tall.
+- **RoofMapper map gets the reclaimed space**: `#rm-map`'s height bumps
+  from `min(70vh,640px)` to `min(78vh,640px)` on mobile (`!important`,
+  needed to beat the element's own inline style) — "the map is where he
+  needs every pixel," and the header savings above free up real room for
+  it specifically.
+- **Auto-hide header on scroll** (mobile only): scrolling down past a
+  small threshold slides the header up (`transform:translateY(-100%)`,
+  CSS transition); scrolling up, or being at the very top of the page,
+  brings it back. Skipped while a modal is open (checks the same
+  `document.body.style.overflow==="hidden"` `lockBodyScroll()`/
+  `unlockBodyScroll()` already toggle, so there's no separate flag to
+  keep in sync) and gated to `matchMedia("(max-width:640px)")` so desktop
+  is untouched. **Deliberately timestamp-throttled, not
+  `requestAnimationFrame`-throttled**: while testing this in the browser,
+  `requestAnimationFrame` callbacks never fired at all on the (backgrounded)
+  preview tab — a real risk in any environment where the tab isn't
+  actively in the foreground, which would have silently disabled this
+  entire feature. A plain `Date.now()` threshold check has no such
+  dependency and was directly verified to work (see testing below).
+  Doesn't do much to help *while actively panning the map itself* (the
+  map captures its own touch/pan events; the page around it doesn't
+  necessarily scroll) — RoofMapper's real space win there is the shorter
+  static header + taller map height above, not this. Scroll-hide mainly
+  helps on the long-form views (Edit, Building History, etc.) and while
+  scrolling RoofMapper's own capture card before the map appears.
+
+**Two real button-clobbering bugs caught while implementing this** (not
+reported by Mark, found because I tested the icon/label markup surviving
+a real state change, not just its initial render): `updateAdminUI()` and
+`updateAccountUI()` both did `btn.textContent = "Admin: ON"` / `"🔐 " +
+email` — blunt text replacement that would have silently wiped out the
+new icon + `.tab-label` span structure the very first time either button's
+state changed (toggling admin mode, signing in), permanently forcing that
+one button back to full-text even on mobile until the next page reload.
+Fixed both to `innerHTML` with the same icon+span structure (the account
+one runs the email through the existing `esc()` helper, since it's
+user-supplied data going into `innerHTML`).
+
+Tested at 375px (mobile), 768px (tablet), and 1280px (desktop) via
+`preview_resize` + `preview_inspect` (measuring actual computed
+height/padding, not just reading the CSS): confirmed header height
+264–288px → ~55px at mobile width; confirmed icon buttons measure
+41×40px (finger-friendly); confirmed tablet (768px) and desktop (1280px)
+render with full text labels and the original wrapping behavior,
+byte-for-byte unchanged CSS rules (nothing in the unqualified selectors
+was touched, only new rules inside the `max-width:640px` block); confirmed
+`#rm-map` computed height is 633px at mobile width (`min(78vh,640px)` of
+an 812px viewport) vs. what would have been 568px at the old 70vh:
+confirmed `updateAdminUI()`/`updateAccountUI()` preserve the icon+label
+`innerHTML` structure through an on→off and signed-in→signed-out state
+change; confirmed scroll-down collapses the header
+(`.header-collapsed` → `transform:translateY(-100%)`), scroll-up expands
+it, and scrolling to the very top always shows it, using real `setTimeout`
+gaps between synthetic scroll events (not `requestAnimationFrame`, which
+doesn't fire in this backgrounded test tab — see note above); confirmed
+the header does NOT collapse while `document.body.style.overflow` is
+`"hidden"` (simulating an open modal). All test state cleared, page
+reloaded, console clean at all three widths.
+
 ## RoofMapper save flow: full CompanyCam picker (shipped 2026-07-10, dev only)
 
 Mark: he could pick an existing app-created building when saving a traced

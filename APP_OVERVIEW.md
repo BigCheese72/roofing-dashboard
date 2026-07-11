@@ -18,6 +18,13 @@ order always goes straight to its form (never through Home), and **"+ New"** in 
 header returns to Home to start something new rather than immediately blanking the
 form. Tapping the Watkins logo in the header also returns to Home from anywhere.
 
+**On a phone**, the header tabs show as icons only (tap-and-hold or check the label
+under Account for what each one means) in one compact, swipeable row instead of
+wrapping across several lines — reclaims most of the screen for actual content. The
+header also tucks itself out of the way while scrolling down a long form and slides
+back the moment you scroll up, so it's out of the way when you don't need it and one
+scroll away when you do. None of this changes on a tablet or desktop screen.
+
 ## Main Workflow
 
 1. Open the app — pick a tile on the Home screen to start, or use "+ New" any time

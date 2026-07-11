@@ -556,6 +556,21 @@ Goal: turn each building into a long-term roof record.
   embedded image was coming out ~22MB uncompressed, ~<100KB with it). See
   "RoofMapper export: fix broken PDF / single shared render path" in
   `DEV_NOTES.md`.
+- ✅ **Shipped (dev only, 2026-07-11)**: mobile header/toolbar pass — Mark:
+  the top banner and buttons eat too much screen on mobile. Measured
+  first: the header was 264–288px tall on a 375px phone (9 nav buttons
+  wrapping to ~5 rows). Fix: icon-first buttons in one non-wrapping
+  horizontally-scrollable row instead of wrap, slimmer logo/title, tighter
+  spacing across `.wrap`/`.card`/`.btn`/`.rm-bigbtn` on mobile (padding
+  only, not font-size, so tap targets stay comfortably finger-friendly —
+  measured 41×40px), RoofMapper's map height bumped to use the reclaimed
+  space, and an auto-hide-on-scroll header (down hides, up or top-of-page
+  shows, skipped while a modal is open). Entirely scoped to a mobile media
+  query — desktop/tablet unchanged. Caught two real bugs while building
+  this: `updateAdminUI()`/`updateAccountUI()` were replacing the button's
+  full `innerHTML` with plain text on every state change, silently wiping
+  the new icon-only mobile markup after the first toggle. See "Mobile
+  header/toolbar pass" in `DEV_NOTES.md`.
 - ✅ **Shipped (dev only, 2026-07-10)**: easier map navigation — Mark found
   the map "a little hard to navigate." `touch-action:none` on the map
   container (the likely actual cause — without it the page's own scroll

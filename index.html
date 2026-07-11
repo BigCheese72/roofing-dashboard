@@ -31,14 +31,42 @@
     text-transform:uppercase;letter-spacing:.07em}
 
   header{background:var(--slate);padding:12px 16px;display:flex;align-items:center;
-    gap:10px;flex-wrap:wrap;position:sticky;top:0;z-index:10}
+    gap:10px;flex-wrap:wrap;position:sticky;top:0;z-index:10;transition:transform .22s ease}
   header .title{color:#fff;font-weight:700;font-size:20px}
   header .title .accent{color:var(--orange)}
   header .title .sub{color:#B0BEC5;font-size:16px}
   header .spacer{flex:1}
   .tab{border:none;background:transparent;color:#CFD8DC;padding:8px 14px;border-radius:4px;
-    font-weight:700;font-size:14px;cursor:pointer}
+    font-weight:700;font-size:14px;cursor:pointer;white-space:nowrap}
   .tab.active{background:var(--orange);color:#fff}
+  /* Mobile header/toolbar pass (2026-07-11) -- Mark: header + buttons eat too
+     much screen on mobile (9 nav buttons wrapping to ~5 rows measured
+     ~264px tall on a 375-wide phone, before any content even starts).
+     Fix: icon-first buttons (text label hidden, icon-only) in ONE
+     non-wrapping horizontally-scrollable row instead of wrap -- the row's
+     own height becomes the header's height regardless of button count,
+     which is the actual fix (icon-only alone still helps, but wrap->scroll
+     is what stops N buttons from ever producing N/3 rows). Logo/title
+     shrink too so the row itself is compact. Tap targets stay >=40px tall
+     (padding, not font-size, does the compacting) per Mark's "compact, not
+     cramped" requirement. See "Mobile header/toolbar pass" in
+     DEV_NOTES.md. */
+  @media (max-width:640px){
+    header{padding:7px 10px;gap:6px;flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch}
+    header::-webkit-scrollbar{display:none}
+    header .title{font-size:14px;white-space:nowrap}
+    header .title .sub{display:none}
+    header .spacer{flex:none;width:0;min-width:0}
+    #hdr-logo{height:28px!important}
+    .tab{padding:12px 11px;font-size:13px}
+    .tab .tab-label{display:none}
+    header.header-collapsed{transform:translateY(-100%)}
+    /* Reclaim the vertical space the slimmer header just freed up --
+       "the map is where he needs every pixel." !important overrides the
+       inline height style on #rm-map (inline styles otherwise beat any
+       external rule regardless of specificity). */
+    #rm-map{height:min(78vh,640px)!important}
+  }
 
   .wrap{max-width:860px;margin:0 auto;padding:18px 12px 90px}
   .card{background:#fff;border:1px solid var(--card-line);border-top:3px solid var(--slate);
@@ -57,6 +85,17 @@
   .btn.danger{border-color:#D64545;color:#D64545}
   .btn.primary{background:var(--orange);border-color:var(--orange);color:#fff}
   .btnrow{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px}
+  @media (max-width:640px){
+    /* Tighter overall spacing on mobile -- Mark: "audit ALL the top-level
+       buttons for size/padding on mobile." Padding does the compacting,
+       not font-size, so buttons stay comfortably tappable (still well
+       over the ~40px minimum) while taking noticeably less vertical room
+       stacked in a form. */
+    .wrap{padding:10px 8px 90px}
+    .card{padding:12px 12px 4px}
+    .btnrow{gap:8px}
+    .btn{padding:8px 11px}
+  }
 
   .rowcard{border:1px solid #E2E7EA;border-left:4px solid #2E7D32;border-radius:4px;
     padding:12px 12px 2px;margin-bottom:12px;background:#FAFBFC}
@@ -206,7 +245,7 @@
   .rm-local-item .info{flex:1;min-width:160px;font-size:13px}
   .rm-local-item .info b{display:block;font-size:14px;color:var(--slate)}
   @media (max-width:480px){
-    .rm-bigbtn{font-size:15px}
+    .rm-bigbtn{font-size:15px;min-height:46px;padding:11px 14px}
   }
   /* Easier map navigation (Mark: "map is a little hard to navigate") --
      touch-action:none on the map container is the actual fix for the most
@@ -240,15 +279,15 @@
     onclick="showView('home')" title="Home">
   <div class="title cond">Leak Work Order <span class="accent">/</span> <span class="sub">Repair Documentation</span></div>
   <div class="spacer"></div>
-  <button class="tab cond" style="background:#E8600A;color:#fff" onclick="newOrder()">+ New</button>
-  <button class="tab cond active" id="tab-edit" onclick="showView('edit')">Edit</button>
-  <button class="tab cond" id="tab-preview" onclick="showView('preview')">Preview</button>
-  <button class="tab cond" id="tab-saved" onclick="showView('saved')">Saved (<span id="saved-count">0</span>)</button>
-  <button class="tab cond" id="tab-history" onclick="showView('history')">Building History</button>
-  <button class="tab cond" id="tab-reports" onclick="showView('reports')">Reports</button>
-  <button class="tab cond" id="tab-roofmapper" onclick="showView('roofmapper')">🗺️ RoofMapper</button>
-  <button class="tab cond" id="admin-toggle" onclick="toggleAdminMode()" style="font-size:11px">Admin</button>
-  <button class="tab cond" id="account-toggle" onclick="openAccountModal()" style="font-size:11px">🔐 Account</button>
+  <button class="tab cond" style="background:#E8600A;color:#fff" onclick="newOrder()" title="New work order">➕<span class="tab-label"> New</span></button>
+  <button class="tab cond active" id="tab-edit" onclick="showView('edit')" title="Edit">✏️<span class="tab-label"> Edit</span></button>
+  <button class="tab cond" id="tab-preview" onclick="showView('preview')" title="Preview">👁️<span class="tab-label"> Preview</span></button>
+  <button class="tab cond" id="tab-saved" onclick="showView('saved')" title="Saved work orders">💾<span class="tab-label"> Saved</span> (<span id="saved-count">0</span>)</button>
+  <button class="tab cond" id="tab-history" onclick="showView('history')" title="Building History">🏢<span class="tab-label"> Building History</span></button>
+  <button class="tab cond" id="tab-reports" onclick="showView('reports')" title="Reports">📋<span class="tab-label"> Reports</span></button>
+  <button class="tab cond" id="tab-roofmapper" onclick="showView('roofmapper')" title="RoofMapper">🗺️<span class="tab-label"> RoofMapper</span></button>
+  <button class="tab cond" id="admin-toggle" onclick="toggleAdminMode()" style="font-size:11px" title="Admin">🛠️<span class="tab-label"> Admin</span></button>
+  <button class="tab cond" id="account-toggle" onclick="openAccountModal()" style="font-size:11px" title="Account">🔐<span class="tab-label"> Account</span></button>
 </header>
 
 <div class="wrap">
@@ -1039,7 +1078,12 @@ if (fauth){
 function updateAccountUI(){
   var btn = document.getElementById("account-toggle");
   if (!btn) return;
-  btn.textContent = currentAuthUser ? "🔐 " + (currentAuthUser.email || "Account") : "🔐 Account";
+  /* innerHTML (not textContent) -- preserves the icon + .tab-label span
+     structure the mobile header CSS relies on for icon-only display; see
+     the matching note on updateAdminUI() and "Mobile header/toolbar pass"
+     in DEV_NOTES.md. esc() escapes the email since it's user-supplied data
+     going into innerHTML. */
+  btn.innerHTML = '🔐<span class="tab-label"> ' + esc(currentAuthUser ? (currentAuthUser.email || "Account") : "Account") + '</span>';
   if (document.getElementById("account-modal").style.display !== "none") renderAccountModal();
 }
 function openAccountModal(){
@@ -1611,7 +1655,12 @@ function updateAdminUI(){
   var btn = document.getElementById("admin-toggle");
   if (btn){
     btn.classList.toggle("active", isAdmin);
-    btn.textContent = isAdmin ? "Admin: ON" : "Admin";
+    /* innerHTML (not textContent) -- must preserve the icon + .tab-label
+       span structure the mobile header CSS depends on to show icon-only
+       on narrow screens (see "Mobile header/toolbar pass" in
+       DEV_NOTES.md); textContent would silently wipe that out and make
+       this button always full-text even on mobile. */
+    btn.innerHTML = '🛠️<span class="tab-label">' + (isAdmin ? " Admin: ON" : " Admin") + '</span>';
   }
   var settingsBar = document.getElementById("admin-settings-bar");
   if (settingsBar){
@@ -8930,6 +8979,35 @@ function rmDeleteLocalOutline(id){
   rmSaveLocalOutlines(rmLoadLocalOutlines().filter(function(x){ return x.id !== id; }));
   rmRenderLocalSaves();
 }
+
+/* Mobile: auto-hide the header on scroll-down, show again on scroll-up --
+   Mark: "maximize usable area... consider collapsing or auto-hiding the
+   banner... on scroll." Mobile-only (matchMedia gate, same 640px cutoff as
+   the mobile header CSS) so desktop behavior is completely unchanged.
+   Timestamp-throttled (not requestAnimationFrame -- rAF can be starved or
+   never fire at all on a backgrounded/inactive tab in some browsers,
+   which would silently disable this entirely) so it doesn't add scroll
+   jank; a small DOWN_THRESHOLD avoids the header flickering on tiny/
+   accidental scroll wiggles. Doesn't fire while scrolled to the very top
+   (header always visible there) or while a modal has locked body scroll
+   (lockBodyScroll() sets this same overflow:hidden the check below reads,
+   so there's no separate flag to keep in sync). */
+(function(){
+  var DOWN_THRESHOLD = 12, THROTTLE_MS = 80;
+  var lastY = window.scrollY, lastRun = 0, header = document.querySelector("header");
+  function onScroll(){
+    var now = Date.now();
+    if (now - lastRun < THROTTLE_MS) return;
+    lastRun = now;
+    if (!window.matchMedia("(max-width:640px)").matches){ header.classList.remove("header-collapsed"); lastY = window.scrollY; return; }
+    if (document.body.style.overflow === "hidden") return; /* a modal is open (lockBodyScroll) */
+    var y = window.scrollY;
+    if (y <= 0){ header.classList.remove("header-collapsed"); }
+    else if (y > lastY + DOWN_THRESHOLD){ header.classList.add("header-collapsed"); lastY = y; }
+    else if (y < lastY - DOWN_THRESHOLD){ header.classList.remove("header-collapsed"); lastY = y; }
+  }
+  window.addEventListener("scroll", onScroll, { passive: true });
+})();
 
 /* ================= init ================= */
 document.getElementById("hdr-logo").src = LOGO;
