@@ -327,15 +327,39 @@ Example fields:
   roofId, // which of buildingId's roofs[] this work order is for — see DEV_NOTES.md
           // "Multiple roofs per building, part 2". null/omitted means the
           // building's first roof (implemented as currentRoofId in index.html).
-  reportedArea,
+  reportedArea, // Leak/Service intake field — hidden on the form for woType ===
+                // "Inspection" (an inspection isn't triggered by a reported leak, per
+                // Mark's "Inspection form overhaul"), field itself unaffected/still
+                // present in the schema for older/other-type data.
   findings: [], // each: { id, condition, location, warranty, pin } — see DEV_NOTES.md
-                // Not applicable/hidden on the form for woType === "Repair", but the
-                // field itself is unchanged — a Repair work order just keeps an
-                // empty/unused findings array. pin.source is "device_gps" for a pin
-                // placed via "Use My Location" OR auto-dropped from a camera-captured
-                // photo's GPS (maybeAutoPinFinding(), see "Photo-capture rework" in
+                // Not applicable/hidden on the form for woType === "Repair"/"Change
+                // Order", but the field itself is unchanged — those types just keep
+                // an empty/unused findings array. For woType === "Inspection", the
+                // section is relabeled "Roofing Inspection Findings" but stays fully
+                // present and manually-addable ("+ Add Finding" unchanged) — PLUS any
+                // inspectionChecklist item rated below Good auto-creates/updates/
+                // removes ONE entry here, tracked via that checklist item's
+                // linkedFindingId (see inspectionChecklist below and
+                // syncInspectionFinding() in DEV_NOTES.md). pin.source is
+                // "device_gps" for a pin placed via "Use My Location" OR
+                // auto-dropped from a camera-captured photo's GPS
+                // (maybeAutoPinFinding(), see "Photo-capture rework" in
                 // DEV_NOTES.md) — both write the identical shape, so nothing reading
                 // a pin can tell which one it was.
+  inspectionChecklist: [], // Inspection-only — each:
+                // { id, key, rating, notes, linkedFindingId }. key is one of the 8
+                // fixed INSPECTION_CHECKLIST_COMPONENTS in index.html (membrane,
+                // flashings, penetrations, drainage, equipment, perimeter, interior,
+                // safety) — always exactly these 8, backfilled by
+                // ensureInspectionChecklist() for old/new orders alike, not an
+                // addable/removable list like repairItems. rating is one of Good |
+                // Fair | Poor | Critical | N/A. linkedFindingId points at the
+                // auto-surfaced entry in findings[] above when rating is below Good
+                // (null when Good/N/A — nothing to surface). Each item can also carry
+                // an optional photo the same way a finding does — photo.finding_id
+                // doubles as a generic "owning row id," works unmodified for a
+                // checklist item's id too (see "Inspection form overhaul" in
+                // DEV_NOTES.md).
   photos: [], // each: { caption, img (base64), w, h, finding_id, ccPhotoId }. gps
               // (optional: {lat,lng,accuracy}) is set either by a CompanyCam import
               // (photo's own EXIF-derived location) or by in-app camera capture
@@ -347,7 +371,10 @@ Example fields:
               // from gps by maybeAutoPinPhoto(). Absent for every other work order
               // type. See "Photo-capture rework" in DEV_NOTES.md.
   repairs: [],
-  warrantable,
+  warrantable, // Warranty Determination card -- hidden on the form for woType ===
+               // "Change Order" and "Inspection" (an inspection isn't itself a
+               // warranty determination, that's a separate downstream decision, per
+               // Mark's "Inspection form overhaul"). Not enforced at the data level.
   nonWarrantable,
   mfgServiceNo, // free text, optional — manufacturer's work order / service number
                 // for a warrantable leak (Mark: "~9 times out of 10" one exists).

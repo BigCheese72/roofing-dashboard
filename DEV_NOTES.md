@@ -3406,6 +3406,127 @@ admin path and the status line updates to empty afterward; confirmed
 `rmClearLinkedFeatures()` (fresh search, etc.) also clears the status line.
 All test state removed, page reloaded clean.
 
+### Inspection form overhaul (shipped 2026-07-10, dev only)
+
+Real-world feedback from Mark testing dev — Inspection had been reusing the
+generic Leak/Service form with almost no differentiation. Built it out into
+a real form.
+
+1. **"Reported Leak Area" removed for Inspection.** Wrapped in
+   `#wo-reportedarea-fld`, toggled by `onWoTypeChange()`'s new `isInspection`
+   var. Field/schema itself unchanged for every other type.
+2. **Findings section relabeled, not removed.** `#wo-findings-title` (an id
+   added to what was a static `<h2>`) now reads "Roofing Inspection
+   Findings" for Inspection, "Roof Investigation Findings" for everything
+   else, set in `onWoTypeChange()`. The section stays fully visible and
+   manually-addable ("+ Add Finding" unchanged) — findings on an inspection
+   are still added one at a time as the tech works through the roof, same
+   as Leak/Service. Not hidden like Repair/Change Order.
+3. **Warranty Determination hidden for Inspection too** — extended the
+   existing Change-Order-only hide condition (`wdc.style.display`) to
+   `(isCO || isInspection)`. An inspection isn't itself a warranty
+   determination; that's a separate downstream decision.
+4. **Summary field untouched** — already always-visible, no change needed.
+5. **New Inspection Checklist** (`#wo-inspection-card`, `#inspection-
+   checklist-list`) — the core piece that was missing. A FIXED set of 8
+   components (`INSPECTION_CHECKLIST_COMPONENTS`: Membrane/Field,
+   Flashings & Terminations, Penetrations, Drainage (incl. Ponding),
+   Rooftop Equipment, Perimeter/Edge, Interior (if accessible), Safety
+   Hazards), each rated Good/Fair/Poor/Critical/N/A
+   (`INSPECTION_RATINGS`) with an optional notes field and an optional
+   photo (reuses `findingPhotoGalleryHtml(item)` unmodified — confirmed
+   generic, keyed only on `.id`, works for any object with a stable id, not
+   specifically a "finding"). `inspectionChecklist` (module var, mirrors
+   `repairItems`'s pattern) is NOT addable/removable like `repairItems` —
+   `ensureInspectionChecklist()` backfills all 8 in canonical order for any
+   Inspection order, old or new, so a tech always sees the same fixed
+   checklist and just rates what applies, N/A for what doesn't.
+   - **"Anything rated below Good surfaces as a finding"** (Mark's exact
+     ask) — `syncInspectionFinding(item)` runs on every rating/notes edit:
+     if the new rating is Fair/Poor/Critical, it creates-or-updates ONE
+     finding in `findings[]` (condition = "`<component>`: `<rating>` —
+     `<notes>`", location = component label, warranty = "Undetermined"),
+     tracked via the checklist item's new `linkedFindingId`. If the rating
+     goes back to Good/N/A, that linked finding is removed and the link
+     cleared. This is one-way (checklist → findings) and scoped to ONLY the
+     finding it created itself — a tech's manually-added findings are
+     completely untouched by it, verified directly (added one manually,
+     changed a checklist rating, confirmed both coexist independently and
+     the manual one's text was never touched).
+   - Both `addPhotosFromFiles()`/`addPhotosFromCamera()`'s completion
+     callbacks, and the CompanyCam-import completion path in the CC modal,
+     now check `inspectionChecklistItemById(findingId)` (a new tiny lookup,
+     mirroring `findingById()`) alongside the existing `findingById()`
+     check, calling `renderInspectionChecklist()` when a photo was added to
+     a checklist item specifically — otherwise a photo added to a checklist
+     row's gallery wouldn't visually appear until something else happened
+     to re-render the checklist.
+6. **Multi-roof roof selection.** There was NO roof-picker anywhere on the
+   main work-order Edit form before this — the only existing one
+   (`renderPinRoofPicker()`) lives inside the pin-placement modal, reached
+   only once a tech places a pin. Added `renderInspectionRoofPicker()`
+   (mirrors that exact pattern -- same `lookupProspectiveBuildingRoofInfo()`
+   lookup, same `<select>` markup) directly on the Inspection card, writing
+   straight to the same `currentRoofId` the pin picker already uses, so it
+   round-trips through `collect()`/`fill()` (`o.roofId`) with zero changes
+   to either function. Only ever shows up once the resolved building
+   actually has more than one roof (single-roof buildings see nothing,
+   same as the pin picker). Since the lookup depends on Job Name/Bill To
+   already being filled in (same constraint `lookupProspectiveBuildingRoofInfo()`
+   already had), `refreshInspectionRoofPickerIfNeeded()` was hooked onto
+   both fields' existing `onblur` handlers (only actually does the async
+   lookup when `woType === "Inspection"`, a no-op otherwise) so the picker
+   catches up once enough info exists to resolve the building, not just at
+   initial type-selection time.
+7. **Report output** (`buildLeakReportText()`, `renderLeakReportDoc()`,
+   `generateLeakReportPdf()`) — all three gained an `isInspection` branch:
+   title becomes "Roofing Inspection Report" (was falling through to the
+   generic Leak title before); Reported Leak Area row omitted from Job
+   Information; a new Inspection Checklist table (Component/Condition/
+   Notes, all 8 rows always) renders before the findings table; the
+   findings heading is relabeled the same way as the edit form; Warranty
+   Determination is omitted entirely (not just self-hidden-when-blank like
+   before). Findings themselves needed NO new rendering code — Inspection
+   already fell through to the same shared findings-table path Leak/Service
+   uses (only Repair and Change Order branch away from it), so the
+   checklist's auto-surfaced findings and any manually-added ones both show
+   up there automatically.
+
+**Kept intentionally scoped, per the ask**: rating+notes checklist only —
+no health-score rollup or weighted scoring across components (flagged as a
+natural follow-up if it grows into something bigger, not attempted here).
+
+Tested with `fdb`/`callAdminApi`/`confirm` mocked, extensively: confirmed
+field visibility for Inspection (reportedArea hidden, warranty hidden,
+inspection card shown, findings card shown+relabeled) and confirmed all 4
+OTHER types are completely unaffected (reportedArea still visible,
+inspection card still hidden, findings title unchanged) after these
+changes; confirmed the checklist renders all 8 rows with working rating/
+notes inputs; confirmed rating a component below Good auto-creates exactly
+one finding with the right text, editing notes afterward updates that SAME
+finding (no duplicate), and reverting to Good removes it and clears the
+link; confirmed a manually-added finding is completely unaffected by
+checklist syncing running alongside it; confirmed the full `collect()`/
+`fill()` round-trip (save an Inspection order with checklist+findings data,
+load a DIFFERENT type over it to create stale state, then load the saved
+Inspection order back) correctly restores the checklist, findings, roof
+link, and field visibility — this specifically exercises a real ordering
+fix in `fill()` (`inspectionChecklist` must be set from the loaded data
+BEFORE `onWoTypeChange()` runs, since that's what renders it); confirmed
+the multi-roof picker resolves a mocked multi-roof building, defaults to
+the first roof, and correctly updates `currentRoofId` (verified it
+round-trips through `collect()`) when a different roof is picked; confirmed
+all three report outputs (text/HTML/PDF) render the checklist table,
+relabeled findings heading, and correctly omit Reported Leak Area and
+Warranty Determination -- PDF generation itself ran end-to-end with no
+errors. Hit and recovered from one test-harness snag (a stubbed `newOrder()`
+call triggered a real blocking `confirm()` dialog that froze the headless
+preview — recovered by forcing a fresh navigation, then re-ran the test with
+`window.confirm` properly stubbed first; not a product bug, purely a testing
+sequencing mistake on my part). All test state removed, page reloaded clean
+with a final regression pass confirming Leak/Service, Change Order, Repair,
+and Warranty are all still exactly as they were before this feature.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |

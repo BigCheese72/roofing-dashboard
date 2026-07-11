@@ -79,8 +79,10 @@ Goal: preserve and harden the existing RoofOps Field / Watkins work order workfl
   Determination, photos — is unchanged from Leak/Service. Its report/PDF reuses the
   leak-report layout (not a separate template like Change Order), titled "Repair /
   Project Report" with the findings section swapped for Repair Scope. Leak/Service and
-  Change Order are both unaffected. Inspection and Warranty remain on the base form
-  until Mark defines their fields. See "Repair work order type" in `DEV_NOTES.md`.
+  Change Order are both unaffected. Inspection and Warranty remained on the base form
+  at the time — Inspection was later built out into its own real form (see further
+  below), Warranty still pending until Mark defines its fields. See "Repair work
+  order type" in `DEV_NOTES.md`.
 - ✅ **Shipped**: two Leak/Service-only refinements. The Warranty Guidelines reference
   (see above) is now gated to Leak/Service only — Mark: the lists are "for leaks and
   leaks only," not Repair/Change Order/Inspection/Warranty. Added an optional
@@ -207,6 +209,29 @@ Goal: preserve and harden the existing RoofOps Field / Watkins work order workfl
   copies. The separate Reply-To (marks@ + charlottew@, server-side) is
   unaffected. See "Email Send-to recipient defaults", "Email Send-to
   corrections", and "Email Send-to defaults, round 2" in `DEV_NOTES.md`.
+- ✅ **Shipped**: Inspection work order type built out into a real form
+  (previously just the generic Leak/Service form with almost no
+  differentiation, per the Repair work-order-type entry above — now
+  resolved for Inspection; Warranty still pending). No Reported
+  Leak Area (not a leak-triggered visit); Warranty Determination hidden
+  entirely; findings section kept but relabeled "Roofing Inspection
+  Findings" (still manually-addable one at a time, same as Leak/Service).
+  The core new piece: a fixed 8-component **Inspection Checklist**
+  (Membrane/Field, Flashings & Terminations, Penetrations, Drainage incl.
+  Ponding, Rooftop Equipment, Perimeter/Edge, Interior if accessible,
+  Safety Hazards), each rated Good/Fair/Poor/Critical/N/A with optional
+  notes + an optional photo — anything rated below Good automatically
+  surfaces as a finding (created/updated/removed in step with the rating,
+  never touching a tech's own manually-added findings). Also added the
+  first roof-picker on the main work-order Edit form itself (previously
+  roof selection only ever happened indirectly, inside the pin-placement
+  modal) — shows up whenever the building has more than one roof. All
+  three report outputs (text/HTML/PDF) updated to match: new title,
+  checklist table, relabeled findings, Reported Leak Area and Warranty
+  Determination both omitted. Deliberately scoped to rating+notes only — no
+  weighted health-score rollup across components (flagged as a natural
+  follow-up if it grows into something bigger). See "Inspection form
+  overhaul" in `DEV_NOTES.md`.
 
 ## Phase 2: Building/Site History Foundation
 

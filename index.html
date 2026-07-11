@@ -278,11 +278,11 @@
         <span class="hint" style="margin:0">Picks an existing customer/building's info into the fields below — or just type a new one in directly.</span>
       </div>
       <div class="grid">
-        <div class="fld"><label>Job Name</label><input type="text" id="jobName" list="dl-jobName" onblur="rememberFieldValue('jobName', this.value)"></div>
+        <div class="fld"><label>Job Name</label><input type="text" id="jobName" list="dl-jobName" onblur="rememberFieldValue('jobName', this.value); refreshInspectionRoofPickerIfNeeded();"></div>
         <div class="fld"><label>Location</label><input type="text" id="location" list="dl-location" onblur="rememberFieldValue('location', this.value)"></div>
         <div class="fld"><label>Date of Service</label><input type="text" id="serviceDate"></div>
         <div class="fld"><label>Job No.</label><input type="text" id="jobNo"></div>
-        <div class="fld"><label>Bill To</label><input type="text" id="billTo" list="dl-billTo" onblur="rememberFieldValue('billTo', this.value)"></div>
+        <div class="fld"><label>Bill To</label><input type="text" id="billTo" list="dl-billTo" onblur="rememberFieldValue('billTo', this.value); refreshInspectionRoofPickerIfNeeded();"></div>
         <div class="fld"><label>Billing Contact</label><input type="text" id="billContact" list="dl-contactName" onblur="rememberFieldValue('contactName', this.value)"></div>
         <div class="fld"><label>Contact Phone</label><input type="text" id="billPhone" list="dl-contactPhone" onblur="rememberFieldValue('contactPhone', this.value)"></div>
         <div class="fld"><label>Site Contact</label><input type="text" id="siteContact" list="dl-contactName" onblur="rememberFieldValue('contactName', this.value)"></div>
@@ -305,12 +305,20 @@
           </select>
         </div>
       </div>
-      <div class="fld"><label>Reported Leak Area</label>
+      <div class="fld" id="wo-reportedarea-fld"><label>Reported Leak Area</label>
         <textarea id="reportedArea" rows="3"></textarea></div>
     </div>
 
+    <div class="card" id="wo-inspection-card" style="display:none">
+      <h2 class="cond">Inspection Checklist</h2>
+      <div id="wo-inspection-roof-picker"></div>
+      <p class="hint">Rate each area's condition as you go. Anything rated Fair, Poor, or Critical
+        automatically shows up in the Findings section below too.</p>
+      <div id="inspection-checklist-list"></div>
+    </div>
+
     <div class="card" id="wo-findings-card">
-      <h2 class="cond">Roof Investigation Findings</h2>
+      <h2 class="cond" id="wo-findings-title">Roof Investigation Findings</h2>
       <div id="findings-list"></div>
       <div class="btnrow"><button class="btn" onclick="addFinding()">+ Add Finding</button></div>
     </div>
@@ -1115,6 +1123,26 @@ var currentId = null;
 var findings = [];
 var repairs = [];
 var repairItems = []; /* Repair-type only — see wo-repair-card / addRepairItem() */
+/* Inspection-type only — component-by-component condition checklist (see
+   "Inspection form overhaul" in DEV_NOTES.md). A fixed set of 8 rows
+   (ensureInspectionChecklist() backfills any missing ones, always in this
+   order), not an addable/removable list like repairItems -- an inspection
+   always covers the same components, a tech just rates what applies and
+   leaves the rest N/A. linkedFindingId tracks the finding auto-surfaced
+   into findings[] when a rating is below Good (see syncInspectionFinding())
+   -- null when the rating is Good/N/A, i.e. nothing to surface. */
+var INSPECTION_CHECKLIST_COMPONENTS = [
+  { key: "membrane", label: "Membrane / Field" },
+  { key: "flashings", label: "Flashings & Terminations" },
+  { key: "penetrations", label: "Penetrations" },
+  { key: "drainage", label: "Drainage (incl. Ponding)" },
+  { key: "equipment", label: "Rooftop Equipment" },
+  { key: "perimeter", label: "Perimeter / Edge" },
+  { key: "interior", label: "Interior (if accessible)" },
+  { key: "safety", label: "Safety Hazards" }
+];
+var INSPECTION_RATINGS = ["Good", "Fair", "Poor", "Critical", "N/A"];
+var inspectionChecklist = [];
 var photos = [];
 var ccLinkedProjectId = null;
 var ccLinkedProjectName = "";
@@ -1530,6 +1558,114 @@ async function geocodeAddress(text){
 }
 function findingById(id){
   return findings.find(function(f){ return f.id === id; });
+}
+function inspectionChecklistItemById(id){
+  return inspectionChecklist.find(function(c){ return c.id === id; });
+}
+function inspectionComponentLabel(key){
+  var c = INSPECTION_CHECKLIST_COMPONENTS.find(function(x){ return x.key === key; });
+  return c ? c.label : key;
+}
+/* Backfills any of the 8 fixed components missing from a loaded/new work
+   order (old data, or a brand-new Inspection) and keeps them in canonical
+   order regardless of storage order -- safe to call any time, a no-op once
+   all 8 already exist. */
+function ensureInspectionChecklist(){
+  INSPECTION_CHECKLIST_COMPONENTS.forEach(function(c){
+    if (!inspectionChecklist.some(function(item){ return item.key === c.key; })){
+      inspectionChecklist.push({ id: genId("chk"), key: c.key, rating: "N/A", notes: "", linkedFindingId: null });
+    }
+  });
+  inspectionChecklist.sort(function(a, b){
+    var ia = INSPECTION_CHECKLIST_COMPONENTS.findIndex(function(c){ return c.key === a.key; });
+    var ib = INSPECTION_CHECKLIST_COMPONENTS.findIndex(function(c){ return c.key === b.key; });
+    return ia - ib;
+  });
+}
+/* Anything rated below Good "surfaces as a finding" per Mark -- keeps a
+   single auto-managed entry in findings[] per checklist item, tracked via
+   linkedFindingId so it can be found again, updated in place as the rating/
+   notes change, and cleanly removed the moment the rating goes back to
+   Good/N/A. Doesn't touch or interfere with findings a tech added manually
+   ("+ Add Finding" still works exactly as it always has) -- only ever
+   creates/updates/removes the ONE finding it itself created for this item. */
+function syncInspectionFinding(item){
+  var below = ["Fair", "Poor", "Critical"].indexOf(item.rating) > -1;
+  var label = inspectionComponentLabel(item.key);
+  if (below){
+    var existing = item.linkedFindingId ? findingById(item.linkedFindingId) : null;
+    var text = label + ": " + item.rating + (item.notes ? " — " + item.notes : "");
+    if (existing){
+      existing.condition = text;
+      existing.location = label;
+    } else {
+      var f = { id: genId("fnd"), condition: text, location: label, warranty: "Undetermined", pin: null };
+      findings.push(f);
+      item.linkedFindingId = f.id;
+    }
+  } else if (item.linkedFindingId){
+    var idx = findings.findIndex(function(f){ return f.id === item.linkedFindingId; });
+    if (idx > -1){
+      var removedId = findings[idx].id;
+      findings.splice(idx, 1);
+      photos.forEach(function(p){ if (p.finding_id === removedId) p.finding_id = null; });
+    }
+    item.linkedFindingId = null;
+  }
+  renderFindings();
+}
+function renderInspectionChecklist(){
+  var host = document.getElementById("inspection-checklist-list");
+  if (!host) return;
+  host.innerHTML = inspectionChecklist.map(function(item, i){
+    var flagged = ["Fair", "Poor", "Critical"].indexOf(item.rating) > -1;
+    return '<div class="rowcard' + (flagged ? " nonwar" : "") + '">' +
+      '<div class="rowhead"><b>' + esc(inspectionComponentLabel(item.key)) + '</b></div>' +
+      '<div class="fld" style="max-width:200px"><label>Condition</label>' +
+      '<select data-ci="' + i + '" data-cf="rating">' +
+        INSPECTION_RATINGS.map(function(r){ return '<option' + (item.rating === r ? " selected" : "") + '>' + r + '</option>'; }).join("") +
+      '</select></div>' +
+      '<div class="fld"><label>Notes (optional)</label>' +
+      '<textarea rows="2" data-ci="' + i + '" data-cf="notes">' + esc(item.notes) + '</textarea></div>' +
+      findingPhotoGalleryHtml(item) +
+      '</div>';
+  }).join("");
+  host.querySelectorAll("[data-cf]").forEach(function(el){
+    el.addEventListener("input", function(){
+      var item = inspectionChecklist[+el.dataset.ci];
+      item[el.dataset.cf] = el.value;
+      syncInspectionFinding(item);
+      if (el.dataset.cf === "rating") renderInspectionChecklist();
+    });
+  });
+  host.querySelectorAll("[data-findingphoto]").forEach(function(el){
+    el.addEventListener("input", function(){
+      photos[+el.dataset.findingphoto].caption = el.value;
+    });
+  });
+}
+/* Mirrors renderPinRoofPicker() (the pin-modal roof picker) but lives right
+   on the main Inspection card instead of inside a modal -- an inspection
+   needs to know which roof it's for up front, not just at the point of
+   placing a pin. Writes straight to the same currentRoofId the pin picker
+   uses, so it round-trips through collect()/fill() with zero other
+   changes. Only ever shows up once the resolved building actually has more
+   than one roof, same as the pin picker. */
+async function renderInspectionRoofPicker(){
+  var host = document.getElementById("wo-inspection-roof-picker");
+  if (!host) return;
+  var info = await lookupProspectiveBuildingRoofInfo();
+  if (!info || info.roofs.length <= 1){ host.innerHTML = ""; return; }
+  if (!currentRoofId || !info.roofs.some(function(r){ return r.id === currentRoofId; })){
+    currentRoofId = info.roofs[0].id;
+  }
+  host.innerHTML = '<div class="fld" style="max-width:260px">' +
+    '<label>Which roof is this inspection for?</label><select onchange="currentRoofId=this.value">' +
+    info.roofs.map(function(r){ return '<option value="' + esc(r.id) + '"' + (r.id === currentRoofId ? ' selected' : '') + '>' + esc(r.label || "Roof") + '</option>'; }).join('') +
+    '</select></div>';
+}
+function refreshInspectionRoofPickerIfNeeded(){
+  if (val("woType") === "Inspection") renderInspectionRoofPicker();
 }
 /* Read-only lookup of the prospective building for the CURRENT work order
    (same id derivation as ensureCustomerAndBuilding), returning its full
@@ -2169,7 +2305,10 @@ function addPhotosFromFiles(files, findingId){
     if (pending === 0){
       results.forEach(function(r){ if (r) photos.push(r); });
       renderPhotos();
-      if (findingId) renderFindings();
+      if (findingId){
+        if (findingById(findingId)) renderFindings();
+        if (inspectionChecklistItemById(findingId)) renderInspectionChecklist();
+      }
     }
   }
   list.forEach(function(file, idx){
@@ -2251,7 +2390,10 @@ function addPhotosFromCamera(files, findingId){
           else if (val("woType") === "Change Order") maybeAutoPinPhoto(r);
         });
         renderPhotos();
-        if (findingId) renderFindings();
+        if (findingId){
+          if (findingById(findingId)) renderFindings();
+          if (inspectionChecklistItemById(findingId)) renderInspectionChecklist();
+        }
       }
     }
     list.forEach(function(file, idx){
@@ -2511,9 +2653,13 @@ function onWoTypeChange(){
   /* Warranty Determination doesn't apply to a Change Order at all — it's a
      scope-of-work/authorization document, not a leak/warranty
      investigation (per Mark, same framing as the findings/repairs-made
-     sections above). Every other type keeps the card exactly as before. */
+     sections above). Inspection doesn't need it either (per Mark, when
+     building out the real Inspection form — an inspection isn't itself a
+     warranty determination, that's a separate downstream decision).
+     Every other type keeps the card exactly as before. */
+  var isInspection = val("woType") === "Inspection";
   var wdc = document.getElementById("wo-warrantydetermination-card");
-  if (wdc) wdc.style.display = isCO ? "none" : "";
+  if (wdc) wdc.style.display = (isCO || isInspection) ? "none" : "";
   /* Warranty guideline reference + Manufacturer Service # are leak-specific
      (per Mark: guideline lists are "for leaks and leaks only"; the
      manufacturer service # is what a warrantable leak usually also has a
@@ -2521,6 +2667,20 @@ function onWoTypeChange(){
   var isLeak = val("woType") === WORK_ORDER_TYPES[0];
   var lw = document.getElementById("wo-leak-warranty-extra");
   if (lw) lw.style.display = isLeak ? "" : "none";
+  /* Inspection form (built out per Mark's real-world feedback testing
+     dev): no "Reported Leak Area" (that's a Leak/Service-specific intake
+     field, an inspection isn't triggered by a reported leak), findings
+     section relabeled since findings on an inspection are added one at a
+     time as the tech works through the roof (not "investigation findings"
+     from a specific leak complaint), and the new Inspection Checklist card
+     -- see "Inspection form overhaul" in DEV_NOTES.md. */
+  var raf = document.getElementById("wo-reportedarea-fld");
+  if (raf) raf.style.display = isInspection ? "none" : "";
+  var ic = document.getElementById("wo-inspection-card");
+  if (ic) ic.style.display = isInspection ? "" : "none";
+  if (isInspection){ ensureInspectionChecklist(); renderInspectionChecklist(); renderInspectionRoofPicker(); }
+  var ft = document.getElementById("wo-findings-title");
+  if (ft) ft.textContent = isInspection ? "Roofing Inspection Findings" : "Roof Investigation Findings";
 }
 
 /* ================= warranty guidelines (display-only reference) =================
@@ -2593,6 +2753,7 @@ function collect(){
   o.findings = findings.slice();
   o.repairs = repairs.slice();
   o.repairItems = repairItems.slice();
+  o.inspectionChecklist = inspectionChecklist.slice();
   o.photos = photos.slice();
   o.companyCamProjectId = ccLinkedProjectId || null;
   o.companyCamProjectName = ccLinkedProjectName || "";
@@ -2602,6 +2763,11 @@ function collect(){
 function fill(o){
   currentId = o.id;
   currentRoofId = o.roofId || null;
+  /* Must be set before onWoTypeChange() below (Inspection's branch reads
+     inspectionChecklist to render it) so a freshly loaded order's own
+     checklist is what gets shown, not whatever was left over from
+     whichever order was open before this one. */
+  inspectionChecklist = (o.inspectionChecklist || []).slice();
   FIELD_IDS.forEach(function(k){ setVal(k, o[k]); });
   populateWoTypeSelect();
   setVal("woType", o.woType || WORK_ORDER_TYPES[0]);
@@ -2622,6 +2788,12 @@ function fill(o){
   ccLinkedProjectId = o.companyCamProjectId || null;
   ccLinkedProjectName = o.companyCamProjectName || "";
   renderFindings(); renderRepairs(); renderRepairItems(); renderPhotos(); renderCCLinkInfo();
+  /* Re-render the checklist now that photos[]/findings[] are the truly
+     loaded values, not whatever onWoTypeChange() saw mid-load above --
+     otherwise a checklist item's photo gallery could briefly reflect the
+     PREVIOUSLY open order instead of this one. Cheap, harmless if run
+     twice. */
+  if (val("woType") === "Inspection"){ ensureInspectionChecklist(); renderInspectionChecklist(); }
 }
 function todayStr(){
   var d = new Date();
@@ -3908,8 +4080,9 @@ function buildText(){
 }
 function buildLeakReportText(o){
   var isRepair = o.woType === "Repair";
+  var isInspection = o.woType === "Inspection";
   var L = [];
-  L.push(isRepair ? "REPAIR / PROJECT REPORT" : "LEAK WORK ORDER / REPAIR DOCUMENTATION");
+  L.push(isRepair ? "REPAIR / PROJECT REPORT" : (isInspection ? "ROOFING INSPECTION REPORT" : "LEAK WORK ORDER / REPAIR DOCUMENTATION"));
   L.push(o.jobName + (o.location ? " - " + o.location : ""));
   L.push("");
   L.push("JOB INFORMATION");
@@ -3923,7 +4096,7 @@ function buildLeakReportText(o){
   if (o.billPhone) L.push("Contact Phone: " + o.billPhone);
   L.push("Site Contact: " + o.siteContact);
   if (o.technician) L.push("Technician: " + o.technician);
-  L.push("Reported Leak Area: " + o.reportedArea);
+  if (!isInspection) L.push("Reported Leak Area: " + o.reportedArea);
   L.push("Roof System: " + o.roofSystem);
   L.push("");
   if (isRepair){
@@ -3937,7 +4110,14 @@ function buildLeakReportText(o){
       });
     }
   } else {
-    L.push("ROOF INVESTIGATION FINDINGS");
+    if (isInspection){
+      L.push("INSPECTION CHECKLIST");
+      (o.inspectionChecklist || []).forEach(function(item){
+        L.push(inspectionComponentLabel(item.key) + ": " + item.rating + (item.notes ? " — " + item.notes : ""));
+      });
+      L.push("");
+    }
+    L.push(isInspection ? "ROOFING INSPECTION FINDINGS" : "ROOF INVESTIGATION FINDINGS");
     filledFindings().forEach(function(f,i){
       L.push((i+1) + ". " + f.condition + (f.location ? " — " + f.location : "") + " [" + f.warranty + "]");
     });
@@ -3948,11 +4128,13 @@ function buildLeakReportText(o){
     L.push((i+1) + ". " + r.repair + (r.location ? " — " + r.location : ""));
   });
   L.push("");
-  L.push("WARRANTY DETERMINATION");
-  if (o.warrantable) L.push("Warrantable Repairs: " + o.warrantable);
-  if (o.nonWarrantable) L.push("Non-Warrantable Repairs: " + o.nonWarrantable);
-  if (o.mfgServiceNo) L.push("Manufacturer Service #: " + o.mfgServiceNo);
-  L.push("");
+  if (!isInspection){
+    L.push("WARRANTY DETERMINATION");
+    if (o.warrantable) L.push("Warrantable Repairs: " + o.warrantable);
+    if (o.nonWarrantable) L.push("Non-Warrantable Repairs: " + o.nonWarrantable);
+    if (o.mfgServiceNo) L.push("Manufacturer Service #: " + o.mfgServiceNo);
+    L.push("");
+  }
   L.push("SUMMARY");
   if (o.summary) L.push(o.summary);
   var caps = filledPhotos();
@@ -4031,18 +4213,20 @@ function renderDoc(){
 }
 function renderLeakReportDoc(o){
   var isRepair = o.woType === "Repair";
+  var isInspection = o.woType === "Inspection";
   var h = "";
   h += "<div class='dochead' style='display:flex;align-items:center;gap:16px'>" +
        "<img src='" + LOGO + "' alt='Watkins Roofing' style='height:72px;flex:none'>" +
-       "<div><div class='t1 cond'>" + (isRepair ? "Repair / Project Report" : "Leak Work Order / Repair Documentation") + "</div>" +
+       "<div><div class='t1 cond'>" + (isRepair ? "Repair / Project Report" : (isInspection ? "Roofing Inspection Report" : "Leak Work Order / Repair Documentation")) + "</div>" +
        "<div class='t2'>" + esc(o.jobName) + (o.location ? " — " + esc(o.location) : "") + "</div></div></div>";
 
   h += "<h3 class='cond'>Job Information</h3>" + kvTable([
     ["Work Order Type",o.woType],
     ["Job Name",o.jobName],["Location",o.location],["Date of Service",o.serviceDate],
     ["Job No.",o.jobNo],["Bill To",o.billTo],["Billing Contact",o.billContact],
-    ["Contact Phone",o.billPhone],["Site Contact",o.siteContact],["Technician",o.technician],
-    ["Reported Leak Area",o.reportedArea],["Roof System",o.roofSystem]]);
+    ["Contact Phone",o.billPhone],["Site Contact",o.siteContact],["Technician",o.technician]]
+    .concat(isInspection ? [] : [["Reported Leak Area",o.reportedArea]])
+    .concat([["Roof System",o.roofSystem]]));
 
   if (isRepair){
     if (o.repairDescription || filledRepairItems().length){
@@ -4059,9 +4243,17 @@ function renderLeakReportDoc(o){
       }
     }
   } else {
+    if (isInspection && (o.inspectionChecklist || []).length){
+      h += "<h3 class='cond'>Inspection Checklist</h3><table><thead><tr>" +
+        "<th>Component</th><th style='width:90px'>Condition</th><th>Notes</th></tr></thead><tbody>" +
+        o.inspectionChecklist.map(function(item){
+          return "<tr><td>" + esc(inspectionComponentLabel(item.key)) + "</td><td>" + esc(item.rating) +
+            "</td><td>" + esc(item.notes) + "</td></tr>";
+        }).join("") + "</tbody></table>";
+    }
     var ff = filledFindings();
     if (ff.length){
-      h += "<h3 class='cond'>Roof Investigation Findings</h3><table><thead><tr>" +
+      h += "<h3 class='cond'>" + (isInspection ? "Roofing Inspection Findings" : "Roof Investigation Findings") + "</h3><table><thead><tr>" +
         "<th style='width:36px'>No.</th><th>Roof Condition Observed</th><th>Location / Detail</th>" +
         "<th style='width:130px'>Warranty Opinion</th></tr></thead><tbody>" +
         ff.map(function(f,i){
@@ -4080,8 +4272,10 @@ function renderLeakReportDoc(o){
       }).join("") + "</tbody></table>";
   }
 
-  var wd = kvTable([["Warrantable Repairs",o.warrantable],["Non-Warrantable Repairs",o.nonWarrantable],["Manufacturer Service #",o.mfgServiceNo]]);
-  if (wd) h += "<h3 class='cond'>Warranty Determination</h3>" + wd;
+  if (!isInspection){
+    var wd = kvTable([["Warrantable Repairs",o.warrantable],["Non-Warrantable Repairs",o.nonWarrantable],["Manufacturer Service #",o.mfgServiceNo]]);
+    if (wd) h += "<h3 class='cond'>Warranty Determination</h3>" + wd;
+  }
 
   if (o.summary) h += "<h3 class='cond'>Summary</h3><p style='white-space:pre-wrap'>" + esc(o.summary) + "</p>";
 
@@ -4237,6 +4431,7 @@ async function generatePdf(){
 }
 async function generateLeakReportPdf(o){
   var isRepair = o.woType === "Repair";
+  var isInspection = o.woType === "Inspection";
   var jsPDF = window.jspdf.jsPDF;
   var doc = new jsPDF({ unit: "pt", format: "letter" });
   var W = doc.internal.pageSize.getWidth();
@@ -4249,7 +4444,7 @@ async function generateLeakReportPdf(o){
   doc.setFont("helvetica", "bold");
   doc.setFontSize(15);
   doc.setTextColor(30, 39, 46);
-  doc.text(isRepair ? "REPAIR / PROJECT REPORT" : "LEAK WORK ORDER / REPAIR DOCUMENTATION", M + 112, y + 20, { maxWidth: W - M * 2 - 112 });
+  doc.text(isRepair ? "REPAIR / PROJECT REPORT" : (isInspection ? "ROOFING INSPECTION REPORT" : "LEAK WORK ORDER / REPAIR DOCUMENTATION"), M + 112, y + 20, { maxWidth: W - M * 2 - 112 });
   doc.setFontSize(11);
   doc.text(String((o.jobName || "") + (o.location ? " \u2014 " + o.location : "")), M + 112, y + 42, { maxWidth: W - M * 2 - 112 });
   y += 66;
@@ -4296,9 +4491,8 @@ async function generateLeakReportPdf(o){
     ["Work Order Type", o.woType],
     ["Job Name", o.jobName], ["Location", o.location], ["Date of Service", o.serviceDate],
     ["Job No.", o.jobNo], ["Bill To", o.billTo], ["Billing Contact", o.billContact],
-    ["Contact Phone", o.billPhone], ["Site Contact", o.siteContact], ["Technician", o.technician],
-    ["Reported Leak Area", o.reportedArea], ["Roof System", o.roofSystem]
-  ]);
+    ["Contact Phone", o.billPhone], ["Site Contact", o.siteContact], ["Technician", o.technician]
+  ].concat(isInspection ? [] : [["Reported Leak Area", o.reportedArea]]).concat([["Roof System", o.roofSystem]]));
 
   if (isRepair){
     if (o.repairDescription){
@@ -4321,9 +4515,23 @@ async function generateLeakReportPdf(o){
       y = doc.lastAutoTable.finalY + 18;
     }
   } else {
+    if (isInspection && (o.inspectionChecklist || []).length){
+      heading("Inspection Checklist");
+      doc.autoTable({
+        startY: y,
+        head: [["Component", "Condition", "Notes"]],
+        body: o.inspectionChecklist.map(function(item){ return [inspectionComponentLabel(item.key), item.rating, item.notes]; }),
+        theme: "grid",
+        headStyles: { fillColor: [38, 50, 56], fontSize: 8 },
+        styles: { fontSize: 9, cellPadding: 4, textColor: [30, 39, 46], lineColor: [154, 165, 172], lineWidth: 0.5 },
+        columnStyles: { 1: { cellWidth: 70 } },
+        margin: { left: M, right: M }
+      });
+      y = doc.lastAutoTable.finalY + 18;
+    }
     var ff = filledFindings();
     if (ff.length){
-      heading("Roof Investigation Findings");
+      heading(isInspection ? "Roofing Inspection Findings" : "Roof Investigation Findings");
       doc.autoTable({
         startY: y,
         head: [["No.", "Roof Condition Observed", "Location / Detail", "Warranty Opinion"]],
@@ -4354,7 +4562,7 @@ async function generateLeakReportPdf(o){
     y = doc.lastAutoTable.finalY + 18;
   }
 
-  if (o.warrantable || o.nonWarrantable || o.mfgServiceNo){
+  if (!isInspection && (o.warrantable || o.nonWarrantable || o.mfgServiceNo)){
     heading("Warranty Determination");
     kvTablePdf([["Warrantable Repairs", o.warrantable], ["Non-Warrantable Repairs", o.nonWarrantable], ["Manufacturer Service #", o.mfgServiceNo]]);
   }
@@ -5277,6 +5485,7 @@ async function ccImport(){
   }
   renderPhotos();
   renderFindings();
+  if (ccTargetFindingId && inspectionChecklistItemById(ccTargetFindingId)) renderInspectionChecklist();
   renderCCLinkInfo();
   if (ok){
     toast("Locking CompanyCam project and syncing history...");

@@ -101,8 +101,24 @@ a Leak/Service work order. Its report/PDF reuses the same leak-report layout —
 job info, same photo documentation — just titled "Repair / Project Report" with the
 findings section swapped for Repair Scope.
 
-Inspection and Warranty still use the standard leak report format for now (Mark is
-defining their fields incrementally).
+**Inspection** is built out for a real component-by-component roof inspection. No
+Reported Leak Area (not triggered by a reported leak) and no Warranty Determination
+(an inspection isn't itself a warranty decision — that's separate). Findings stay,
+relabeled **"Roofing Inspection Findings"**, still added one at a time exactly like
+Leak/Service. The centerpiece is the new **Inspection Checklist**: eight fixed roof
+components — Membrane/Field, Flashings & Terminations, Penetrations, Drainage
+(incl. Ponding), Rooftop Equipment, Perimeter/Edge, Interior (if accessible), Safety
+Hazards — each rated **Good / Fair / Poor / Critical / N/A** with optional notes and
+an optional photo. Rate something Fair, Poor, or Critical and it **automatically
+shows up in Findings too** — no need to write it twice — and if the rating goes back
+to Good it disappears from Findings again just as automatically. If the building has
+more than one roof, a roof picker appears right on the form (the first place in the
+app a work order lets you pick a roof directly, rather than only indirectly through
+where a pin gets placed). The report/PDF gets its own "Roofing Inspection Report"
+title, an Inspection Checklist table, and the relabeled findings section.
+
+Warranty still uses the standard leak report format for now (Mark is defining its
+fields incrementally).
 
 The type also shows up on that building's Building History timeline and in the
 Reports tab (as a filterable "Work Order Type," alongside Report Type, Technician,
