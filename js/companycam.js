@@ -1,3 +1,4 @@
+"use strict";
 /* ================= CompanyCam import ================= */
 var ccSelected = {};
 /* findingId (optional) -- set when opened from a finding's own "Import from

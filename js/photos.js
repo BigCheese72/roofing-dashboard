@@ -1,3 +1,4 @@
+"use strict";
 /* ================= roof map pin placement (Phase 2) =================
    Design (see roof-map spec): lat/lng is authoritative — pins survive a
    future base-map swap. x/y stay null here; they're only used for

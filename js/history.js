@@ -1,3 +1,4 @@
+"use strict";
 /* ================= building history view (foundation) ================= */
 function fmtTs(ms){
   if (!ms) return "";

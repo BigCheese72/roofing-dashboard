@@ -1,3 +1,4 @@
+"use strict";
 /* ================= building picker (explicit selection) =================
    Phase 2 roadmap item: "explicit customer/building picker UI in the Edit
    tab, replacing the current implicit derive-from-text-fields approach,

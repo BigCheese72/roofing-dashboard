@@ -1,3 +1,4 @@
+"use strict";
 /* ================= document build ================= */
 function filledFindings(){ return findings.filter(function(f){ return f.condition || f.location; }); }
 function filledRepairs(){ return repairs.filter(function(r){ return r.repair || r.location; }); }

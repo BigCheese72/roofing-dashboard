@@ -1,3 +1,4 @@
+"use strict";
 /* ================= custom base maps (Phase 4, admin-only) =================
    A building's base map is shared/building-wide (affects every future
    report's pin placement and the history map), not per-work-order draft
