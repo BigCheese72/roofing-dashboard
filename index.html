@@ -215,6 +215,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 </head>
 <body>
 
@@ -457,6 +458,22 @@
 
   <!-- ================= ALL REPORTS VIEW (read-only, cross-building) ================= -->
   <div id="view-reports" style="display:none">
+    <div class="card" id="feedback-backlog-card" style="display:none">
+      <h2 class="cond">🗣️ Feedback Backlog (admin)</h2>
+      <p class="hint">In-app feedback submitted from the field via the 💬 button, newest first. Each submission is
+        also emailed to Mark.</p>
+      <div class="btnrow" style="margin:0 0 10px;align-items:center">
+        <select id="feedback-filter-type" onchange="renderFeedbackBacklog()">
+          <option value="">All types</option>
+          <option value="praise">👍 Works great</option>
+          <option value="confusing">🤔 Confusing</option>
+          <option value="bug">🐞 Bug</option>
+          <option value="feature">💡 Feature request</option>
+        </select>
+        <button class="btn" onclick="loadFeedbackBacklog()">Refresh</button>
+      </div>
+      <div id="feedback-backlog-list"><p class="hint">Tap Refresh to load.</p></div>
+    </div>
     <div class="card">
       <h2 class="cond">All Reports</h2>
       <p class="hint">Every generated report across every building, most recent first — read-only. Tap a report
@@ -795,6 +812,46 @@
 <div id="photo-lightbox" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:10000" onclick="if(event.target===this)closePhotoLightbox()">
   <button class="btn" style="position:absolute;top:14px;right:14px" onclick="closePhotoLightbox()">✕ Close</button>
   <img id="photo-lightbox-img" class="photo-lightbox-img" src="">
+</div>
+
+<!-- ================= Send Feedback (reachable from every screen) =================
+     Floating button lives outside every view's own div so showView() never
+     hides it. See "Send Feedback" in DEV_NOTES.md. -->
+<button id="feedback-fab" onclick="openFeedbackModal()" title="Send Feedback" aria-label="Send Feedback"
+  style="position:fixed;right:16px;bottom:74px;z-index:400;width:48px;height:48px;border-radius:50%;
+  background:#263238;color:#fff;border:none;font-size:22px;line-height:1;box-shadow:0 2px 8px rgba(0,0,0,.35);
+  cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0">💬</button>
+
+<div id="feedback-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)closeFeedbackModal()">
+  <div style="background:#fff;max-width:440px;margin:40px auto;border-radius:8px;overflow:hidden;max-height:calc(100vh - 80px);display:flex;flex-direction:column">
+    <div style="background:#263238;color:#fff;padding:14px 16px;display:flex;justify-content:space-between;align-items:center;flex:none">
+      <b>Send Feedback</b>
+      <button class="btn" onclick="closeFeedbackModal()" style="background:transparent;color:#fff;border:1px solid rgba(255,255,255,.4)">Close</button>
+    </div>
+    <div style="padding:16px;overflow-y:auto">
+      <div class="fld">
+        <label>Type</label>
+        <div id="feedback-type-picker" class="btnrow" style="margin:0"></div>
+      </div>
+      <div class="fld">
+        <label>Comments</label>
+        <textarea id="feedback-comments" rows="4" placeholder="What's going on?"></textarea>
+      </div>
+      <div class="fld">
+        <label>Screenshot (optional)</label>
+        <div id="feedback-screenshot-status"></div>
+        <div class="btnrow" style="margin:6px 0 0">
+          <button class="btn" type="button" onclick="captureFeedbackScreenshot()">📸 Capture Screen</button>
+          <button class="btn" type="button" onclick="document.getElementById('feedback-photo-input').click()">🖼️ Attach Photo</button>
+        </div>
+        <input type="file" id="feedback-photo-input" accept="image/*" style="display:none" onchange="attachFeedbackPhoto(this)">
+      </div>
+      <p class="hint" id="feedback-context-hint" style="margin:10px 0 0"></p>
+    </div>
+    <div style="padding:12px 16px;border-top:1px solid var(--line);flex:none">
+      <button class="btn primary" style="width:100%" onclick="submitFeedback()">Submit Feedback</button>
+    </div>
+  </div>
 </div>
 
 <div class="toast" id="toast"></div>
@@ -1288,6 +1345,14 @@ function updateAdminUI(){
   renderCCLinkInfo();
   if (document.getElementById("view-history") && document.getElementById("view-history").style.display !== "none"){
     renderHistoryList();
+  }
+  var fbCard = document.getElementById("feedback-backlog-card");
+  if (fbCard){
+    fbCard.style.display = isAdmin ? "" : "none";
+    if (isAdmin && document.getElementById("view-reports") &&
+        document.getElementById("view-reports").style.display !== "none"){
+      loadFeedbackBacklog();
+    }
   }
 }
 
@@ -2758,7 +2823,14 @@ function photoDrop(e, i){
 function openPhotoLightbox(i){
   var p = photos[i];
   if (!p || !p.img) return;
-  document.getElementById("photo-lightbox-img").src = p.img;
+  openImageLightbox(p.img);
+}
+/* Pulled out of openPhotoLightbox() so anything with a bare image data-URL
+   (not necessarily an index into the global photos[] array -- e.g. a
+   feedback screenshot in the admin backlog) can reuse the same lightbox
+   UI. See "Send Feedback" in DEV_NOTES.md. */
+function openImageLightbox(src){
+  document.getElementById("photo-lightbox-img").src = src;
   document.getElementById("photo-lightbox").style.display = "";
   lockBodyScroll();
 }
@@ -2766,6 +2838,189 @@ function closePhotoLightbox(){
   document.getElementById("photo-lightbox").style.display = "none";
   document.getElementById("photo-lightbox-img").src = "";
   unlockBodyScroll();
+}
+
+/* ================= Send Feedback =================
+   Reachable from every screen (floating 💬 button, outside every view's
+   own div -- see the HTML block right after #photo-lightbox). Stores each
+   submission in the `feedback` Firestore collection (create-only from the
+   client -- see firestore.rules) AND emails it to Mark via
+   netlify/functions/send-feedback.js, best-effort on both so one failing
+   doesn't block the other. See "Send Feedback" in DEV_NOTES.md. */
+var FEEDBACK_TYPES = [
+  { key: "praise", emoji: "👍", label: "Works great" },
+  { key: "confusing", emoji: "🤔", label: "Confusing" },
+  { key: "bug", emoji: "🐞", label: "Bug" },
+  { key: "feature", emoji: "💡", label: "Feature request" }
+];
+var FEEDBACK_VIEW_LABELS = {
+  home: "Home", edit: "Work Order Form", preview: "Report Preview", saved: "Saved Work Orders",
+  history: "Building History", reports: "Reports", roofmapper: "RoofMapper"
+};
+var feedbackState = { type: null, screenshot: null };
+function openFeedbackModal(){
+  feedbackState = { type: null, screenshot: null };
+  setVal("feedback-comments", "");
+  document.getElementById("feedback-screenshot-status").innerHTML = "";
+  renderFeedbackTypePicker();
+  var screenLabel = FEEDBACK_VIEW_LABELS[currentViewName] || currentViewName;
+  var ctxBits = ["Screen: " + screenLabel];
+  if (currentViewName === "edit" || currentViewName === "preview"){
+    var jobName = val("jobName").trim();
+    if (jobName) ctxBits.push("Work order: " + jobName);
+  }
+  document.getElementById("feedback-context-hint").textContent =
+    ctxBits.join(" · ") + " — captured automatically with your submission.";
+  document.getElementById("feedback-modal").style.display = "";
+  lockBodyScroll();
+}
+function closeFeedbackModal(){
+  document.getElementById("feedback-modal").style.display = "none";
+  unlockBodyScroll();
+}
+function renderFeedbackTypePicker(){
+  var host = document.getElementById("feedback-type-picker");
+  if (!host) return;
+  host.innerHTML = FEEDBACK_TYPES.map(function(t){
+    var active = feedbackState.type === t.key;
+    return '<button type="button" class="btn' + (active ? " primary" : "") + '" onclick="selectFeedbackType(\'' +
+      t.key + '\')">' + t.emoji + ' ' + esc(t.label) + '</button>';
+  }).join("");
+}
+function selectFeedbackType(key){
+  feedbackState.type = key;
+  renderFeedbackTypePicker();
+}
+/* Downscales an already-captured canvas the same way resizeImageFile()
+   downscales a source <img> -- kept separate since there's no File/Image
+   to read here, just a canvas html2canvas already produced. Caps the
+   screenshot well under Firestore's 1MB document limit and keeps the
+   emailed attachment small. */
+function canvasToCappedDataUrl(canvas, maxDim, quality){
+  var w = canvas.width, h = canvas.height;
+  if (w > maxDim || h > maxDim){
+    if (w >= h){ h = Math.round(h * maxDim / w); w = maxDim; }
+    else { w = Math.round(w * maxDim / h); h = maxDim; }
+  }
+  var c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  c.getContext("2d").drawImage(canvas, 0, 0, w, h);
+  return c.toDataURL("image/jpeg", quality);
+}
+async function captureFeedbackScreenshot(){
+  if (!window.html2canvas){ toast("Screenshot tool isn't available right now — try Attach Photo instead."); return; }
+  toast("Capturing screen…");
+  var modal = document.getElementById("feedback-modal");
+  modal.style.display = "none"; /* don't capture the feedback modal itself */
+  try{
+    await new Promise(function(r){ setTimeout(r, 50); });
+    var canvas = await html2canvas(document.body, { scale: 1, logging: false, useCORS: true });
+    feedbackState.screenshot = canvasToCappedDataUrl(canvas, 900, 0.55);
+    renderFeedbackScreenshotStatus();
+    toast("Screenshot captured ✓");
+  }catch(e){
+    toast("Couldn't capture the screen — try Attach Photo instead.");
+  }finally{
+    modal.style.display = "";
+  }
+}
+function attachFeedbackPhoto(input){
+  var file = input.files && input.files[0];
+  input.value = "";
+  if (!file) return;
+  resizeImageFile(file, 900, 0.55).then(function(dataUrl){
+    feedbackState.screenshot = dataUrl;
+    renderFeedbackScreenshotStatus();
+    toast("Photo attached ✓");
+  }).catch(function(e){ toast("Couldn't read that photo: " + e.message); });
+}
+function renderFeedbackScreenshotStatus(){
+  var host = document.getElementById("feedback-screenshot-status");
+  if (!host) return;
+  host.innerHTML = feedbackState.screenshot ?
+    '<img src="' + feedbackState.screenshot + '" style="max-width:160px;max-height:110px;border:1px solid var(--line);border-radius:4px;display:block;margin-top:6px">' +
+    '<button class="btn danger" style="margin-top:6px" onclick="removeFeedbackScreenshot()">Remove</button>' : '';
+}
+function removeFeedbackScreenshot(){
+  feedbackState.screenshot = null;
+  renderFeedbackScreenshotStatus();
+}
+async function submitFeedback(){
+  if (!feedbackState.type){ toast("Pick a feedback type first."); return; }
+  var typeInfo = FEEDBACK_TYPES.find(function(t){ return t.key === feedbackState.type; });
+  var comments = val("feedback-comments").trim();
+  var onWorkOrderScreen = currentViewName === "edit" || currentViewName === "preview";
+  var techFromForm = onWorkOrderScreen ? val("technician").trim() : "";
+  var techName = techFromForm || (getFieldHistory("technician")[0] || "");
+  var doc = {
+    type: feedbackState.type,
+    typeLabel: typeInfo.emoji + " " + typeInfo.label,
+    comments: comments,
+    screen: FEEDBACK_VIEW_LABELS[currentViewName] || currentViewName,
+    technician: techName,
+    adminMode: isAdmin,
+    device: (navigator.userAgent || "").slice(0, 200),
+    workOrderId: onWorkOrderScreen ? (currentId || null) : null,
+    workOrderJobName: onWorkOrderScreen ? (val("jobName").trim() || null) : null,
+    screenshot: feedbackState.screenshot || null,
+    createdAt: Date.now()
+  };
+  toast("Sending feedback…");
+  var savedOk = false, emailOk = false;
+  if (fdb){
+    try{
+      await fdb.collection("feedback").doc(genId("fb")).set(doc);
+      savedOk = true;
+    }catch(e){ /* still try the email below */ }
+  }
+  try{
+    var resp = await fetch("/.netlify/functions/send-feedback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(doc)
+    });
+    var out = null;
+    try{ out = await resp.json(); }catch(e){}
+    emailOk = !!(resp.ok && out && out.ok);
+  }catch(e){ /* best-effort -- backlog storage above is what matters most */ }
+  closeFeedbackModal();
+  if (savedOk || emailOk) toast("Feedback sent — thank you! ✓");
+  else toast("Couldn't send feedback — check your connection and try again.");
+}
+/* ---- Admin backlog (Reports tab, admin mode only) ---- */
+var feedbackBacklog = [];
+async function loadFeedbackBacklog(){
+  if (!isAdmin) return;
+  var host = document.getElementById("feedback-backlog-list");
+  if (host) host.innerHTML = '<p class="hint">Loading…</p>';
+  try{
+    var out = await callAdminApi({ action: "list_feedback" });
+    feedbackBacklog = out.items || [];
+    renderFeedbackBacklog();
+  }catch(e){
+    if (host) host.innerHTML = '<p class="hint">Couldn\'t load feedback: ' + esc(e.message) + '</p>';
+  }
+}
+function renderFeedbackBacklog(){
+  var host = document.getElementById("feedback-backlog-list");
+  if (!host) return;
+  var filterType = val("feedback-filter-type");
+  var items = feedbackBacklog.filter(function(f){ return !filterType || f.type === filterType; });
+  if (!items.length){ host.innerHTML = '<p class="hint">No feedback yet.</p>'; return; }
+  host.innerHTML = items.map(function(f){
+    return '<div class="card" style="margin:0 0 8px">' +
+      '<div style="display:flex;justify-content:space-between;align-items:start;gap:8px">' +
+      '<b>' + esc(f.typeLabel || f.type || "") + '</b>' +
+      '<span class="hint" style="margin:0;white-space:nowrap">' + esc(f.createdAt ? new Date(f.createdAt).toLocaleString() : "") + '</span></div>' +
+      (f.comments ? '<p style="margin:6px 0">' + esc(f.comments) + '</p>' : '<p class="hint" style="margin:6px 0">(no comments)</p>') +
+      '<p class="hint" style="margin:0">Screen: ' + esc(f.screen || "") +
+        (f.technician ? ' · Tech: ' + esc(f.technician) : '') +
+        (f.workOrderJobName ? ' · Work order: ' + esc(f.workOrderJobName) : '') +
+        (f.adminMode ? ' · (admin mode)' : '') + '</p>' +
+      (f.screenshot ? '<img src="' + esc(f.screenshot) + '" style="max-width:180px;max-height:120px;border:1px solid var(--line);' +
+        'border-radius:4px;margin-top:6px;cursor:pointer" onclick="openImageLightbox(this.src)">' : '') +
+    '</div>';
+  }).join("");
 }
 function renderPhotos(){
   var host = document.getElementById("photos-list");
@@ -5854,7 +6109,11 @@ function unlinkCC(){
   toast("Unlinked CompanyCam project from this work order");
 }
 /* ================= views ================= */
+var currentViewName = "home"; /* mirrors showView()'s v -- used by Send
+  Feedback to auto-capture which screen the tester was on. See "Send
+  Feedback" in DEV_NOTES.md. */
 function showView(v){
+  currentViewName = v;
   /* "home" has no header tab (reached via "+ New", the empty-state button
      in Building History, or tapping the logo) — every other view still
      keeps its tab exactly as before. */
@@ -5867,7 +6126,7 @@ function showView(v){
   if (v === "preview") renderDoc();
   if (v === "saved") renderSaved();
   if (v === "history") renderHistoryList();
-  if (v === "reports") renderReportsList();
+  if (v === "reports"){ renderReportsList(); if (isAdmin) loadFeedbackBacklog(); }
   if (v === "roofmapper") rmOnShow();
   window.scrollTo(0,0);
   if (v === "edit" && pendingPinFindingId){

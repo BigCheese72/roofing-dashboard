@@ -4066,6 +4066,121 @@ state (`rmState.outline`, `linkedAssetsCache`, `linkedBuildingId`/
 `linkedRoofId`, stubbed `fdb`/`prompt`/`toast`) cleared, page reloaded,
 console clean.
 
+## Send Feedback (shipped 2026-07-10, dev only)
+
+An in-app feedback tool so field testers (Mark, mainly, during live testing)
+can report a problem or idea from wherever they hit it, without switching
+apps. Reachable from every screen.
+
+**Floating button + form, present everywhere**: `#feedback-fab` (💬) sits
+outside every view's own `<div>` (right after `#photo-lightbox`, a sibling
+of the view containers), `position:fixed;bottom:74px;right:16px;z-index:400`
+— `showView()`'s per-view `display` toggling only touches the `view-*`
+containers, so the button is never hidden regardless of which tab is
+active. `z-index:400` clears the toast (`bottom:18px`, so the two don't
+overlap) but sits well under every modal's `9999`. Tapping it opens
+`#feedback-modal`, following the exact same modal pattern as
+`#signature-modal`/`#pin-modal` (fixed, dimmed backdrop,
+`lockBodyScroll()`/`unlockBodyScroll()`).
+
+**Quick-type picker + comments + optional screenshot**: four fixed types
+(`FEEDBACK_TYPES` — 👍 Works great / 🤔 Confusing / 🐞 Bug / 💡 Feature
+request), rendered as toggle buttons (`renderFeedbackTypePicker()`,
+re-renders on every `selectFeedbackType()` call so the active one highlights
+`btn primary`). Comments are free text, optional — a bare 👍 tap with no
+elaboration is a valid submission. Screenshot is optional two ways:
+"📸 Capture Screen" (`html2canvas`, new CDN script tag alongside
+jsPDF/Leaflet — captures `document.body` after briefly hiding the feedback
+modal itself so it doesn't capture its own UI, then restores it in a
+`finally` so a capture error can't leave the modal stuck hidden) or
+"🖼️ Attach Photo" (reuses the existing `resizeImageFile()` helper, same as
+every other photo-capture path in the app). Either path runs through a
+resize/compress cap (900px max dimension, JPEG quality 0.55 —
+`canvasToCappedDataUrl()` for the html2canvas path, `resizeImageFile()`'s
+existing cap for the attach-photo path) to stay well under Firestore's 1MB
+document limit and keep the emailed attachment small; a captured screenshot
+in testing came out to ~33KB.
+
+**Auto-captured context, no typing needed**: `screen` (`FEEDBACK_VIEW_LABELS
+[currentViewName]` — `currentViewName` is a new module var `showView()` now
+sets on every call, mirroring its `v` argument, that nothing needed before
+this), `technician` (the open work order's Technician field if the tester's
+on the edit/preview view and it's non-empty, else the most-recently-
+remembered technician name device-wide via the existing
+`getFieldHistory("technician")[0]` field-memory mechanism, else "" — "no
+real accounts yet, use the best available identifier" per spec), `adminMode`
+(`isAdmin`), `device` (`navigator.userAgent`, truncated), `workOrderId`/
+`workOrderJobName` (from `currentId`/the Job Name field, only when a work
+order is actually open — edit/preview view — else both `null`), and
+`createdAt` (`Date.now()`).
+
+**Storage — `feedback` Firestore collection, additive, create-only from the
+client**: `fdb.collection("feedback").doc(genId("fb")).set(doc)`, matching
+this app's existing convention of client-generated ids over `.add()`.
+`firestore.rules` allows `create: if true` (anyone should be able to submit,
+no PIN) but `read/update/delete: if false` — nobody reads it back through
+the client SDK at all; the admin backlog is the only reader, and it goes
+through `netlify/functions/admin.js`'s new `list_feedback` action (Admin
+SDK, PIN-gated, newest-first, capped at 200) instead, so "admin-only read"
+is enforced server-side, not just hidden in the UI. **Needs a manual apply
+in the Firebase Console to take effect**, same as `app_settings` — this repo
+file is reference-only, nothing deploys it automatically.
+
+**Emailed to Mark on every submission, independent of the Firestore
+write**: new `netlify/functions/send-feedback.js`, structurally mirroring
+`send-workorder.js` (same `RESEND_API_KEY`, same fetch-to-Resend shape) but
+tailored — no PDF, an optional screenshot/photo attachment instead, and
+always sent to `marks@watkinsroofing.net` (overridable via new
+`FEEDBACK_TO_EMAIL`) rather than a client-picked recipient list. **Subject
+is always `"[RoofOps Feedback] " + typeLabel + " — " + screen`** (e.g.
+`"[RoofOps Feedback] 🐞 Bug — Inspection Form"`) — the leading
+`[RoofOps Feedback]` token is identical on every single submission
+regardless of type or screen, specifically so a mail rule can match on that
+fixed prefix and file all of them into one Outlook folder once delegated
+auth/inbox rules are available (see "Outlook / Microsoft 365" above) —
+Mark's explicit ask. The email body lists every auto-captured field plus
+the comments. `submitFeedback()` fires the Firestore write and the email
+send as two independent best-effort attempts (`savedOk`/`emailOk`, each in
+its own try/catch) — either one succeeding is enough to report success, so
+a network hiccup on one doesn't silently lose the other or block the UI.
+
+**Admin backlog view** — new card at the top of the Reports tab
+(`#feedback-backlog-card`), visibility driven by `updateAdminUI()` exactly
+like `#admin-settings-bar`, and auto-loaded (`loadFeedbackBacklog()`)
+whenever an admin opens the Reports tab or turns admin mode on while
+already there. Newest-first list (server already sorts by `createdAt desc`
+in `list_feedback`), a type filter `<select>` re-renders client-side from
+the already-fetched `feedbackBacklog` array (no re-fetch per filter
+change), each entry showing type/comments/screen/technician/work
+order/timestamp, and a screenshot thumbnail that opens full-size via a new
+`openImageLightbox(src)` — pulled `openPhotoLightbox(i)`'s body out into
+this reusable-by-src version (it now just resolves the index to a `.img`
+and calls through) so a screenshot, which has no place in the global
+`photos[]` array, can reuse the exact same lightbox UI.
+
+Tested with mocked `fdb`/`callAdminApi`/`fetch` (no real writes, no real
+emails, no real admin PIN check): the type picker correctly highlights the
+active selection; submit is blocked with a clear toast when no type is
+picked; a full submit on the Work Order Form view correctly captured
+screen/technician/work order context and produced matching payloads to
+both the Firestore write and the `send-feedback` fetch call; the subject-
+prefix logic (re-implemented inline and run against 4 cases, since this
+sandbox has no Node runtime to execute the Netlify function directly)
+produced the exact expected string in every case, including the no-screen
+edge case; `html2canvas` screenshot capture produced a real ~33KB JPEG and
+correctly restored the modal's visibility afterward; the attach-photo
+fallback correctly resized a synthetic PNG through `resizeImageFile()`;
+Remove Screenshot correctly cleared the state; the admin backlog card is
+`display:none` for non-admins and becomes visible + auto-loads on
+`updateAdminUI()`/entering Reports as admin; the type filter correctly
+narrowed the rendered list without re-fetching; a `list_feedback` failure
+(simulated wrong-PIN error) rendered a clear inline error instead of a
+blank list; the 💬 button was confirmed present (`getComputedStyle().
+display`) across all six views. All test state (`fdb`, `isAdmin`/
+`adminPin`/sessionStorage, `feedbackState`, `feedbackBacklog`, `currentId`,
+stubbed `callAdminApi`/`fetch`/`toast`) cleared, page reloaded, console
+clean, no stray `localStorage` keys left behind.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |
@@ -4076,6 +4191,7 @@ console clean.
 | `RESEND_API_KEY` | `send-workorder.js` | yes |
 | `FROM_EMAIL` | `send-workorder.js` | optional (has a default). Also the source of the sending *domain* for per-job From addresses — see below. |
 | `REPLY_TO_EMAIL` | `send-workorder.js` | optional, comma-separated. Defaults to `marks@<domain>` + `charlottew@<domain>` (Mark's and Charlotte's real monitored mailboxes, per his decision). See "Per-job From address" below. |
+| `FEEDBACK_TO_EMAIL` | `send-feedback.js` | optional (defaults to `marks@watkinsroofing.net`). See "Send Feedback" above. |
 | `ADMIN_PIN` | `admin.js` | yes, for admin mode to work | The real PIN check — not present anywhere in `index.html` anymore. |
 | `FIREBASE_SERVICE_ACCOUNT` | `admin.js` | yes, for admin mode to work | Entire JSON contents of a Firebase service account key. Full project access — treat as a secret, never commit it. |
 | `GRAPH_TENANT_ID` | `outlook.js` / `lib/graphAuth.js` | yes, for the Outlook/M365 integration to work | Azure AD tenant id. |

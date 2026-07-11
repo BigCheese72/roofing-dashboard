@@ -665,6 +665,57 @@ Notes:
 - Deliberately not gated by `accountId` yet, since there's no multi-account model in
   production — a single global doc is intentional for now, not an oversight.
 
+### `feedback` (currently implemented)
+
+In-app Send Feedback submissions — the 💬 button reachable from every screen. See
+"Send Feedback" in `DEV_NOTES.md`.
+
+```js
+// feedback/<genId("fb")>
+{
+  type,           // "praise" | "confusing" | "bug" | "feature" — internal key, one
+                   // of FEEDBACK_TYPES in index.html
+  typeLabel,       // "👍 Works great" | "🤔 Confusing" | "🐞 Bug" | "💡 Feature request"
+                   // — emoji + label, pre-built client-side so the backlog view and
+                   // the emailed subject line don't each re-derive it from `type`
+  comments,        // free text, optional (a bare 👍 tap with no comment is valid)
+  screen,          // friendly view name the tester was on when they tapped 💬 — e.g.
+                   // "Inspection Form", "RoofMapper" — see FEEDBACK_VIEW_LABELS
+  technician,      // best-available identity, auto-captured: the open work order's
+                   // Technician field if one's open and non-empty, else the
+                   // most-recently-remembered technician name (getFieldHistory
+                   // ("technician")[0]) device-wide, else "". No real accounts yet,
+                   // per Mark's own framing of the ask — this is the best available
+                   // identifier, not a real user reference.
+  adminMode,       // bool — was the submitter in admin mode at the time
+  device,          // navigator.userAgent, truncated to 200 chars
+  workOrderId,     // currentId if a work order was open (edit/preview view), else null
+  workOrderJobName,// that work order's Job Name, else null
+  screenshot,      // optional base64 JPEG data-URL, capped ~900px/quality 0.55 (via
+                   // html2canvas capturing document.body, or a manually attached
+                   // photo as a fallback) — same resize-before-store discipline as
+                   // work order photos, just capped smaller since these are
+                   // debugging aids, not documentation. null if not attached.
+  createdAt        // Date.now() at submission
+}
+```
+
+Notes:
+
+- Client can `create` but never `read`/`update`/`delete` (`firestore.rules`) — the
+  admin backlog view (Reports tab, admin mode) reads it exclusively through
+  `netlify/functions/admin.js`'s `list_feedback` action (Admin SDK, PIN-gated,
+  newest-first, capped at 200), the same pattern used for every other admin-only
+  read/write in this file. **The rules change needs a manual apply in the Firebase
+  Console** to take effect for reads, same as `app_settings` above — this repo file is
+  reference-only, nothing deploys it automatically.
+- Every submission is also emailed to Mark (`netlify/functions/send-feedback.js`, via
+  Resend) independent of whether the Firestore write succeeds — the two are
+  best-effort and independent, so a network hiccup on one doesn't silently lose the
+  other. The email subject always starts with the stable `[RoofOps Feedback]` token
+  (regardless of type) so a mail rule can file every one of these into one Outlook
+  folder reliably.
+
 ## Migration Notes
 
 - Keep current `workorders` behavior stable until Phase 2 data cleanup is complete.

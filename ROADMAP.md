@@ -57,6 +57,23 @@ Goal: preserve and harden the existing RoofOps Field / Watkins work order workfl
   specific, so it can be wired into other forms later — e.g. leak/
   non-warranty service-order signing, once the email-doc-attach feature
   lands. See "In-app signature capture" in `DEV_NOTES.md`.
+- ✅ **Shipped (dev only, 2026-07-10)**: Send Feedback — a 💬 button reachable
+  from every screen (fixed corner, present on all tabs) opens a quick-type
+  picker (👍 Works great / 🤔 Confusing / 🐞 Bug / 💡 Feature request) plus
+  comments and an optional screenshot (device screen capture via
+  `html2canvas`, or attach a photo as a fallback). Every submission
+  auto-captures its context with no typing needed — which screen, the
+  technician (best-available identifier — there are no real accounts yet),
+  admin-mode status, device, and the open work order (if any) — and both
+  saves to a new `feedback` collection for an admin-only backlog view (on
+  the Reports tab) AND emails Mark a copy, always with a stable
+  `"[RoofOps Feedback]"` leading subject token (e.g. "[RoofOps Feedback] 🐞
+  Bug — Inspection Form") regardless of type, specifically so a mail rule
+  can file every one of these into one Outlook folder reliably once
+  delegated auth/inbox rules are live (see "Outlook / Microsoft 365"
+  below). **The `feedback` collection's Firestore rule needs a manual apply
+  in the Firebase Console to take effect** (same as `app_settings`) — not
+  automatic from this repo. See "Send Feedback" in `DEV_NOTES.md`.
 - ✅ **Shipped**: Home / launcher screen — the app now opens to a tile-based launcher
   (one tile per work order type + RoofMapper/Building History/Reports) instead of
   dropping straight into a blank Leak/Service form. Existing tabs and navigation are

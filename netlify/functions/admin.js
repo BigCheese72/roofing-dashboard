@@ -197,6 +197,18 @@ exports.handler = async function (event) {
       return resp(200, { ok: true });
     }
 
+    if (body.action === "list_feedback") {
+      // In-app Send Feedback backlog (💬 button, every screen — see
+      // "Send Feedback" in DEV_NOTES.md). firestore.rules blocks client
+      // reads on `feedback` entirely (create-only, like the delete-blocked
+      // collections above use write-blocked) — this Admin-SDK read is the
+      // only way to list them, so the backlog view is inherently
+      // admin-PIN-gated with no separate check needed.
+      const snap = await db.collection("feedback").orderBy("createdAt", "desc").limit(200).get();
+      const items = snap.docs.map(d => Object.assign({ id: d.id }, d.data()));
+      return resp(200, { ok: true, items });
+    }
+
     if (body.action === "set_photo_size_pref") {
       // Global (not per-user, not per-work-order) photo size — used to be
       // a client-only localStorage preference; now a single admin-set

@@ -70,5 +70,17 @@ service cloud.firestore {
       allow read: if true;
       allow write: if false;
     }
+
+    // In-app Send Feedback submissions (💬 button, every screen — see
+    // "Send Feedback" in DEV_NOTES.md). Any client can create one (no PIN
+    // needed — anyone should be able to submit), but nobody reads/updates/
+    // deletes directly through the client SDK: the admin backlog view goes
+    // through netlify/functions/admin.js's list_feedback action (Admin
+    // SDK, PIN-gated) instead, same pattern as app_settings' write-only
+    // gate above, just mirrored onto read.
+    match /feedback/{feedbackId} {
+      allow create: if true;
+      allow read, update, delete: if false;
+    }
   }
 }

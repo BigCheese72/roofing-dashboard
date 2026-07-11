@@ -493,6 +493,22 @@ job an email is about at a glance, even before opening it. If a customer hits Re
 it's routed to a real monitored inbox rather than that per-job address (which isn't a
 real mailbox).
 
+## Send Feedback
+
+A small 💬 button sits in the bottom-right corner on every screen — home, a work
+order, RoofMapper, Building History, Reports, anywhere. Tap it to send Mark feedback
+right from wherever you hit something, without switching apps.
+
+Pick a quick type — 👍 Works great, 🤔 Confusing, 🐞 Bug, or 💡 Feature request — add
+a comment if you want (a bare 👍 tap with nothing typed is fine too), and optionally
+attach a screenshot: either "📸 Capture Screen" (grabs what's currently on screen
+automatically) or "🖼️ Attach Photo" (pick one from your camera roll). Hit Submit.
+
+You don't have to explain where you are or what you were doing — the app already
+knows: which screen you were on, your technician name (if set), and which work order
+was open (if any) all go along automatically. Every submission is emailed straight to
+Mark and also saved to an in-app backlog he can review (see Admin Mode below).
+
 ## Admin Mode
 
 Field techs should not be able to unlink a CompanyCam project or delete building
@@ -517,6 +533,11 @@ reveals:
   one from a file is admin-only. (There's no Export button at all anymore, for
   anyone — Mark: "I don't need an export button at all.") Opening any work order —
   new or already submitted — is fully editable for everyone, admin or not.
+- A **Feedback Backlog** card at the top of the Reports tab — every 💬 Send Feedback
+  submission, newest first, filterable by type, showing the comment, screen, tech,
+  work order, and screenshot if one was attached. (Feedback is also emailed to Mark
+  the moment it's submitted, so the backlog is a reviewable record, not the only way
+  to see it.)
 
 The timeline also auto-flags **possible duplicate entries** — same work order + same
 report type logged within 5 minutes of each other, almost always a double-click or a
