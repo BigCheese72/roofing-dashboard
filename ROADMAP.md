@@ -427,7 +427,11 @@ Goal: turn each building into a long-term roof record.
   survey-grade," and each recorded corner's actual accuracy shows in the
   confirmation toast. A rough-but-adjustable footprint, not survey-grade —
   exactly the field method needed when OSM/satellite both fail. See
-  "RoofMapper Phase 3, part 2" in `DEV_NOTES.md`.
+  "RoofMapper Phase 3, part 2" in `DEV_NOTES.md`. Its known roughness is
+  exactly what the **Calibrate-by-known-edge** item under Dimensions below
+  is for — a single tape-measured edge, entered by editing that edge's
+  auto-shown dimension, rescales the whole footprint to be accurate; build
+  it together with Dimensions, not as a separate walk-the-corners-only fix.
   **Part 3, explicitly NOT built — flagged for a product decision**:
   uploading a drone/custom image as the capture canvas. Researched the
   existing image pipeline (`renderBaseMapAdminCard`, `resizeImageFile()`,
@@ -478,6 +482,31 @@ Goal: turn each building into a long-term roof record.
      things are from each other, not just where they are. Distinct from
      #1 (perimeter is automatic and roof-wide; this is manual and
      feature-specific).
+  3. **Calibrate-by-known-edge** (Mark's idea, to be built together with #1
+     and the Walk-the-Corners capture method above — GPS corner-walking
+     gives an accurate SHAPE but only a rough absolute SIZE, consumer GPS
+     being ~10–30 ft off per corner; this is what turns that rough polygon
+     into an accurately-scaled one from a single tape measurement). Exact
+     UX, per Mark: the moment a footprint auto-draws (from walked corners,
+     or really any capture method), #1's automatic per-edge dimension
+     labels are already showing on every edge, straight from the GPS/geometry
+     estimate. The tech taps ONE of those edge labels and edits it to the
+     real field-measured length (tape-measured on site) — the app then
+     rescales the ENTIRE footprint proportionally off that one calibrated
+     edge, so every other edge's dimension label, plus total area and
+     perimeter, all update to match automatically. One field measurement,
+     one edit, the whole footprint (and everything computed from it)
+     becomes accurate — not a separate calibration screen/flow, just
+     editing a dimension that was already on screen. A second edge can
+     optionally be entered/verified afterward as a confidence check (how
+     far off is it from what the first edge's scaling predicted) and/or
+     folded into a best-fit scale across both known edges rather than
+     trusting the single edge alone — a refinement on top of the core
+     single-edge-edit interaction, not required for it to work. Ties
+     directly into walk-the-corners (Phase 3, part 2, shipped) and #1
+     above (auto per-edge dimensions) — build all three together, this
+     is the piece that makes GPS-captured footprints actually
+     dimensionally trustworthy, not just correctly shaped.
 - **Sections**: divide one roof outline into multiple labeled sections (e.g.
   by roof system or area), each with its own computed area, tying into the
   existing multi-roof/roof-section data model rather than a parallel one.
