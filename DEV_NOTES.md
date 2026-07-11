@@ -3527,6 +3527,184 @@ sequencing mistake on my part). All test state removed, page reloaded clean
 with a final regression pass confirming Leak/Service, Change Order, Repair,
 and Warranty are all still exactly as they were before this feature.
 
+### RoofMapper Phase 3, part 2: "Walk the Corners" GPS capture (shipped 2026-07-10, dev only)
+
+Third RoofMapper outline-capture method, alongside OSM footprint search and
+manual trace (both re-verified still working correctly first, per Mark's
+ask -- see "RoofMapper Phase 3, part 1" above, no regressions from
+subsequent Phase 2.5/base-map/delete-outline work). For a roof where
+neither OSM nor satellite imagery is good enough to search or trace: walk
+to each corner of the building, tap "📍 Record This Corner," repeat, tap
+Finish.
+
+**Reused the trace engine instead of building a second one.** Manual trace
+and walk-the-corners are now two entry points into the SAME
+`rmTraceState`/`rmTraceAddPoint()`/`rmRenderTracePreview()`/
+`rmUpdateTraceButtons()`/`rmTraceUndo()`/`rmCancelTrace()`/`rmFinishTrace()`
+machinery -- `rmTraceState.mode` ("manual" | "walk") is the only thing that
+differs:
+- Manual trace (`rmStartManualTrace()`) attaches a map-click handler; points
+  come from tapping the satellite map.
+- Walk-the-corners (`rmStartWalkCorners()`) attaches NO map-click handler at
+  all -- `rmWalkRecordCorner()` calls the existing `rmGeoRequest()` (the
+  same geolocation wrapper `rmUseMyLocation()` already uses, same error
+  handling) and feeds the result into the identical `rmTraceAddPoint()`
+  manual trace's map-click handler calls. One shared "add a point, redraw
+  the preview, update Finish/Undo state" path regardless of where the point
+  came from.
+- `rmFinishTrace()` tags the resulting outline `source: "walk_corners"`
+  (vs. `"manual_trace"`) -- otherwise byte-identical shape to every other
+  capture method (`ring`/`center`/`areaSqFt`/`perimeterFt`/`isSiteBoundary`/
+  `createdAt`, no `tags`/`osmId`), so save, export, and Phase 2.5's inline
+  feature placement all work on a walked-corners outline with zero
+  additional code -- verified directly (saved one to a fake building,
+  confirmed it links and shows the Features panel exactly like any other
+  outline).
+- `rmShowTracePanel()` swaps the panel's title/hint text and shows/hides
+  the "📍 Record This Corner" button based on `rmTraceState.mode`, so the
+  same `#rm-trace-panel` card serves both methods without duplicating markup.
+- **Accuracy reality flagged directly in the UI**, not just in a doc:
+  the walk-mode hint text states consumer GPS is "roughly ±10–30 ft per
+  corner... not survey-grade," and each recorded corner's actual accuracy
+  (`position.coords.accuracy`, converted to feet) shows in the confirmation
+  toast, so the tech gets live feedback on how rough that specific corner's
+  fix was, not just a generic warning up front.
+- Auto-pan-to-latest-point on the map is scoped to walk mode only
+  (`rmRenderTracePreview()` checks `rmTraceState.mode === "walk"`) --
+  manual trace deliberately does NOT auto-pan, since the tech is
+  intentionally tapping a fixed view there and yanking the map after every
+  tap would fight their own panning/zooming. Walk mode benefits from it
+  (keeps the growing polygon in view while physically walking around a
+  building); manual trace would find it actively annoying.
+
+Tested with `navigator.geolocation.getCurrentPosition` mocked (no real GPS
+needed): confirmed starting walk-corners switches to satellite, shows the
+Record button, hides it for manual trace and vice versa; confirmed
+recording corners correctly disables Finish under 3 points and enables it
+at 3+; confirmed Undo removes exactly one point; confirmed Finish produces
+a `source:"walk_corners"` outline with a correctly closed ring and
+computed area; confirmed that outline saves to a fake building and links
+into the Features panel identically to OSM/manual-trace outlines; confirmed
+Cancel clears all state including resetting `rmTraceState.mode` back to
+"manual"; confirmed a geolocation error (permission denied) is handled
+gracefully -- no point added, button re-enabled, no crash; confirmed manual
+trace still works correctly and independently afterward (shares the engine
+but the two modes don't interfere with each other). All test state removed,
+page reloaded clean.
+
+## Outlook / Microsoft 365 — delegated auth (Phase 0 of delegated, dev-only, pending redirect URI registration)
+
+The app-only (client-credentials) Graph integration above is read/write for
+mail as *the app itself*, not as Mark — and Microsoft Graph does not expose
+Outlook inbox rules (`messageRules`) to application permissions **at all**.
+Confirmed empirically, not just from docs: every `messageRules` POST under
+the app-only token returned `403 ErrorAccessDenied`, while every other Graph
+call (folders, messages, moves) succeeded under the *identical* token
+immediately before and after — that's the signature of a hard permission-
+model wall, not a missing scope/consent. OneDrive/Excel/Word "as Mark" have
+the same requirement — those APIs work delegated-only for a personal
+mailbox/drive. This phase adds the **delegated** ("acts as you")
+authorization-code OAuth flow, alongside (not replacing) the app-only flow —
+both live on the same Azure app registration, just two different grant
+types.
+
+**New files** (mirror the app-only files' structure/conventions):
+- `netlify/functions/lib/graphDelegatedAuth.js` — the auth helper: builds/
+  validates the OAuth `state` param, exchanges an authorization code for
+  tokens, refreshes an access token from a stored refresh token (persisting
+  any *rotated* refresh token Azure AD issues back to Firestore — see
+  below), and `graphFetchDelegated()`, a delegated-token equivalent of
+  `lib/graphAuth.js`'s `graphFetch()`.
+- `netlify/functions/ms-auth-start.js` — Mark visits this URL directly (a
+  plain link, no UI needed) and gets a `302` to Microsoft's sign-in page.
+  Sign-in URLs:
+  `https://leak-work-orders.netlify.app/.netlify/functions/ms-auth-start`
+  (prod) / `https://dev--leak-work-orders.netlify.app/.netlify/functions/ms-auth-start`
+  (dev).
+- `netlify/functions/ms-auth-callback.js` — Microsoft redirects back here
+  with an authorization code; this exchanges it server-side for an access +
+  refresh token, confirms identity with a lightweight `GET /me`, and stores
+  the refresh token. Returns a plain confirmation HTML page — never echoes
+  any token back to the browser.
+
+**Redirect URIs are hardcoded, not env-configurable** — Azure AD rejects
+any `redirect_uri` that doesn't exactly match what's registered on the app
+registration, so a typo'd env var would silently break sign-in in a
+confusing way. Instead `resolveRedirectUri()` allow-lists exactly two
+request hosts and maps each to its exact, fixed callback URL:
+`leak-work-orders.netlify.app` → prod callback, `dev--leak-work-orders.netlify.app`
+→ dev callback. Any other host (including a similar-looking spoof like
+`leak-work-orders.netlify.app.evil.com`) is rejected outright rather than
+used to build a URL. **These same two exact strings need to be registered
+in Azure AD → App registrations → this app → Authentication → Web platform
+→ Redirect URIs — Steve (the M365/domain admin, see "Outlook / Microsoft
+365 integration" above) needs to add them.** Until he does, `ms-auth-start`
+will redirect fine, but Microsoft will reject the sign-in with a redirect-
+URI-mismatch error at the consent screen. **This step is the one thing not
+yet done — everything else in this phase is built and unit-tested.**
+
+**State CSRF protection is stateless** (no server-side session to store a
+nonce in, since this is plain serverless functions) — `signState()`
+produces `base64url(timestamp + "." + HMAC-SHA256(timestamp))`, keyed by
+`GRAPH_CLIENT_SECRET` (intentionally reused — it's already a secret only
+the server holds; a separate state-signing secret would be one more env
+var to manage for no real security gain in this single-admin-user
+context). `verifyState()` recomputes the HMAC and rejects if it doesn't
+match (`crypto.timingSafeEqual`, not `===`, to avoid a timing side-channel)
+or if the timestamp is more than 10 minutes old (replay protection).
+
+**Refresh token storage: Firestore, `secrets/ms_graph_delegated`, Admin-SDK-only.**
+Considered and rejected a Netlify env var instead — env vars are
+deploy-time/static in Netlify, but Azure AD v2 **rotates the refresh token
+on most refreshes** when `offline_access` is granted, so the stored value
+needs to be updatable at runtime, which only a real database supports.
+Firestore was the natural choice since it's already the app's database and
+`admin.js` already established the exact pattern needed (Firebase Admin
+SDK, bypasses Firestore security rules entirely, gated by which Netlify
+function code paths call it — never by a client-supplied credential).
+`firestore.rules` (repo root) has an explicit
+`match /secrets/{secretId} { allow read, write: if false; }` block — belt
+and suspenders on top of Firestore's own implicit deny-by-default for any
+collection with no matching rule, so a future edit to this file can't
+accidentally expose it. The refresh token itself is never returned to the
+browser, logged, or written to any file outside Firestore.
+
+**Testing done without a live interactive sign-in** (can't get a real
+authorization `code` until Steve registers the redirect URIs and someone
+actually completes the Microsoft sign-in prompt): 23 unit tests against
+the actual pure logic (redirect-URI allow-listing including a spoofed-
+subdomain rejection case; state sign/verify round-trip, tamper rejection,
+expiry, wrong-secret rejection; authorize-URL structural correctness —
+exact scope string, exact redirect_uri, tenant/client_id round-trip), all
+passing, plus a live read-only check against the tenant's own OIDC
+discovery document confirming the authorize/token endpoint URLs Graph
+expects match exactly what this code builds. One interesting non-bug found
+while testing: appending characters to the end of a `state` value doesn't
+always get rejected — `base64url`/`hex` decoding in Node/Deno silently
+drops a trailing *incomplete* group rather than erroring, so a small
+amount of trailing noise can decode to the exact same payload. Confirmed
+this is not a forgery vector (mid-string tampering, which *does* change
+the decoded payload, is correctly rejected every time) — an attacker still
+cannot produce a *different* valid timestamp/signature pair without
+`GRAPH_CLIENT_SECRET`. **Not tested at all yet, pending the redirect URI
+registration**: the actual authorization-code exchange, refresh-token
+persistence against real Firestore (no local service-account credentials
+in the environment this was built in), and refresh-token rotation over
+real repeated use.
+
+**Required env vars**: same `GRAPH_TENANT_ID`/`GRAPH_CLIENT_ID`/`GRAPH_CLIENT_SECRET`
+as the app-only integration (same app registration, different grant type —
+nothing new to add there) plus `FIREBASE_SERVICE_ACCOUNT` (already required
+for `admin.js`). No new env vars.
+
+**Not built yet, deliberately**: nothing calls `graphFetchDelegated()` for
+anything real yet — no OneDrive/Excel/Word feature, no inbox-rules
+creation using it. This phase is scoped to "get delegated auth working
+end-to-end so a stored, refreshable token exists" per the task that
+specced it; wiring an actual feature on top (starting with the 33-rule
+inbox-rules spec drafted in the app-only section above, once delegated
+auth is confirmed live) is the next phase, not this one.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |

@@ -309,8 +309,17 @@ hospitals, are only mapped as a whole property parcel, or not mapped at all.) Ta
 **"🛰️ Switch to Satellite View"** to see real imagery instead of the street map, and
 **"✏️ Trace Manually Instead"** to tap the roof's corners by hand right on the
 satellite image — Undo the last point, Finish once you've got at least 3, or Cancel.
-A hand-traced outline works exactly the same as one found automatically: same save,
-export, and feature-placement steps above.
+
+**Satellite imagery not good enough either?** Tap **"🚶 Walk the Corners"** instead —
+walk to each corner of the roof and tap **"📍 Record This Corner"** there, repeat
+around the building, then Finish. Each recorded corner shows its GPS accuracy right
+in the confirmation ("±18 ft accuracy," etc.) — a phone's GPS is typically accurate to
+somewhere around 10–30 feet per corner, so this is a rough-but-adjustable footprint,
+not survey-grade, but it's a real field method for the buildings where nothing else
+works.
+
+However it's captured — OSM search, hand-traced, or walked — an outline works exactly
+the same from there: same save, export, and feature-placement steps above.
 
 **Zoom**: the map has real zoom in/out (scroll, pinch, +/- buttons) and a bigger
 default size for working on large roofs. Generating an outline zooms straight into it

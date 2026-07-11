@@ -496,15 +496,21 @@
       <div class="rm-actions" id="rm-basemap-wrap" style="display:none">
         <button class="btn" id="rm-baselayer-btn" onclick="rmToggleBaseLayer()">🛰️ Switch to Satellite View</button>
         <button class="btn" id="rm-trace-btn" onclick="rmStartManualTrace()">✏️ Trace Manually Instead</button>
+        <button class="btn" id="rm-walk-btn" onclick="rmStartWalkCorners()">🚶 Walk the Corners</button>
       </div>
       <p class="hint" id="rm-trace-hint" style="display:none;margin:-6px 0 12px">OpenStreetMap has no footprint here,
-        or none of the ones found are right? Switch to satellite view and trace the roof's outline by hand.</p>
+        or none of the ones found are right? Switch to satellite view and trace the roof's outline by hand, or walk
+        its corners and tap to record each one — both work even where satellite imagery isn't good enough to trace.</p>
     </div>
 
     <div class="card" id="rm-trace-panel" style="display:none">
-      <h2 class="cond">Trace Roof Outline</h2>
-      <p class="hint">Tap the roof's corners in order, all the way around, right on the satellite map above.
-        <span id="rm-trace-count">0 points</span> so far — need at least 3.</p>
+      <h2 class="cond" id="rm-trace-title">Trace Roof Outline</h2>
+      <p class="hint" id="rm-trace-mode-hint">Tap the roof's corners in order, all the way around, right on the
+        satellite map above.</p>
+      <p class="hint"><span id="rm-trace-count">0 points</span> so far — need at least 3.</p>
+      <div class="rm-actions">
+        <button class="btn primary rm-bigbtn" id="rm-walk-record-btn" onclick="rmWalkRecordCorner()" style="display:none">📍 Record This Corner</button>
+      </div>
       <div class="rm-actions">
         <button class="btn primary rm-bigbtn" id="rm-trace-finish-btn" onclick="rmFinishTrace()" disabled>✓ Finish Outline</button>
         <button class="btn rm-bigbtn" id="rm-trace-undo-btn" onclick="rmTraceUndo()" disabled>↩️ Undo Last Point</button>
@@ -6348,27 +6354,76 @@ function rmGenerateOutline(){
   toast(outline.isSiteBoundary ? "Site boundary captured — not a single roof, see warning below ⚠️" : "Roof outline generated ✓");
 }
 
-/* ---- Phase 3: manual trace (satellite view, no OSM footprint needed) ----
-   Same rmState.outline shape as the OSM path (source:"manual_trace" instead
-   of "osm", no tags/osmId since there's no OSM feature behind it) so
-   everything downstream -- save, export, inline feature placement -- works
-   completely unchanged. Traces directly on rmState.map (auto-switched to
-   satellite), not a separate map instance. */
-var rmTraceState = { active: false, points: [], previewLayer: null, vertexLayers: [] };
+/* ---- Phase 3: manual trace + walk-the-corners (no OSM footprint needed) ----
+   Two capture methods, one shared point-collection engine. rmTraceState.mode
+   ("manual" | "walk") is the only thing that differs: manual trace collects
+   points from map taps (satellite view, auto-switched); walk-the-corners
+   collects points from navigator.geolocation each time the tech physically
+   stands at a corner and taps Record -- no map-click handler at all, since
+   the tech is looking at the roof, not necessarily the screen. Both produce
+   the exact same rmState.outline shape as the OSM path (just a different
+   `source` tag, no tags/osmId since there's no OSM feature behind either),
+   so everything downstream -- save, export, inline feature placement --
+   works completely unchanged regardless of which method captured it. */
+var rmTraceState = { active: false, mode: "manual", points: [], previewLayer: null, vertexLayers: [] };
 var rmTraceClickHandler = null;
+function rmShowTracePanel(){
+  document.getElementById("rm-trace-panel").style.display = "";
+  document.getElementById("rm-footprint-panel").style.display = "none";
+  var isWalk = rmTraceState.mode === "walk";
+  document.getElementById("rm-trace-title").textContent = isWalk ? "Walk the Corners" : "Trace Roof Outline";
+  document.getElementById("rm-trace-mode-hint").textContent = isWalk ?
+    "Walk to each corner of the roof and tap “📍 Record This Corner” there. Consumer GPS is " +
+    "accurate to roughly ±10–30 ft per corner — good for a rough, adjustable footprint when " +
+    "satellite/OSM aren’t usable here, not survey-grade. Undo and re-record a corner if a reading looks off." :
+    "Tap the roof's corners in order, all the way around, right on the satellite map above.";
+  document.getElementById("rm-walk-record-btn").style.display = isWalk ? "" : "none";
+  rmUpdateTraceButtons();
+  document.getElementById("rm-trace-panel").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
 function rmStartManualTrace(){
   rmClearFootprintLayers(); /* same clean-slate as starting a new search */
   rmTraceState.active = true;
+  rmTraceState.mode = "manual";
   rmTraceState.points = [];
   rmSetBaseLayer("satellite");
-  document.getElementById("rm-trace-panel").style.display = "";
-  document.getElementById("rm-footprint-panel").style.display = "none";
   var map = rmEnsureMap();
   rmTraceClickHandler = function(e){ rmTraceAddPoint(e.latlng); };
   map.on("click", rmTraceClickHandler);
   if (rmState.lat != null) map.setView([rmState.lat, rmState.lng], 20);
   rmSetStatus("Tracing manually — tap the roof's corners in order below, then Finish Outline.");
-  document.getElementById("rm-trace-panel").scrollIntoView({ behavior: "smooth", block: "nearest" });
+  rmShowTracePanel();
+}
+/* Walk-the-corners: no map-click handler -- points come from a GPS fix each
+   time the tech taps Record, not from tapping the map (satellite imagery
+   may be blank/wrong/unavailable here at all, which is exactly the case
+   this method exists for). Still switches to satellite so there's SOME
+   visual reference and the accumulating preview polygon is visible, but
+   nothing about capture depends on the map itself. */
+function rmStartWalkCorners(){
+  rmClearFootprintLayers();
+  rmTraceState.active = true;
+  rmTraceState.mode = "walk";
+  rmTraceState.points = [];
+  rmSetBaseLayer("satellite");
+  var map = rmEnsureMap();
+  if (rmState.lat != null) map.setView([rmState.lat, rmState.lng], 19);
+  rmSetStatus("Walking the corners — stand at each corner of the roof and tap Record This Corner below.");
+  rmShowTracePanel();
+}
+function rmWalkRecordCorner(){
+  var btn = document.getElementById("rm-walk-record-btn");
+  btn.disabled = true; btn.textContent = "Locating…";
+  rmGeoRequest(function(pos){
+    btn.disabled = false; btn.textContent = "📍 Record This Corner";
+    var lat = pos.coords.latitude, lng = pos.coords.longitude, acc = pos.coords.accuracy || 0;
+    rmTraceAddPoint(L.latLng(lat, lng));
+    var accFt = Math.round(acc * 3.28084);
+    toast("Corner " + rmTraceState.points.length + " recorded (±" + accFt + " ft accuracy).");
+  }, function(err){
+    btn.disabled = false; btn.textContent = "📍 Record This Corner";
+    toast(err.friendly || "Couldn't get your location.");
+  });
 }
 function rmTraceAddPoint(latlng){
   if (!rmTraceState.active) return;
@@ -6394,6 +6449,14 @@ function rmRenderTracePreview(){
       color: "#E8600A", weight: 2, dashArray: "4,4", fillColor: "#E8600A", fillOpacity: 0.1
     }).addTo(map);
   }
+  /* Walk-the-corners only -- keep the growing polygon in view as the tech
+     physically moves around a building. Manual trace deliberately does NOT
+     auto-pan: the tech is intentionally tapping a fixed view, and yanking
+     the map after every tap would fight their own panning/zooming. */
+  if (rmTraceState.mode === "walk" && rmTraceState.points.length){
+    var last = rmTraceState.points[rmTraceState.points.length - 1];
+    map.panTo([last.lat, last.lng], { animate: true });
+  }
 }
 function rmUpdateTraceButtons(){
   document.getElementById("rm-trace-finish-btn").disabled = rmTraceState.points.length < 3;
@@ -6411,26 +6474,32 @@ function rmCancelTrace(){
   rmTraceState.points = [];
   rmTraceState.vertexLayers = [];
   rmTraceState.previewLayer = null;
+  rmTraceState.mode = "manual";
   document.getElementById("rm-trace-panel").style.display = "none";
+  document.getElementById("rm-walk-record-btn").style.display = "none";
   rmUpdateTraceButtons();
 }
 function rmFinishTrace(){
-  if (rmTraceState.points.length < 3){ toast("Tap at least 3 points to form a roof outline."); return; }
+  var isWalk = rmTraceState.mode === "walk";
+  if (rmTraceState.points.length < 3){
+    toast((isWalk ? "Record" : "Tap") + " at least 3 " + (isWalk ? "corners" : "points") + " to form a roof outline.");
+    return;
+  }
   var ring = rmGeomCleanRing(rmTraceState.points.concat([rmTraceState.points[0]]));
-  if (ring.length < 4){ toast("Those points are too close together — try tracing wider corners."); return; }
+  if (ring.length < 4){ toast("Those points are too close together — try " + (isWalk ? "spacing corners further apart" : "tracing wider corners") + "."); return; }
   var outline = {
     ring: ring,
     center: rmGeomRingCentroid(ring),
     areaSqFt: rmGeomPolygonAreaSqMeters(ring) * 10.7639,
     perimeterFt: rmGeomPolygonPerimeterMeters(ring) * 3.28084,
-    source: "manual_trace",
+    source: isWalk ? "walk_corners" : "manual_trace",
     osmId: null, osmType: null, tags: {},
     isSiteBoundary: false,
     createdAt: Date.now()
   };
   rmCancelTrace();
   rmDrawFinalOutline(outline);
-  toast("Roof outline traced ✓");
+  toast(isWalk ? "Roof outline captured from walked corners ✓" : "Roof outline traced ✓");
 }
 
 /* ---- save to building (existing or new) ---- */

@@ -401,7 +401,7 @@ Goal: turn each building into a long-term roof record.
   custom (x/y) base-map assets still can't place/show inline (lat/lng
   only). Photo auto-pin is untouched — separate code path entirely. See
   "RoofMapper Phase 2.5" in `DEV_NOTES.md`.
-- ✅ **Shipped (dev only), part 1 of 2**: RoofMapper ↔ Roof Map unification —
+- ✅ **Shipped (dev only), part 1 of 3**: RoofMapper ↔ Roof Map unification —
   Phase 3, satellite view + manual trace. Lets a tech map a roof even where
   OpenStreetMap has no building footprint at all (the real case that
   prompted this — St. Joseph's Hospital). A "🛰️ Switch to Satellite View"
@@ -413,7 +413,22 @@ Goal: turn each building into a long-term roof record.
   instead of `"osm"`) — so saving, exporting, and Phase 2.5's inline
   feature placement all work on it with zero extra code. See "RoofMapper
   Phase 3, part 1" in `DEV_NOTES.md`.
-  **Part 2, explicitly NOT built — flagged for a product decision**:
+- ✅ **Shipped (dev only), part 2 of 3**: "🚶 Walk the Corners" GPS
+  footprint capture — a third capture method alongside OSM search and
+  manual trace, for when neither OSM nor satellite imagery is usable at
+  all. Walk to each corner of the roof, tap "📍 Record This Corner"
+  (reuses the same `rmGeoRequest()` geolocation wrapper `📍 Use My
+  Location` already uses), repeat, tap Finish — reuses the exact same
+  trace engine manual trace already built (`rmTraceState.mode` is the only
+  difference: points come from a GPS fix per tap instead of a map tap),
+  producing the same outline shape tagged `source:"walk_corners"`. GPS
+  accuracy reality is flagged directly in the UI, not just documented: the
+  mode's hint text states "roughly ±10–30 ft per corner... not
+  survey-grade," and each recorded corner's actual accuracy shows in the
+  confirmation toast. A rough-but-adjustable footprint, not survey-grade —
+  exactly the field method needed when OSM/satellite both fail. See
+  "RoofMapper Phase 3, part 2" in `DEV_NOTES.md`.
+  **Part 3, explicitly NOT built — flagged for a product decision**:
   uploading a drone/custom image as the capture canvas. Researched the
   existing image pipeline (`renderBaseMapAdminCard`, `resizeImageFile()`,
   `tools/geotiff_to_webmap.py`) — the blocker is that the app's only way to
