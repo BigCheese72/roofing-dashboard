@@ -4513,6 +4513,16 @@ function saveOrder(opts){
     return cloudSaveOrder(o).then(function(){
       return syncPinCorrectionsToHistory(o);
     }).then(function(){
+      /* Building History used to only get an entry once a PDF was
+         Downloaded/Emailed/Shared -- a work order Saved (findings, pins,
+         photos and all) but never exported left NO record at all, which is
+         exactly what happened to Mark's real Tri-Delta leak report. Every
+         save now creates/updates that same building_history_events doc
+         (evt_<id>, same upsert-by-id as the PDF actions below) so field
+         work shows up immediately, export or not. See "Building History on
+         Save" in DEV_NOTES.md. */
+      return logReportAndHistoryEvent(o, "Saved", null, undefined);
+    }).then(function(){
       if (!opts.quiet) toast("Saved to cloud \u2713 \u2014 visible on all your devices");
       renderSaved();
       return true;
@@ -5656,6 +5666,17 @@ async function openBuildingHistory(buildingId){
        roofs" in DEV_NOTES.md. */
     var autoAssignBtnHtml = roofs.length > 1 ?
       '<button class="btn" onclick="rmAutoAssignExistingPinsToRoofs(\'' + buildingId + '\')">🎯 Auto-Assign Photos to Roofs</button>' : '';
+    /* "Building History on Save" recovery ask: a work order Saved before
+       this shipped (findings/pins/photos and all -- Mark's real Tri-Delta
+       leak report from today, saved but never Downloaded/Emailed/Shared)
+       has no building_history_events doc at all, so it won't show up just
+       from opening this page again -- there's nothing to re-render. This
+       button runs the one-time recovery pass: finds this building's
+       already-saved work orders that are still missing an event and
+       creates it, without requiring a re-export. See
+       backfillMissingHistoryEvents() and "Building History on Save" in
+       DEV_NOTES.md. */
+    var recoverBtnHtml = '<button class="btn" onclick="backfillMissingHistoryEvents(\'' + buildingId + '\')">🔄 Recover Unlogged Work Orders</button>';
     var emptyMapCardHtml = '<div class="card"><h2 class="cond">Roof Map</h2>' + roofPickerHtml +
       '<p class="hint">No pins placed yet — they’ll show up here as findings get pinned on future reports. ' +
       'Permanent features (drains, HVAC units, hatches, etc.) can be added any time.</p>' +
@@ -5682,8 +5703,9 @@ async function openBuildingHistory(buildingId){
       historyEvents = [];
       historyBuildingId = buildingId;
       detail.innerHTML = baseMapCardHtml + profileCardHtml + emptyMapCardHtml + '<div class="card"><h2 class="cond">Timeline</h2>' +
-        '<div class="btnrow" style="margin:0 0 10px">' + addActivityBtnHtml + '</div>' +
-        '<div class="empty">No reports logged for this building yet.</div></div>';
+        '<div class="btnrow" style="margin:0 0 10px">' + addActivityBtnHtml + ' ' + recoverBtnHtml + '</div>' +
+        '<div class="empty">No reports logged for this building yet. If a work order was already Saved for this ' +
+        'building but never Downloaded/Emailed/Shared, tap 🔄 Recover Unlogged Work Orders above.</div></div>';
       renderBuildingMap([], hasCustomBaseMap ? roof : null, bld.location, orthoOverlay, roofAssets, buildingId, allRoofOutlinesForMap);
       return;
     }
@@ -5722,7 +5744,7 @@ async function openBuildingHistory(buildingId){
       addFeatureBtnHtml + ' ' + addRoofBtnHtml + ' ' + autoAssignBtnHtml + '</div>';
     detail.innerHTML = baseMapCardHtml + profileCardHtml + mapCardHtml +
       '<div class="card"><h2 class="cond">Timeline (' + events.length + ')</h2>' +
-      '<div class="btnrow" style="margin:0 0 10px">' + addActivityBtnHtml + '</div>' +
+      '<div class="btnrow" style="margin:0 0 10px">' + addActivityBtnHtml + ' ' + recoverBtnHtml + '</div>' +
       (dupCount ? '<p class="hint">\u26a0 ' + dupCount + ' possible duplicate' + (dupCount === 1 ? "" : "s") +
         ' flagged below (same work order + report type within 5 minutes of another entry).</p>' : '') +
       timelineFiltersHtml() +
@@ -5823,6 +5845,73 @@ async function rmAutoAssignExistingPinsToRoofs(buildingId){
       (ambiguousCount ? " (" + ambiguousCount + " flagged — check the ⚠️ badge on those findings)" : "") + " ✓");
     openBuildingHistory(buildingId);
   }catch(e){ toast("Couldn't auto-assign pins: " + e.message); }
+}
+/* "Building History on Save" recovery pass -- Mark's real Tri-Delta case:
+   a work order Saved (findings, pins, photos, GPS and all) before this
+   shipped, but never Downloaded/Emailed/Shared, has NO building_history_events
+   doc at all (that write used to be PDF-action-only -- see
+   logReportAndHistoryEvent()/saveOrder()). One-time, one-tap recovery for
+   whatever's already sitting in `workorders` for this building.
+
+   workorders has no buildingId field of its own (see DATA_MODEL.md) -- a
+   work order only ever gets tied to a building indirectly, via
+   ensureCustomerAndBuilding() recomputing the same cust_/bld_ slug from
+   its own jobName/billTo at report-save time. So this recomputes that
+   exact same slug for every candidate and keeps only the ones that match
+   THIS building, rather than trusting any stored field. Capped at the
+   same 100-most-recent-saved window cloudFetchIndex() already uses
+   everywhere else in this file -- a real, documented limit (matches every
+   other building-wide recovery pass here), not silently unbounded. */
+async function backfillMissingHistoryEvents(buildingId){
+  if (!fdb){ toast("Needs cloud sync (internet connection)."); return; }
+  toast("Checking saved work orders for unlogged reports…");
+  try{
+    var qs = await fdb.collection("workorders").orderBy("savedAt", "desc").limit(100).get();
+    var candidates = [];
+    qs.forEach(function(d){
+      var v = d.data();
+      var bldName = (v.jobName || "").trim();
+      if (!bldName) return;
+      var custId = (v.billTo || "").trim() ? ("cust_" + slugify(v.billTo.trim())) : null;
+      var bldId = "bld_" + slugify((custId || "nocust") + "_" + bldName);
+      if (bldId === buildingId) candidates.push({ id: d.id, jobName: bldName, savedAt: v.savedAt || 0 });
+    });
+    if (!candidates.length){
+      toast("No saved work orders found for this building in the last 100 saved.");
+      return;
+    }
+    /* One existence check per candidate rather than one big "in" query --
+       Firestore's whereIn caps at 30 values and candidates can exceed that
+       for a busy building, so per-doc .get() (cheap, direct-by-id reads)
+       is simpler and correct at any candidate count. */
+    var missing = [];
+    for (var i = 0; i < candidates.length; i++){
+      var snap = await fdb.collection("building_history_events").doc("evt_" + candidates[i].id).get();
+      if (!snap.exists) missing.push(candidates[i]);
+    }
+    if (!missing.length){
+      toast("Checked " + candidates.length + " saved work order" + (candidates.length === 1 ? "" : "s") +
+        " for this building — every one already has a history entry.");
+      return;
+    }
+    if (!confirm(missing.length + " saved work order" + (missing.length === 1 ? "" : "s") +
+      " for this building " + (missing.length === 1 ? "has" : "have") + " no Building History entry yet " +
+      "(saved but never Downloaded/Emailed/Shared). Recover " + (missing.length === 1 ? "it" : "them") +
+      " now?")) return;
+    toast("Recovering " + missing.length + " report" + (missing.length === 1 ? "" : "s") + "…");
+    var recovered = 0, failed = 0;
+    for (var j = 0; j < missing.length; j++){
+      try{
+        var o = await cloudFetchOrder(missing[j].id);
+        if (!o) { failed++; continue; }
+        await logReportAndHistoryEvent(o, "Saved", null, undefined);
+        recovered++;
+      }catch(e){ failed++; }
+    }
+    toast(recovered + " report" + (recovered === 1 ? "" : "s") + " recovered into Building History" +
+      (failed ? " (" + failed + " couldn't be read — try again)" : "") + " ✓");
+    openBuildingHistory(buildingId);
+  }catch(e){ toast("Couldn't check for unlogged work orders: " + e.message); }
 }
 /* A roof's label was previously only ever set once, at promptAddRoof()
    creation time -- no way to fix a typo or rename it later. Same
@@ -6925,6 +7014,14 @@ async function logReportAndHistoryEvent(o, kind, emailInfo, ccUploadResult){
   if (!fdb) return;
   try{
     var ids = await ensureCustomerAndBuilding(o);
+    /* kind === "Saved" comes from the plain Save button/autosave path (see
+       saveOrder()) -- fires on every save of every work order type, long
+       before a job name is necessarily filled in yet. Nothing to attach a
+       history event to without a building, so skip silently rather than
+       writing a buildingId:null record -- a real PDF action (kind !== "Saved")
+       already implied a filled-in job name every time this ran before, so
+       this guard changes nothing for those call sites. */
+    if (!ids.buildingId) return;
     var pdfRef = null; /* no Firebase Storage — see comment above */
     var sharedId = "evt_" + o.id;
     var existing = null;
@@ -6966,7 +7063,12 @@ async function logReportAndHistoryEvent(o, kind, emailInfo, ccUploadResult){
         return (ids.length > 1 && o.roofLabels) ? ids.map(function(id){ return o.roofLabels[id] || id; }) : null;
       })(),
       workOrderType: o.woType || WORK_ORDER_TYPES[0],
-      roofType: o.roofSystem || "", reportType: kind,
+      roofType: o.roofSystem || "",
+      /* "Saved" (plain-save path) is deliberately the LOWEST-priority label
+         -- never downgrades a real report action (PDF Downloaded/Emailed/
+         Shared) that already happened for this work order. A genuine report
+         action always overwrites, exactly as before this existed. */
+      reportType: kind === "Saved" ? ((existing && existing.reportType) || kind) : kind,
       conditionsSummary: summarizeRows(o.findings || [], "condition", "location"),
       repairsSummary: summarizeRows(o.repairs || [], "repair", "location"),
       warrantyStatus: computeWarrantyStatus(o),
