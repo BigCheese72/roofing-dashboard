@@ -141,6 +141,16 @@ function kvTable(rows){
   return body ? "<table><tbody>" + body + "</tbody></table>" : "";
 }
 
+/* Preview and every export path share the exact same photo-integrity risk
+   -- see ensurePhotosLoadedForExport()'s own comment below. Preview/Edit
+   tabs call this instead of showView('preview') directly so a photo-
+   stripped record gets the same loud warning before rendering, not just
+   before generating a PDF. */
+async function goToPreview(){
+  var photoCheck = await ensurePhotosLoadedForExport();
+  if (!photoCheck.ok) alert(photosMissingWarning(photoCheck.missingCount));
+  showView("preview");
+}
 function renderDoc(){
   var o = collect();
   document.getElementById("doc-output").innerHTML =
@@ -429,9 +439,59 @@ function pdfFileName(){
    Every other type still uses this original leak-report builder,
    byte-for-byte unchanged in its own logic. See "Change Order gets its
    own PDF template" and "Repair work order type" in DEV_NOTES.md. */
+/* Defense in depth against Mark's real "captions present, photos gone"
+   bug: loadOrder() now refuses to trust a photo-stripped local cache over
+   a cloud refetch (see stripPhotoBytes()/orderPhotosAreStrippedLocally()
+   in core.js), which is the actual root fix -- but Preview and every
+   export path (PDF download/email/share) all render straight from
+   whatever's currently in the live photos[] array, by design
+   (renderLeakReportDoc() is deliberately synchronous, no Firestore
+   access). This is the last line of defense for any OTHER way that array
+   could end up missing bytes (offline reopen, a future bug, etc.): checks
+   for any photo missing .img, and if the current work order has a real id
+   and a cloud connection, attempts exactly one fetch of the full cloud
+   copy and restores bytes by array position -- ONLY when the photo count
+   still matches (a mismatch means photos were added/removed since
+   whatever got cached, so position no longer reliably corresponds to the
+   same photo; safer to report it unresolved than guess wrong). Never
+   silently proceeds with missing images -- every caller below blocks and
+   shows a loud, impossible-to-miss warning instead of producing an
+   incomplete customer-facing document. See "PDF/preview missing photos"
+   in DEV_NOTES.md. */
+async function ensurePhotosLoadedForExport(){
+  var missing = (photos || []).filter(function(p){ return !p.img; });
+  if (!missing.length) return { ok: true };
+  if (!currentId || !fdb) return { ok: false, missingCount: missing.length };
+  try{
+    var cloudCopy = await cloudFetchOrder(currentId);
+    if (!cloudCopy || !cloudCopy.photos || cloudCopy.photos.length !== photos.length){
+      return { ok: false, missingCount: missing.length };
+    }
+    var stillMissing = 0;
+    photos.forEach(function(p, i){
+      if (p.img) return;
+      var match = cloudCopy.photos[i];
+      if (match && match.img) p.img = match.img;
+      else stillMissing++;
+    });
+    if (stillMissing > 0) return { ok: false, missingCount: stillMissing };
+    renderPhotos();
+    return { ok: true, recovered: missing.length };
+  }catch(e){ return { ok: false, missingCount: missing.length, error: e.message }; }
+}
+function photosMissingWarning(missingCount){
+  return "⚠️ " + missingCount + " photo" + (missingCount === 1 ? "" : "s") + " couldn't be loaded" +
+    (fdb ? " from the cloud" : " — no internet connection") + ". Stopped rather than produce a report " +
+    "with missing images. Check your connection and reopen this work order, or re-add the missing photo(s), then try again.";
+}
 async function generatePdf(){
   if (!(window.jspdf && window.jspdf.jsPDF && window.jspdf.jsPDF.API && window.jspdf.jsPDF.API.autoTable)){
     toast("PDF tools couldn't load — check your internet connection, or use Print instead.");
+    return null;
+  }
+  var photoCheck = await ensurePhotosLoadedForExport();
+  if (!photoCheck.ok){
+    alert(photosMissingWarning(photoCheck.missingCount));
     return null;
   }
   var o = collect();

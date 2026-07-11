@@ -1162,6 +1162,19 @@ function onWoTypeChange(){
       was removed entirely -- see "Export button removed" in
       DEV_NOTES.md.) */
 var MAX_CACHED_PHOTO_DRAFTS = 10;
+/* photosStripped is the explicit, checkable fact that this specific cached
+   copy is missing real image bytes -- Mark's real bug: loadOrder() used to
+   infer "is this cache good enough" purely from a savedAt timestamp
+   comparison, but stripping never touches savedAt, so a stripped local
+   copy and its cloud original can carry the exact same timestamp forever.
+   The next time that report was reopened, the timestamp comparison found
+   them "equal, nothing new on the cloud" and trusted the stripped local
+   copy -- captions/findings intact, every photo silently empty, in BOTH
+   the Preview view and the generated PDF (both render straight from
+   whatever's currently in memory, by design -- see renderLeakReportDoc()'s
+   own "synchronous, no Firestore access" comment). This flag is what
+   loadOrder() now checks instead of trusting the timestamp alone -- see
+   "PDF/preview missing photos" in DEV_NOTES.md. */
 function stripPhotoBytes(o){
   var copy = Object.assign({}, o);
   copy.photos = (o.photos || []).map(function(p){
@@ -1169,10 +1182,18 @@ function stripPhotoBytes(o){
     delete p2.img;
     return p2;
   });
+  copy.photosStripped = true;
   return copy;
 }
 function orderHasCachedPhotoBytes(o){
   return !!(o && o.photos && o.photos.some(function(p){ return p && p.img; }));
+}
+/* Local record has photos worth caring about (findings/captions/etc. that
+   imply real images belong here) but this specific cached copy doesn't
+   actually have the bytes -- the exact condition loadOrder() must never
+   silently trust over a cloud refetch. */
+function orderPhotosAreStrippedLocally(o){
+  return !!(o && o.photosStripped && (o.photos || []).length > 0);
 }
 function pruneCachedPhotoDrafts(db){
   var withPhotos = db.index.filter(function(e){
@@ -1327,8 +1348,15 @@ function loadOrder(id){
   db.index.forEach(function(e){ if (e.id === id) localEntry = e; });
   var cloudEntry = null;
   cloudIndexCache.forEach(function(e){ if (e.id === id) cloudEntry = e; });
+  /* orderPhotosAreStrippedLocally(): a local copy missing its photo bytes
+     must NEVER be treated as "good enough" just because its savedAt
+     matches the cloud's -- stripping never bumps that timestamp, so a
+     stripped copy and its cloud original can carry the same timestamp
+     forever. Always prefer a fresh cloud fetch over a known-stripped local
+     copy when there's a connection to get one. See stripPhotoBytes() and
+     "PDF/preview missing photos" in DEV_NOTES.md. */
   var needCloud = fdb && cloudEntry &&
-    (!local || (cloudEntry.savedAt || 0) > ((localEntry && localEntry.savedAt) || 0));
+    (!local || orderPhotosAreStrippedLocally(local) || (cloudEntry.savedAt || 0) > ((localEntry && localEntry.savedAt) || 0));
   if (needCloud){
     toast("Loading from cloud\u2026");
     cloudFetchOrder(id).then(function(o){

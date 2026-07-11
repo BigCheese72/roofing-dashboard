@@ -50,7 +50,7 @@
   <div class="spacer"></div>
   <button class="tab cond" style="background:#E8600A;color:#fff" onclick="newOrder()" title="New work order">➕<span class="tab-label"> New</span></button>
   <button class="tab cond active" id="tab-edit" onclick="showView('edit')" title="Edit">✏️<span class="tab-label"> Edit</span></button>
-  <button class="tab cond" id="tab-preview" onclick="showView('preview')" title="Preview">👁️<span class="tab-label"> Preview</span></button>
+  <button class="tab cond" id="tab-preview" onclick="goToPreview()" title="Preview">👁️<span class="tab-label"> Preview</span></button>
   <button class="tab cond" id="tab-saved" onclick="showView('saved')" title="Saved work orders">💾<span class="tab-label"> Saved</span> (<span id="saved-count">0</span>)</button>
   <button class="tab cond" id="tab-history" onclick="showView('history')" title="Building History">🏢<span class="tab-label"> Building History</span></button>
   <button class="tab cond" id="tab-reports" onclick="showView('reports')" title="Reports">📋<span class="tab-label"> Reports</span></button>
@@ -233,7 +233,7 @@
 
     <div class="btnrow">
       <button class="btn primary" onclick="saveOrder()">Save</button>
-      <button class="btn" onclick="showView('preview')">Preview Document →</button>
+      <button class="btn" onclick="goToPreview()">Preview Document →</button>
     </div>
   </div>
 
