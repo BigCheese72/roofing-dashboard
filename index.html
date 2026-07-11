@@ -807,6 +807,46 @@
       </div>
     </div>
 
+    <!-- Bluebeam-style markup layer (Mark, approved): arrows, text callouts,
+         shapes, revision clouds, measurements, and a count tool, drawn right
+         on this map -- works over whatever base layer is showing (satellite
+         or a drone ortho set as this roof's custom base), same surface roof
+         features already use. Each markup records who added it and when;
+         "Show" filters by period once more than one exists. See
+         rmStartMarkup()/"Markup layer" in DEV_NOTES.md. -->
+    <div class="card" id="rm-markup-panel" style="display:none">
+      <h2 class="cond">Markup</h2>
+      <p class="hint">Draw arrows, callouts, shapes, clouds, measurements, or count markers directly on the map
+        above. Everything is tagged with who added it and when.</p>
+      <div class="rm-actions" id="rm-markup-toolbar">
+        <button class="btn" onclick="rmStartMarkup('arrow')">↗️ Arrow</button>
+        <button class="btn" onclick="rmStartMarkup('text')">💬 Text</button>
+        <button class="btn" onclick="rmStartMarkup('rect')">▭ Rectangle</button>
+        <button class="btn" onclick="rmStartMarkup('circle')">⭕ Circle</button>
+        <button class="btn" onclick="rmStartMarkup('cloud')">☁️ Cloud</button>
+        <button class="btn" onclick="rmStartMarkup('measure')">📏 Measure</button>
+        <button class="btn" onclick="rmStartMarkup('count')">🔢 Count</button>
+      </div>
+      <div id="rm-markup-color-row" style="display:flex;gap:6px;margin:8px 0"></div>
+      <div class="fld" id="rm-markup-text-row" style="display:none">
+        <label>Caption</label>
+        <input type="text" id="rm-markup-text-input" placeholder="e.g. Ponding water, re-flash this corner">
+      </div>
+      <div id="rm-markup-placing" style="display:none">
+        <p class="hint" id="rm-markup-placing-hint"></p>
+        <div class="btnrow">
+          <button class="btn primary" id="rm-markup-finish-btn" onclick="rmFinishMarkup()" style="display:none">✓ Finish</button>
+          <button class="btn" onclick="rmUndoMarkupPoint()">↩ Undo Point</button>
+          <button class="btn" onclick="rmCancelMarkup()">✕ Cancel</button>
+        </div>
+      </div>
+      <div class="fld" id="rm-markup-filter-row" style="display:none">
+        <label>Show</label>
+        <select id="rm-markup-period-filter" onchange="rmFilterMarkupsByPeriod(this.value)"></select>
+      </div>
+      <div id="rm-markup-list"></div>
+    </div>
+
     <div class="card" id="rm-footprint-panel" style="display:none">
       <h2 class="cond">Selected Building</h2>
       <div class="rm-footprint-info" id="rm-footprint-info"></div>
@@ -8902,6 +8942,9 @@ var rmState = {
      kept so tapping a marker to edit it doesn't need a fresh Firestore
      read just to know what it is. */
   linkedBuildingId: null, linkedRoofId: null, assetLayerGroup: null, linkedAssetsCache: [],
+  /* Markup layer (arrows/text/shapes/clouds/measurements/count) drawn on
+     this same map -- rmDrawMarkups()/"Markup layer" in DEV_NOTES.md. */
+  markupLayerGroup: null,
   /* Phase 3: which base tile layer is currently showing (rmSetBaseLayer()). */
   baseLayer: null, baseLayerType: "osm",
   /* Export panel: whether to stitch + embed satellite imagery beneath the
@@ -9305,9 +9348,14 @@ function rmClearLinkedFeatures(){
      loading a different local save) so stale features from a PREVIOUS
      building never bleed into a new one. */
   rmCloseFeatureForm(); /* don't leave an in-progress add/edit orphaned */
+  if (rmMarkupState.active) rmCancelMarkup(); /* don't leave an in-progress markup placement orphaned either */
   if (rmState.map && rmState.assetLayerGroup) rmState.map.removeLayer(rmState.assetLayerGroup);
   rmState.assetLayerGroup = null;
   rmState.linkedAssetsCache = [];
+  if (rmState.map && rmState.markupLayerGroup) rmState.map.removeLayer(rmState.markupLayerGroup);
+  rmState.markupLayerGroup = null;
+  rmMarkupState.cache = [];
+  rmMarkupState.periodFilter = "All";
   rmState.linkedBuildingId = null;
   rmState.linkedRoofId = null;
   if (rmState.map && rmState.roofLabelLayer) rmState.map.removeLayer(rmState.roofLabelLayer);
@@ -9321,6 +9369,8 @@ function rmClearLinkedFeatures(){
   if (exportSelectHost) exportSelectHost.innerHTML = "";
   var panel = document.getElementById("rm-features-panel");
   if (panel) panel.style.display = "none";
+  var markupPanel = document.getElementById("rm-markup-panel");
+  if (markupPanel) markupPanel.style.display = "none";
   var bmStatus = document.getElementById("rm-basemap-status");
   if (bmStatus) bmStatus.innerHTML = "";
 }
@@ -11579,6 +11629,8 @@ function rmShowFeaturePanel(buildingName){
   var panel = document.getElementById("rm-features-panel");
   if (!panel) return;
   panel.style.display = "";
+  var markupPanel = document.getElementById("rm-markup-panel");
+  if (markupPanel){ markupPanel.style.display = ""; rmRenderMarkupColorRow(); }
   var hint = document.getElementById("rm-features-hint");
   if (hint){
     hint.textContent = (buildingName ? "Linked to " + buildingName + ". " : "") +
@@ -11594,6 +11646,7 @@ async function rmLoadLinkedAssets(){
     var bld = snap.exists ? snap.data() : {};
     var roof = getRoofById(bld, rmState.linkedRoofId);
     rmDrawLinkedAssets(roof.roof_assets || []);
+    rmDrawMarkups(roof.roof_markups || []);
     rmRenderBaseMapStatus(roof.roof_base_map_type || null);
   }catch(e){ toast("Couldn't load roof features: " + e.message); }
 }
@@ -12108,6 +12161,350 @@ async function rmDuplicateFeature(assetId){
     toast("Feature duplicated ✓ — drag it into place");
     rmCloseFeatureForm(true);
   }catch(e){ toast("Couldn't duplicate: " + e.message); }
+}
+
+/* ---- Markup layer: Bluebeam-style annotations on the roof map ----
+   Mark (approved): arrows, text callouts, shapes, revision clouds,
+   measurements, and a count tool, each recording who added it and when,
+   filterable by period, drawn right on RoofMapper's own map -- works over
+   whatever base layer is showing (satellite, or a drone ortho set as this
+   roof's custom base, same surface roof features already use). A THIRD
+   surface Mark asked for -- an uploaded drawing/PDF -- isn't available yet
+   because "drawings/documents as attachable artifacts" doesn't exist as a
+   concept in this app yet (see that item in ROADMAP.md); this ships for
+   the two surfaces that already do exist and can pick up the third once
+   that lands. Persisted as roof.roof_markups[], same read-modify-write
+   pattern as roof_assets[] (persistRoofAsset/removeRoofAsset above) --
+   plain client writes, not admin-gated, for the same reason: a within-one-
+   roof addition any tech should be able to make, firestore.rules already
+   allows it. See "Markup layer" in DEV_NOTES.md/DATA_MODEL.md. */
+async function persistRoofMarkup(buildingId, roofId, markup){
+  var snap = await fdb.collection("buildings").doc(buildingId).get();
+  var roofs = getBuildingRoofs(snap.exists ? snap.data() : {});
+  var roof = getRoofById(snap.exists ? snap.data() : {}, roofId);
+  var markups = roof.roof_markups || [];
+  markups.push(markup);
+  roof.roof_markups = markups;
+  var roofIdx = roofs.findIndex(function(r){ return r.id === roof.id; });
+  if (roofIdx >= 0) roofs[roofIdx] = roof; else roofs.push(roof);
+  await saveBuildingRoofs(buildingId, roofs);
+}
+async function removeRoofMarkup(buildingId, roofId, markupId){
+  var snap = await fdb.collection("buildings").doc(buildingId).get();
+  var roofs = getBuildingRoofs(snap.exists ? snap.data() : {});
+  var roof = getRoofById(snap.exists ? snap.data() : {}, roofId);
+  roof.roof_markups = (roof.roof_markups || []).filter(function(m){ return m.id !== markupId; });
+  var roofIdx = roofs.findIndex(function(r){ return r.id === roof.id; });
+  if (roofIdx >= 0) roofs[roofIdx] = roof; else roofs.push(roof);
+  await saveBuildingRoofs(buildingId, roofs);
+}
+var RM_MARKUP_COLORS = ["#E53935", "#FB8C00", "#43A047", "#1E88E5", "#8E24AA", "#263238"];
+/* -1 means "finishes on demand" (cloud: 3+ points, tech taps Finish when done);
+   any positive number auto-finishes the instant that many points are placed,
+   so a 2-point arrow/rect/circle/measure or a 1-point text/count never needs
+   an extra "done" tap. */
+var RM_MARKUP_POINTS_NEEDED = { arrow: 2, text: 1, rect: 2, circle: 2, measure: 2, count: 1, cloud: -1 };
+var rmMarkupState = { active: false, type: null, points: [], color: RM_MARKUP_COLORS[0], cache: [], periodFilter: "All" };
+var rmMarkupDraftLayer = null, rmMarkupMapClickHandler = null;
+function rmMarkupLabel(type){
+  return { arrow: "Arrow", text: "Text", rect: "Rectangle", circle: "Circle", cloud: "Cloud", measure: "Measurement", count: "Count marker" }[type] || type;
+}
+/* "Period" groups markups for the Show filter -- today's date, matching
+   Mark's ask ("period-based layer toggling") without depending on there
+   being an active work order in RoofMapper's context (there often isn't
+   one -- this screen isn't tied to any single work order). */
+function rmMarkupCurrentPeriod(){ return new Date().toLocaleDateString(); }
+function rmMarkupCurrentAuthor(){ return getFieldHistory("technician")[0] || "Unknown"; }
+function rmRenderMarkupColorRow(){
+  var host = document.getElementById("rm-markup-color-row");
+  if (!host) return;
+  host.innerHTML = RM_MARKUP_COLORS.map(function(c){
+    var sel = c === rmMarkupState.color;
+    return '<button type="button" style="width:28px;height:28px;padding:0;background:' + c + ';border-radius:50%;cursor:pointer;' +
+      'border:' + (sel ? "3px solid #263238" : "1px solid #ccc") + '" onclick="rmSetMarkupColor(\'' + c + '\')"></button>';
+  }).join("");
+}
+function rmSetMarkupColor(c){ rmMarkupState.color = c; rmRenderMarkupColorRow(); }
+function rmStartMarkup(type){
+  if (!rmState.linkedBuildingId || !rmState.linkedRoofId){ toast("Save this outline to a building first."); return; }
+  if (rmMarkupState.active) rmCancelMarkup();
+  rmMarkupState.active = true;
+  rmMarkupState.type = type;
+  rmMarkupState.points = [];
+  var textRow = document.getElementById("rm-markup-text-row");
+  if (textRow) textRow.style.display = type === "text" ? "" : "none";
+  if (type === "text") document.getElementById("rm-markup-text-input").value = "";
+  document.getElementById("rm-markup-placing").style.display = "";
+  document.getElementById("rm-markup-toolbar").style.display = "none";
+  document.getElementById("rm-markup-finish-btn").style.display = type === "cloud" ? "" : "none";
+  rmUpdateMarkupPlacingHint();
+  var map = rmEnsureMap();
+  if (rmMarkupMapClickHandler) map.off("click", rmMarkupMapClickHandler);
+  rmMarkupMapClickHandler = function(e){ rmMarkupAddPoint(e.latlng); };
+  map.on("click", rmMarkupMapClickHandler);
+}
+function rmUpdateMarkupPlacingHint(){
+  var el = document.getElementById("rm-markup-placing-hint");
+  if (!el) return;
+  var type = rmMarkupState.type, n = rmMarkupState.points.length;
+  if (type === "cloud"){
+    el.textContent = n < 3 ? ("Tap at least 3 points around the area (" + n + " placed), then Finish.") :
+      (n + " points placed — tap Finish when the outline is closed, or keep tapping to add more.");
+  } else if (type === "text" || type === "count"){
+    el.textContent = "Tap the map to place it.";
+  } else {
+    el.textContent = n === 0 ? "Tap the start point." : "Tap the end point.";
+  }
+}
+function rmMarkupAddPoint(latlng){
+  rmMarkupState.points.push({ lat: latlng.lat, lng: latlng.lng });
+  rmMarkupDrawDraft();
+  var needed = RM_MARKUP_POINTS_NEEDED[rmMarkupState.type];
+  if (needed > 0 && rmMarkupState.points.length >= needed){ rmFinishMarkup(); return; }
+  rmUpdateMarkupPlacingHint();
+}
+function rmUndoMarkupPoint(){
+  rmMarkupState.points.pop();
+  rmMarkupDrawDraft();
+  rmUpdateMarkupPlacingHint();
+}
+function rmCancelMarkup(){
+  rmMarkupState.active = false;
+  rmMarkupState.points = [];
+  var map = rmState.map;
+  if (map && rmMarkupMapClickHandler) map.off("click", rmMarkupMapClickHandler);
+  rmMarkupMapClickHandler = null;
+  if (map && rmMarkupDraftLayer){ map.removeLayer(rmMarkupDraftLayer); rmMarkupDraftLayer = null; }
+  var placing = document.getElementById("rm-markup-placing");
+  if (placing) placing.style.display = "none";
+  var toolbar = document.getElementById("rm-markup-toolbar");
+  if (toolbar) toolbar.style.display = "";
+  var textRow = document.getElementById("rm-markup-text-row");
+  if (textRow) textRow.style.display = "none";
+}
+function rmMarkupDrawDraft(){
+  var map = rmEnsureMap();
+  if (rmMarkupDraftLayer){ map.removeLayer(rmMarkupDraftLayer); rmMarkupDraftLayer = null; }
+  if (!rmMarkupState.points.length) return;
+  rmMarkupDraftLayer = rmRenderMarkupShape({ type: rmMarkupState.type, points: rmMarkupState.points, color: rmMarkupState.color, text: "…" }, true);
+  if (rmMarkupDraftLayer) rmMarkupDraftLayer.addTo(map);
+}
+async function rmFinishMarkup(){
+  var type = rmMarkupState.type;
+  var minPoints = type === "cloud" ? 3 : (RM_MARKUP_POINTS_NEEDED[type] || 1);
+  if (rmMarkupState.points.length < minPoints){ toast("Tap at least " + minPoints + " point" + (minPoints > 1 ? "s" : "") + " first."); return; }
+  var text = type === "text" ? document.getElementById("rm-markup-text-input").value.trim() : "";
+  if (type === "text" && !text){ toast("Add a caption first."); return; }
+  var markup = {
+    id: genId("mkp"), type: type, points: rmMarkupState.points.slice(), color: rmMarkupState.color, text: text,
+    author: rmMarkupCurrentAuthor(), createdAt: Date.now(), period: rmMarkupCurrentPeriod(), roofId: rmState.linkedRoofId
+  };
+  if (type === "count"){
+    markup.count = (rmMarkupState.cache || []).filter(function(m){ return m.type === "count"; }).length + 1;
+  }
+  var map = rmState.map;
+  if (map && rmMarkupMapClickHandler) map.off("click", rmMarkupMapClickHandler);
+  rmMarkupMapClickHandler = null;
+  if (map && rmMarkupDraftLayer){ map.removeLayer(rmMarkupDraftLayer); rmMarkupDraftLayer = null; }
+  rmMarkupState.active = false;
+  rmMarkupState.points = [];
+  document.getElementById("rm-markup-placing").style.display = "none";
+  document.getElementById("rm-markup-toolbar").style.display = "";
+  var textRow = document.getElementById("rm-markup-text-row");
+  if (textRow) textRow.style.display = "none";
+  try{
+    await persistRoofMarkup(rmState.linkedBuildingId, rmState.linkedRoofId, markup);
+    toast(rmMarkupLabel(type) + " added ✓");
+    rmLoadLinkedAssets();
+  }catch(e){ toast("Couldn't save markup: " + e.message); }
+}
+/* Real-world-meter direction math (same rmGeomToLocalXY/FromLocalXY
+   tangent-plane projection used everywhere else in RoofMapper) so the
+   arrowhead is a fixed real-world size that scales with zoom exactly like
+   the rest of the drawing, rather than a fixed screen-pixel size that
+   would need its own zoom/pan redraw wiring to stay attached. */
+function rmMarkupArrowHeadLatLngs(p1, p2){
+  var origin = p1;
+  var xy2 = rmGeomToLocalXY(p2, origin);
+  var len = Math.sqrt(xy2.x * xy2.x + xy2.y * xy2.y) || 1e-6;
+  var ux = xy2.x / len, uy = xy2.y / len;
+  var headLen = Math.min(len * 0.3, 3); /* meters, capped so a long arrow doesn't get an oversized head */
+  var ang = 28 * Math.PI / 180;
+  function rot(vx, vy, a){ return { x: vx * Math.cos(a) - vy * Math.sin(a), y: vx * Math.sin(a) + vy * Math.cos(a) }; }
+  var back1 = rot(-ux, -uy, ang), back2 = rot(-ux, -uy, -ang);
+  var wing1 = { x: xy2.x + back1.x * headLen, y: xy2.y + back1.y * headLen };
+  var wing2 = { x: xy2.x + back2.x * headLen, y: xy2.y + back2.y * headLen };
+  return [rmGeomFromLocalXY(wing1, origin), rmGeomFromLocalXY(wing2, origin)];
+}
+/* Cheap-but-correct scalloped "revision cloud": a light polygon fill plus
+   a ring of unfilled circles (real-world meter radius, so they scale with
+   zoom like everything else) traced along the perimeter at roughly even
+   spacing -- overlapping circle arcs read as the familiar Bluebeam cloud
+   bump pattern using only stock Leaflet primitives (L.polygon + L.circle),
+   each of which already redraws itself correctly on pan/zoom. A hand-built
+   scalloped SVG path would look marginally crisper but needs its own
+   zoom/moveend redraw wiring for a live pannable map; not worth it here. */
+function rmMarkupCloudLayer(points, color, opacity){
+  var group = L.layerGroup();
+  L.polygon(points.map(function(p){ return [p.lat, p.lng]; }), { color: color, weight: 0, fillOpacity: 0.10 * opacity, fillColor: color }).addTo(group);
+  var n = points.length;
+  var perimeterM = 0;
+  for (var i = 0; i < n; i++) perimeterM += rmGeomHaversineMeters(points[i], points[(i + 1) % n]);
+  if (perimeterM < 0.1) return group;
+  var bumpCount = Math.max(8, Math.min(60, Math.round(perimeterM / 2.5)));
+  var spacing = perimeterM / bumpCount;
+  var bumpRadius = Math.max(0.6, spacing / 1.8);
+  var edgeIdx = 0, edgeStart = points[0], edgeEnd = points[1 % n];
+  var edgeLen = rmGeomHaversineMeters(edgeStart, edgeEnd) || 1e-6;
+  var traveled = 0;
+  for (var placed = 0; placed < bumpCount; placed++){
+    while (traveled > edgeLen && edgeIdx < n - 1){
+      traveled -= edgeLen;
+      edgeIdx++;
+      edgeStart = points[edgeIdx % n];
+      edgeEnd = points[(edgeIdx + 1) % n];
+      edgeLen = rmGeomHaversineMeters(edgeStart, edgeEnd) || 1e-6;
+    }
+    var t = Math.min(1, traveled / edgeLen);
+    var lat = edgeStart.lat + (edgeEnd.lat - edgeStart.lat) * t;
+    var lng = edgeStart.lng + (edgeEnd.lng - edgeStart.lng) * t;
+    L.circle([lat, lng], { radius: bumpRadius, color: color, weight: 2, fill: false, opacity: opacity }).addTo(group);
+    traveled += spacing;
+  }
+  return group;
+}
+/* Renders any ONE markup as a Leaflet layer/layerGroup -- shared by the
+   live in-progress draft (rmMarkupDrawDraft, dimmed opacity) and the
+   committed layer (rmDrawMarkups, full opacity), so a placed markup never
+   looks different from its own preview. */
+function rmRenderMarkupShape(m, isDraft){
+  var opacity = isDraft ? 0.55 : 1;
+  var latlngs = m.points.map(function(p){ return [p.lat, p.lng]; });
+  if (m.type === "arrow"){
+    if (m.points.length < 2) return L.layerGroup();
+    var g = L.layerGroup();
+    L.polyline(latlngs, { color: m.color, weight: 3, opacity: opacity }).addTo(g);
+    var wings = rmMarkupArrowHeadLatLngs(m.points[0], m.points[1]);
+    L.polygon([latlngs[1], [wings[0].lat, wings[0].lng], [wings[1].lat, wings[1].lng]],
+      { color: m.color, weight: 0, fillOpacity: opacity, fillColor: m.color }).addTo(g);
+    return g;
+  }
+  if (m.type === "text"){
+    return L.marker(latlngs[0], {
+      icon: L.divIcon({
+        className: "", iconSize: null, iconAnchor: [0, 12],
+        html: '<div style="background:' + m.color + ';color:#fff;padding:4px 8px;border-radius:5px;font-size:12px;' +
+          'font-weight:600;max-width:220px;box-shadow:0 1px 3px rgba(0,0,0,.4);opacity:' + opacity + '">' + esc(m.text || "") + '</div>'
+      })
+    });
+  }
+  if (m.type === "rect"){
+    if (m.points.length < 2) return L.layerGroup();
+    return L.rectangle(latlngs, { color: m.color, weight: 2, fillOpacity: 0.08, opacity: opacity });
+  }
+  if (m.type === "circle"){
+    if (m.points.length < 2) return L.layerGroup();
+    return L.circle(latlngs[0], { radius: rmGeomHaversineMeters(m.points[0], m.points[1]), color: m.color, weight: 2, fillOpacity: 0.08, opacity: opacity });
+  }
+  if (m.type === "cloud"){
+    if (m.points.length < 3) return L.layerGroup();
+    return rmMarkupCloudLayer(m.points, m.color, opacity);
+  }
+  if (m.type === "measure"){
+    if (m.points.length < 2) return L.layerGroup();
+    var g2 = L.layerGroup();
+    L.polyline(latlngs, { color: m.color, weight: 2, dashArray: "5,5", opacity: opacity }).addTo(g2);
+    var distFt = rmGeomHaversineMeters(m.points[0], m.points[1]) * 3.28084;
+    var mid = { lat: (m.points[0].lat + m.points[1].lat) / 2, lng: (m.points[0].lng + m.points[1].lng) / 2 };
+    L.marker([mid.lat, mid.lng], {
+      icon: L.divIcon({
+        className: "", iconSize: null,
+        html: '<div style="background:#263238;color:#fff;padding:2px 7px;border-radius:4px;font-size:11px;' +
+          'font-weight:700;white-space:nowrap;transform:translate(-50%,-50%);opacity:' + opacity + '">' + Math.round(distFt) + ' ft</div>'
+      })
+    }).addTo(g2);
+    return g2;
+  }
+  if (m.type === "count"){
+    return L.marker(latlngs[0], {
+      icon: L.divIcon({
+        className: "", iconSize: [24, 24], iconAnchor: [12, 12],
+        html: '<div style="background:' + m.color + ';color:#fff;width:24px;height:24px;border-radius:50%;' +
+          'display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;' +
+          'border:2px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,.4);opacity:' + opacity + '">' + (m.count || "•") + '</div>'
+      })
+    });
+  }
+  return L.layerGroup();
+}
+function rmMarkupPeriods(markups){
+  var seen = {}, list = [];
+  markups.forEach(function(m){ if (!seen[m.period]){ seen[m.period] = true; list.push(m.period); } });
+  return list;
+}
+function rmRenderMarkupPeriodFilter(markups){
+  var row = document.getElementById("rm-markup-filter-row");
+  var sel = document.getElementById("rm-markup-period-filter");
+  if (!row || !sel) return;
+  var periods = rmMarkupPeriods(markups);
+  if (periods.length <= 1){ row.style.display = "none"; return; }
+  row.style.display = "";
+  sel.innerHTML = '<option value="All">All (' + markups.length + ')</option>' +
+    periods.map(function(p){
+      var count = markups.filter(function(m){ return m.period === p; }).length;
+      return '<option value="' + esc(p) + '">' + esc(p) + ' (' + count + ')</option>';
+    }).join("");
+  sel.value = rmMarkupState.periodFilter;
+}
+function rmFilterMarkupsByPeriod(period){
+  rmMarkupState.periodFilter = period;
+  rmDrawMarkups(rmMarkupState.cache);
+}
+function rmDrawMarkups(markups){
+  rmMarkupState.cache = markups || [];
+  var map = rmEnsureMap();
+  if (rmState.markupLayerGroup) map.removeLayer(rmState.markupLayerGroup);
+  rmState.markupLayerGroup = L.layerGroup().addTo(map);
+  var filter = rmMarkupState.periodFilter;
+  var visible = filter === "All" ? rmMarkupState.cache : rmMarkupState.cache.filter(function(m){ return m.period === filter; });
+  visible.forEach(function(m){
+    var layer = rmRenderMarkupShape(m, false);
+    layer.addTo(rmState.markupLayerGroup);
+    /* Every markup renders as either a single Path or a LayerGroup of a
+       few -- both support .on(), and only a LayerGroup has .eachLayer --
+       so this recurses into whichever it actually got without needing to
+       know which shape types are "simple" vs "grouped". */
+    (function attachClick(l){
+      if (l.on) l.on("click", function(){ rmOpenMarkupInfo(m); });
+      if (l.eachLayer) l.eachLayer(attachClick);
+    })(layer);
+  });
+  rmRenderMarkupPeriodFilter(rmMarkupState.cache);
+  rmRenderMarkupList(visible);
+}
+function rmRenderMarkupList(markups){
+  var host = document.getElementById("rm-markup-list");
+  if (!host) return;
+  if (!markups.length){ host.innerHTML = '<p class="hint">No markups on this roof yet.</p>'; return; }
+  host.innerHTML = markups.slice().sort(function(a, b){ return b.createdAt - a.createdAt; }).map(function(m){
+    return '<div class="hint" style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:4px 0;border-bottom:1px solid #eee">' +
+      '<span><b style="color:' + m.color + '">●</b> ' + esc(rmMarkupLabel(m.type)) + (m.text ? " — " + esc(m.text) : "") +
+      '<br><span style="color:#8a8f93">' + esc(m.author || "Unknown") + ' · ' + esc(m.period || "") + '</span></span>' +
+      '<button class="btn danger" style="padding:4px 8px" onclick="rmDeleteMarkup(\'' + m.id + '\')">🗑️</button></div>';
+  }).join("");
+}
+function rmOpenMarkupInfo(m){
+  if (confirm(rmMarkupLabel(m.type) + (m.text ? ": " + m.text : "") + "\nAdded by " + (m.author || "Unknown") + " on " + (m.period || "") + "\n\nDelete this markup?")){
+    rmDeleteMarkup(m.id);
+  }
+}
+async function rmDeleteMarkup(markupId){
+  if (!rmState.linkedBuildingId || !rmState.linkedRoofId) return;
+  try{
+    await removeRoofMarkup(rmState.linkedBuildingId, rmState.linkedRoofId, markupId);
+    toast("Markup removed");
+    rmLoadLinkedAssets();
+  }catch(e){ toast("Couldn't remove: " + e.message); }
 }
 
 /* ---- save locally (localStorage fallback — offline or not linked yet) ---- */

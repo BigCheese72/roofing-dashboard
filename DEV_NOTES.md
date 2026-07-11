@@ -7043,6 +7043,95 @@ export does, and confirmed the checkbox's onchange handler correctly
 flips `rmState.exportIncludeBasemap`. All test state cleared and the page
 reloaded clean after.
 
+### Markup layer: Bluebeam-style annotations (shipped)
+
+Mark's approved spec: arrows, text callouts, shapes, revision clouds,
+measurements, and a count tool, each recording author + date + roofId,
+filterable by period, drawn on the roof map (satellite, drone ortho, and
+eventually an uploaded drawing/PDF once that surface exists).
+
+New "Markup" card in RoofMapper, shown/hidden alongside the existing
+"Roof Features" card (`rmShowFeaturePanel()`/`rmClearLinkedFeatures()`) --
+same visibility gating (only once an outline is linked to a building), same
+"tap the map to place it" interaction family as roof features, but built
+fresh (`rmMarkupState`, `rmStartMarkup(type)`/`rmMarkupAddPoint()`/
+`rmFinishMarkup()`) since markups need multiple points per shape and
+features only ever needed one draggable marker. Seven tools, matching
+Mark's exact list:
+
+- **Arrow / rectangle / circle / measurement**: 2-tap, auto-finishes the
+  instant the second point lands (`RM_MARKUP_POINTS_NEEDED`). Arrow draws
+  a real triangular head computed in local meters (`rmGeomToLocalXY`/
+  `rmGeomFromLocalXY`, same tangent-plane projection used everywhere else
+  in RoofMapper) so it's a fixed real-world size that scales with zoom
+  like the rest of the drawing, rather than a fixed screen-pixel size that
+  would need its own pan/zoom redraw wiring. Measurement reuses the same
+  haversine-distance-in-feet calculation edge dimensions already use.
+- **Text**: 1-tap, with a caption typed into a field that appears above
+  the map before placing (not a `window.prompt`, consistent with the rest
+  of the app's form-field conventions).
+- **Count**: 1-tap, auto-numbered (1, 2, 3…) by counting how many
+  existing "count" markups are already on the roof at placement time.
+- **Cloud**: multi-tap (3+ points) with an explicit "✓ Finish" button,
+  same "tap points, then finish" shape as roof tracing. Rendered as a
+  real scalloped revision-cloud look — NOT a hand-built custom SVG path
+  (which would need its own zoom/`moveend` redraw wiring to track a live
+  pannable Leaflet map) but a cheap composition of stock Leaflet
+  primitives that already redraw themselves correctly: a light polygon
+  fill plus a ring of unfilled `L.circle`s (real-world meter radius)
+  traced along the perimeter at even spacing -- overlapping circle arcs
+  read as the familiar bump pattern.
+
+Every markup carries `author` (`getFieldHistory("technician")[0]`, the
+same "last name typed into any form" convention already used elsewhere —
+there's no real login system to draw a true logged-in user from),
+`createdAt`, and `period` (today's date at creation — RoofMapper has no
+"current work order" in scope to tag it with, so date is the grouping
+that actually makes sense here). A "Show" dropdown appears once a roof
+has markups from more than one period, filtering the drawn layer AND the
+list below it (`rmFilterMarkupsByPeriod()`); tapping any placed markup on
+the map (or its 🗑️ button in the list) confirms and deletes it.
+
+Persisted as `roof.roof_markups[]`, same read-modify-write pattern as
+`roof_assets[]` (`persistRoofMarkup()`/`removeRoofMarkup()`, modeled
+directly on `persistRoofAsset()`/`removeRoofAsset()` above) — plain client
+writes, not admin-gated, since this is a within-one-roof addition any tech
+should be able to make and `firestore.rules` already allows it (same
+reasoning as roof assets, GPS auto-assign's retroactive pass, etc. — see
+the `move_roof`/general admin-gating rule established earlier in this
+file). Loading piggybacks on the existing `rmLoadLinkedAssets()` (one
+extra `rmDrawMarkups(roof.roof_markups || [])` call using the SAME
+already-fetched roof doc, no extra read) so markups reload at every point
+assets already do — outline save, roof switch, "Trace Another Roof," etc.
+— without needing to touch each call site individually.
+
+**Not yet built** (explicitly, not silently): markup on an uploaded
+drawing/PDF, the third surface Mark asked for. Blocked on "drawings/
+documents as attachable artifacts" not existing as a concept in this app
+yet (see `ROADMAP.md`) — the live satellite map and a roof's custom drone-
+ortho base map (both already-existing surfaces) are covered; the PDF
+surface will follow naturally once that artifact type exists, since
+markups are drawn straight onto whatever `rmState.map` is showing and
+don't care which base layer that is.
+
+**Tested** with a mocked `fdb` (no real writes; state cleared after):
+seeded a building with one saved roof, opened the Markup panel, and
+placed one of every type (arrow, text, rect, circle, measure, count ×2,
+cloud) through the actual tap-simulation functions — confirmed all 8
+persisted with correct shapes (arrow wing distances symmetric from the
+tip, cloud captured all 4 tapped points, count numbers 1/2, cloud
+required an explicit Finish rather than auto-finishing like the 2-point
+tools). Confirmed rendering: `rmState.markupLayerGroup` held exactly 8
+top-level layers with click handlers wired on every sub-layer. Added a
+9th markup from a different (backdated) period and confirmed the period
+filter dropdown populated correctly (`All (9)`, plus one option per
+period with correct counts) and actually filtered the drawn layer (9 → 1
+→ 9). Confirmed delete removes exactly the targeted markup from both the
+Firestore doc and the rendered list. Confirmed `rmClearLinkedFeatures()`
+(fired whenever a roof link is torn down) correctly cancels an
+in-progress placement rather than leaving it orphaned, and hides the
+panel/clears the layer group.
+
 ## Roadmap (not built yet, foundation only)
 
 - **RoofOps Dashboard**: cross-building reporting, search, filters — reads from

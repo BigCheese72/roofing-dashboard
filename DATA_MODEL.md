@@ -428,6 +428,41 @@ one report; a roof asset is permanent, independent of any work order, and is exp
 to be added/moved/removed as the roof itself changes — the difference between "where a
 leak was" and "where the roof drain has always been."
 
+**`roof_markups[]` item shape** (implemented, not just proposed — see "Markup layer" in
+`DEV_NOTES.md`). Bluebeam-style annotations (arrows/text/shapes/clouds/measurements/
+count markers), drawn on RoofMapper's own map. Lives on each roof in `roofs[]`, alongside
+`roof_assets[]`/`roof_outlines[]`:
+
+```js
+{
+  id,       // genId("mkp")
+  type,     // "arrow" | "text" | "rect" | "circle" | "cloud" | "measure" | "count"
+  points,   // [{lat,lng}, ...] -- 1 point (text/count), 2 (arrow/rect/circle/measure),
+            // or 3+ (cloud, closed polygon, NOT repeating the first point last)
+  color,    // hex string, one of RM_MARKUP_COLORS
+  text,     // caption -- only meaningful for type "text", empty string otherwise
+  count,    // only for type "count" -- 1-based sequence number among this roof's
+            // count markers at the time it was placed
+  author,   // free text -- getFieldHistory("technician")[0], same "last technician
+            // name typed into any form" convention used elsewhere, not a real login
+  createdAt,
+  period,   // new Date().toLocaleDateString() at creation time -- what the "Show"
+            // filter in the Markup panel groups/filters by
+  roofId    // which roof this belongs to (redundant with the array it lives in,
+            // kept for symmetry with finding pins' roofId and so a markup is still
+            // self-describing if ever pulled out of its roof's array)
+}
+```
+
+Distinct from a roof asset: an asset is a permanent physical feature of the roof itself
+(a drain really is there); a markup is a drawn annotation about the roof (an arrow
+pointing at where to re-flash, a cloud around a problem area) — closer in spirit to a
+Bluebeam markup layer than to the roof's own blueprint. Only two of the three surfaces
+Mark asked markups to work over exist yet (the live satellite map, and a drone ortho set
+as a roof's custom base map); the third — an uploaded drawing/PDF — is blocked on
+"drawings/documents as attachable artifacts" not existing as a concept yet (see
+`ROADMAP.md`).
+
 **`roof_outlines[]` item shape** (implemented, not just proposed — see "RoofMapper" in
 `DEV_NOTES.md`). Also lives on each roof in `roofs[]` now, not directly on the building:
 
