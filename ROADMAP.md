@@ -545,6 +545,24 @@ Goal: turn each building into a long-term roof record.
   synthetic; see DEV_NOTES.md for the full reasoning. See "Trace directly
   on an uploaded drone orthomosaic" and "Ortho upload: persist with the
   roof + pick from an existing CompanyCam photo" in `DEV_NOTES.md`.
+- ✅ **Shipped (dev only, 2026-07-11)**: three accuracy fixes Mark flagged
+  as "core to the multi-roof workflow actually being trustworthy" —
+  **scale inheritance** (calibrate one roof's edge, every LATER
+  manual_trace/ortho_trace roof on that same building automatically
+  inherits the correction, no re-measuring; a clear "Scale inherited"
+  note shows in the UI with a one-tap override); **vertex snapping**
+  (tracing or dragging a vertex near an already-traced roof's corner or
+  edge locks onto it exactly — pixel-distance threshold so the snap
+  radius feels the same at any zoom level — toggleable, and explicitly
+  never applies to walked GPS corners); and a **precision crosshair
+  cursor** (replaces the default hand cursor with a crosshair while
+  tracing/editing/placing, plus a fixed on-map reticle + "Place at
+  Crosshair" button as a touch-friendly pan-to-aim alternative to tapping
+  under a finger that occludes the target). Also fixed the ortho overlay
+  getting torn down on every "Trace Another Roof" tap (forcing a re-
+  upload of the same photo for every roof section) — it now stays up
+  across roofs on the same building. See "Multi-roof accuracy: scale
+  inheritance, vertex snapping, precision cursor" in `DEV_NOTES.md`.
 - 🐛 **Fixed (dev only, 2026-07-11), HIGH PRIORITY**: RoofMapper export was
   badly broken — Mark's actual exported file showed the outline missing
   entirely, features as unlabeled floating dots, layout crammed into one

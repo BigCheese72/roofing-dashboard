@@ -5368,6 +5368,115 @@ end-state as a local file upload; confirmed "Load More" pagination
 correctly hides when a page returns fewer than 30 photos. All test state
 cleared, page reloaded, console clean.
 
+## Multi-roof accuracy: scale inheritance, vertex snapping, precision cursor (shipped 2026-07-11, dev only)
+
+Three fixes Mark called out as "core to the multi-roof workflow actually
+being trustworthy," folded into the same cluster as the multi-roof fix
+above.
+
+**Scale inheritance** — Mark: "if a building already has a scale set
+(calibrated), a NEW roof traced on that same building must AUTOMATICALLY
+use that existing scale... scale is a property of the building/base
+image, not of an individual roof." Applies to `manual_trace`/`ortho_trace`
+outlines only (OSM footprints are independently georeferenced already;
+`walk_corners` is each a fresh independent GPS fix with nothing shared to
+inherit — and once real GeoTIFF georeferencing ships, scale is inherent
+there too, per Mark's own note, making this moot for that case).
+`rmCalibrateEdge()` now also records `rmState.inheritedScaleFactor`
+(compounded — multiplied in, not replaced, so a second recalibration
+stacks on an earlier inherited correction rather than discarding it) and
+`rmState.inheritedScaleFactorBuildingId`. `rmFinishTrace()` checks both
+against `rmState.pendingBuildingId` (set by `rmEnterMultiRoofCapture()`)
+and, if they match, auto-applies the exact same uniform rescale-about-
+centroid math `rmCalibrateEdge()` itself uses — no re-measurement needed.
+The new outline's `calibration` gets `{inherited:true, factor,
+calibratedAt}` (distinct shape from a manual edge calibration's
+`{edgeIndex, measuredFt, calibratedAt}`) so `rmRenderOutlineStats()` can
+show a clear "📏 Scale inherited from this building's earlier
+calibration — no need to re-measure" note (with an explicit "tap any
+edge to override" escape hatch, per Mark's ask to let him re-calibrate
+if he ever needs to). Also fixed the thing that would have made this
+mostly theoretical for ortho tracing specifically: `rmEnterMultiRoofCapture()`
+now keeps an already-uploaded ortho overlay ALIVE across "Trace Another
+Roof" (a new `rmState.preserveOrthoOnClear` flag, checked by
+`rmClearFootprintLayers()`) instead of tearing it down — he shouldn't
+have to re-upload/re-pick the same drone photo for every roof section on
+it, and restarting a trace directly on the still-visible image (skipping
+the normal re-center/re-search) is what makes scale inheritance actually
+save him a step rather than just being a nice-to-know.
+
+**Vertex snapping** — Mark: "roof sections on a real building share
+boundaries exactly... adjoining sections share EXACT shared vertices
+with no gaps or overlaps." New `rmFindSnapTarget(latlng)`: searches every
+ring in a new `rmState.referenceRings` (populated alongside the visual
+reference layer by `rmDrawReferenceRoofs()`) for the nearest corner OR
+nearest point on an edge segment (`rmProjectPointOntoSegment()`, clamped
+to the segment itself — an edge doesn't attract a tap way past its own
+endpoint) within `RM_SNAP_PIXEL_THRESHOLD` (18) **screen pixels**, not a
+fixed real-world distance — a pixel threshold keeps the snap radius
+feeling consistent regardless of zoom level, where a fixed-feet radius
+would feel wildly different zoomed in vs. out. Wired into both
+`rmTraceAddPoint()` (map-tap tracing only — explicitly gated off for
+`rmTraceState.mode === "walk"`, since a walked corner is a real GPS fix
+at the tech's actual physical position that must never be silently
+swapped for a nearby vertex) and `rmOnVertexDragEnd()` (dragging a
+vertex in Edit Shape). A yellow ring (`rmShowSnapIndicator()`, a color
+not already meaning something else on this map — orange is the active
+trace, blue is the linked-roof label, gray is the reference layer)
+confirms exactly where a snap landed; cleared by `rmClearSnapIndicator()`
+whenever tracing/edit mode exits. Toggleable — a "🧲 Snap to existing roof
+corners/edges" checkbox in the trace panel (`rmState.snapEnabled`,
+defaults on) — per Mark's explicit ask for a way to place a genuinely
+free point when that's intentional.
+
+**Precision cursor** — Mark: "cursor is a big HAND... can't tell where
+the point will land... as accurate as possible." `rmSetPrecisionMode()`
+toggles a `.rm-precision-active` class on `#rm-map-wrap` (CSS
+`cursor:crosshair` on the map, zero interaction risk — pure visual) plus
+a fixed yellow crosshair reticle centered on the map viewport
+(`.rm-crosshair-reticle`, `pointer-events:none` so it's purely visual,
+taps pass straight through). Wired on for trace mode (map-tap modes
+only, not walk-corners — same reasoning as vertex snapping, there's
+nothing on the map to aim a crosshair at for a GPS-based capture),
+vertex-edit, and feature placement; off on each mode's exit path. A new
+"⊕ Place at Crosshair" button (trace panel only — vertex-edit is already
+drag-based with live visual feedback, feature placement already has its
+own click-to-reposition) pans-then-taps: pan the map so the reticle sits
+over the real corner, tap the button, and the point lands there exactly
+— **chosen over a fingertip-offset preview** (the other option Mark
+explicitly offered) since it needs no changes to Leaflet's own touch/tap
+handling, works identically for a mouse, and (a nice side effect) still
+goes through `rmTraceAddPoint()` so it gets vertex-snapping for free.
+
+Tested in the browser (no `fdb` needed for the geometry pieces; a
+mocked `fdb` for the full multi-roof-on-ortho scale-inheritance
+scenario, no real writes): built a rectangular ortho-traced roof,
+calibrated one edge to a real 100ft, confirmed `inheritedScaleFactor`
+was learned and tied to the right building; tapped "Trace Another Roof"
+— confirmed the ortho overlay is the SAME object (preserved, not
+rebuilt), trace restarted immediately, and the status message announced
+"Scale inherited"; traced a second, differently-shaped roof on the same
+still-visible ortho WITHOUT calibrating it — confirmed its area came out
+auto-rescaled by exactly `inheritedScaleFactor²` (area scales with the
+square of a uniform linear rescale, verified to match precisely) and the
+UI showed the inherited-scale note. For snapping: built a reference
+rectangle, confirmed a tap 5px from a corner (well within the 18px
+threshold) snaps to the corner's EXACT coordinates, a tap near an edge
+midpoint snaps onto the edge (not to either endpoint), and a tap far
+from anything returns no snap; confirmed `rmTraceAddPoint()` snaps in
+manual-trace mode with snapping on, does NOT snap with the toggle off,
+and does NOT snap in walk-corners mode even with the toggle on (GPS
+fixes stay untouched); confirmed dragging a vertex near a reference
+edge in Edit Shape snaps it onto the edge, exactly matching what
+`rmFindSnapTarget()` independently computes for the same drop point. For
+the precision cursor: confirmed `cursor:crosshair` actually renders on
+the live map element (not just the CSS rule existing) via computed-style
+inspection; confirmed the reticle is visible and centered; confirmed
+manual-trace mode turns precision mode + the crosshair button on, walk
+mode leaves both off, and canceling turns both back off; confirmed
+"Place at Crosshair" adds a point at the map's exact current center.
+All test state cleared, page reloaded, console clean.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |

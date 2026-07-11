@@ -428,16 +428,23 @@ leak was" and "where the roof drain has always been."
                   // built) happens — shape/area/perimeter are exact once
                   // calibrated, only WHERE on Earth it sits is a placeholder.
   createdAt,
-  calibration     // optional — set once a tech taps an edge dimension label and
-                  // enters a real tape-measured length (calibrate-by-known-edge).
-                  // Shape: { edgeIndex, measuredFt, calibratedAt }. edgeIndex
-                  // identifies which edge (ring[i] to ring[i+1]) was the
-                  // calibration reference — also drives the checkmark highlight
-                  // on that edge's label on the map. Absent/undefined for an
-                  // outline never calibrated. Calibrating scales the entire
+  calibration     // optional — TWO possible shapes. Manual: set once a tech taps
+                  // an edge dimension label and enters a real tape-measured
+                  // length (calibrate-by-known-edge) — { edgeIndex, measuredFt,
+                  // calibratedAt }. edgeIndex identifies which edge (ring[i] to
+                  // ring[i+1]) was the calibration reference — also drives the
+                  // checkmark highlight on that edge's label on the map.
+                  // Inherited (shipped 2026-07-11): auto-applied by
+                  // rmFinishTrace() when a manual_trace/ortho_trace outline is
+                  // finished on a building that already taught a scale factor
+                  // via an earlier roof's manual calibration — no edge tap
+                  // involved, so no edgeIndex — { inherited: true, factor,
+                  // calibratedAt } instead. Either shape scales the entire
                   // ring/areaSqFt/perimeterFt/center by one uniform factor about
                   // the ring's centroid — see "Self-scaling dimension
-                  // calibration" in DEV_NOTES.md.
+                  // calibration" and "Multi-roof accuracy: scale inheritance,
+                  // vertex snapping, precision cursor" in DEV_NOTES.md. Absent/
+                  // undefined for an outline never calibrated either way.
   squared         // optional — set once "🟦 Square Up" has been applied (shipped
                   // 2026-07-10). Shape: { at, tolerance, snappedEdges }. Snaps
                   // near-90°/axis-aligned edges clean (within `tolerance` degrees

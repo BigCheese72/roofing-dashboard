@@ -368,7 +368,17 @@ helps a tech capture a clean roof outline for a building on the spot:
    you already traced dimmed on the map, with their labels and everything already
    placed on them, so you can see what's already mapped while tracing the next one
    right next to it, then label, trace, and save it the same way, as many times as
-   there are roofs.
+   there are roofs. Tracing near an already-mapped roof's corner or edge locks onto
+   it automatically (a "🧲 Snap to existing roof corners/edges" checkbox lets you
+   turn that off for a genuinely free point), so adjoining sections share exact
+   boundaries — no gaps, no overlaps. And once you've calibrated one roof's real
+   measurement on a building, every later roof on that same building picks up that
+   same scale automatically — no re-measuring (a "Scale inherited" note says so, and
+   you can still tap an edge to override it just for that one roof if you need to).
+   While tracing, placing a feature, or editing a shape, the cursor switches to a fine
+   crosshair instead of the default hand — on a phone, a "⊕ Place at Crosshair" button
+   next to the map lets you pan to line up a fixed on-screen crosshair with the exact
+   spot instead of tapping blind under your finger.
 8. Tap **"👁️ Preview Export"** to see exactly what the outline + labels + placed
    features will look like before exporting — no guessing, then export **SVG**,
    **PNG**, or **PDF** right from the preview, or from the buttons below it any time.

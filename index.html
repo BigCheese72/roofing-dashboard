@@ -262,6 +262,33 @@
   #rm-recenter-btn{position:absolute;right:8px;bottom:8px;z-index:401;width:40px;height:40px;border-radius:50%;
     background:#fff;border:2px solid var(--line);box-shadow:0 1px 5px rgba(0,0,0,.35);font-size:18px;
     display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0}
+  /* Precision cursor (Mark: "big HAND cursor, can't tell where the point
+     will land, as accurate as possible") -- swaps the default Leaflet grab
+     hand for a fine crosshair while placing/tracing/editing a vertex.
+     Real, immediate accuracy win for a mouse/trackpad with zero risk
+     (pure CSS, no interaction change). See "Precision cursor" in
+     DEV_NOTES.md. */
+  #rm-map-wrap.rm-precision-active #rm-map,
+  #rm-map-wrap.rm-precision-active #rm-map .leaflet-interactive,
+  #rm-map-wrap.rm-precision-active #rm-map .leaflet-container{cursor:crosshair}
+  /* Touch precision aid: a finger occludes the exact drop point, so a
+     fixed reticle at the map's own center gives an unambiguous aim point
+     -- pan the map so the crosshair sits over the real corner, then tap
+     "Place at Crosshair" instead of tapping blind under a fingertip.
+     Mark explicitly offered this as a valid alternative to a fingertip-
+     offset preview; chosen over that option here since it needs no
+     changes to Leaflet's own touch/tap handling (lower risk) and works
+     identically for a mouse too. pointer-events:none so it's purely
+     visual -- taps pass straight through to the map underneath it. */
+  .rm-crosshair-reticle{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+    width:34px;height:34px;z-index:402;pointer-events:none;display:none}
+  #rm-map-wrap.rm-precision-active .rm-crosshair-reticle{display:block}
+  .rm-crosshair-reticle::before,.rm-crosshair-reticle::after{content:"";position:absolute;background:#FFD600;
+    box-shadow:0 0 0 1px rgba(0,0,0,.5)}
+  .rm-crosshair-reticle::before{left:50%;top:0;bottom:0;width:2px;transform:translateX(-1px)}
+  .rm-crosshair-reticle::after{top:50%;left:0;right:0;height:2px;transform:translateY(-1px)}
+  .rm-crosshair-reticle .rm-crosshair-ring{position:absolute;inset:6px;border:2px solid #FFD600;border-radius:50%;
+    box-shadow:0 0 0 1px rgba(0,0,0,.5)}
 </style>
 <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore-compat.js"></script>
@@ -599,6 +626,7 @@
       <div id="rm-map-wrap" style="display:none;margin-bottom:12px">
         <div id="rm-map" style="height:min(70vh,640px);border-radius:6px;overflow:hidden"></div>
         <button id="rm-recenter-btn" onclick="rmRecenter()" title="Recenter / fit to roof">🎯</button>
+        <div class="rm-crosshair-reticle"><div class="rm-crosshair-ring"></div></div>
       </div>
 
       <!-- Trace controls (Undo/Finish/Cancel/Record) live right here, immediately
@@ -609,8 +637,13 @@
         <p class="hint" id="rm-trace-mode-hint">Tap the roof's corners in order, all the way around, right on the
           satellite map above.</p>
         <p class="hint"><span id="rm-trace-count">0 points</span> so far — need at least 3.</p>
+        <label id="rm-snap-toggle-wrap" style="display:flex;align-items:center;gap:6px;font-size:13px;margin:0 0 8px;color:var(--muted)">
+          <input type="checkbox" id="rm-snap-toggle" checked onchange="rmState.snapEnabled = this.checked">
+          🧲 Snap to existing roof corners/edges
+        </label>
         <div class="btnrow">
           <button class="btn primary" id="rm-walk-record-btn" onclick="rmWalkRecordCorner()" style="display:none">📍 Record This Corner</button>
+          <button class="btn" id="rm-place-crosshair-btn" onclick="rmPlaceAtCrosshair()" style="display:none">⊕ Place at Crosshair</button>
           <button class="btn primary" id="rm-trace-finish-btn" onclick="rmFinishTrace()" disabled>✓ Finish Outline</button>
           <button class="btn" id="rm-trace-undo-btn" onclick="rmTraceUndo()" disabled>↩️ Undo Last Point</button>
           <button class="btn" onclick="rmCancelTrace()">✕ Cancel</button>
@@ -7449,7 +7482,32 @@ var rmState = {
      another roof" in DEV_NOTES.md. */
   referenceLayerGroup: null,
   pendingBuildingId: null,
-  pendingBuildingName: null
+  pendingBuildingName: null,
+  /* Scale inheritance -- see rmFinishTrace()/rmCalibrateEdge(). A
+     dimensionless rescale factor (1 = no correction learned yet),
+     compounded (multiplied in, not replaced) each time a manual_trace/
+     ortho_trace outline on this SAME building gets calibrated, so a later
+     fine-tune stacks on top of an earlier inherited correction rather than
+     discarding it. inheritedScaleFactorBuildingId guards against applying
+     a factor learned for one building to a different one. */
+  inheritedScaleFactor: 1,
+  inheritedScaleFactorBuildingId: null,
+  /* Set momentarily by rmEnterMultiRoofCapture() around its
+     rmClearFootprintLayers() call when continuing to trace on the SAME
+     already-uploaded ortho for the SAME building -- see
+     rmClearFootprintLayers() and "Scale inheritance" in DEV_NOTES.md. */
+  preserveOrthoOnClear: false,
+  /* Vertex snapping (Mark: "adjoining sections share EXACT shared
+     vertices with no gaps or overlaps"). referenceRings is a flat array
+     of {lat,lng} rings (one per already-traced roof shown in the
+     reference layer), rebuilt alongside the visual reference layer by
+     rmDrawReferenceRoofs() -- the actual snap targets rmFindSnapTarget()
+     searches. snapEnabled is user-toggleable (checkbox in the trace
+     panel); snapIndicatorLayer is the brief visual "you snapped here"
+     marker. See "Vertex snapping" in DEV_NOTES.md. */
+  snapEnabled: true,
+  referenceRings: [],
+  snapIndicatorLayer: null
 };
 var RM_LOCAL_KEY = "roofmapper-local-outlines-v1";
 /* A commercial building — especially a hospital/medical campus — can easily
@@ -7758,7 +7816,13 @@ function rmDeleteOutline(){
 }
 function rmClearFootprintLayers(){
   rmCancelTrace(); /* starting fresh (new search, or a new trace) aborts any in-progress trace too */
-  rmClearOrthoOverlay(); /* GPS/address search means a real location, not the ortho's synthetic Null Island one */
+  /* GPS/address search means a real location, not the ortho's synthetic
+     Null Island one -- BUT rmEnterMultiRoofCapture() sets
+     preserveOrthoOnClear when "Trace Another Roof" is continuing on the
+     SAME already-uploaded ortho for the SAME building, so he isn't forced
+     to re-upload/re-pick the same image for every roof section on it.
+     See "Scale inheritance" in DEV_NOTES.md. */
+  if (!rmState.preserveOrthoOnClear) rmClearOrthoOverlay();
   var map = rmState.map;
   if (map){
     Object.keys(rmState.footprintLayers).forEach(function(id){ map.removeLayer(rmState.footprintLayers[id]); });
@@ -7874,7 +7938,19 @@ function rmRenderOutlineStats(outline){
     '<p class="rm-status warn" style="margin:0 0 10px">⚠️ This traces the property/site boundary from ' +
     'OpenStreetMap, not a single roof — the numbers below cover the whole site. Use only as a rough reference; ' +
     'trace or measure the actual roof separately.</p>' : '';
-  document.getElementById("rm-outline-stats").innerHTML =
+  /* Scale inheritance indicator -- Mark: "show the user that the scale is
+     inherited." outline.calibration.inherited (set by rmFinishTrace() when
+     it auto-applies a factor learned from an earlier roof on this same
+     building) is distinct from a manually-tapped edge calibration
+     (calibration.edgeIndex set instead) -- only the inherited case gets
+     this note; a real edge tap already has its own green-highlighted
+     label on the map. */
+  var scaleNote = "";
+  if (outline.calibration && outline.calibration.inherited){
+    scaleNote = '<p class="hint" style="margin:0 0 8px">📏 Scale inherited from this building’s earlier ' +
+      'calibration — no need to re-measure. Tap any edge’s length to override it for just this roof.</p>';
+  }
+  document.getElementById("rm-outline-stats").innerHTML = scaleNote +
     '<div class="stat"><b>' + outline.areaSqFt.toFixed(0) + '</b><span>Sq Ft</span></div>' +
     '<div class="stat"><b>' + outline.perimeterFt.toFixed(0) + '</b><span>Perimeter Ft</span></div>' +
     '<div class="stat"><b>' + outline.ring.length + '</b><span>Points</span></div>';
@@ -7945,6 +8021,7 @@ function rmEnterVertexEdit(){
   document.getElementById("rm-edit-shape-btn").textContent = "✓ Done Editing";
   document.getElementById("rm-edit-shape-hint").style.display = "";
   document.getElementById("rm-square-up-btn").disabled = true; /* two edit modes fighting over the same ring mid-drag is asking for trouble */
+  rmSetPrecisionMode(true);
   rmDrawVertexHandles();
 }
 function rmExitVertexEdit(persist){
@@ -7957,6 +8034,8 @@ function rmExitVertexEdit(persist){
   if (sqBtn) sqBtn.disabled = false;
   if (rmState.map && rmState.vertexHandleLayerGroup) rmState.map.removeLayer(rmState.vertexHandleLayerGroup);
   rmState.vertexHandleLayerGroup = null;
+  rmClearSnapIndicator();
+  rmSetPrecisionMode(false);
   if (persist) rmPersistVertexEdit();
 }
 function rmDrawVertexHandles(){
@@ -7981,10 +8060,10 @@ function rmDrawVertexHandles(){
        edge-dimension divIcons on every drag frame would be needless churn
        mid-gesture and risks feeling laggy on a phone, the opposite of
        what was asked for. */
-    (function(vertexIndex){
+    (function(vertexIndex, marker2){
       marker.on("drag", function(e){ rmOnVertexDrag(vertexIndex, e.target.getLatLng()); });
-      marker.on("dragend", function(){ rmOnVertexDragEnd(); });
-    })(i);
+      marker.on("dragend", function(e){ rmOnVertexDragEnd(vertexIndex, e.target.getLatLng(), marker2); });
+    })(i, marker);
   }
 }
 function rmOnVertexDrag(vertexIndex, latlng){
@@ -7996,9 +8075,28 @@ function rmOnVertexDrag(vertexIndex, latlng){
   if (vertexIndex === 0) ring[n] = { lat: latlng.lat, lng: latlng.lng }; /* keep the ring explicitly closed */
   if (rmState.outlineLayer) rmState.outlineLayer.setLatLngs(ring.map(function(p){ return [p.lat, p.lng]; }));
 }
-function rmOnVertexDragEnd(){
+/* vertexIndex/droppedLatLng/marker are only used for the snap check --
+   same rmFindSnapTarget() the trace-tap path uses, so dragging a corner
+   near an existing roof's vertex/edge locks it exactly onto that shared
+   boundary too. Snapped or not, the outline.ring was already updated
+   live during "drag" (rmOnVertexDrag) -- this just possibly nudges it
+   those last few pixels onto an exact match before recomputing stats. */
+function rmOnVertexDragEnd(vertexIndex, droppedLatLng, marker){
   var outline = rmState.outline;
   if (!outline) return;
+  var ring = outline.ring;
+  var n = ring.length - 1;
+  var snap = rmFindSnapTarget(droppedLatLng);
+  if (snap){
+    ring[vertexIndex] = { lat: snap.lat, lng: snap.lng };
+    if (vertexIndex === 0) ring[n] = { lat: snap.lat, lng: snap.lng };
+    if (rmState.outlineLayer) rmState.outlineLayer.setLatLngs(ring.map(function(p){ return [p.lat, p.lng]; }));
+    if (marker) marker.setLatLng([snap.lat, snap.lng]);
+    rmShowSnapIndicator(snap);
+    toast("Snapped to existing roof " + snap.type + " ✓");
+  } else {
+    rmClearSnapIndicator();
+  }
   outline.areaSqFt = rmGeomPolygonAreaSqMeters(outline.ring) * 10.7639;
   outline.perimeterFt = rmGeomPolygonPerimeterMeters(outline.ring) * 3.28084;
   outline.center = rmGeomRingCentroid(outline.ring);
@@ -8102,6 +8200,19 @@ function rmCalibrateEdge(edgeIndex){
   outline.perimeterFt = rmGeomPolygonPerimeterMeters(newRing) * 3.28084;
   outline.center = centroid;
   outline.calibration = { edgeIndex: edgeIndex, measuredFt: measuredFt, calibratedAt: Date.now() };
+  /* Scale inheritance -- learn from this calibration so the NEXT roof
+     traced on this same building (manual_trace/ortho_trace only --
+     OSM footprints are independently georeferenced, walk_corners has no
+     shared scale to learn) can skip re-measuring. Compounds (multiplies
+     in) rather than replaces, so recalibrating a second roof on the same
+     building stacks on top of what the first one already taught, instead
+     of discarding it. See rmFinishTrace() and "Scale inheritance" in
+     DEV_NOTES.md. */
+  if ((outline.source === "manual_trace" || outline.source === "ortho_trace") && rmState.linkedBuildingId){
+    var carryOver = rmState.inheritedScaleFactorBuildingId === rmState.linkedBuildingId ? rmState.inheritedScaleFactor : 1;
+    rmState.inheritedScaleFactor = carryOver * factor;
+    rmState.inheritedScaleFactorBuildingId = rmState.linkedBuildingId;
+  }
   /* If features are already placed on a saved roof, keep them visually
      anchored to the roof by applying the identical transform -- otherwise
      a rescale would visibly detach drains/HVAC markers from the edges they
@@ -8266,6 +8377,26 @@ function rmGenerateOutline(){
    works completely unchanged regardless of which method captured it. */
 var rmTraceState = { active: false, mode: "manual", points: [], previewLayer: null, vertexLayers: [] };
 var rmTraceClickHandler = null;
+/* Precision cursor (Mark: "big HAND cursor... as accurate as possible")
+   -- toggles the crosshair CSS + fixed center reticle (see the
+   #rm-map-wrap.rm-precision-active rules and .rm-crosshair-reticle in the
+   stylesheet) on for the duration of placing/tracing/editing a vertex.
+   Applies uniformly to trace, vertex-edit, and feature placement; the
+   "⊕ Place at Crosshair" quick-action button (rmPlaceAtCrosshair()) is
+   trace-specific -- vertex-edit is drag-based (you already see the handle
+   move) and feature placement already has its own click-to-reposition, so
+   the cursor/reticle alone covers those two without a redundant button.
+   See "Precision cursor" in DEV_NOTES.md. */
+function rmSetPrecisionMode(active){
+  var wrap = document.getElementById("rm-map-wrap");
+  if (wrap) wrap.classList.toggle("rm-precision-active", !!active);
+  var btn = document.getElementById("rm-place-crosshair-btn");
+  if (btn) btn.style.display = active ? "" : "none";
+}
+function rmPlaceAtCrosshair(){
+  if (!rmState.map || !rmTraceState.active) return;
+  rmTraceAddPoint(rmState.map.getCenter());
+}
 function rmShowTracePanel(){
   document.getElementById("rm-footprint-panel").style.display = "none";
   var isWalk = rmTraceState.mode === "walk";
@@ -8276,6 +8407,11 @@ function rmShowTracePanel(){
     "satellite/OSM aren’t usable here, not survey-grade. Undo and re-record a corner if a reading looks off." :
     "Tap the roof's corners in order, all the way around, right on the satellite map above.";
   document.getElementById("rm-walk-record-btn").style.display = isWalk ? "" : "none";
+  /* Crosshair/reticle + "Place at Crosshair" only apply to map-tap tracing
+     -- walk-corners points come from an actual GPS fix at the tech's
+     physical position, not a map tap, so there's nothing on the map to
+     aim a crosshair at. */
+  rmSetPrecisionMode(!isWalk);
   rmUpdateTraceButtons();
   rmUpdateControlVisibility(); /* shows #rm-trace-panel (rmTraceState.active is already true here), hides search buttons */
   document.getElementById("rm-trace-panel").scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -8573,6 +8709,20 @@ function rmWalkRecordCorner(){
 }
 function rmTraceAddPoint(latlng){
   if (!rmTraceState.active) return;
+  /* Snap only applies to map-tap tracing (manual/ortho) -- walk-corners
+     points come from an actual GPS fix at the tech's real physical
+     position, which must never be silently swapped for a nearby existing
+     vertex (that would defeat the entire point of walking to the real
+     corner). See "Vertex snapping" in DEV_NOTES.md. */
+  if (rmTraceState.mode !== "walk"){
+    var snap = rmFindSnapTarget(latlng);
+    if (snap){
+      latlng = L.latLng(snap.lat, snap.lng);
+      rmShowSnapIndicator(snap);
+    } else {
+      rmClearSnapIndicator();
+    }
+  }
   rmTraceState.points.push({ lat: latlng.lat, lng: latlng.lng });
   rmRenderTracePreview();
   rmUpdateTraceButtons();
@@ -8617,6 +8767,8 @@ function rmCancelTrace(){
     if (rmTraceState.previewLayer) map.removeLayer(rmTraceState.previewLayer);
     if (rmTraceClickHandler){ map.off("click", rmTraceClickHandler); rmTraceClickHandler = null; }
   }
+  rmClearSnapIndicator(); /* covers both an explicit Cancel and rmFinishTrace()'s internal call to this same function */
+  rmSetPrecisionMode(false);
   rmTraceState.points = [];
   rmTraceState.vertexLayers = [];
   rmTraceState.previewLayer = null;
@@ -8653,9 +8805,33 @@ function rmFinishTrace(){
      it sits is a placeholder. See "Ortho upload + flat-canvas tracing" in
      DEV_NOTES.md. */
   if (tracedOnOrtho) outline.tracedOnOrtho = true;
+  /* Scale inheritance (Mark: "he should not have to re-calibrate for every
+     roof... scale is a property of the building/base image, not of an
+     individual roof") -- applies to manual_trace/ortho_trace only (OSM
+     footprints are already independently georeferenced; walk_corners is
+     each a fresh independent GPS fix, nothing shared to inherit). If a
+     PRIOR roof on this same continuing multi-roof session was calibrated
+     (rmCalibrateEdge() sets rmState.inheritedScaleFactor), auto-apply that
+     exact correction to this brand-new ring immediately -- same uniform
+     rescale-about-centroid math Calibrate itself uses -- so it comes out
+     accurate without asking him to re-measure an edge he's already
+     measured once for this building. See "Scale inheritance" in
+     DEV_NOTES.md. */
+  var canInheritScale = (outline.source === "manual_trace" || outline.source === "ortho_trace") &&
+    rmState.inheritedScaleFactor !== 1 && rmState.inheritedScaleFactorBuildingId === rmState.pendingBuildingId;
+  if (canInheritScale){
+    var centroid = rmGeomRingCentroid(ring);
+    var scaledRing = ring.map(function(p){ return rmGeomScalePoint(p, centroid, rmState.inheritedScaleFactor); });
+    outline.ring = scaledRing;
+    outline.center = centroid;
+    outline.areaSqFt = rmGeomPolygonAreaSqMeters(scaledRing) * 10.7639;
+    outline.perimeterFt = rmGeomPolygonPerimeterMeters(scaledRing) * 3.28084;
+    outline.calibration = { inherited: true, factor: rmState.inheritedScaleFactor, calibratedAt: Date.now() };
+  }
   rmCancelTrace();
   rmDrawFinalOutline(outline);
-  toast(isWalk ? "Roof outline captured from walked corners ✓" : "Roof outline traced ✓");
+  toast(isWalk ? "Roof outline captured from walked corners ✓" :
+    (canInheritScale ? "Roof outline traced ✓ — scale inherited from this building, no need to re-measure" : "Roof outline traced ✓"));
 }
 
 /* ---- save to building (existing or new) ---- */
@@ -9080,6 +9256,7 @@ function rmDrawLinkedAssets(assets){
 function rmClearReferenceLayer(){
   if (rmState.map && rmState.referenceLayerGroup) rmState.map.removeLayer(rmState.referenceLayerGroup);
   rmState.referenceLayerGroup = null;
+  rmState.referenceRings = [];
 }
 /* Dimmed variant of assetIcon() -- same shape/icon so a feature is still
    instantly recognizable, but muted color + reduced opacity so it reads as
@@ -9152,6 +9329,7 @@ async function rmDrawReferenceRoofs(buildingId, bld, excludeRoofId){
       var labelCenter = outline.center || rmGeomRingCentroid(outline.ring);
       rmRefLabelMarker(labelCenter.lat, labelCenter.lng, roof.label || "Roof").addTo(rmState.referenceLayerGroup);
       outline.ring.forEach(function(p){ bounds.push([p.lat, p.lng]); });
+      rmState.referenceRings.push(outline.ring); /* snap targets -- see rmFindSnapTarget() */
     }
     (roof.roof_assets || []).forEach(function(a){
       if (typeof a.lat !== "number" || typeof a.lng !== "number") return;
@@ -9166,6 +9344,74 @@ async function rmDrawReferenceRoofs(buildingId, bld, excludeRoofId){
     });
   });
   return bounds.length ? bounds : null;
+}
+/* ---- Vertex snapping ----
+   Mark: "roof sections on a real building share boundaries exactly" --
+   when tracing a new roof section adjacent to one already mapped, lock
+   onto its existing corners (and, since a new section often butts partway
+   along a wall rather than exactly at a corner, its edges too) so
+   adjoining sections share EXACT vertices with no gaps or overlaps.
+   Pixel-distance threshold (not a fixed real-world distance) so the snap
+   radius feels the same regardless of zoom level -- "close enough
+   on-screen to obviously mean this corner," not "close enough in feet,"
+   which would feel wildly different zoomed in vs. out. Toggleable
+   (rmState.snapEnabled, checkbox in the trace panel) since Mark explicitly
+   wants a way to place a genuinely free point when that's intentional.
+   See "Vertex snapping" in DEV_NOTES.md. */
+var RM_SNAP_PIXEL_THRESHOLD = 18;
+function rmProjectPointOntoSegment(p, a, b){
+  var abx = b.x - a.x, aby = b.y - a.y;
+  var lenSq = abx * abx + aby * aby;
+  if (lenSq === 0) return null;
+  var t = ((p.x - a.x) * abx + (p.y - a.y) * aby) / lenSq;
+  if (t < 0 || t > 1) return null; /* only the segment itself, not its infinite extension -- an edge doesn't attract a tap way past its own endpoint */
+  return L.point(a.x + t * abx, a.y + t * aby);
+}
+/* Returns {lat, lng, type:"corner"|"edge"} for the closest snap candidate
+   within RM_SNAP_PIXEL_THRESHOLD screen pixels of latlng, across every
+   ring in rmState.referenceRings, or null if nothing's close enough (the
+   normal case away from any existing roof -- most taps snap to nothing). */
+function rmFindSnapTarget(latlng){
+  if (!rmState.snapEnabled || !rmState.map || !rmState.referenceRings.length) return null;
+  var map = rmState.map;
+  var tapPt = map.latLngToContainerPoint(latlng);
+  var best = null, bestDist = RM_SNAP_PIXEL_THRESHOLD;
+  rmState.referenceRings.forEach(function(ring){
+    for (var i = 0; i < ring.length - 1; i++){ /* ring is closed: ring[length-1] === ring[0] */
+      var a = ring[i], b = ring[i + 1];
+      var aPt = map.latLngToContainerPoint([a.lat, a.lng]);
+      var bPt = map.latLngToContainerPoint([b.lat, b.lng]);
+      var dCorner = tapPt.distanceTo(aPt);
+      if (dCorner < bestDist){ bestDist = dCorner; best = { lat: a.lat, lng: a.lng, type: "corner" }; }
+      var proj = rmProjectPointOntoSegment(tapPt, aPt, bPt);
+      if (proj){
+        var dEdge = tapPt.distanceTo(proj);
+        if (dEdge < bestDist){
+          bestDist = dEdge;
+          var snappedLatLng = map.containerPointToLatLng(proj);
+          best = { lat: snappedLatLng.lat, lng: snappedLatLng.lng, type: "edge" };
+        }
+      }
+    }
+  });
+  return best;
+}
+/* Brief visual confirmation of where a snap landed -- a distinct yellow
+   ring (not orange/blue/gray, all already meaning something else on this
+   map: active trace, linked-roof label, reference layer) at the exact
+   snapped point. Left in place (not auto-faded) until the next trace
+   action replaces or clears it, so it's still visible as a reference
+   while placing the next point nearby. */
+function rmShowSnapIndicator(latlng){
+  if (!rmState.map) return;
+  if (rmState.snapIndicatorLayer) rmState.map.removeLayer(rmState.snapIndicatorLayer);
+  rmState.snapIndicatorLayer = L.circleMarker([latlng.lat, latlng.lng], {
+    radius: 11, color: "#FFD600", weight: 3, fillOpacity: 0, interactive: false
+  }).addTo(rmState.map);
+}
+function rmClearSnapIndicator(){
+  if (rmState.map && rmState.snapIndicatorLayer) rmState.map.removeLayer(rmState.snapIndicatorLayer);
+  rmState.snapIndicatorLayer = null;
 }
 /* Best-known location for a building with no active trace yet -- tries,
    in order: (1) any existing roof's latest outline centroid [already-
@@ -9203,7 +9449,17 @@ async function rmGetBuildingKnownLocation(bld){
    again either. */
 async function rmEnterMultiRoofCapture(buildingId){
   if (currentViewName !== "roofmapper") showView("roofmapper");
+  /* Continuing to trace on the SAME already-uploaded ortho for the SAME
+     building (e.g. "Trace Another Roof" tapped right after saving a roof
+     that was itself traced on an ortho)? Keep the image up instead of
+     tearing it down -- he shouldn't have to re-upload/re-pick the same
+     photo for every roof section on it, and it's what makes scale
+     inheritance actually save him a step rather than just being a nice-
+     to-know. See "Scale inheritance" in DEV_NOTES.md. */
+  var continuingOrtho = rmState.orthoActive && rmState.linkedBuildingId === buildingId;
+  rmState.preserveOrthoOnClear = continuingOrtho;
   rmClearFootprintLayers(); /* wipes any in-progress trace/search/linked-roof state */
+  rmState.preserveOrthoOnClear = false;
   toast("Loading this building's roofs…");
   try{
     var snap = await fdb.collection("buildings").doc(buildingId).get();
@@ -9211,6 +9467,22 @@ async function rmEnterMultiRoofCapture(buildingId){
     rmState.pendingBuildingId = buildingId;
     rmState.pendingBuildingName = bld.name || "this building";
     var bounds = await rmDrawReferenceRoofs(buildingId, bld, null);
+    if (continuingOrtho){
+      /* Ortho overlay + its map position/zoom are already exactly right --
+         just restart tracing directly on it, same tail end
+         rmStartOrthoTrace() itself uses, no re-center/re-search. */
+      var map2 = rmEnsureMap();
+      rmTraceState.active = true;
+      rmTraceState.mode = "manual";
+      rmTraceState.points = [];
+      rmTraceClickHandler = function(e){ rmTraceAddPoint(e.latlng); };
+      map2.on("click", rmTraceClickHandler);
+      rmShowTracePanel();
+      rmSetStatus("Tracing another roof on the same drone image — existing roofs shown dimmed for reference." +
+        (rmState.inheritedScaleFactorBuildingId === buildingId ? " Scale inherited — no need to re-measure." : ""));
+      rmUpdateControlVisibility();
+      return;
+    }
     var map = rmEnsureMap();
     var center = await rmGetBuildingKnownLocation(bld);
     if (center){
@@ -9272,6 +9544,7 @@ function rmOpenFeatureForm(existingAsset){
   document.getElementById("rm-feature-dup-btn").style.display = existingAsset ? "" : "none";
   document.getElementById("rm-feature-form").style.display = "";
   document.getElementById("rm-features-actions").style.display = "none";
+  rmSetPrecisionMode(true);
   var map = rmEnsureMap();
   /* Idempotent re-entry: clear any marker/handler from a previous open
      (e.g. tapping a different existing marker while already adding one)
@@ -9316,6 +9589,7 @@ function rmCloseFeatureForm(refresh){
   if (rmFeatureMarker){ if (rmState.map) rmState.map.removeLayer(rmFeatureMarker); rmFeatureMarker = null; }
   if (rmFeatureMapClickHandler){ if (rmState.map) rmState.map.off("click", rmFeatureMapClickHandler); rmFeatureMapClickHandler = null; }
   rmFeatureEditingId = null;
+  rmSetPrecisionMode(false);
   if (!rmState.map || !rmState.linkedBuildingId) return; /* whole roof link is being torn down -- nothing to restore */
   /* refresh=true (Save/Delete -- the data actually changed) re-fetches;
      plain Cancel just redraws from the already-held cache (no data
