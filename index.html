@@ -4071,8 +4071,9 @@ function pinPopupHtml(p){
     (p.finding_id ? "<button class=\"btn\" onclick=\"jumpToAdjustPin('" + p.work_order_id + "','" + p.finding_id + "')\">Adjust Pin</button>" : "") +
     "</div>";
 }
-function outlinePopupHtml(o){
+function outlinePopupHtml(o, roofLabel){
   return "<b>🗺️ " + esc(rmOutlineTitle(o)) + "</b><br>" +
+    (roofLabel ? "Roof: " + esc(roofLabel) + "<br>" : "") +
     (o.areaSqFt ? Math.round(o.areaSqFt) + " sq ft · " + Math.round(o.perimeterFt || 0) + " ft perimeter<br>" : "") +
     "<span style='color:var(--muted);font-size:12px'>Saved from RoofMapper" +
     (o.createdAt ? " — " + new Date(o.createdAt).toLocaleDateString() : "") + "</span>";
@@ -4089,7 +4090,13 @@ function renderBuildingMap(pins, customBld, bldAddress, orthoOverlay, assets, bu
   /* outlines (roof_outlines[] from RoofMapper) are always real lat/lng —
      only drawn in satellite/drone_ortho mode, same tradeoff already
      documented above for pins/assets vs. a custom roof_plan/sketch base
-     map (no coordinate system to convert lat/lng into there). */
+     map (no coordinate system to convert lat/lng into there). Each item
+     may carry an optional _roofLabel (set by openBuildingHistory() when
+     passing every roof's most recent outline, not just the one currently
+     selected in the picker) so multiple roofs can show together, each
+     labeled -- Mark: roofs should "coexist" and be identifiable at a
+     glance, not switched one-at-a-time. See "Individual-roof tracing +
+     labels" in DEV_NOTES.md. */
   outlines = outlines || [];
   var el = document.getElementById("building-map");
   if (!el) return;
@@ -4145,7 +4152,11 @@ function renderBuildingMap(pins, customBld, bldAddress, orthoOverlay, assets, bu
         if (!o.ring || o.ring.length < 3) return;
         L.polygon(o.ring.map(function(p){ return [p.lat, p.lng]; }), {
           color: "#E8600A", weight: 2, fillColor: "#E8600A", fillOpacity: 0.1
-        }).addTo(buildingMap).bindPopup(outlinePopupHtml(o));
+        }).addTo(buildingMap).bindPopup(outlinePopupHtml(o, o._roofLabel));
+        if (o._roofLabel){
+          var labelCenter = o.center || rmGeomRingCentroid(o.ring);
+          roofLabelMarker(labelCenter.lat, labelCenter.lng, o._roofLabel).addTo(buildingMap);
+        }
       });
       pins.forEach(function(p){
         L.circleMarker([p.lat, p.lng], {
@@ -4583,20 +4594,43 @@ async function openBuildingHistory(buildingId){
     var orthoOverlay = (roof.roof_base_map_type === "drone_ortho" && roof.roof_base_map_url && roof.roof_base_map_bounds) ?
       { url: roof.roof_base_map_url, bounds: roof.roof_base_map_bounds } : null;
     var roofAssets = roof.roof_assets || [];
+    /* Every roof's most recent outline, each tagged with its own roof's
+       label -- lets Mark see every roof on this building at once, labeled,
+       instead of switching one-at-a-time via the picker below. Only
+       meaningful in satellite mode (hasCustomBaseMap forces a single
+       roof's x/y image CRS, which the other roofs' lat/lng outlines can't
+       be drawn onto at all -- same coordinate-system constraint already
+       documented for pins/assets above). See "Individual-roof tracing +
+       labels" in DEV_NOTES.md. */
+    var allRoofOutlinesForMap = hasCustomBaseMap ? [] : roofs.reduce(function(acc, r){
+      var ol = r.roof_outlines || [];
+      var latest = ol[ol.length - 1];
+      if (latest) acc.push(Object.assign({}, latest, { _roofLabel: r.label || "Roof" }));
+      return acc;
+    }, []);
     /* Roof selector only renders for a building with more than one real
        roof — a still-single-roof building (all of them, as of this
        writing) looks exactly like it did before roofs[] existed. Condition
        (if the admin has set one) shows right in the option label — a cheap
-       way to surface a key profile fact without opening the profile card. */
+       way to surface a key profile fact without opening the profile card.
+       "✏️ Rename" is new -- a roof's label was previously only ever set
+       once, at creation (promptAddRoof()'s prompt), with no way to fix a
+       typo or rename it later. Shown for a single-roof building too (its
+       synthesized/default "Roof 1" is just as renameable). See
+       "Individual-roof tracing + labels" in DEV_NOTES.md. */
+    var renameBtnHtml = '<button class="btn" style="margin-left:6px" onclick="promptRenameRoof(\'' +
+      buildingId + '\', \'' + historySelectedRoofId + '\')">✏️ Rename</button>';
     var roofPickerHtml = roofs.length > 1 ?
-      '<div class="fld" style="max-width:260px;margin-bottom:8px">' +
-        '<label>Roof</label><select onchange="historySelectRoof(\'' + buildingId + '\', this.value)">' +
+      '<div class="fld" style="max-width:320px;margin-bottom:8px">' +
+        '<label>Roof</label><div class="btnrow" style="margin:0;align-items:center">' +
+        '<select onchange="historySelectRoof(\'' + buildingId + '\', this.value)" style="flex:1">' +
         roofs.map(function(r){
           var cond = getRoofProfile(r).condition;
           return '<option value="' + esc(r.id) + '"' + (r.id === historySelectedRoofId ? ' selected' : '') + '>' +
             esc(r.label || "Roof") + (cond ? " — " + esc(cond) : "") + '</option>';
         }).join('') +
-        '</select></div>' : '';
+        '</select>' + renameBtnHtml + '</div></div>' :
+      '<p class="hint" style="margin:0 0 8px">Roof: <b>' + esc(roof.label || "Roof") + '</b>' + renameBtnHtml + '</p>';
     var addRoofBtnHtml = '<button class="btn" onclick="promptAddRoof(\'' + buildingId + '\')">+ Add Roof</button>';
     var addFeatureBtnHtml = '<button class="btn" onclick="openAssetModal(\'' + buildingId + '\', null, \'' + historySelectedRoofId + '\')">+ Add Roof Feature</button>';
     var addActivityBtnHtml = '<button class="btn" onclick="openActivityModal(\'' + buildingId + '\')">+ Log Activity</button>';
@@ -4615,7 +4649,7 @@ async function openBuildingHistory(buildingId){
       detail.innerHTML = baseMapCardHtml + profileCardHtml + emptyMapCardHtml + '<div class="card"><h2 class="cond">Timeline</h2>' +
         '<div class="btnrow" style="margin:0 0 10px">' + addActivityBtnHtml + '</div>' +
         '<div class="empty">No reports logged for this building yet.</div></div>';
-      renderBuildingMap([], hasCustomBaseMap ? roof : null, bld.location, orthoOverlay, roofAssets, buildingId, roof.roof_outlines);
+      renderBuildingMap([], hasCustomBaseMap ? roof : null, bld.location, orthoOverlay, roofAssets, buildingId, allRoofOutlinesForMap);
       return;
     }
     flagDuplicateEvents(events);
@@ -4660,7 +4694,7 @@ async function openBuildingHistory(buildingId){
       '<div id="timeline-list"></div></div>';
     populateTimelineFilterOptions();
     renderTimelineList();
-    renderBuildingMap(mapPins, hasCustomBaseMap ? roof : null, bld.location, orthoOverlay, roofAssets, buildingId, roof.roof_outlines);
+    renderBuildingMap(mapPins, hasCustomBaseMap ? roof : null, bld.location, orthoOverlay, roofAssets, buildingId, allRoofOutlinesForMap);
   }catch(e){
     detail.innerHTML = '<div class="card"><div class="empty">Couldn\u2019t load timeline: ' + esc(e.message) + '</div></div>';
   }
@@ -4689,6 +4723,31 @@ async function promptAddRoof(buildingId){
     toast("Roof added \u2713");
     openBuildingHistory(buildingId);
   }catch(e){ toast("Couldn't add roof: " + e.message); }
+}
+/* A roof's label was previously only ever set once, at promptAddRoof()
+   creation time -- no way to fix a typo or rename it later. Same
+   prompt-based pattern as promptAddRoof(), pre-filled with the current
+   label. See "Individual-roof tracing + labels" in DEV_NOTES.md. */
+async function promptRenameRoof(buildingId, roofId){
+  toast("Loading roof\u2026");
+  try{
+    var snap = await fdb.collection("buildings").doc(buildingId).get();
+    var bld = snap.exists ? snap.data() : {};
+    var roofs = getBuildingRoofs(bld);
+    var roof = roofs.find(function(r){ return r.id === roofId; });
+    if (!roof){ toast("Couldn't find that roof."); return; }
+    var label = prompt("Rename this roof:", roof.label || "");
+    if (label === null) return;
+    label = label.trim();
+    if (!label){ toast("Enter a name for the roof."); return; }
+    roof.label = label;
+    roof.updatedAt = Date.now();
+    var idx = roofs.findIndex(function(r){ return r.id === roofId; });
+    roofs[idx] = roof;
+    await saveBuildingRoofs(buildingId, roofs);
+    toast("Roof renamed \u2713");
+    openBuildingHistory(buildingId);
+  }catch(e){ toast("Couldn't rename roof: " + e.message); }
 }
 async function deleteHistoryEventAdmin(eventId, buildingId){
   if (!isAdmin){ toast("Admin mode required to delete."); return; }
@@ -6414,6 +6473,25 @@ function rmGeomRingCentroid(ring){
   ring.forEach(function(p){ lat += p.lat; lng += p.lng; });
   return { lat: lat / n, lng: lng / n };
 }
+/* Persistent roof-name label -- distinct styling from the per-edge
+   dimension labels (blue instead of dark slate, larger/bolder) so the two
+   read as different kinds of information at a glance. Shared by RoofMapper
+   itself and Building History's roof map -- both draw one of these per
+   roof, at that roof's most recent outline centroid, non-interactive (the
+   outline polygon underneath keeps its own tap/popup). See "Individual-
+   roof tracing + labels" in DEV_NOTES.md. */
+function roofLabelMarker(lat, lng, text){
+  return L.marker([lat, lng], {
+    icon: L.divIcon({
+      className: "", iconSize: null,
+      html: '<div style="background:#1976D2;color:#fff;padding:4px 10px;border-radius:5px;' +
+        'font-size:12px;font-weight:700;white-space:nowrap;transform:translate(-50%,-50%);' +
+        'box-shadow:0 1px 4px rgba(0,0,0,.45);border:1.5px solid rgba(255,255,255,.85)">' +
+        esc(text) + '</div>'
+    }),
+    interactive: false
+  });
+}
 function rmGeomPolygonAreaSqMeters(ring){
   var origin = rmGeomRingCentroid(ring);
   var pts = ring.map(function(p){ return rmGeomToLocalXY(p, origin); });
@@ -6817,7 +6895,9 @@ var rmState = {
   /* Phase 3: which base tile layer is currently showing (rmSetBaseLayer()). */
   baseLayer: null, baseLayerType: "osm",
   /* Per-edge dimension labels drawn on the current outline (rmDrawEdgeDimensions()). */
-  dimensionLayerGroup: null
+  dimensionLayerGroup: null,
+  /* This roof's persistent name label, once saved (roofLabelMarker()). */
+  roofLabelLayer: null
 };
 var RM_LOCAL_KEY = "roofmapper-local-outlines-v1";
 /* A commercial building — especially a hospital/medical campus — can easily
@@ -7040,6 +7120,8 @@ function rmClearLinkedFeatures(){
   rmState.linkedAssetsCache = [];
   rmState.linkedBuildingId = null;
   rmState.linkedRoofId = null;
+  if (rmState.map && rmState.roofLabelLayer) rmState.map.removeLayer(rmState.roofLabelLayer);
+  rmState.roofLabelLayer = null;
   var panel = document.getElementById("rm-features-panel");
   if (panel) panel.style.display = "none";
   var bmStatus = document.getElementById("rm-basemap-status");
@@ -7578,20 +7660,56 @@ function rmBpRender(list){
       '<button class="btn">Save Here</button></div>';
   }).join("");
 }
-/* A building with only one roof saves immediately, same as before — no
-   extra tap. A multi-roof building gets a small picker first, since
-   RoofMapper doesn't yet know which roof the tech was standing on. */
+/* Always shows a picker for an EXISTING building, even a currently
+   single-roof one -- previously a single-roof building saved immediately
+   with zero taps, which silently meant a second distinct roof traced later
+   for the same building just appended into roof #1's roof_outlines[]
+   instead of becoming its own roof. Mark: "no way to trace individual
+   roofs." "+ Add a new roof…" is always offered alongside whatever roofs
+   already exist, so creating roof #2/#3/etc never requires leaving
+   RoofMapper first. See "Individual-roof tracing + labels" in
+   DEV_NOTES.md. (rmCreateBuildingAndSave(), for a BRAND-NEW building, is
+   unaffected -- its first roof is unambiguous, no picker needed there.) */
 function rmChooseBuildingForSave(buildingId){
   var b = (rmBpCache || []).find(function(x){ return x.id === buildingId; }) || {};
   var roofs = getBuildingRoofs(b);
-  if (roofs.length <= 1){ rmSaveOutlineToBuilding(buildingId, roofs[0] && roofs[0].id); return; }
   document.getElementById("rm-roof-picker").innerHTML =
     '<div class="fld" style="max-width:260px"><label>Which roof is this outline for?</label>' +
     '<select id="rm-roof-select">' +
     roofs.map(function(r){ return '<option value="' + esc(r.id) + '">' + esc(r.label || "Roof") + '</option>'; }).join('') +
+    '<option value="__new__">+ Add a new roof…</option>' +
     '</select></div>' +
-    '<div class="btnrow"><button class="btn primary" onclick="rmSaveOutlineToBuilding(\'' + buildingId +
-    '\', document.getElementById(\'rm-roof-select\').value)">Save Outline</button></div>';
+    '<div class="btnrow"><button class="btn primary" onclick="rmConfirmSaveToChosenRoof(\'' + buildingId +
+    '\')">Save Outline</button></div>';
+}
+function rmConfirmSaveToChosenRoof(buildingId){
+  var sel = document.getElementById("rm-roof-select").value;
+  if (sel === "__new__"){
+    var label = prompt("Name for this new roof (e.g. \"Main Roof\", \"North Wing\", \"Warehouse\"):");
+    if (label === null) return;
+    label = label.trim();
+    if (!label){ toast("Enter a name for the roof."); return; }
+    rmAddRoofAndSave(buildingId, label);
+    return;
+  }
+  rmSaveOutlineToBuilding(buildingId, sel);
+}
+async function rmAddRoofAndSave(buildingId, label){
+  if (!rmState.outline){ toast("Generate a roof outline first."); return; }
+  toast("Adding roof…");
+  try{
+    var snap = await fdb.collection("buildings").doc(buildingId).get();
+    var bld = snap.exists ? snap.data() : {};
+    var roofs = getBuildingRoofs(bld);
+    var newRoof = {
+      id: genId("roof"), label: label, roofSystem: "",
+      roof_base_map_type: null, roof_base_map_url: null, roof_base_map_bounds: null,
+      roof_assets: [], roof_outlines: [], createdAt: Date.now(), updatedAt: Date.now()
+    };
+    roofs.push(newRoof);
+    await saveBuildingRoofs(buildingId, roofs);
+    await rmSaveOutlineToBuilding(buildingId, newRoof.id);
+  }catch(e){ toast("Couldn't add the new roof: " + e.message); }
 }
 function rmConfirmSiteBoundarySave(){
   if (!rmState.outline || !rmState.outline.isSiteBoundary) return true;
@@ -7606,9 +7724,11 @@ async function rmSaveOutlineToBuilding(buildingId, roofId){
     var snap = await fdb.collection("buildings").doc(buildingId).get();
     var bld = snap.exists ? snap.data() : {};
     var roofs = getBuildingRoofs(bld);
-    /* roofId comes from rmChooseBuildingForSave's picker for a multi-roof
-       building; undefined (single-roof building, or a brand-new building
-       from rmCreateBuildingAndSave) falls back to the first roof. */
+    /* roofId comes from rmChooseBuildingForSave's picker (always shown for
+       an existing building, including "+ Add a new roof…" -- see
+       "Individual-roof tracing + labels" in DEV_NOTES.md); undefined only
+       for a brand-new building from rmCreateBuildingAndSave, where the
+       first roof is unambiguous. */
     var roof = roofs.find(function(r){ return r.id === roofId; }) || roofs[0];
     var entry = Object.assign({}, rmState.outline, { id: genId("rmo") });
     roof.roof_outlines = (roof.roof_outlines || []).concat([entry]);
@@ -7633,6 +7753,15 @@ async function rmSaveOutlineToBuilding(buildingId, roofId){
        the building from there instead. */
     rmState.linkedBuildingId = buildingId;
     rmState.linkedRoofId = roof.id;
+    /* Persistent label on the outline just saved, using the roof it was
+       actually saved to -- so Mark sees which roof this is at a glance,
+       not just in the picker dropdown. See "Individual-roof tracing +
+       labels" in DEV_NOTES.md. */
+    if (rmState.map){
+      if (rmState.roofLabelLayer) rmState.map.removeLayer(rmState.roofLabelLayer);
+      var labelCenter = rmState.outline.center || rmGeomRingCentroid(rmState.outline.ring);
+      rmState.roofLabelLayer = roofLabelMarker(labelCenter.lat, labelCenter.lng, roof.label || "Roof").addTo(rmState.map);
+    }
     rmShowFeaturePanel(bld.name);
     await rmLoadLinkedAssets();
     rmUpdateExportHint();

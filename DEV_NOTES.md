@@ -4410,6 +4410,116 @@ text) is completely unaffected by any of the above. All test state
 stubbed `geocodeAddress`/`rmSearchBuildings`/`rmGeoRequest`/`toast`)
 cleared, page reloaded, console clean.
 
+## Individual-roof tracing + labels (shipped 2026-07-10, dev only)
+
+Mark's feedback: "no way to trace individual roofs, and each roof needs a
+LABEL." The multi-roof data model (`roofs[]`, each with its own `.label`/
+`.roof_outlines[]`/`.roof_assets[]`) already existed from an earlier
+increment — this closes the actual gaps in the RoofMapper/Building History
+UI that made it hard to use in practice.
+
+**Real latent bug found and fixed**: `rmChooseBuildingForSave()` only
+showed a roof picker for a building that ALREADY had 2+ roofs — a
+single-roof building saved with zero extra taps, straight into that one
+roof's `roof_outlines[]`. That meant tracing a genuinely second, distinct
+roof for a still-single-roof building had no way to become its own roof —
+it would silently append into roof #1's outline history instead (which is
+otherwise a deliberate, documented behavior for re-surveys/corrections of
+the SAME roof, just wrong for a NEW one). Now the picker always shows for
+an existing building, single-roof or not, with a
+**"+ Add a new roof…"** option alongside whatever roofs already exist —
+picking it prompts for a label and creates the roof
+(`rmAddRoofAndSave()`) before saving the outline into it
+(`rmSaveOutlineToBuilding()`). One extra tap for the common single-roof
+case, traded for actually being able to add roof #2/#3/etc. without ever
+leaving RoofMapper. (`rmCreateBuildingAndSave()`, for a brand-new building,
+is unaffected — its first roof is unambiguous, no picker needed.)
+
+**Persistent labels, not just picker text**: previously a roof's name only
+ever appeared as `<option>` text in a dropdown, or in a tap-triggered map
+popup (`outlinePopupHtml()`). New shared `roofLabelMarker(lat, lng, text)`
+(next to `rmGeomRingCentroid()`) draws a small persistent blue pill label
+at an outline's centroid — visually distinct from the existing per-edge
+dimension labels (dark slate) so the two read as different kinds of
+information. Used in two places: RoofMapper draws one on the outline it
+just saved (`rmSaveOutlineToBuilding()`, using the roof it was actually
+saved to — `rmState.roofLabelLayer`, cleaned up alongside the rest of
+`rmClearLinkedFeatures()`/`rmClearGeneratedOutline()` so nothing lingers
+after a fresh search); Building History's `renderBuildingMap()` draws one
+per outline that carries an optional `_roofLabel` tag.
+
+**Building History now shows every roof at once, not one at a time**:
+`openBuildingHistory()` used to pass only the currently-selected roof's
+`roof_outlines` into `renderBuildingMap()` — switching roofs via the
+dropdown redrew the map for just that one. New `allRoofOutlinesForMap`
+aggregates every roof's MOST RECENT outline, each tagged
+`_roofLabel: roof.label`, so Mark can see every roof on the building
+together and tell them apart by their labels — matches "coexist... tell
+them apart." **Scope boundary, deliberate**: only built for satellite mode
+(`hasCustomBaseMap` false) — a roof with a custom `roof_plan`/`sketch` base
+map renders in that image's own `L.CRS.Simple` pixel coordinate system,
+which other roofs' real lat/lng outlines literally cannot be drawn onto
+(same pre-existing constraint already documented for pins/assets). Pins
+and roof-features/assets stay scoped to whichever roof is selected in the
+dropdown, unchanged — only OUTLINES got the "show them all" treatment;
+broadening pins/assets the same way wasn't part of what was asked and
+would blur which roof is actually being worked on below the map.
+`outlinePopupHtml()` gained an optional second `roofLabel` param so a
+tapped outline's popup also states which roof it belongs to.
+
+**Labels are now renameable** — previously set once, at
+`promptAddRoof()` creation time, with no way to fix a typo or rename
+later. New `promptRenameRoof(buildingId, roofId)` (same prompt-based
+pattern, pre-filled with the current label) reachable via a new
+"✏️ Rename" button next to the roof picker — shown even for a
+single-roof building (its synthesized/default "Roof 1" is just as
+renameable), not gated behind having 2+ roofs like the picker dropdown
+itself.
+
+**Investigated and found NOT to be a gap**: whether work orders tie to a
+specific roof only on Inspection forms. They don't need broadening —
+every work order type already gets a per-pin roof picker
+(`renderPinRoofPicker()`, at the point a finding's pin is placed) once the
+resolved building has more than one roof; Inspection's own up-front
+picker (`renderInspectionRoofPicker()`) is a deliberate exception because
+an inspection's checklist has no per-item pin to hang a roof choice off of
+the way Findings do, so it needs the roof known before the checklist
+renders. Change Order has no pin/roof concept at all, by design (no
+findings). No code change made here.
+
+**Deliberately deferred, not built tonight**: showing a building's
+already-traced roofs as a live reference layer WHILE tracing a new one in
+RoofMapper's own capture view (so a tech can see roof #1's boundary while
+walking/tracing roof #2 and avoid accidental overlap). Every fresh
+footprint search/trace currently resets `rmState.linkedBuildingId` to
+`null` (`rmClearGeneratedOutline()` → `rmClearLinkedFeatures()`), by
+design, so there's no "still linked to building X" state to draw a
+reference layer FROM during a fresh trace anyway — building that properly
+would mean deciding whether starting a new trace should preserve the link
+to the previous building, a real UX/state design question bigger than
+tonight's scope. The save-time roof picker (now with labels + "+ Add a new
+roof…") already gives full visibility of what roofs exist before
+committing a new one, which covers the essential need. Flagged as a
+follow-up, not silently dropped.
+
+Tested with mocked `fdb`/`prompt`/`toast` (no real writes, no real map
+network calls) using a stateful in-memory `fdb` mock (a plain object store
+so sequential `get()`/`set()` calls within one flow actually observe each
+other's writes, matching real Firestore's read-your-own-writes
+consistency — an earlier non-stateful mock produced a false failure here
+purely from the mock's own limitation, not a product bug): confirmed the
+save-flow picker always renders, including for a single-roof building, with
+"+ Add a new roof…" always present; confirmed selecting "+ Add a new
+roof…" creates the roof AND saves the outline into it (not into the
+pre-existing default roof); confirmed the roof-label marker draws with the
+correct roof's label text on a real Leaflet map instance and is null'd out
+by the existing clear/reset paths; confirmed the `allRoofOutlinesForMap`
+aggregation picks each roof's most recent outline, skips a roof with no
+outline yet, and tags each with the right `_roofLabel`; confirmed
+`promptRenameRoof()` updates only the targeted roof's label (sibling roofs
+untouched) and that Cancel/empty-input both leave the label unchanged.
+All test state cleared, page reloaded, console clean.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |

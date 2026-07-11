@@ -141,7 +141,17 @@ Physical buildings/sites associated with a customer.
 ```js
 {
   id,       // "roof_default" for a synthesized/first roof, or genId("roof")
-  label,    // "Roof 1" by default, editable, e.g. "East Wing"
+  label,    // "Roof 1" by default, e.g. "East Wing", "Warehouse". Set at
+            // creation (promptAddRoof()) and renameable any time after
+            // (promptRenameRoof(), shipped 2026-07-10 — see "Individual-roof
+            // tracing + labels" in DEV_NOTES.md; before that, a roof's label
+            // could only ever be set once). Rendered as a persistent map
+            // label (not just a picker-dropdown option) via the shared
+            // roofLabelMarker() helper in both RoofMapper and Building
+            // History's roof map. Note: an outline object passed into
+            // renderBuildingMap() may carry a transient `_roofLabel` copied
+            // from its owning roof at render time (openBuildingHistory()) —
+            // display-only, never persisted on the outline itself.
   roofSystem,
   roof_base_map_type: null, // "roof_plan" | "sketch" | "drone_ortho"
   roof_base_map_url: null,

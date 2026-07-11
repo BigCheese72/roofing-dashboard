@@ -333,6 +333,24 @@ Goal: make every work order contribute to a durable customer/building record.
   picker/list's one-line summary still reads the legacy `roofSystem` field
   (display-only). See "Multiple roofs per building, part 1 & 2" in `DEV_NOTES.md` and
   `DATA_MODEL.md`.
+- ✅ **Shipped (dev only, 2026-07-10)**: individual-roof tracing + labels —
+  the multi-roof vision pillar above, made actually usable from RoofMapper
+  itself. Mark: "no way to trace individual roofs, and each roof needs a
+  LABEL." Saving an outline to an existing building now always offers
+  **"+ Add a new roof…"** (previously a single-roof building saved with no
+  picker at all, so a genuinely second roof had no way to become its own
+  roof — it silently merged into roof #1's outline history; real bug,
+  fixed). Roof labels are now **persistent on the map** (a small labeled
+  pin at each outline's centroid, not just picker-dropdown text or a
+  tap-triggered popup), **renameable any time** after creation (not just
+  once, at creation), and Building History's roof map now shows **every
+  roof on a building at once**, each labeled, instead of switching
+  one-at-a-time — roofs genuinely "coexist" now. See "Individual-roof
+  tracing + labels" in `DEV_NOTES.md` for the full scope, including one
+  deliberately deferred piece (showing already-traced roofs as a live
+  reference layer while tracing a new one, in RoofMapper's own capture
+  view — a real UX/state design question bigger than this pass, flagged
+  as a follow-up).
 - ⚠️ **Partially shipped**: possible-duplicate buildings (same customer, very similar
   name) are now flagged with a badge in Building History, conservatively (same
   customer required, to avoid false positives). Merging flagged duplicates is

@@ -348,6 +348,17 @@ shows up there too, and vice versa. If GPS accuracy is poor, no buildings are fo
 nearby, or OpenStreetMap can't be reached, RoofMapper shows a plain-language message
 and a way to try again rather than failing silently.
 
+**Buildings with more than one roof** — a warehouse with a main roof and an annex, a
+campus with several separate buildings, etc. — get their own distinct, labeled roofs
+instead of one combined footprint. When saving a traced outline to an existing
+building, pick which roof it's for from the list, or tap **"+ Add a new roof…"** to
+name a brand-new one right there (e.g. "Main Roof," "North Wing," "Warehouse") — no
+need to leave RoofMapper first. Every roof's name shows as a small label right on the
+map (not just in a dropdown), and Building History's Roof Map shows every roof on a
+building at once, each labeled, so you can tell them apart at a glance instead of
+switching one at a time. A roof's name can be changed any time via the
+**"✏️ Rename"** button next to the roof picker in Building History.
+
 **No OpenStreetMap footprint for this building?** (Happens — some buildings, like
 hospitals, are only mapped as a whole property parcel, or not mapped at all.) Tap
 **"🛰️ Satellite View"** to see real imagery instead of the street map, and
