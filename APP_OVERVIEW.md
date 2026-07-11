@@ -320,16 +320,19 @@ helps a tech capture a clean roof outline for a building on the spot:
 4. Tap **"✏️ Generate Roof Outline"** — the app cleans up that footprint into a roof
    outline and shows its area and perimeter, plus a length label (in feet) on every
    individual edge of the outline, right on the map.
-5. **Clean up the shape and dimensions, if you want.** Roofs are usually rectilinear,
-   so tap **"🟦 Square Up"** to snap near-90° corners and near-straight edges clean —
-   a genuine diagonal cut or a curved section is left exactly as traced, never forced
+5. **Adjust the shape, clean it up, and dimension it, if you want.** Need to move a
+   specific corner? Tap **"✏️ Edit Shape"** — a dot appears on every corner; drag any
+   one of them and the shape, area, and dimensions update as you go. Tap
+   **"✓ Done Editing"** when it looks right. Roofs are usually rectilinear, so tap
+   **"🟦 Square Up"** to snap near-90° corners and near-straight edges clean — a
+   genuine diagonal cut or a curved section is left exactly as traced, never forced
    square. Not happy with the result? **"↩️ Undo Square Up"** puts it back. Then, if
    you have a real tape measurement, tap any edge's length label and enter the actual
    measured length — the whole outline rescales proportionally off that one edge, so
    every other edge, the area, and the perimeter all become accurate from a single
-   field measurement. Do these in that order (Square Up, then calibrate a measurement)
-   for the cleanest, most accurate result — calibrating last means the edge you
-   measure ends up exactly right no matter what Square Up did to it.
+   field measurement. Best order: Edit Shape / Square Up first, then calibrate a
+   measurement last — that way the edge you measure ends up exactly right no matter
+   what else changed before it.
 6. Save it — **"💾 Save Outline to Building"** links it to an existing building (search
    by name) or creates a new one on the spot, or **"📱 Save on This Device Only"** if
    there's no signal or the building isn't in RoofOps yet (link it later from the
@@ -350,11 +353,17 @@ helps a tech capture a clean roof outline for a building on the spot:
    fence, etc.)? Double-tap an existing marker, or tap **"📋 Duplicate"** in its edit
    form — it copies with the same type/label/notes, dropped just next to the original
    so you can drag it straight into position instead of re-entering it from scratch.
-8. Export **SVG**, **PNG**, or **PDF** any time — all generated on the device, no
-   internet required once the outline exists. Once linked to a building, exports
-   include everything marked up on the roof (features + any leak/repair pins from past
-   reports), not just the bare outline — a hint line under the export buttons always
-   says which you'll get.
+8. Tap **"👁️ Preview Export"** to see exactly what the outline + labels + placed
+   features will look like before exporting — no guessing, then export **SVG**,
+   **PNG**, or **PDF** right from the preview, or from the buttons below it any time.
+   All generated on the device, no internet required once the outline exists. Once
+   linked to a building, exports include everything marked up on the roof (features +
+   any leak/repair pins from past reports), not just the bare outline — a hint line
+   under the export buttons always says which you'll get.
+
+Finding the map itself hard to pan or zoom around? A **"🎯"** button floats right on
+the map — tap it any time to snap back to whatever's most useful (the outline once
+one exists, otherwise the search results or your current location).
 
 Saved outlines also show up on that building's existing **Roof Map** in Building
 History, alongside finding pins and permanent roof features — it's the same

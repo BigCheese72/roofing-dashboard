@@ -208,6 +208,21 @@
   @media (max-width:480px){
     .rm-bigbtn{font-size:15px}
   }
+  /* Easier map navigation (Mark: "map is a little hard to navigate") --
+     touch-action:none on the map container is the actual fix for the most
+     common real complaint behind that: without it, the page's own native
+     scroll/zoom gesture handling can fight with Leaflet's own touch pan/
+     pinch-zoom on a mobile browser, making panning feel sticky or
+     unresponsive. Bigger zoom +/- buttons (Leaflet's default is a small
+     26px control, not a great thumb target) and a floating recenter
+     button, both scoped to #rm-map specifically so no other map in the
+     app is affected. See "Easier map navigation" in DEV_NOTES.md. */
+  #rm-map-wrap{position:relative}
+  #rm-map{touch-action:none}
+  #rm-map .leaflet-control-zoom a{width:38px;height:38px;line-height:38px;font-size:20px}
+  #rm-recenter-btn{position:absolute;right:8px;bottom:8px;z-index:401;width:40px;height:40px;border-radius:50%;
+    background:#fff;border:2px solid var(--line);box-shadow:0 1px 5px rgba(0,0,0,.35);font-size:18px;
+    display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0}
 </style>
 <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore-compat.js"></script>
@@ -521,7 +536,10 @@
       <p class="hint" style="margin:-6px 0 12px">Works for any address — a brand-new roof, a scouting stop, anywhere
         — whether or not it matches CompanyCam or an existing building.</p>
       <p class="rm-status" id="rm-status"></p>
-      <div id="rm-map" style="height:min(70vh,640px);border-radius:6px;overflow:hidden;margin-bottom:12px;display:none"></div>
+      <div id="rm-map-wrap" style="display:none;margin-bottom:12px">
+        <div id="rm-map" style="height:min(70vh,640px);border-radius:6px;overflow:hidden"></div>
+        <button id="rm-recenter-btn" onclick="rmRecenter()" title="Recenter / fit to roof">🎯</button>
+      </div>
 
       <!-- Trace controls (Undo/Finish/Cancel/Record) live right here, immediately
            below the map, so they're reachable without scrolling while actively
@@ -609,6 +627,11 @@
       <div id="rm-outline-warning"></div>
       <div class="rm-outline-stats" id="rm-outline-stats"></div>
       <div class="btnrow" style="margin:0 0 6px">
+        <button class="btn primary" id="rm-edit-shape-btn" onclick="rmToggleVertexEdit()">✏️ Edit Shape</button>
+      </div>
+      <p class="hint" id="rm-edit-shape-hint" style="margin:0 0 10px;display:none">Drag any dot to move that corner —
+        the shape, area, and dimensions update as you go. Tap <b>✓ Done Editing</b> when it looks right.</p>
+      <div class="btnrow" style="margin:0 0 6px">
         <button class="btn" id="rm-square-up-btn" onclick="rmSquareUpOutline()">🟦 Square Up</button>
         <button class="btn" id="rm-undo-square-btn" style="display:none" onclick="rmUndoSquareUp()">↩️ Undo Square Up</button>
       </div>
@@ -620,6 +643,7 @@
       </div>
       <div class="btnrow">
         <button class="btn" onclick="rmZoomToOutline()">🔍 Zoom to Roof</button>
+        <button class="btn primary" onclick="rmPreviewExport()">👁️ Preview Export</button>
         <button class="btn" onclick="rmExportSVG()">Export SVG</button>
         <button class="btn" onclick="rmExportPNG()">Export PNG</button>
         <button class="btn" onclick="rmExportPDF()">Export PDF</button>
@@ -769,6 +793,26 @@
       </div>
       <div class="btnrow">
         <button class="btn primary" onclick="rmCreateBuildingAndSave()">Create Building & Save Outline</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="rm-preview-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)closeRmPreviewModal()">
+  <div style="background:#fff;max-width:720px;margin:4vh auto;border-radius:8px;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;width:94%">
+    <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
+      <b class="cond" style="font-size:17px">Preview Export</b>
+      <span style="flex:1"></span>
+      <button class="btn" onclick="closeRmPreviewModal()">Close</button>
+    </div>
+    <div style="padding:14px 16px;overflow:auto">
+      <p class="hint" style="margin:0 0 10px">This is what SVG/PNG exports will look like (the PDF includes the same
+        info in its own page layout).</p>
+      <div id="rm-preview-svg-host" style="border:1px solid var(--line);border-radius:6px;overflow:auto;background:#fafbfc"></div>
+      <div class="btnrow" style="margin-top:12px">
+        <button class="btn primary" onclick="rmExportSVG()">Export SVG</button>
+        <button class="btn primary" onclick="rmExportPNG()">Export PNG</button>
+        <button class="btn primary" onclick="rmExportPDF()">Export PDF</button>
       </div>
     </div>
   </div>
@@ -7011,6 +7055,33 @@ async function rmExportPDF(){
   }
   doc.save(rmExportFilenameBase() + ".pdf");
 }
+/* Preview before export -- Mark: a way to see the map/drawing (outline +
+   labels + features) as it will look exported, before actually exporting.
+   Reuses rmBuildOutlineSvg() directly -- the SAME function SVG and PNG
+   exports already call -- so the preview is guaranteed byte-identical to
+   what those two exports actually produce, not a separate approximation
+   that could drift out of sync. PDF has its own from-scratch layout (jsPDF
+   draws directly, doesn't rasterize the SVG), so the preview is explicitly
+   labeled as covering SVG/PNG's shared look, with a note that PDF carries
+   the same information in its own page layout. See "Export preview" in
+   DEV_NOTES.md. */
+async function rmPreviewExport(){
+  if (!rmState.outline){ toast("Generate a roof outline first."); return; }
+  toast("Building preview…");
+  var overlay = await rmFetchExportOverlayData();
+  var built = rmBuildOutlineSvg(rmState.outline, overlay);
+  var host = document.getElementById("rm-preview-svg-host");
+  host.innerHTML = built.svg;
+  var svgEl = host.querySelector("svg");
+  if (svgEl){ svgEl.style.width = "100%"; svgEl.style.height = "auto"; svgEl.style.display = "block"; }
+  document.getElementById("rm-preview-modal").style.display = "";
+  lockBodyScroll();
+}
+function closeRmPreviewModal(){
+  document.getElementById("rm-preview-modal").style.display = "none";
+  document.getElementById("rm-preview-svg-host").innerHTML = "";
+  unlockBodyScroll();
+}
 
 /* ---- components/RoofMapper (view/state) ---- */
 var rmState = {
@@ -7035,7 +7106,11 @@ var rmState = {
   /* Pre-Square-Up ring, kept only for Undo (rmSquareUpOutline()/
      rmUndoSquareUp()) -- null whenever the current outline hasn't been
      squared, or after an undo. */
-  preSquareRing: null
+  preSquareRing: null,
+  /* Vertex (per-corner) edit mode -- rmToggleVertexEdit(). vertexHandleLayerGroup
+     holds the draggable per-vertex markers, only populated while active. */
+  vertexEditActive: false,
+  vertexHandleLayerGroup: null
 };
 var RM_LOCAL_KEY = "roofmapper-local-outlines-v1";
 /* A commercial building — especially a hospital/medical campus — can easily
@@ -7101,12 +7176,17 @@ var RM_TILE_OSM = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
 var RM_TILE_SAT = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
 function rmEnsureMap(){
   if (rmState.map) return rmState.map;
-  document.getElementById("rm-map").style.display = "";
+  document.getElementById("rm-map-wrap").style.display = "";
   /* Explicit zoomControl/scrollWheelZoom/touchZoom -- these already default
      true in Leaflet, spelled out here so it's clear real zoom in/out (mouse
      wheel, pinch, +/- buttons) is intentionally on, not an accident of
-     defaults. See "RoofMapper Phase 2" in DEV_NOTES.md. */
-  rmState.map = L.map("rm-map", { zoomControl: true, scrollWheelZoom: true, touchZoom: true });
+     defaults. bounceAtZoomLimits:false + zoomSnap:0.5 (finer increments,
+     matches how a pinch gesture actually lands) round out the "easier
+     navigation" pass -- see "Easier map navigation" in DEV_NOTES.md. */
+  rmState.map = L.map("rm-map", {
+    zoomControl: true, scrollWheelZoom: true, touchZoom: true,
+    bounceAtZoomLimits: false, zoomSnap: 0.5, tap: true
+  });
   rmSetBaseLayer("osm");
   return rmState.map;
 }
@@ -7134,6 +7214,26 @@ function rmToggleBaseLayer(){
 function rmZoomToOutline(){
   if (!rmState.map || !rmState.outlineLayer) return;
   rmState.map.fitBounds(rmState.outlineLayer.getBounds(), { padding: [40, 40] });
+}
+/* Floating 🎯 button on the map itself -- always does the most useful
+   "get back to where I should be looking" thing for whatever phase
+   RoofMapper is currently in, so it's one obvious control regardless of
+   whether an outline exists yet: fit to the outline if one's been drawn,
+   else fit to the footprint search results if any are showing, else
+   recenter on the located point, else nothing to do yet. See "Easier map
+   navigation" in DEV_NOTES.md. */
+function rmRecenter(){
+  if (!rmState.map) return;
+  if (rmState.outlineLayer){ rmZoomToOutline(); return; }
+  var footprintIds = Object.keys(rmState.footprintLayers || {});
+  if (footprintIds.length){
+    var bounds = [];
+    footprintIds.forEach(function(id){ bounds.push(rmState.footprintLayers[id].getBounds()); });
+    rmState.map.fitBounds(bounds.reduce(function(acc, b){ return acc ? acc.extend(b) : b; }, null), { padding: [30, 30] });
+    return;
+  }
+  if (typeof rmState.lat === "number"){ rmState.map.setView([rmState.lat, rmState.lng], 19); return; }
+  toast("Nothing to center on yet — locate or search first.");
 }
 function rmSetDisp(id, show){
   var el = document.getElementById(id);
@@ -7289,6 +7389,7 @@ function rmClearGeneratedOutline(){
   if (undoBtn) undoBtn.style.display = "none";
   var squareStatus = document.getElementById("rm-square-status");
   if (squareStatus) squareStatus.textContent = "";
+  if (rmState.vertexEditActive) rmExitVertexEdit(false); /* discard, nothing left to save it to */
   rmClearLinkedFeatures();
   document.getElementById("rm-outline-panel").style.display = "none";
   rmUpdateExportHint();
@@ -7483,6 +7584,126 @@ function rmDrawEdgeDimensions(outline){
     })(i);
   }
 }
+/* ---- Vertex (per-corner) editing ----
+   Mark asked how to adjust an already-traced outline -- there was
+   previously no way to move one specific point (Square Up auto-cleans
+   angles across the whole shape, Calibrate rescales the whole shape off
+   one edge; neither lets you drag a single corner). This is that missing
+   capability, made deliberately visible rather than a hidden gesture: a
+   primary "✏️ Edit Shape" button, explicit hint text, and handles styled
+   distinctly from both the edge-dimension labels and asset markers.
+   Scope: MOVING existing vertices only -- adding/removing a vertex
+   entirely is a bigger follow-up, not built here. See "Vertex editing"
+   in DEV_NOTES.md. */
+function rmToggleVertexEdit(){
+  if (rmState.vertexEditActive) rmExitVertexEdit(true);
+  else rmEnterVertexEdit();
+}
+function rmEnterVertexEdit(){
+  if (!rmState.outline || !rmState.map) return;
+  rmState.vertexEditActive = true;
+  document.getElementById("rm-edit-shape-btn").textContent = "✓ Done Editing";
+  document.getElementById("rm-edit-shape-hint").style.display = "";
+  document.getElementById("rm-square-up-btn").disabled = true; /* two edit modes fighting over the same ring mid-drag is asking for trouble */
+  rmDrawVertexHandles();
+}
+function rmExitVertexEdit(persist){
+  rmState.vertexEditActive = false;
+  var btn = document.getElementById("rm-edit-shape-btn");
+  if (btn) btn.textContent = "✏️ Edit Shape";
+  var hint = document.getElementById("rm-edit-shape-hint");
+  if (hint) hint.style.display = "none";
+  var sqBtn = document.getElementById("rm-square-up-btn");
+  if (sqBtn) sqBtn.disabled = false;
+  if (rmState.map && rmState.vertexHandleLayerGroup) rmState.map.removeLayer(rmState.vertexHandleLayerGroup);
+  rmState.vertexHandleLayerGroup = null;
+  if (persist) rmPersistVertexEdit();
+}
+function rmDrawVertexHandles(){
+  var map = rmState.map, outline = rmState.outline;
+  if (!map || !outline) return;
+  if (rmState.vertexHandleLayerGroup) map.removeLayer(rmState.vertexHandleLayerGroup);
+  rmState.vertexHandleLayerGroup = L.layerGroup().addTo(map);
+  var ring = outline.ring;
+  var n = ring.length - 1; /* real vertex count -- ring[n] === ring[0], the closing duplicate */
+  for (var i = 0; i < n; i++){
+    var marker = L.marker([ring[i].lat, ring[i].lng], {
+      draggable: true,
+      icon: L.divIcon({
+        className: "", iconSize: [24, 24], iconAnchor: [12, 12],
+        html: '<div style="width:20px;height:20px;border-radius:50%;background:#fff;' +
+          'border:3px solid #E8600A;box-shadow:0 1px 4px rgba(0,0,0,.5)"></div>'
+      })
+    }).addTo(rmState.vertexHandleLayerGroup);
+    /* "drag" (continuous, every move) only moves the polygon outline
+       itself -- cheap (setLatLngs). "dragend" (once, on release) is where
+       area/perimeter/edge-labels actually recompute -- redrawing the
+       edge-dimension divIcons on every drag frame would be needless churn
+       mid-gesture and risks feeling laggy on a phone, the opposite of
+       what was asked for. */
+    (function(vertexIndex){
+      marker.on("drag", function(e){ rmOnVertexDrag(vertexIndex, e.target.getLatLng()); });
+      marker.on("dragend", function(){ rmOnVertexDragEnd(); });
+    })(i);
+  }
+}
+function rmOnVertexDrag(vertexIndex, latlng){
+  var outline = rmState.outline;
+  if (!outline) return;
+  var ring = outline.ring;
+  var n = ring.length - 1;
+  ring[vertexIndex] = { lat: latlng.lat, lng: latlng.lng };
+  if (vertexIndex === 0) ring[n] = { lat: latlng.lat, lng: latlng.lng }; /* keep the ring explicitly closed */
+  if (rmState.outlineLayer) rmState.outlineLayer.setLatLngs(ring.map(function(p){ return [p.lat, p.lng]; }));
+}
+function rmOnVertexDragEnd(){
+  var outline = rmState.outline;
+  if (!outline) return;
+  outline.areaSqFt = rmGeomPolygonAreaSqMeters(outline.ring) * 10.7639;
+  outline.perimeterFt = rmGeomPolygonPerimeterMeters(outline.ring) * 3.28084;
+  outline.center = rmGeomRingCentroid(outline.ring);
+  /* A manual point move invalidates any prior "this shape is square" /
+     "this edge is calibrated" guarantee -- clearing both rather than
+     silently leaving stale metadata that no longer matches the actual
+     shape. Also drops the Square Up undo snapshot, since "undo" against a
+     ring that's since been hand-edited wouldn't mean what it used to. */
+  delete outline.squared;
+  delete outline.calibration;
+  rmState.preSquareRing = null;
+  var undoBtn = document.getElementById("rm-undo-square-btn");
+  if (undoBtn) undoBtn.style.display = "none";
+  rmDrawEdgeDimensions(outline);
+  rmRenderOutlineStats(outline);
+}
+/* Same "only writes if already saved" pattern as Calibrate/Square Up. */
+async function rmPersistVertexEdit(){
+  var outline = rmState.outline;
+  if (!outline) return;
+  rmUpdateExportHint();
+  if (!rmState.linkedBuildingId || !rmState.linkedRoofId || !outline.id){
+    toast("Shape updated ✓ — will save with the outline.");
+    return;
+  }
+  if (!fdb){ toast("Shape updated ✓ — will save with the outline."); return; }
+  toast("Saving shape…");
+  try{
+    var snap = await fdb.collection("buildings").doc(rmState.linkedBuildingId).get();
+    var bld = snap.exists ? snap.data() : {};
+    var roofs = getBuildingRoofs(bld);
+    var roof = roofs.find(function(r){ return r.id === rmState.linkedRoofId; });
+    if (!roof){ toast("Couldn't find the linked roof to save."); return; }
+    roof.roof_outlines = (roof.roof_outlines || []).map(function(o){
+      return o.id === outline.id ? Object.assign({}, o, {
+        ring: outline.ring, areaSqFt: outline.areaSqFt, perimeterFt: outline.perimeterFt,
+        center: outline.center, calibration: null, squared: null
+      }) : o;
+    });
+    var roofIdx = roofs.findIndex(function(r){ return r.id === roof.id; });
+    roofs[roofIdx] = roof;
+    await saveBuildingRoofs(rmState.linkedBuildingId, roofs);
+    toast("Shape saved ✓");
+  }catch(e){ toast("Updated on screen, but couldn't save: " + e.message); }
+}
 function rmDrawFinalOutline(outline){
   rmState.outline = outline;
   rmClearLinkedFeatures(); /* a freshly captured outline is never linked yet */
@@ -7491,6 +7712,7 @@ function rmDrawFinalOutline(outline){
   if (undoBtn) undoBtn.style.display = "none";
   var squareStatus = document.getElementById("rm-square-status");
   if (squareStatus) squareStatus.textContent = "";
+  if (rmState.vertexEditActive) rmExitVertexEdit(false); /* a fresh outline replaces whatever was being hand-edited */
   var map = rmEnsureMap();
   if (rmState.outlineLayer) map.removeLayer(rmState.outlineLayer);
   rmState.outlineLayer = L.polygon(outline.ring.map(function(p){ return [p.lat, p.lng]; }), {

@@ -4677,6 +4677,158 @@ feature is currently being edited; regression-checked that
 `rmEditFeature()`/`rmCancelFeatureForm()` still populate and close the form
 exactly as before. All test state cleared, page reloaded, console clean.
 
+## Vertex editing (shipped 2026-07-10, dev only)
+
+Mark asked how to adjust an already-traced outline — the honest answer,
+confirmed by reading the code before answering, was that there was no way
+to move an individual point at all: Square Up auto-cleans angles across
+the whole shape, Calibrate rescales the whole shape off one edge, but
+neither lets you drag one specific corner, and there's no Leaflet editable-
+polygon plugin loaded (only vanilla Leaflet). This ships that missing
+capability, deliberately visible rather than a hidden gesture — a primary
+"✏️ Edit Shape" button (not a small icon easy to miss), explicit hint text,
+and drag handles styled distinctly from both the edge-dimension labels and
+asset markers (a plain white-filled circle with a thick orange ring).
+
+**Scope, deliberate**: moving existing vertices only. Adding or removing a
+vertex entirely is a real, bigger follow-up (needs edge-midpoint "add"
+handles, a vertex removal affordance, minimum-3-point validation) — not
+built here, flagged rather than silently out of scope.
+
+**`rmToggleVertexEdit()`** flips between `rmEnterVertexEdit()` (draws a
+draggable handle per real vertex via `rmDrawVertexHandles()`, disables
+Square Up for the duration — two edit modes mutating the same ring at once
+is asking for trouble — shows the hint text) and `rmExitVertexEdit(persist)`
+(tears down the handles, re-enables Square Up, and — only when exiting via
+"✓ Done Editing," not an internal reset — calls `rmPersistVertexEdit()`).
+
+**Drag performance**: each handle's Leaflet `drag` event (fires continuously,
+many times per second during an active drag) only calls
+`rmState.outlineLayer.setLatLngs(...)` — cheap, just moves the visible
+polygon shape live. The `dragend` event (fires once, on release) is where
+`areaSqFt`/`perimeterFt`/`center` actually recompute and
+`rmDrawEdgeDimensions()` redraws the dimension-label divIcons. Recreating
+those divIcon markers on every drag frame instead of just once on release
+would be needless churn mid-gesture and risks feeling laggy on a phone —
+the opposite of "easier navigation." Dragging vertex 0 also updates the
+ring's closing duplicate point (`ring[n] === ring[0]` by convention) so the
+polygon never visibly un-closes mid-edit.
+
+**A manual point move invalidates `squared`/`calibration` metadata** — both
+are deleted from the outline on `dragend`, and the Square Up Undo snapshot
+(`rmState.preSquareRing`) is cleared too, since "undo" against a ring
+that's since been hand-edited wouldn't mean what it used to. This keeps the
+metadata honest: `outline.squared`/`.calibration` only ever describe the
+CURRENT ring, never a stale claim about a shape that's since changed.
+
+**Persistence** mirrors Calibrate/Square Up exactly: an unsaved outline
+just updates `rmState.outline` in memory (next Save Outline picks it up);
+an already-saved outline (has `.id` + `linkedBuildingId`/`linkedRoofId`)
+writes immediately via `rmPersistVertexEdit()`, explicitly nulling
+`calibration`/`squared` on the saved `roof_outlines[]` entry to match.
+
+**Auto-exit, no data loss**: both `rmClearGeneratedOutline()` (fresh
+search/clear) and `rmDrawFinalOutline()` (a fresh capture) call
+`rmExitVertexEdit(false)` if edit mode is somehow still active, discarding
+without attempting a doomed save against an outline that's about to be
+replaced or gone entirely.
+
+Tested with a real Leaflet map instance and mocked `fdb`/`toast` (no real
+writes): confirmed entering edit mode draws exactly one handle per real
+vertex and disables Square Up; confirmed dragging vertex 0 updates both it
+and the closing duplicate point, moves the polygon live via `setLatLngs`
+during `drag`, and leaves `areaSqFt` unchanged until `dragend` fires (then
+correctly recomputes); confirmed a drag correctly clears pre-set
+`squared`/`calibration` metadata and hides the Undo Square button; confirmed
+"Done Editing" persists correctly to a mocked linked/saved outline with
+`calibration`/`squared` explicitly nulled, and shows the right "will save
+with the outline" message for an unlinked one; confirmed both
+`rmClearGeneratedOutline()` and `rmDrawFinalOutline()` correctly auto-exit
+an active edit session. All test state cleared, page reloaded, console
+clean.
+
+## Easier map navigation (shipped 2026-07-10, dev only)
+
+Mark: the map is "a little hard to navigate." Three changes, scoped to
+`#rm-map` specifically so no other map in the app is affected:
+
+1. **`touch-action:none` on the map container** — the likely actual root
+   cause of "hard to navigate" on a phone: without it, the page's own
+   native scroll/zoom gesture handling can fight with Leaflet's own touch
+   pan/pinch-zoom, making panning feel sticky, laggy, or unresponsive. This
+   is a well-understood, common real fix for embedded interactive maps on
+   mobile — the app already applied the same principle to the signature pad
+   canvas (a different context, same root cause: letting Leaflet/the canvas
+   own ALL touch gestures on that element instead of the browser).
+2. **Bigger zoom +/- buttons**: Leaflet's default zoom control renders at
+   26px, not a great thumb target — bumped to 38px (`#rm-map .leaflet-
+   control-zoom a`), scoped so the rest of the app's Leaflet controls
+   (asset/pin/building maps) are untouched.
+3. **A floating "🎯" recenter button**, overlaid directly on the map
+   (`#rm-map-wrap` is now `position:relative` so the button can sit in a
+   corner via `position:absolute`) — always reachable without scrolling
+   down to the outline panel's existing "🔍 Zoom to Roof" button (which
+   still exists, unchanged, for when the panel's already in view). New
+   `rmRecenter()` does the most useful "get back to where I should be
+   looking" thing for whatever phase RoofMapper is currently in: fits to
+   the outline if one's been drawn, else fits to the footprint search
+   results if any are showing, else recenters on the located GPS point,
+   else toasts that there's nothing to center on yet — one obvious control
+   that's never a no-op unless genuinely nothing has happened yet.
+
+Also set on the Leaflet map instance itself (`rmEnsureMap()`):
+`bounceAtZoomLimits:false` (no jarring snap-back at the zoom extremes) and
+`zoomSnap:0.5` (finer zoom increments, matching how a pinch gesture
+actually lands instead of jumping in whole-integer steps).
+
+Tested: confirmed `#rm-map`'s computed `touch-action` is `none`; confirmed
+`rmEnsureMap()` reveals `#rm-map-wrap` (not just `#rm-map` directly, since
+the recenter button now lives in that wrapper alongside the map);
+confirmed `rmRecenter()`'s three fallback branches each fire correctly
+(outline → `fitBounds` on the outline; footprints-only → `fitBounds`
+across every footprint layer; located-only → `setView` on `rmState.lat/
+lng`) and that the zero-state correctly toasts instead of erroring. All
+test state cleared, page reloaded, console clean.
+
+## Export preview (shipped 2026-07-10, dev only)
+
+Mark: a way to preview the map/drawing (outline + labels + features) as it
+will look exported, before actually exporting. New "👁️ Preview Export"
+button in the outline panel, next to the existing Export SVG/PNG/PDF
+buttons.
+
+**Guaranteed to match, not a separate approximation**: `rmPreviewExport()`
+calls the exact same `rmFetchExportOverlayData()` + `rmBuildOutlineSvg()`
+pipeline the SVG and PNG exports already call (PNG literally rasterizes
+this same SVG onto a canvas) — the preview is injected via `innerHTML`
+into `#rm-preview-svg-host` inside a new `#rm-preview-modal`, so what's
+shown is byte-identical markup to what SVG export downloads and what PNG
+export rasterizes, not a second render path that could quietly drift out
+of sync with the real thing. PDF is explicitly the exception: it draws
+directly with jsPDF from the same underlying outline/overlay data rather
+than rasterizing the SVG, so it has its own page layout (title placement,
+margins, legend position) that doesn't pixel-match the SVG/PNG preview —
+the modal says so directly ("this is what SVG/PNG exports will look like;
+the PDF includes the same info in its own page layout") rather than
+implying a guarantee that isn't quite true for that one format.
+
+**The modal also carries its own Export SVG/PNG/PDF buttons** — a natural
+"looks good → export it" flow from the same screen, wired to the exact
+same `rmExportSVG()`/`rmExportPNG()`/`rmExportPDF()` functions the outline
+panel's own buttons already call — no new export logic, just a second
+place to reach the same three actions.
+
+Tested with mocked `fdb` (no real writes, no real downloads triggered):
+confirmed no-outline correctly toasts instead of opening an empty modal;
+confirmed a real outline's title/area appear correctly in the injected
+SVG markup; confirmed `closeRmPreviewModal()` hides the modal and clears
+the host (no stale SVG lingering for the next open); confirmed a mocked
+placed HVAC asset correctly appears as both a marker and a legend entry in
+the preview, sourced from the same overlay-fetch path real exports use;
+confirmed the modal's three export buttons carry the exact same `onclick`
+handlers as the outline panel's own export buttons. All test state
+cleared, page reloaded, console clean.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |

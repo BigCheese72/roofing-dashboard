@@ -512,6 +512,22 @@ Goal: turn each building into a long-term roof record.
   feature type, not just one. Same `persistRoofAsset()` write path every
   other roof-asset edit already uses. See "Duplicate roof feature" in
   `DEV_NOTES.md`.
+- ✅ **Shipped (dev only, 2026-07-10)**: easier map navigation — Mark found
+  the map "a little hard to navigate." `touch-action:none` on the map
+  container (the likely actual cause — without it the page's own scroll
+  gesture can fight Leaflet's touch pan/pinch-zoom on mobile), bigger
+  38px zoom +/- buttons (Leaflet's default 26px is a tight thumb target),
+  and a floating "🎯" recenter button always reachable on the map itself —
+  fits to the outline if drawn, else the footprint search results, else
+  the located GPS point. See "Easier map navigation" in `DEV_NOTES.md`.
+- ✅ **Shipped (dev only, 2026-07-10)**: export preview — a "👁️ Preview
+  Export" button shows the outline + labels + placed features as SVG/PNG
+  exports will actually look, before exporting. Reuses the exact same
+  `rmBuildOutlineSvg()` pipeline those two exports already call (PNG
+  literally rasterizes this same SVG), so the preview is guaranteed to
+  match rather than being a second render path that could drift out of
+  sync — PDF has its own from-scratch page layout, noted explicitly rather
+  than implied to pixel-match. See "Export preview" in `DEV_NOTES.md`.
 - ✅ **Shipped (dev only), part 1 of 3**: RoofMapper ↔ Roof Map unification —
   Phase 3, satellite view + manual trace. Lets a tech map a roof even where
   OpenStreetMap has no building footprint at all (the real case that
@@ -649,6 +665,17 @@ Goal: turn each building into a long-term roof record.
      calibrated reflects its final post-square length. Works together with
      calibration cleanly — verified corners stay exactly 90° after
      calibrating a squared outline. See "Square Up" in `DEV_NOTES.md`.
+  5. ✅ **Shipped (dev only, 2026-07-10)**: vertex editing — closes a real
+     gap (Mark asked how to adjust an already-traced outline; the honest
+     answer at the time was that there was no way at all). "✏️ Edit Shape"
+     shows a draggable handle on every corner — drag any of them to move
+     that specific point, with area/perimeter/dimension labels updating
+     live. Deliberately visible (a primary button + hint text + distinctly
+     styled handles), not a hidden gesture. Scope: moving existing points
+     only — adding/removing a vertex is a bigger follow-up, not built here.
+     A manual move clears any prior Square Up / Calibrate metadata, since
+     those guarantees no longer hold once a corner's been hand-adjusted.
+     See "Vertex editing" in `DEV_NOTES.md`.
 - **Sections**: divide one roof outline into multiple labeled sections (e.g.
   by roof system or area), each with its own computed area, tying into the
   existing multi-roof/roof-section data model rather than a parallel one.
