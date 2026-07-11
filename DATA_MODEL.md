@@ -820,6 +820,17 @@ Example fields:
   summary,
   isActivity: false, // true for a manually logged activity — see "Manually logged
                       // activities" in DEV_NOTES.md
+  enteredAt, // number (Date.now()) — activities only (shipped 2026-07-11, see
+             // "Retroactive backfill: back-dating" in DEV_NOTES.md). WHEN this
+             // record was saved, always "now" at save time — deliberately kept
+             // separate from `date` (WHEN the event actually happened, tech-
+             // editable, may be well in the past). isBackdatedEvent() compares
+             // the two to show a subtle "Added later" flag; absent for every
+             // auto-generated report (logReportAndHistoryEvent()), which is
+             // always entered the same day it happens by construction.
+  enteredBy, // string — activities only, who actually did the backfilling (may
+             // differ from `technician`, e.g. Mark entering a job on a tech's
+             // behalf). Falls back to `technician` when left blank.
   notes, // free-text description, activities only
   conditionsSummary,
   repairsSummary,
@@ -833,6 +844,12 @@ Example fields:
   pins: [], // denormalized from findings with a pin — see DEV_NOTES.md. Each pin also
             // carries its own roofId (same value as the event's), used by the Roof Map
             // to show only the pins for the currently-selected roof.
+  photos: [], // activities only (shipped 2026-07-11) — each: {img (base64 data URL)}.
+              // Existing photos attached while backfilling a retroactive record
+              // (attachActivityPhotos(), a device-library picker, not camera capture) —
+              // see "Retroactive backfill: attaching existing photos" in DEV_NOTES.md
+              // and the Vision Pillar entry in ROADMAP.md for what's NOT built yet
+              // (drawings/documents/orthos as distinct artifact types).
   pdfRef: null,
   emailSent: false,
   emailRecipients: [],

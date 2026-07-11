@@ -888,6 +888,47 @@ Goal: turn each building into a long-term roof record.
   over-zoomed satellite genuinely isn't enough. See "Satellite resolution for pin
   placement" in `DEV_NOTES.md`.
 
+## Vision Pillar: Retroactive Entry — the Past Must Be Enterable, Not Just the Future
+
+Mark, framing the whole point of the product: "That's the only way I can see how
+it can go retroactive. You just have to have the ability to add them." The
+product's premise is a building's roof history as its permanent digital memory —
+but that's only true if EXISTING jobs (most of them, on day one) can have their
+past folded in, not just newly-generated reports going forward. A roof history
+that only starts the day the app was adopted isn't a history, it's a blank slate
+with a start date.
+
+Three things this actually requires, first two shipped 2026-07-11:
+
+- **Add a roof map to any existing building with none yet** — including a
+  CompanyCam-only project that's never been a real building in this app before.
+  Verified end-to-end (not assumed): RoofMapper's save flow already handles this
+  correctly — searching/picking a CompanyCam-only project in the save modal
+  (`rmBpSelectCompanyCamProject()`) creates the real building record on the spot,
+  then the normal roof picker (now with inline roof-naming, see DEV_NOTES.md)
+  takes over exactly as if the building already existed. No gap found, no fix
+  needed — this rode entirely on the RoofMapper/save-flow work already shipped
+  this session.
+- ✅ **Shipped: back-dating on manually logged activities** — required, not
+  optional, per Mark ("otherwise the timeline is a lie and the whole history is
+  worthless"). A tech backfilling a past repair/inspection/drawing/photo set sets
+  the real date it happened; the timeline now sorts by that event date
+  (`parseMDYDate()`), not by when the record was typed in. Both dates are kept —
+  `date` (the real event) and `enteredAt`/`enteredBy` (the truth about the save
+  action itself, automatic + optional override) — and a backfilled entry gets a
+  subtle "🕓 Added later" flag so nobody mistakes it for a live, same-day record.
+  See "Retroactive backfill: back-dating" in `DEV_NOTES.md`.
+- ✅ **Shipped, scoped to photos**: attaching EXISTING photos to a backfilled
+  activity (`attachActivityPhotos()`, a device-library multi-picker, same
+  `resizeImageFile()` pattern Send Feedback's own photo-attach already uses).
+  **Not yet built**: drawings, standalone documents, and orthos as their OWN
+  distinct attachable artifact types (as opposed to a roof outline traced through
+  RoofMapper, or a photo through this path) — a real, larger follow-up (a generic
+  attachment/document model, likely its own Firestore collection rather than
+  more inline base64 fields) rather than something to rush into the same pass as
+  the photo case. Flagging explicitly here rather than letting "attach existing
+  artifacts" quietly read as fully done.
+
 ## Phase 4: Dashboard/Admin/Users
 
 Goal: support office/admin workflows and controlled access.

@@ -1120,12 +1120,43 @@
     </div>
     <div style="padding:14px 16px;overflow:auto">
       <p class="hint" id="activity-roof-hint" style="margin:0 0 8px"></p>
+      <!-- Mark: "the roof's history is only worth something if the past can
+           be entered, not just the future." This is THE retroactive-backfill
+           path -- set the date it actually happened below, not today's date,
+           and the timeline orders by that real date, not when it was typed
+           in. See "Retroactive backfill: back-dating" in DEV_NOTES.md. -->
+      <p class="hint" style="margin:0 0 10px">Backfilling a past repair, inspection, drawing, or photo set? Set the
+        date it ACTUALLY happened below — the timeline sorts by that date, not today's.</p>
       <div class="grid">
         <div class="fld"><label>Activity Type</label><select id="activity-type"></select></div>
-        <div class="fld"><label>Date</label><input type="date" id="activity-date"></div>
+        <div class="fld"><label>Date it happened</label><input type="date" id="activity-date"></div>
       </div>
       <div class="fld"><label>Technician / Author (optional)</label><input type="text" id="activity-technician" list="dl-technician" onblur="rememberFieldValue('technician', this.value)"></div>
+      <!-- "Record BOTH: the event date... and the entered-at date... plus
+           who added it — so the record is honest and auditable." entered-at
+           itself is automatic (Date.now(), see logActivityEvent()); this is
+           just the "who" when it's someone other than the technician typed
+           above (e.g. Mark backfilling old jobs on a tech's behalf). Falls
+           back to the Technician field when left blank -- the common case
+           of someone logging their own activity needs no second name typed. -->
+      <div class="fld"><label>Entered by (optional, if different from Technician)</label>
+        <input type="text" id="activity-entered-by" list="dl-technician"></div>
       <div class="fld"><label>Notes / Description</label><textarea id="activity-notes" rows="4"></textarea></div>
+      <!-- "ATTACH EXISTING ARTIFACTS to a building/roof retroactively:
+           drawings, photos, documents, reports, orthos." Scoped to photos
+           for this pass (existing photos from a device library, not camera
+           capture -- these are things that already exist, being pulled in)
+           -- reuses the exact resizeImageFile() pattern Send Feedback's own
+           single-photo attach already uses, just multi-file. Drawings/
+           documents/orthos as their own distinct artifact types are a
+           real, flagged follow-up (see ROADMAP.md's "digital memory of
+           every roof" pillar), not silently out of scope. See "Retroactive
+           backfill: attach existing photos" in DEV_NOTES.md. -->
+      <div class="fld"><label>Attach existing photos (optional)</label>
+        <input type="file" id="activity-photo-input" accept="image/*" multiple style="display:none" onchange="attachActivityPhotos(this)">
+        <button class="btn" onclick="document.getElementById('activity-photo-input').click()">📷 Add Photos From Library</button>
+        <div id="activity-photos-status" style="margin-top:8px"></div>
+      </div>
       <div class="btnrow">
         <button class="btn primary" onclick="saveActivityFromModal()">Save Activity</button>
         <button class="btn" onclick="closeActivityModal()">Cancel</button>
@@ -4168,6 +4199,22 @@ function todayStr(){
   var d = new Date();
   return (d.getMonth()+1) + "/" + d.getDate() + "/" + String(d.getFullYear()).slice(-2);
 }
+/* Parses this app's "M/D/YY" date string (todayStr()'s own format, no
+   zero-padding) into a real timestamp for CHRONOLOGICAL sorting -- string
+   sorting "M/D/YY" directly is wrong (e.g. "12/1/26" < "2/1/26"
+   lexicographically). Returns 0 (sorts oldest/last) for anything
+   unparseable rather than throwing, so one bad/legacy record can't break
+   sorting the rest of a building's timeline. See "Retroactive backfill:
+   order the timeline by event date" in DEV_NOTES.md. */
+function parseMDYDate(mdy){
+  var parts = String(mdy || "").split("/");
+  if (parts.length !== 3) return 0;
+  var m = parseInt(parts[0], 10), day = parseInt(parts[1], 10);
+  var y = parts[2].length === 2 ? 2000 + parseInt(parts[2], 10) : parseInt(parts[2], 10);
+  if (!m || !day || !y) return 0;
+  var t = new Date(y, m - 1, day).getTime();
+  return isNaN(t) ? 0 : t;
+}
 function hasContent(){
   try{
     var o = collect();
@@ -5331,7 +5378,22 @@ function ccUploadBadgeHtml(status){
   if (status === "failed" || status === "not_linked") return '<span class="evt-tag" style="background:#FBE2E2;color:#D64545">⚠️ Not saved to CompanyCam</span>';
   return "";
 }
+/* Subtle "added later" flag -- Mark: "so nobody mistakes a backfilled
+   record for a live one." Only ever true for a manually logged activity
+   with the new enteredAt field (old records and auto-generated reports,
+   which are always entered the same day they happen, never have this) --
+   compares calendar DAYS, not raw milliseconds, so an activity logged the
+   evening of the same day it happened is never wrongly flagged. See
+   "Retroactive backfill: back-dating" in DEV_NOTES.md. */
+function isBackdatedEvent(e){
+  if (!e.enteredAt || !e.date) return false;
+  var eventDay = parseMDYDate(e.date);
+  if (!eventDay) return false;
+  var enteredDay = new Date(e.enteredAt); enteredDay.setHours(0,0,0,0);
+  return eventDay < enteredDay.getTime();
+}
 function timelineEventHtml(e, buildingId){
+  var backdated = isBackdatedEvent(e);
   return '<div class="evt-item"' + (e._dup ? ' style="border-left-color:#D64545"' : '') + '><div class="evt-head">' +
     '<span class="evt-date">' + esc(e.date || fmtTs(e.createdAt)) + '</span>' +
     '<span class="evt-tag">' + esc(e.reportType || "") + '</span>' +
@@ -5340,11 +5402,15 @@ function timelineEventHtml(e, buildingId){
     (e.warrantyStatus ? '<span class="evt-tag">' + esc(e.warrantyStatus) + '</span>' : '') +
     (e.emailSent ? '<span class="evt-tag">Emailed ✓</span>' : '') +
     ccUploadBadgeHtml(e.companyCamUploadStatus) +
+    (backdated ? '<span class="evt-tag" style="background:#ECEFF1;color:#5B6770" title="Entered ' +
+      esc(fmtTs(e.enteredAt)) + ', for an event dated ' + esc(e.date) + '">🕓 Added later</span>' : '') +
     (e._dup ? '<span class="evt-tag" style="background:#FBE2E2;color:#D64545">Possible duplicate</span>' : '') +
     (isAdmin ? '<span class="sp"></span><button class="btn danger" onclick="deleteHistoryEventAdmin(\'' + e._id + '\', \'' + buildingId + '\')">Delete (admin)</button>' : '') +
     '</div>' +
     (e.workOrderNo ? '<div class="evt-row">Job No. ' + esc(e.workOrderNo) + '</div>' : '') +
     (e.technician ? '<div class="evt-row">Technician: ' + esc(e.technician) + '</div>' : '') +
+    (backdated && e.enteredBy && e.enteredBy !== e.technician ?
+      '<div class="evt-row hint">Entered by ' + esc(e.enteredBy) + ' on ' + esc(fmtTs(e.enteredAt)) + '</div>' : '') +
     (e.roofType ? '<div class="evt-row">Roof: ' + esc(e.roofType) + '</div>' : '') +
     /* Multi-roof Inspection only (roofLabels set alongside roofIds -- see
        logReportAndHistoryEvent()); every other event still shows nothing
@@ -5357,6 +5423,14 @@ function timelineEventHtml(e, buildingId){
     (e.conditionsSummary ? '<div class="evt-row">Findings: ' + esc(e.conditionsSummary) + '</div>' : '') +
     (e.repairsSummary ? '<div class="evt-row">Repairs: ' + esc(e.repairsSummary) + '</div>' : '') +
     (e.notes ? '<div class="evt-row">' + esc(e.notes) + '</div>' : '') +
+    /* Existing photos attached while backfilling this record -- see
+       attachActivityPhotos() and "ATTACH EXISTING ARTIFACTS...
+       retroactively" in DEV_NOTES.md. Absent for every event that never
+       had any (the vast majority). */
+    ((e.photos || []).length ? '<div class="evt-row" style="display:flex;gap:6px;flex-wrap:wrap">' +
+      e.photos.map(function(p){
+        return '<img src="' + esc(p.img) + '" style="width:64px;height:64px;object-fit:cover;border:1px solid var(--line);border-radius:4px">';
+      }).join('') + '</div>' : '') +
     (e.pdfRef && e.pdfRef.url ? '<div class="evt-row"><a href="' + esc(e.pdfRef.url) + '" target="_blank" rel="noopener">View saved PDF</a></div>' : '') +
     '</div>';
 }
@@ -5465,6 +5539,19 @@ async function openBuildingHistory(buildingId){
       .where("buildingId", "==", buildingId).orderBy("createdAt", "desc").limit(50).get();
     var events = [];
     qs.forEach(function(d){ events.push(Object.assign({ _id: d.id }, d.data())); });
+    /* Mark: "show the timeline ordered by the EVENT date" -- the query
+       above orders by createdAt (when it was ENTERED, a Firestore-native
+       field) purely to fetch the most-recently-touched 50 records; that's
+       NOT the same as chronological order once a backfilled record's real
+       date can be anywhere in the past. Re-sort client-side by the actual
+       date field (parseMDYDate() -- plain string orderBy would sort
+       "M/D/YY" lexicographically wrong) before anything renders. Same-day
+       events keep their createdAt order as a stable tiebreak. See
+       "Retroactive backfill: back-dating" in DEV_NOTES.md. */
+    events.sort(function(a, b){
+      var d = parseMDYDate(b.date) - parseMDYDate(a.date);
+      return d !== 0 ? d : (b.createdAt || 0) - (a.createdAt || 0);
+    });
     if (!events.length){
       historyEvents = [];
       historyBuildingId = buildingId;
@@ -6701,14 +6788,29 @@ async function logActivityEvent(buildingId, activity){
   var roof = getRoofById(bld, activity.roofId);
   var id = genId("act");
   var nowTs = Date.now();
+  /* Mark: "record BOTH: the event date (when it happened) and the
+     entered-at date (when it was added), plus who added it — so the
+     record is honest and auditable." date is the real/original date the
+     tech picked (may be well in the past, see openActivityModal()'s
+     backfill hint); enteredAt/enteredBy capture the truth about THIS
+     save action, separately, so a backfilled record never masquerades as
+     a live one. enteredBy falls back to technician when left blank (the
+     common case: the person entering it IS the technician). See
+     "Retroactive backfill: back-dating" in DEV_NOTES.md. */
   var payload = {
     buildingId: buildingId, buildingName: bld.name || "",
     customerId: bld.customerId || null, customerName: bld.customerName || "",
     workOrderId: null, workOrderNo: "",
     date: activity.date || todayStr(), technician: activity.technician || "",
+    enteredAt: nowTs, enteredBy: activity.enteredBy || activity.technician || "",
     roofId: roof.id, roofType: roof.roofSystem || "",
     reportType: activity.type, notes: activity.notes || "",
     conditionsSummary: "", repairsSummary: "", warrantyStatus: "",
+    /* Existing photos attached while backfilling this record -- see
+       attachActivityPhotos()/"ATTACH EXISTING ARTIFACTS... retroactively"
+       in DEV_NOTES.md. Empty array for every activity logged before this
+       existed, and for the common case of not attaching anything. */
+    photos: activity.photos || [],
     companyCamProjectId: null, companyCamPhotoIds: [], pins: [],
     pdfRef: null, emailSent: false, emailRecipients: [], emailSubject: "",
     isActivity: true,
@@ -6721,6 +6823,39 @@ async function logActivityEvent(buildingId, activity){
   return id;
 }
 var activityModalBuildingId = null;
+/* Existing photos attached to the activity currently being logged -- see
+   "ATTACH EXISTING ARTIFACTS... retroactively" and
+   attachActivityPhotos()/logActivityEvent() below. Each entry:
+   {img (base64 data URL)}, same minimal shape work-order photos use
+   (caption omitted here -- an activity's own Notes field already covers
+   that, no need for a second free-text field per photo). */
+var activityPhotos = [];
+function attachActivityPhotos(input){
+  var files = input.files ? Array.from(input.files) : [];
+  input.value = "";
+  if (!files.length) return;
+  Promise.all(files.map(function(f){ return resizeImageFile(f, 1400, 0.72); })).then(function(dataUrls){
+    dataUrls.forEach(function(dataUrl){ activityPhotos.push({ img: dataUrl }); });
+    renderActivityPhotosStatus();
+    toast(dataUrls.length + " photo" + (dataUrls.length === 1 ? "" : "s") + " attached ✓");
+  }).catch(function(e){ toast("Couldn't read one of those photos: " + e.message); });
+}
+function renderActivityPhotosStatus(){
+  var host = document.getElementById("activity-photos-status");
+  if (!host) return;
+  if (!activityPhotos.length){ host.innerHTML = ""; return; }
+  host.innerHTML = '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
+    activityPhotos.map(function(p, i){
+      return '<div style="position:relative"><img src="' + p.img + '" style="width:84px;height:84px;object-fit:cover;' +
+        'border:1px solid var(--line);border-radius:4px;display:block">' +
+        '<button class="btn danger" style="position:absolute;top:2px;right:2px;padding:1px 6px;font-size:11px" ' +
+        'onclick="removeActivityPhoto(' + i + ')">✕</button></div>';
+    }).join('') + '</div>';
+}
+function removeActivityPhoto(i){
+  activityPhotos.splice(i, 1);
+  renderActivityPhotosStatus();
+}
 /* The rest of the app stores dates as typed "M/D/YY" (see todayStr()),
    but a native <input type="date"> needs ISO "YYYY-MM-DD" — these just
    convert between the two for the activity modal's date field. */
@@ -6747,7 +6882,10 @@ async function openActivityModal(buildingId){
   }
   setVal("activity-date", isoDateFromMDY(todayStr()));
   document.getElementById("activity-technician").value = "";
+  document.getElementById("activity-entered-by").value = "";
   document.getElementById("activity-notes").value = "";
+  activityPhotos = [];
+  renderActivityPhotosStatus();
   document.getElementById("activity-modal").style.display = "";
   lockBodyScroll();
   /* Only worth mentioning which roof this logs to once a building
@@ -6777,7 +6915,9 @@ async function saveActivityFromModal(){
     type: val("activity-type"),
     date: isoDate ? mdyFromIsoDate(isoDate) : todayStr(),
     technician: val("activity-technician").trim(),
+    enteredBy: val("activity-entered-by").trim(),
     notes: val("activity-notes").trim(),
+    photos: activityPhotos.slice(),
     /* Logs to whichever roof is currently showing in Building History —
        defaults to the building's first roof (see historySelectedRoofId),
        so a single-roof building's activities need no extra picker. */

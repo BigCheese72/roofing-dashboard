@@ -6503,6 +6503,85 @@ stays single-column too, same as before this change (the desktop grid
 only ever activates at 1024px+). All test state cleared, console clean
 throughout.
 
+## Retroactive backfill: back-dating + attaching existing photos (shipped 2026-07-11, dev only)
+
+Mark: "the roof's history is only worth something if the past can be
+entered, not just the future... otherwise the timeline is a lie." Flagged
+as a vision pillar in `ROADMAP.md` — this pass covers the two REQUIRED
+pieces plus verifies a third that turned out to already work.
+
+**Back-dating (required, not optional).** The "Log Activity" modal
+already had a real `<input type="date">` — a tech could always type a
+past date — but the actual bug was everywhere ELSE: `building_history_events`
+was queried `.orderBy("createdAt", "desc")`, i.e. sorted by when a record
+was TYPED IN, not the real event date it claimed. A backfilled record
+from 6 months ago would show up at the TOP of the timeline (since it was
+just entered) instead of down where it chronologically belongs — exactly
+"the timeline is a lie." Fixed by re-sorting client-side after fetch
+(`parseMDYDate()`, a new helper — this app's `date` field is `"M/D/YY"`,
+un-zero-padded, so a plain string sort is provably wrong, e.g.
+`"12/1/26" < "2/1/26"` lexicographically; same-day events keep `createdAt`
+as a stable tiebreak). The Firestore query itself stays `orderBy("createdAt")`
+(fetching the most-recently-TOUCHED 50 records is still the right fetch
+strategy — a proper `orderBy("date")` isn't reliable against a string
+field like this without a data migration, and isn't needed once the
+client re-sorts anyway).
+
+**Both dates recorded, per Mark's exact ask** — `date` (the real event,
+tech-editable) stays as-is; new `enteredAt`/`enteredBy` fields capture the
+truth about the SAVE action itself: `enteredAt` is automatic
+(`Date.now()`), `enteredBy` is a new optional modal field (falls back to
+the `technician` field when left blank — the common case of someone
+logging their own activity needs no second name typed; the field exists
+for when Mark backfills old jobs on a tech's behalf). `isBackdatedEvent()`
+compares CALENDAR DAYS (not raw milliseconds, so same-day entries are
+never wrongly flagged) and drives a subtle "🕓 Added later" badge in
+`timelineEventHtml()` — tooltip shows the real entered-at timestamp — plus
+an "Entered by X" row when that name differs from the technician's.
+Auto-generated reports (`logReportAndHistoryEvent()`, not manual
+activities) don't get `enteredAt` at all — they're always entered the
+same day they happen by construction, so there's nothing to flag.
+
+**Attaching existing photos** — scoped deliberately to photos this pass
+(see the ROADMAP.md pillar entry for what's explicitly NOT built yet:
+drawings/documents/orthos as distinct artifact types). `attachActivityPhotos()`
+is a device-library multi-picker (not camera capture — these are EXISTING
+photos being pulled in, the whole point of a backfill), reusing the exact
+`resizeImageFile()` call Send Feedback's own single-photo attach already
+established, just multi-file. Stored as a plain `photos: [{img}]` array on
+the activity's `reports`/`building_history_events` payload (same
+base64-in-Firestore precedent work-order photos already use, not a new
+storage pattern) and rendered as thumbnails in the timeline entry.
+
+**Add a roof map to a building with none yet, including a CompanyCam-only
+project** — verified end-to-end in the browser rather than assumed, since
+Mark explicitly asked for this to be checked and fixed if broken. It
+already worked: traced an outline, opened the save modal, selected a
+CompanyCam-only project (no app building yet) from the CompanyCam-merge
+search — confirmed `rmBpSelectCompanyCamProject()` creates a real building
+record on the spot (`ensureCustomerAndBuilding()`), the roof picker
+renders exactly like it would for a normal existing building (single
+synthesized "Roof 1" + "+ Add a new roof…", now with this session's
+inline-naming fix), and completing the save correctly persists the
+outline with the CompanyCam link intact. No gap found — this rode
+entirely on the RoofMapper save-flow work already shipped earlier this
+session, nothing new needed here.
+
+Tested in the browser with a mocked `fdb` (no real writes): logged three
+activities out of chronological order (today, 6 months ago, ~16 months
+ago) — confirmed the timeline renders them in real EVENT-date order
+(newest event first), not entry order, and exactly the two backdated ones
+show the "Added later" badge while the same-day one doesn't; confirmed
+"Entered by Mark" shows for the entry where `enteredBy` differs from
+`technician`, and correctly stays hidden for the one where it was left
+blank (falls back to matching the technician); attached two photos to a
+backfilled activity — confirmed both stored as real data URLs and both
+rendered as thumbnails in the resulting timeline entry; walked the full
+CompanyCam-only-project-to-saved-roof path end-to-end via real function
+calls (not assumptions) — confirmed a building gets created, linked, and
+a roof outline saved with zero blockers. All test state cleared, console
+clean throughout.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |
