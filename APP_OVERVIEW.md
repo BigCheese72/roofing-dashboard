@@ -437,10 +437,16 @@ pick an image straight from your device (phone or laptop) and trace directly on 
 no CompanyCam project or GPS fix needed first. This is different from the "Drone
 orthomosaic" base-map upload above (which needs the companion script and real GPS
 corner coordinates for a whole building's base map): this is a quick, no-prep way to
-trace a roof outline on your own image right now. Since a plain exported image has no
-GPS data built in, the shape starts at an arbitrary size — use Calibrate (tap any edge,
-enter its real measured length) right after tracing to fix the true scale, same as any
-other outline. Square Up and Edit Shape work on it exactly the same way too. Once you
+trace a roof outline on your own image right now.
+
+**Uploading a real GeoTIFF** (the actual output of a georeferenced RTK drone survey,
+e.g. WebODM's `odm_orthophoto.tif`)? The app reads its built-in GPS data automatically
+and lines it up at its real position on the map — a status message says
+**"✅ Georeferenced (RTK) — scale set automatically"**, and there's nothing to
+calibrate: every corner you tap is already accurate. A plain JPG/PNG (or a TIFF with
+no GPS data in it) works the same way as before — the shape starts at an arbitrary
+size, and you Calibrate an edge after tracing to fix the true scale. Either way, Square
+Up and Edit Shape work exactly the same. Once you
 save the outline, the image itself is kept with the roof too (needs admin mode and a
 CompanyCam project linked to the building — the outline still saves fine either way,
 just the image-retention part needs those). Already added the drone photo to this

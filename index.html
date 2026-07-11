@@ -298,6 +298,18 @@
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<!-- True GeoTIFF support (Mark's Mavic 3T / WebODM / RTK orthos are real
+     georeferenced GeoTIFFs, not flattened images) -- parses embedded
+     geodata and renders it at its TRUE geographic position/scale on the
+     existing Leaflet map, no manual calibration needed. Feasibility
+     validated end-to-end in the browser before building on it: a
+     synthetic GeoTIFF written with geotiff.js round-tripped through
+     parseGeoraster + GeoRasterLayer with exact bounds preserved onto a
+     real Leaflet map. See "GeoTIFF georeferenced ortho support" in
+     DEV_NOTES.md. -->
+<script src="https://cdn.jsdelivr.net/npm/geotiff@2/dist-browser/geotiff.js"></script>
+<script src="https://unpkg.com/georaster@1.6.0/dist/georaster.browser.bundle.min.js"></script>
+<script src="https://unpkg.com/georaster-layer-for-leaflet@3/dist/georaster-layer-for-leaflet.min.js"></script>
 </head>
 <body>
 
@@ -7507,7 +7519,18 @@ var rmState = {
      marker. See "Vertex snapping" in DEV_NOTES.md. */
   snapEnabled: true,
   referenceRings: [],
-  snapIndicatorLayer: null
+  snapIndicatorLayer: null,
+  /* True georeferenced GeoTIFF tracing (Mark: DJI Mavic 3T + WebODM + RTK
+     orthos are real georeferenced GeoTIFFs, not flattened images) --
+     deliberately SEPARATE from the orthoActive/orthoOverlayLayer/etc.
+     state above, which is specifically the synthetic-origin flat-canvas
+     system for a plain PNG/JPG with no geodata. A geoTiffLayer renders at
+     its TRUE geographic position via georaster-layer-for-leaflet, so
+     points traced on it are already real, accurate lat/lng straight from
+     the map -- no synthetic origin, no scale guess, no Calibrate step
+     needed. See "GeoTIFF georeferenced ortho support" in DEV_NOTES.md. */
+  geoTiffActive: false,
+  geoTiffLayer: null
 };
 var RM_LOCAL_KEY = "roofmapper-local-outlines-v1";
 /* A commercial building — especially a hospital/medical campus — can easily
@@ -7822,7 +7845,10 @@ function rmClearFootprintLayers(){
      SAME already-uploaded ortho for the SAME building, so he isn't forced
      to re-upload/re-pick the same image for every roof section on it.
      See "Scale inheritance" in DEV_NOTES.md. */
-  if (!rmState.preserveOrthoOnClear) rmClearOrthoOverlay();
+  if (!rmState.preserveOrthoOnClear){
+    rmClearOrthoOverlay();
+    rmClearGeoTiffLayer(); /* same "continuing the same building's already-uploaded base" exception as the ortho overlay above */
+  }
   var map = rmState.map;
   if (map){
     Object.keys(rmState.footprintLayers).forEach(function(id){ map.removeLayer(rmState.footprintLayers[id]); });
@@ -8491,12 +8517,124 @@ function rmLoadAndResizeOrtho(file, maxDim, quality){
     reader.readAsDataURL(file);
   });
 }
+/* Georeferenced GeoTIFF flagged as a real (not hard) constraint per
+   Mark's ask -- full-res WebODM orthos can be large, and the whole file
+   has to land in the browser's memory as an ArrayBuffer regardless (a
+   local file upload, unlike a COG served over HTTP, has no URL to
+   range-request against for true streaming). Rather than silently
+   attempt a huge file and risk the tab running out of memory (worse on a
+   phone), a clear size cap with an explicit explanation and a fallback
+   suggestion. Tunable; see "GeoTIFF georeferenced ortho support" in
+   DEV_NOTES.md for the full reasoning and what true COG-tile-streaming
+   would take if this cap becomes a real practical problem. */
+var RM_GEOTIFF_MAX_BYTES = 120 * 1024 * 1024;
+/* Returns a parsed `georaster` object if arrayBuffer is a valid GeoTIFF
+   with usable embedded geodata (either a Geographic — plain lat/lng — or
+   Projected — e.g. UTM, what WebODM/RTK output actually uses — CRS), or
+   null for anything else (not a TIFF at all, e.g. a plain JPG/PNG; or a
+   TIFF with no geo tags at all, e.g. a hand-exported flattened image).
+   Never throws -- every failure mode just means "fall back to the flat-
+   canvas path," never a hard error. Reprojection from a projected CRS
+   (UTM etc.) to the lat/lng GeoRasterLayer needs for Leaflet is handled
+   internally by georaster-layer-for-leaflet itself -- verified directly
+   (not assumed) by round-tripping a synthetic UTM-zone-15N GeoTIFF
+   through this exact pipeline before building on it; see DEV_NOTES.md. */
+async function rmTryParseGeoreferencedTiff(arrayBuffer){
+  try{
+    var tiff = await GeoTIFF.fromArrayBuffer(arrayBuffer);
+    var image = await tiff.getImage();
+    var geoKeys = image.getGeoKeys ? image.getGeoKeys() : null;
+    if (!geoKeys || (!geoKeys.GeographicTypeGeoKey && !geoKeys.ProjectedCSTypeGeoKey)) return null;
+    /* Caught in testing: some TIFF-writing tools (including the geotiff.js
+       library used to build the test fixtures for this exact feature)
+       inject a DEFAULT WGS84 GeographicTypeGeoKey even when no real geo
+       metadata was ever supplied -- geoKeys alone being present isn't
+       proof of REAL geodata. The telltale sign of a meaningless default
+       is a bounding box spanning most/all of the planet -- a drone photo
+       of a roof is at most a few hundred meters across (a small fraction
+       of a degree), never anywhere close to a full degree of latitude or
+       longitude. Reject anything that implausible as "not really
+       georeferenced" and fall back to the flat-canvas path instead of
+       trusting a bogus placeholder location. */
+    var bbox = image.getBoundingBox ? image.getBoundingBox() : null;
+    if (!bbox || bbox.length !== 4) return null;
+    var isProjected = !!geoKeys.ProjectedCSTypeGeoKey;
+    var spanX = Math.abs(bbox[2] - bbox[0]), spanY = Math.abs(bbox[3] - bbox[1]);
+    var maxPlausibleSpan = isProjected ? 20000 : 1; /* meters for a projected CRS, degrees for geographic */
+    if (spanX > maxPlausibleSpan || spanY > maxPlausibleSpan) return null;
+    return await parseGeoraster(arrayBuffer);
+  }catch(e){
+    return null;
+  }
+}
+function rmClearGeoTiffLayer(){
+  if (rmState.map && rmState.geoTiffLayer) rmState.map.removeLayer(rmState.geoTiffLayer);
+  rmState.geoTiffLayer = null;
+  rmState.geoTiffActive = false;
+}
+/* Starts a trace session directly on a rendered, correctly-georeferenced
+   GeoTIFF -- deliberately much simpler than rmStartOrthoTrace() (the
+   flat-canvas/synthetic-origin path): the layer is already positioned at
+   its TRUE geographic bounds, so every map click during this trace is
+   already real, accurate lat/lng -- no synthetic origin, no meters-per-
+   pixel guess, nothing to Calibrate. */
+function rmStartGeoTiffTrace(georaster){
+  var map = rmEnsureMap();
+  rmClearFootprintLayers(); /* same clean-slate as any other fresh capture start */
+  rmState.geoTiffLayer = new GeoRasterLayer({ georaster: georaster, resolution: 128 }).addTo(map);
+  rmState.geoTiffActive = true;
+  var bounds = rmState.geoTiffLayer.getBounds();
+  map.fitBounds(bounds);
+  var center = bounds.getCenter();
+  rmState.lat = center.lat; rmState.lng = center.lng; rmState.accuracy = null;
+  rmTraceState.active = true;
+  rmTraceState.mode = "manual";
+  rmTraceState.points = [];
+  rmTraceClickHandler = function(e){ rmTraceAddPoint(e.latlng); };
+  map.on("click", rmTraceClickHandler);
+  rmShowTracePanel();
+  document.getElementById("rm-trace-mode-hint").textContent =
+    "Tap the roof's corners in order, right on your georeferenced drone image above. Real GPS geodata means the " +
+    "shape, position, and scale are all accurate automatically — no calibration step needed.";
+  rmSetStatus("✅ Georeferenced (RTK) — scale set automatically, no calibration needed.");
+  rmUpdateControlVisibility();
+}
 async function rmUploadOrthoFile(input){
   var file = input.files && input.files[0];
   input.value = "";
   if (!file) return;
-  toast("Preparing image…");
   try{
+    /* Only bother attempting the (slower) GeoTIFF parse for files that
+       look like a TIFF at all -- a plain JPG/PNG skips straight to the
+       existing flat-canvas path without wasting time on a parse attempt
+       that would just fail anyway. */
+    if (/\.tiff?$/i.test(file.name || "")){
+      if (file.size > RM_GEOTIFF_MAX_BYTES){
+        toast("This file is " + Math.round(file.size / 1024 / 1024) + "MB — large enough that loading it fully " +
+          "into the browser risks running out of memory, especially on a phone. Try a downsampled/lower-resolution " +
+          "export from WebODM, or use “☁️ Trace From CompanyCam Photo” instead if it's already uploaded there.");
+        return;
+      }
+      toast("Reading GeoTIFF…");
+      var arrayBuffer = await file.arrayBuffer();
+      var georaster = await rmTryParseGeoreferencedTiff(arrayBuffer);
+      if (georaster){
+        rmStartGeoTiffTrace(georaster);
+        return;
+      }
+      /* Caught in testing: a .tif with no usable geodata can't just fall
+         through to the flat-canvas path below the way a JPG/PNG can --
+         most browsers have NO native TIFF image decoder at all (TIFF
+         isn't a web-standard <img>/Canvas format the way PNG/JPG/WebP
+         are), so rmLoadAndResizeOrtho() would silently fail with an
+         unhelpful "Couldn't read the image" instead of ever starting a
+         trace. Stopping here with a clear, actionable message instead of
+         attempting something that's essentially guaranteed to fail. */
+      toast("This TIFF has no usable GPS data, and most browsers can't display a plain TIFF directly. Re-export it " +
+        "as a JPG or PNG to trace it as a flat image with manual Calibrate, or use a real georeferenced GeoTIFF.");
+      return;
+    }
+    toast("Preparing image…");
     var result = await rmLoadAndResizeOrtho(file, RM_ORTHO_MAX_DIM, RM_ORTHO_QUALITY);
     rmStartOrthoTrace(result.dataUrl, result.w, result.h);
   }catch(e){ toast("Couldn't load that image: " + e.message); }
@@ -8786,16 +8924,27 @@ function rmFinishTrace(){
   var ring = rmGeomCleanRing(rmTraceState.points.concat([rmTraceState.points[0]]));
   if (ring.length < 4){ toast("Those points are too close together — try " + (isWalk ? "spacing corners further apart" : "tracing wider corners") + "."); return; }
   var tracedOnOrtho = rmState.orthoActive;
+  var tracedOnGeoTiff = rmState.geoTiffActive;
   var outline = {
     ring: ring,
     center: rmGeomRingCentroid(ring),
     areaSqFt: rmGeomPolygonAreaSqMeters(ring) * 10.7639,
     perimeterFt: rmGeomPolygonPerimeterMeters(ring) * 3.28084,
-    source: isWalk ? "walk_corners" : (tracedOnOrtho ? "ortho_trace" : "manual_trace"),
+    source: isWalk ? "walk_corners" : (tracedOnGeoTiff ? "geotiff_trace" : (tracedOnOrtho ? "ortho_trace" : "manual_trace")),
     osmId: null, osmType: null, tags: {},
     isSiteBoundary: false,
     createdAt: Date.now()
   };
+  /* geotiff_trace is the OPPOSITE of tracedOnOrtho below -- real GPS
+     geodata means the ring is already an accurate, real-world position,
+     not a placeholder. Flagged explicitly so future code (and Mark) can
+     tell at a glance this one didn't need Calibrate and won't inherit a
+     scale factor learned from some other, less-accurate roof on the same
+     building (rmCalibrateEdge()'s inheritance-learning check only matches
+     source "manual_trace"/"ortho_trace", so geotiff_trace is naturally
+     excluded without extra code). See "GeoTIFF georeferenced ortho
+     support" in DEV_NOTES.md. */
+  if (tracedOnGeoTiff) outline.georeferencedSource = true;
   /* tracedOnOrtho'd outlines carry a synthetic (Null Island) origin, not a
      real-world position -- flagged explicitly rather than silently baked
      into `source` alone, so any future code inspecting an outline can
@@ -9456,7 +9605,7 @@ async function rmEnterMultiRoofCapture(buildingId){
      photo for every roof section on it, and it's what makes scale
      inheritance actually save him a step rather than just being a nice-
      to-know. See "Scale inheritance" in DEV_NOTES.md. */
-  var continuingOrtho = rmState.orthoActive && rmState.linkedBuildingId === buildingId;
+  var continuingOrtho = (rmState.orthoActive || rmState.geoTiffActive) && rmState.linkedBuildingId === buildingId;
   rmState.preserveOrthoOnClear = continuingOrtho;
   rmClearFootprintLayers(); /* wipes any in-progress trace/search/linked-roof state */
   rmState.preserveOrthoOnClear = false;
@@ -9468,9 +9617,10 @@ async function rmEnterMultiRoofCapture(buildingId){
     rmState.pendingBuildingName = bld.name || "this building";
     var bounds = await rmDrawReferenceRoofs(buildingId, bld, null);
     if (continuingOrtho){
-      /* Ortho overlay + its map position/zoom are already exactly right --
-         just restart tracing directly on it, same tail end
-         rmStartOrthoTrace() itself uses, no re-center/re-search. */
+      /* Ortho/GeoTIFF overlay + its map position/zoom are already exactly
+         right -- just restart tracing directly on it, same tail end
+         rmStartOrthoTrace()/rmStartGeoTiffTrace() itself uses, no re-
+         center/re-search. */
       var map2 = rmEnsureMap();
       rmTraceState.active = true;
       rmTraceState.mode = "manual";
@@ -9478,8 +9628,11 @@ async function rmEnterMultiRoofCapture(buildingId){
       rmTraceClickHandler = function(e){ rmTraceAddPoint(e.latlng); };
       map2.on("click", rmTraceClickHandler);
       rmShowTracePanel();
-      rmSetStatus("Tracing another roof on the same drone image — existing roofs shown dimmed for reference." +
-        (rmState.inheritedScaleFactorBuildingId === buildingId ? " Scale inherited — no need to re-measure." : ""));
+      rmSetStatus(rmState.geoTiffActive ?
+        "Tracing another roof on the same georeferenced image — existing roofs shown dimmed for reference. " +
+          "✅ Scale set automatically, no calibration needed." :
+        "Tracing another roof on the same drone image — existing roofs shown dimmed for reference." +
+          (rmState.inheritedScaleFactorBuildingId === buildingId ? " Scale inherited — no need to re-measure." : ""));
       rmUpdateControlVisibility();
       return;
     }

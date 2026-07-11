@@ -563,6 +563,30 @@ Goal: turn each building into a long-term roof record.
   upload of the same photo for every roof section) — it now stays up
   across roofs on the same building. See "Multi-roof accuracy: scale
   inheritance, vertex snapping, precision cursor" in `DEV_NOTES.md`.
+- ✅ **Shipped (dev only, 2026-07-11)**: true GeoTIFF support — Mark's real
+  orthos (DJI Mavic 3T + WebODM + RTK) are genuine georeferenced GeoTIFFs
+  with centimeter accuracy, not flattened images. Uploading one now reads
+  its embedded geodata and renders it at its TRUE geographic position on
+  the map via `geotiff.js` + `georaster-layer-for-leaflet` — tracing on it
+  needs **zero manual calibration**, since every map click is already
+  real, accurate lat/lng. Correctly reprojects a projected CRS (UTM zone,
+  what WebODM actually outputs — meters, not lat/lng) with no extra
+  library needed, verified directly before building on it. A plain flat
+  image (PNG/JPG, or a TIFF with no real geodata) still falls back to the
+  existing Calibrate-based path from the local-upload feature above;
+  clearly announces which mode was detected either way ("✅ Georeferenced
+  (RTK) — scale set automatically" vs. falls back with a clear message).
+  Large-file memory use flagged as a real constraint (120MB cap, clear
+  message + fallback suggestion rather than silently risking a crash).
+  Two real bugs caught in testing, both fixed before shipping: a
+  GeoTIFF-writing library injecting a default placeholder CRS that isn't
+  real geodata (caught via an implausible world-spanning bounding box);
+  and a plain non-georeferenced TIFF silently failing since most browsers
+  have no native TIFF image decoder at all (now stops with a clear,
+  actionable message instead). Retaining a GeoTIFF-traced roof's image
+  with the roof for reopening (same as Finding A's persistence piece) is
+  a deliberate follow-up, not built this pass. See "GeoTIFF georeferenced
+  ortho support" in `DEV_NOTES.md`.
 - 🐛 **Fixed (dev only, 2026-07-11), HIGH PRIORITY**: RoofMapper export was
   badly broken — Mark's actual exported file showed the outline missing
   entirely, features as unlabeled floating dots, layout crammed into one

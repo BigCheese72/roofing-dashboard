@@ -5477,6 +5477,129 @@ mode leaves both off, and canceling turns both back off; confirmed
 "Place at Crosshair" adds a point at the map's exact current center.
 All test state cleared, page reloaded, console clean.
 
+## GeoTIFF georeferenced ortho support (shipped 2026-07-11, dev only)
+
+Mark's real orthos: DJI Mavic 3T + WebODM + RTK — true georeferenced
+GeoTIFFs with centimeter-level accuracy, not flattened images. The
+existing local-upload path (Finding A, above) only ever handled a plain
+raster (PNG/JPG, or whatever a browser `<img>` can decode) on a synthetic
+Null Island origin with a guessed scale, needing manual Calibrate — wrong
+model entirely for a real georeferenced file. This adds the real path:
+read the file's embedded geodata, render it at its TRUE geographic
+position on the existing Leaflet map, and trace directly on it with
+**zero manual calibration** — the map's own coordinates ARE the roof's
+real coordinates.
+
+**Feasibility validated end-to-end in the browser BEFORE writing any
+production code** — not assumed, not just "the docs say this should
+work": loaded `geotiff.js` + `georaster` + `georaster-layer-for-leaflet`
+via CDN (`<script>` tags, same no-bundler pattern every other library in
+this app already uses), wrote a synthetic GeoTIFF with `geotiff.js`'s own
+`writeArrayBuffer`, round-tripped it through `parseGeoraster` +
+`GeoRasterLayer` onto a real Leaflet map instance, and confirmed the
+rendered layer's bounds matched the encoded geodata exactly. **Then
+specifically tested the case that actually matters for Mark**: a
+synthetic GeoTIFF in a PROJECTED CRS (UTM zone 15N / EPSG:32615, meters —
+what WebODM actually outputs, not plain lat/lng degrees) — confirmed
+`georaster-layer-for-leaflet` reprojects it to correct, plausible lat/lng
+bounds automatically, with **no extra `proj4js` library needed** (it's
+bundled internally). This is what unblocked committing to the approach
+at all — a naive implementation feeding raw UTM meters into Leaflet
+(which expects WGS84 lat/lng) would have rendered completely wrong,
+off-world positions.
+
+**New**: `RM_GEOTIFF_MAX_BYTES` (120MB) size cap — flagged as a real (not
+hard) constraint per Mark's ask: a local file upload has no URL to
+range-request against for true COG-tile-streaming, so the whole file
+lands in browser memory as an ArrayBuffer regardless of format; a true
+streaming approach would need the file to already be at a URL (e.g.
+uploaded to CompanyCam first) rather than a raw local upload — flagged as
+a possible future improvement if this cap becomes a real practical
+problem, not built now. `rmTryParseGeoreferencedTiff()` — parses via
+`GeoTIFF.fromArrayBuffer()`, checks for real geo keys AND a plausible
+bounding-box size (see the bug below), returns a `georaster` object or
+`null`. `rmStartGeoTiffTrace()` — deliberately much simpler than
+`rmStartOrthoTrace()` (no synthetic origin, no meters-per-pixel guess,
+nothing to calibrate): renders the `GeoRasterLayer`, fits the map to its
+real bounds, and starts a normal trace session directly — every map click
+from here is already real, accurate lat/lng. `rmUploadOrthoFile()` now
+detects `.tif`/`.tiff` files first and only attempts the GeoTIFF parse
+for those (a JPG/PNG skips straight to the existing flat-canvas path,
+no wasted parse attempt); a valid georeferenced result routes to
+`rmStartGeoTiffTrace()`, anything else falls back to the existing
+flat-canvas path. Finished outlines get `source: "geotiff_trace"` (a new,
+distinct value — NOT `"ortho_trace"`, which specifically means "synthetic
+Null Island position, don't trust it") and `georeferencedSource: true`.
+Deliberately excluded from scale inheritance (rmCalibrateEdge()'s
+inheritance-learning check only matches `"manual_trace"`/`"ortho_trace"`)
+since a georeferenced trace is already accurate — inheriting a correction
+factor from some OTHER, less-accurate roof on the same building would
+make it WORSE, not better. The layer also stays alive across "Trace
+Another Roof" on the same building (extended the existing
+`preserveOrthoOnClear` mechanism from the flat-ortho case to cover this
+too), so he isn't forced to re-upload a potentially large file for every
+roof section on it.
+
+**UI**: `rmSetStatus("✅ Georeferenced (RTK) — scale set automatically, no
+calibration needed.")` on successful detection — Mark explicitly asked
+this be surfaced, not silently assumed. **Not built this pass**: retaining
+the GeoTIFF-traced roof's base image WITH the roof for reopening later
+(the same "part 2" persistence piece Finding A got, extended to this
+case) — `rmPersistOrthoBaseMap()` specifically uploads a JPEG data URL via
+`ccApiPost`, which doesn't fit a raw GeoTIFF/`georaster` object without
+real additional work (upload the raw file as-is — potentially huge — or
+render+persist a snapshot as a real `"drone_ortho"` type with its now-
+legitimate real bounds). Deliberately deferred as its own follow-up
+rather than rushed; local-session tracing on an uploaded GeoTIFF is
+already the core, highest-value capability and works completely on its
+own.
+
+**Two real bugs caught by actually generating and inspecting output, not
+by code review alone — both fixed before shipping**:
+1. `GeoTIFF.writeArrayBuffer()` (used to build every one of the test
+   GeoTIFFs above) turned out to inject a DEFAULT `GeographicTypeGeoKey:
+   4326` even when NO geo metadata is supplied at all — a "geo keys are
+   present" check alone can't distinguish real geodata from a meaningless
+   placeholder. The telltale sign: the resulting bounding box spans the
+   entire planet (`[-180,-90,180,90]`) — a drone photo of a roof is at
+   most a few hundred meters across, nowhere close to a full degree of
+   latitude/longitude. Fixed by rejecting anything with an implausibly
+   large bounding box (>1° for a geographic CRS, >20,000m for a projected
+   one) as "not really georeferenced," regardless of which geo keys are
+   technically present.
+2. For a `.tif` with genuinely no usable geodata, the code originally
+   fell through to the existing flat-canvas path (`rmLoadAndResizeOrtho`)
+   the same way a JPG/PNG would — but that path loads the file via a
+   browser `<img>`/`Image()` element, and **most browsers have no native
+   TIFF decoder at all** (unlike PNG/JPG/WebP, TIFF isn't a web-standard
+   `<img>` format). Confirmed directly: this silently failed with an
+   unhelpful "Couldn't read the image," never starting a trace, with no
+   clear explanation of why. Fixed by stopping immediately with a clear,
+   actionable message ("most browsers can't display a plain TIFF
+   directly — re-export as JPG/PNG, or use a real georeferenced GeoTIFF")
+   instead of attempting something that was essentially guaranteed to
+   fail.
+
+Tested in the browser (no `fdb` needed — this is entirely client-side
+geometry/rendering, no writes): built and round-tripped a plain lat/lng
+GeoTIFF AND a UTM-projected GeoTIFF (the realistic WebODM case) through
+the full `rmUploadOrthoFile()` → detection → `rmStartGeoTiffTrace()`
+pipeline — confirmed both are detected, both render at plausible
+real-world bounds (the UTM case specifically confirmed to land in the
+right general region after reprojection), both correctly set
+`geoTiffActive`/start an active trace session, and the status message
+announces "Georeferenced (RTK)" for both; traced a roof shape on a
+rendered GeoTIFF and finished it — confirmed `source:"geotiff_trace"`,
+`georeferencedSource:true`, no `calibration` set (none needed), and real,
+plausible area/perimeter numbers computed directly from the ring's actual
+lat/lng; confirmed an oversized file (mocked `.size`) is rejected with a
+clear message and doesn't touch any existing state; confirmed a TIFF with
+no real geodata (the bogus-default case) is correctly rejected by the
+bounding-box plausibility check and, end-to-end through
+`rmUploadOrthoFile()`, stops cleanly with the new actionable message
+rather than silently failing. All test state cleared, page reloaded,
+console clean.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |

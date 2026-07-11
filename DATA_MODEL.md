@@ -414,9 +414,14 @@ leak was" and "where the roof drain has always been."
   perimeterFt,
   source,         // "osm" (OpenStreetMap/Overpass footprint) | "manual_trace"
                   // (tapped points) | "walk_corners" (GPS-recorded corners) |
-                  // "ortho_trace" (tapped points on an uploaded drone
-                  // orthomosaic — see "Trace directly on an uploaded drone
-                  // orthomosaic" in DEV_NOTES.md)
+                  // "ortho_trace" (tapped points on an uploaded FLAT drone
+                  // image with no geodata, synthetic origin — see "Trace
+                  // directly on an uploaded drone orthomosaic" in
+                  // DEV_NOTES.md) | "geotiff_trace" (shipped 2026-07-11 —
+                  // tapped points on an uploaded, TRUE georeferenced
+                  // GeoTIFF, real lat/lng straight from the map, no
+                  // synthetic origin and no calibration needed — see
+                  // "GeoTIFF georeferenced ortho support" in DEV_NOTES.md)
   osmId,          // e.g. "way/12345" — only set when source is "osm"
   osmType,        // "way" | "relation" — only set when source is "osm"
   tags,           // raw OSM tags at capture time — only set when source is "osm"
@@ -427,6 +432,11 @@ leak was" and "where the roof drain has always been."
                   // not a real-world position, until manual alignment (not
                   // built) happens — shape/area/perimeter are exact once
                   // calibrated, only WHERE on Earth it sits is a placeholder.
+  georeferencedSource, // optional — true only when source is "geotiff_trace".
+                  // The OPPOSITE meaning of tracedOnOrtho above: the ring is
+                  // already a real, accurate, RTK-grade position straight
+                  // from the uploaded GeoTIFF's own embedded geodata, not a
+                  // placeholder — no manual alignment or calibration needed.
   createdAt,
   calibration     // optional — TWO possible shapes. Manual: set once a tech taps
                   // an edge dimension label and enters a real tape-measured
