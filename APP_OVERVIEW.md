@@ -283,7 +283,8 @@ helps a tech capture a clean roof outline for a building on the spot:
    clears it (and any outline already generated for it) without losing the search
    results — tap the right one right after, no re-search needed.
 4. Tap **"✏️ Generate Roof Outline"** — the app cleans up that footprint into a roof
-   outline and shows its area and perimeter.
+   outline and shows its area and perimeter, plus a length label (in feet) on every
+   individual edge of the outline, right on the map.
 5. Save it — **"💾 Save Outline to Building"** links it to an existing building (search
    by name) or creates a new one on the spot, or **"📱 Save on This Device Only"** if
    there's no signal or the building isn't in RoofOps yet (link it later from the
@@ -291,12 +292,14 @@ helps a tech capture a clean roof outline for a building on the spot:
    and lets you start over — if it wasn't saved yet, it's just gone; if it was already
    saved to a building, this only resets what you're looking at here, it doesn't
    remove the saved copy from that building's record.
-6. **Mark it up right there** — once linked to a building, a "Roof Features" card
-   appears with an **"🔧 Add Feature"** button. Tapping it drops a draggable marker
-   directly on the RoofMapper map itself — no popup, no separate screen — with a
-   small Type/Label/Notes form right below it; drag the marker or tap the map to
-   position it, then Save. Existing features for that roof are already drawn on the
-   map — tap one to edit or delete it the same inline way.
+6. **Mark it up right there** — once saved, the screen streamlines: the earlier
+   search/trace/satellite-toggle controls disappear (nothing left to do with them),
+   and a "Roof Features" card pops up right below the map with a **"🔧 Add Feature"**
+   button. Tapping it drops a draggable marker directly on the RoofMapper map itself —
+   no popup, no separate screen — with a small Type/Label/Notes form right below it;
+   drag the marker or tap the map to position it, then Save. Existing features for
+   that roof are already drawn on the map — tap one to edit or delete it the same
+   inline way.
 7. Export **SVG**, **PNG**, or **PDF** any time — all generated on the device, no
    internet required once the outline exists. Once linked to a building, exports
    include everything marked up on the roof (features + any leak/repair pins from past
@@ -312,9 +315,11 @@ and a way to try again rather than failing silently.
 
 **No OpenStreetMap footprint for this building?** (Happens — some buildings, like
 hospitals, are only mapped as a whole property parcel, or not mapped at all.) Tap
-**"🛰️ Switch to Satellite View"** to see real imagery instead of the street map, and
-**"✏️ Trace Manually Instead"** to tap the roof's corners by hand right on the
-satellite image — Undo the last point, Finish once you've got at least 3, or Cancel.
+**"🛰️ Satellite View"** to see real imagery instead of the street map, and
+**"✏️ Trace Manually"** to tap the roof's corners by hand right on the satellite
+image. While tracing, Undo/Finish/Cancel sit directly below the map — no need to
+scroll down to reach them — and the search buttons from the earlier step get out of
+the way automatically.
 
 **Satellite imagery not good enough either?** Tap **"🚶 Walk the Corners"** instead —
 walk to each corner of the roof and tap **"📍 Record This Corner"** there, repeat

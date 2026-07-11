@@ -3789,6 +3789,92 @@ correctly; confirmed findings (Leak/Service) are completely unaffected --
 still show all three photo options. All test state removed, page reloaded
 clean.
 
+### RoofMapper UI cleanup: contextual controls + per-edge dimensions (shipped 2026-07-10, dev only)
+
+Mark's feedback tracing an outline live on dev.
+
+**1-4: contextual control visibility, centralized.** Search-again buttons
+(Search This Area/Wider/Relocate) stayed on screen after tracing started;
+mode buttons (satellite/trace/walk) were full-width `rm-bigbtn`s when they
+should be small/secondary; trace controls (Undo/Finish/Cancel/Record) lived
+in a separate card far enough below the map that reaching Undo mid-trace
+needed a scroll; and once an outline was saved, all of the earlier
+capture-phase controls stayed cluttering the screen instead of getting out
+of the way for feature placement. Fixed as one coherent state model instead
+of four separate patches:
+- New `rmUpdateControlVisibility()` — reads `rmState.lat`/`rmTraceState.
+  active`/`rmState.outline`/`rmState.linkedBuildingId` and sets exactly
+  four things: `#rm-search-again-wrap`+hint (visible only while located,
+  no outline yet, not tracing), `#rm-basemap-wrap`+hint (visible once
+  located, gone once saved), `#rm-trace-btn`/`#rm-walk-btn` specifically
+  (hidden while already mid-trace — starting a NEW capture mid-trace
+  doesn't make sense, but the satellite toggle stays available), and
+  `#rm-trace-panel` itself (visible only while `rmTraceState.active`).
+  Also force-hides `#rm-footprint-panel` once saved (doesn't touch its
+  normal show/hide otherwise -- that's still driven by footprint
+  selection). Called from every phase-transition point:
+  `rmUseMyLocation()`/`rmSearchBuildings()` (replacing what used to be
+  direct, scattered `style.display` sets), `rmClearGeneratedOutline()`
+  (fresh search / switch footprint / delete outline), `rmDrawFinalOutline()`
+  (outline generated or traced), `rmShowTracePanel()` (trace started),
+  `rmCancelTrace()` (trace ended), `rmSaveOutlineToBuilding()` (saved), and
+  `rmLoadLocalOutline()` (loaded a local save).
+- **HTML restructure**: `#rm-trace-panel`'s content moved from its own
+  separate `<div class="card">` to living directly inside the main map
+  card, right after `#rm-map` — verified directly (`compareDocumentPosition`)
+  that it's now in the same parent as the map, not several DOM siblings
+  away. `#rm-basemap-wrap` changed from `class="rm-actions"` (column,
+  `rm-bigbtn` children -- full width, 52px tall) to `class="btnrow"` with
+  plain `class="btn"` buttons (row, wraps, ~13px/8px-padding sizing --
+  same as the delete buttons elsewhere) and shortened button text
+  ("🛰️ Satellite View" instead of "🛰️ Switch to Satellite View", etc.,
+  including `rmSetBaseLayer()`'s dynamic toggle text) so three buttons fit
+  comfortably in one row.
+- **`#rm-features-panel` moved earlier in DOM order** — now sits
+  immediately after the map card (verified: `mapCard.nextElementSibling
+  === featuresPanel`), ahead of `#rm-footprint-panel`/`#rm-outline-panel`.
+  It's already `display:none` until linked, so this has zero effect on the
+  pre-save flow — but once `rmSaveOutlineToBuilding()` succeeds and hides
+  the search/mode/footprint clutter, Roof Features is the very next visible
+  thing below the map, exactly matching Mark: "after I saved it, the add
+  features should just pop up right below the map." The old duplicate
+  `#rm-features-panel` block (previously positioned after the outline
+  panel) was removed, not left as dead markup.
+
+**5: per-edge dimensions on the map.** New `rmDrawEdgeDimensions(outline)`
+— one small dark label per edge (`L.divIcon`, non-interactive), positioned
+at that edge's midpoint, reading its length in feet, computed with the
+exact same `rmGeomHaversineMeters()` helper the perimeter total already
+uses (so the labels always sum to the displayed perimeter, no separate/
+divergent calculation). Drawn on `rmState.dimensionLayerGroup`, called
+alongside every place an outline gets drawn (`rmDrawFinalOutline()` — OSM
+footprint or trace/walk-corners alike — and `rmLoadLocalOutline()`), and
+cleared alongside the outline layer itself in `rmClearGeneratedOutline()`
+so nothing lingers after Delete Outline or a fresh search. This is the base
+"automatic per-edge perimeter dimensions" piece of the Dimensions roadmap
+item — area and perimeter totals are unchanged, this adds the per-edge
+breakdown on top. The tap-to-edit-one-edge-and-rescale calibration (see
+"Calibrate-by-known-edge" in `ROADMAP.md`) is NOT built here — these labels
+are read-only for now, still purely GPS/geometry-derived.
+
+Tested with mocked footprint/trace/walk-corners data (no real GPS/network):
+confirmed the "located" state shows search+mode buttons with trace panel
+hidden; confirmed generating an outline hides search buttons while mode
+buttons and the footprint panel stay visible, and produces exactly one
+dimension label per edge with correct lengths (verified a rectangle's
+opposite edges compute equal lengths); confirmed starting a manual trace
+hides search buttons, hides Trace/Walk (keeps the satellite toggle), and
+shows the trace panel in the same card as the map (not a separate one);
+confirmed finishing a trace restores Trace/Walk, hides the trace panel, and
+draws the correct number of dimension labels for the traced shape;
+confirmed saving hides search/mode buttons and the footprint panel, and
+that the now-visible Roof Features panel is the map card's very next DOM
+sibling; confirmed Delete Outline restores search/mode buttons and clears
+the dimension layer group with nothing lingering; confirmed walk-the-corners
+goes through the identical trace-panel/dimension pipeline (source tagged
+`walk_corners`, correct label count). All test state removed, page reloaded
+clean.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |

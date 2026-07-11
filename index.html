@@ -485,6 +485,23 @@
       </div>
       <p class="rm-status" id="rm-status"></p>
       <div id="rm-map" style="height:min(70vh,640px);border-radius:6px;overflow:hidden;margin-bottom:12px;display:none"></div>
+
+      <!-- Trace controls (Undo/Finish/Cancel/Record) live right here, immediately
+           below the map, so they're reachable without scrolling while actively
+           tapping/recording corners -- moved out of their own separate card. -->
+      <div id="rm-trace-panel" style="display:none">
+        <h2 class="cond" id="rm-trace-title" style="margin-top:0">Trace Roof Outline</h2>
+        <p class="hint" id="rm-trace-mode-hint">Tap the roof's corners in order, all the way around, right on the
+          satellite map above.</p>
+        <p class="hint"><span id="rm-trace-count">0 points</span> so far — need at least 3.</p>
+        <div class="btnrow">
+          <button class="btn primary" id="rm-walk-record-btn" onclick="rmWalkRecordCorner()" style="display:none">📍 Record This Corner</button>
+          <button class="btn primary" id="rm-trace-finish-btn" onclick="rmFinishTrace()" disabled>✓ Finish Outline</button>
+          <button class="btn" id="rm-trace-undo-btn" onclick="rmTraceUndo()" disabled>↩️ Undo Last Point</button>
+          <button class="btn" onclick="rmCancelTrace()">✕ Cancel</button>
+        </div>
+      </div>
+
       <div class="rm-actions" id="rm-search-again-wrap" style="display:none">
         <button class="btn primary rm-bigbtn" id="rm-search-here-btn" onclick="rmSearchThisArea()">🔍 Search This Area</button>
         <button class="btn rm-bigbtn" id="rm-widen-btn" style="display:none" onclick="rmWidenSearch()">🔎 Search Wider</button>
@@ -493,56 +510,18 @@
       <p class="hint" id="rm-search-here-hint" style="display:none;margin:-6px 0 12px">Panned to the right spot? Tap
         <b>Search This Area</b> to look for building footprints where the map is centered now — GPS doesn't need to
         be right for this.</p>
-      <div class="rm-actions" id="rm-basemap-wrap" style="display:none">
-        <button class="btn" id="rm-baselayer-btn" onclick="rmToggleBaseLayer()">🛰️ Switch to Satellite View</button>
-        <button class="btn" id="rm-trace-btn" onclick="rmStartManualTrace()">✏️ Trace Manually Instead</button>
+
+      <!-- Mode-switch row: made deliberately compact (plain small buttons, not
+           full-width rm-bigbtn) since these are secondary/occasional actions,
+           not the primary flow -- Mark: "roughly 3 small buttons in a row." -->
+      <div class="btnrow" id="rm-basemap-wrap" style="display:none">
+        <button class="btn" id="rm-baselayer-btn" onclick="rmToggleBaseLayer()">🛰️ Satellite View</button>
+        <button class="btn" id="rm-trace-btn" onclick="rmStartManualTrace()">✏️ Trace Manually</button>
         <button class="btn" id="rm-walk-btn" onclick="rmStartWalkCorners()">🚶 Walk the Corners</button>
       </div>
       <p class="hint" id="rm-trace-hint" style="display:none;margin:-6px 0 12px">OpenStreetMap has no footprint here,
         or none of the ones found are right? Switch to satellite view and trace the roof's outline by hand, or walk
         its corners and tap to record each one — both work even where satellite imagery isn't good enough to trace.</p>
-    </div>
-
-    <div class="card" id="rm-trace-panel" style="display:none">
-      <h2 class="cond" id="rm-trace-title">Trace Roof Outline</h2>
-      <p class="hint" id="rm-trace-mode-hint">Tap the roof's corners in order, all the way around, right on the
-        satellite map above.</p>
-      <p class="hint"><span id="rm-trace-count">0 points</span> so far — need at least 3.</p>
-      <div class="rm-actions">
-        <button class="btn primary rm-bigbtn" id="rm-walk-record-btn" onclick="rmWalkRecordCorner()" style="display:none">📍 Record This Corner</button>
-      </div>
-      <div class="rm-actions">
-        <button class="btn primary rm-bigbtn" id="rm-trace-finish-btn" onclick="rmFinishTrace()" disabled>✓ Finish Outline</button>
-        <button class="btn rm-bigbtn" id="rm-trace-undo-btn" onclick="rmTraceUndo()" disabled>↩️ Undo Last Point</button>
-        <button class="btn rm-bigbtn" onclick="rmCancelTrace()">✕ Cancel</button>
-      </div>
-    </div>
-
-    <div class="card" id="rm-footprint-panel" style="display:none">
-      <h2 class="cond">Selected Building</h2>
-      <div class="rm-footprint-info" id="rm-footprint-info"></div>
-      <div class="rm-actions">
-        <button class="btn primary rm-bigbtn" id="rm-generate-btn" onclick="rmGenerateOutline()">✏️ Generate Roof Outline</button>
-        <button class="btn rm-bigbtn" onclick="rmDeselectFootprint()">✕ Wrong Building? Choose Again</button>
-      </div>
-    </div>
-
-    <div class="card" id="rm-outline-panel" style="display:none">
-      <h2 class="cond">Roof Outline</h2>
-      <div id="rm-outline-warning"></div>
-      <div class="rm-outline-stats" id="rm-outline-stats"></div>
-      <div class="rm-actions">
-        <button class="btn primary rm-bigbtn" onclick="openRmSaveModal()">💾 Save Outline to Building</button>
-        <button class="btn rm-bigbtn" onclick="rmSaveLocally()">📱 Save on This Device Only</button>
-        <button class="btn danger rm-bigbtn" onclick="rmDeleteOutline()">🗑️ Delete Outline</button>
-      </div>
-      <div class="btnrow">
-        <button class="btn" onclick="rmZoomToOutline()">🔍 Zoom to Roof</button>
-        <button class="btn" onclick="rmExportSVG()">Export SVG</button>
-        <button class="btn" onclick="rmExportPNG()">Export PNG</button>
-        <button class="btn" onclick="rmExportPDF()">Export PDF</button>
-      </div>
-      <p class="hint" id="rm-export-hint" style="margin:8px 0 0"></p>
     </div>
 
     <div class="card" id="rm-features-panel" style="display:none">
@@ -576,6 +555,33 @@
           <button class="btn" onclick="rmCancelFeatureForm()">Cancel</button>
         </div>
       </div>
+    </div>
+
+    <div class="card" id="rm-footprint-panel" style="display:none">
+      <h2 class="cond">Selected Building</h2>
+      <div class="rm-footprint-info" id="rm-footprint-info"></div>
+      <div class="rm-actions">
+        <button class="btn primary rm-bigbtn" id="rm-generate-btn" onclick="rmGenerateOutline()">✏️ Generate Roof Outline</button>
+        <button class="btn rm-bigbtn" onclick="rmDeselectFootprint()">✕ Wrong Building? Choose Again</button>
+      </div>
+    </div>
+
+    <div class="card" id="rm-outline-panel" style="display:none">
+      <h2 class="cond">Roof Outline</h2>
+      <div id="rm-outline-warning"></div>
+      <div class="rm-outline-stats" id="rm-outline-stats"></div>
+      <div class="rm-actions">
+        <button class="btn primary rm-bigbtn" onclick="openRmSaveModal()">💾 Save Outline to Building</button>
+        <button class="btn rm-bigbtn" onclick="rmSaveLocally()">📱 Save on This Device Only</button>
+        <button class="btn danger rm-bigbtn" onclick="rmDeleteOutline()">🗑️ Delete Outline</button>
+      </div>
+      <div class="btnrow">
+        <button class="btn" onclick="rmZoomToOutline()">🔍 Zoom to Roof</button>
+        <button class="btn" onclick="rmExportSVG()">Export SVG</button>
+        <button class="btn" onclick="rmExportPNG()">Export PNG</button>
+        <button class="btn" onclick="rmExportPDF()">Export PDF</button>
+      </div>
+      <p class="hint" id="rm-export-hint" style="margin:8px 0 0"></p>
     </div>
 
     <div class="card" id="rm-local-panel" style="display:none">
@@ -6085,7 +6091,9 @@ var rmState = {
      read just to know what it is. */
   linkedBuildingId: null, linkedRoofId: null, assetLayerGroup: null, linkedAssetsCache: [],
   /* Phase 3: which base tile layer is currently showing (rmSetBaseLayer()). */
-  baseLayer: null, baseLayerType: "osm"
+  baseLayer: null, baseLayerType: "osm",
+  /* Per-edge dimension labels drawn on the current outline (rmDrawEdgeDimensions()). */
+  dimensionLayerGroup: null
 };
 var RM_LOCAL_KEY = "roofmapper-local-outlines-v1";
 /* A commercial building — especially a hospital/medical campus — can easily
@@ -6176,7 +6184,7 @@ function rmSetBaseLayer(type){
   rmState.baseLayer.bringToBack(); /* outlines/footprints/features stay on top */
   rmState.baseLayerType = type;
   var btn = document.getElementById("rm-baselayer-btn");
-  if (btn) btn.textContent = type === "satellite" ? "🗺️ Switch to Map View" : "🛰️ Switch to Satellite View";
+  if (btn) btn.textContent = type === "satellite" ? "🗺️ Map View" : "🛰️ Satellite View";
 }
 function rmToggleBaseLayer(){
   rmSetBaseLayer(rmState.baseLayerType === "satellite" ? "osm" : "satellite");
@@ -6184,6 +6192,46 @@ function rmToggleBaseLayer(){
 function rmZoomToOutline(){
   if (!rmState.map || !rmState.outlineLayer) return;
   rmState.map.fitBounds(rmState.outlineLayer.getBounds(), { padding: [40, 40] });
+}
+function rmSetDisp(id, show){
+  var el = document.getElementById(id);
+  if (el) el.style.display = show ? "" : "none";
+}
+/* Centralizes visibility for every control that's only relevant during ONE
+   phase of the capture flow -- called at every phase transition so nothing
+   lingers once it's no longer needed. Mark's real-world feedback tracing
+   an outline: the search-again buttons stayed on screen after tracing
+   started, and all the earlier capture controls (search/mode-switch) were
+   still cluttering the screen even after the outline was saved. Does NOT
+   touch #rm-footprint-panel's normal show/hide (that's driven by footprint
+   selection itself -- rmSelectFootprint()/rmDeselectFootprint()) except to
+   force it closed once saved, since "which building" is moot by then. */
+function rmUpdateControlVisibility(){
+  var located = rmState.lat != null;
+  var tracing = rmTraceState.active;
+  var hasOutline = !!rmState.outline;
+  var saved = !!rmState.linkedBuildingId;
+  /* Search-again buttons: only relevant during the "find a footprint"
+     step -- gone once an outline exists (generated OR traced) or while
+     actively tracing. */
+  rmSetDisp("rm-search-again-wrap", located && !hasOutline && !tracing);
+  rmSetDisp("rm-search-here-hint", located && !hasOutline && !tracing);
+  /* Mode-switch row (satellite/trace/walk): stays available through the
+     whole capture phase (including once an outline exists but isn't saved
+     yet, in case the tech wants to redo it a different way), but goes away
+     entirely once saved -- "no sense in having all this other stuff on
+     here" once you're placing features. */
+  rmSetDisp("rm-basemap-wrap", located && !saved);
+  rmSetDisp("rm-trace-hint", located && !saved && !hasOutline && !tracing);
+  /* Starting a NEW trace while already mid-trace doesn't make sense --
+     hide just those two (keep the satellite toggle, still useful for
+     checking imagery mid-trace). */
+  rmSetDisp("rm-trace-btn", !tracing);
+  rmSetDisp("rm-walk-btn", !tracing);
+  /* Trace controls: only while actively tracing -- now living right below
+     the map (see the HTML), not a separate card several scrolls away. */
+  rmSetDisp("rm-trace-panel", tracing);
+  if (saved) rmSetDisp("rm-footprint-panel", false);
 }
 function rmUseMyLocation(){
   var btn = document.getElementById("rm-locate-btn");
@@ -6205,10 +6253,7 @@ function rmUseMyLocation(){
     var accLabel = acc <= 15 ? "Good" : (acc <= 35 ? "Fair" : "Poor");
     rmSetStatus("Located — accuracy ±" + Math.round(acc) + "m.", accKind === "poor" ? "warn" : null,
       ' <span class="rm-accuracy ' + accKind + '">' + accLabel + ' GPS</span>');
-    document.getElementById("rm-search-again-wrap").style.display = "";
-    document.getElementById("rm-search-here-hint").style.display = "";
-    document.getElementById("rm-basemap-wrap").style.display = "";
-    document.getElementById("rm-trace-hint").style.display = "";
+    rmUpdateControlVisibility();
     if (accKind === "poor") toast("GPS accuracy is poor (±" + Math.round(acc) + "m) — searching anyway, open sky helps.");
     rmSearchBuildings();
   }, function(err){
@@ -6249,9 +6294,12 @@ function rmClearGeneratedOutline(){
   if (rmState.map && rmState.outlineLayer) rmState.map.removeLayer(rmState.outlineLayer);
   rmState.outlineLayer = null;
   rmState.outline = null;
+  if (rmState.map && rmState.dimensionLayerGroup) rmState.map.removeLayer(rmState.dimensionLayerGroup);
+  rmState.dimensionLayerGroup = null;
   rmClearLinkedFeatures();
   document.getElementById("rm-outline-panel").style.display = "none";
   rmUpdateExportHint();
+  rmUpdateControlVisibility();
 }
 /* Mark: "there's not anything to get rid of it... you still don't have the
    delete button to get rid of anything that you generate on RoofMapper."
@@ -6291,10 +6339,7 @@ async function rmSearchBuildings(){
   var radius = RM_RADIUS_STEPS[rmState.radiusIndex];
   rmSetStatus("Searching within " + radius + "m for building footprints…");
   rmClearFootprintLayers();
-  document.getElementById("rm-search-again-wrap").style.display = "";
-  document.getElementById("rm-search-here-hint").style.display = "";
-  document.getElementById("rm-basemap-wrap").style.display = "";
-  document.getElementById("rm-trace-hint").style.display = "";
+  rmUpdateControlVisibility();
   try{
     var results = await rmFetchNearbyBuildings(rmState.lat, rmState.lng, radius);
     var hasMore = rmState.radiusIndex < RM_RADIUS_STEPS.length - 1;
@@ -6405,6 +6450,35 @@ function rmRenderOutlineStats(outline){
    3 manual trace) -- draws whatever outline object was built, zooms to it,
    and updates the surrounding UI, so both capture methods end up on
    identical footing for save/export/feature-placement. */
+/* Auto per-edge dimensions -- the base "show per-edge lengths" piece of the
+   Dimensions roadmap item (calibrate-by-known-edge, the tap-to-edit-and-
+   rescale piece, comes later alongside walk-the-corners refinement; this
+   just SHOWS the GPS/geometry-derived length of every edge, on the map,
+   right now). One small label per edge, at its midpoint, reusing the same
+   haversine distance helper the perimeter total already uses -- so the
+   sum of these labels always matches the perimeter stat exactly. */
+function rmDrawEdgeDimensions(outline){
+  var map = rmState.map;
+  if (!map) return;
+  if (rmState.dimensionLayerGroup) map.removeLayer(rmState.dimensionLayerGroup);
+  rmState.dimensionLayerGroup = L.layerGroup().addTo(map);
+  var ring = outline.ring;
+  for (var i = 0; i < ring.length - 1; i++){
+    var a = ring[i], b = ring[i + 1];
+    var distFt = rmGeomHaversineMeters(a, b) * 3.28084;
+    if (distFt < 1) continue; /* skip degenerate/near-zero edges from ring cleanup */
+    var midLat = (a.lat + b.lat) / 2, midLng = (a.lng + b.lng) / 2;
+    L.marker([midLat, midLng], {
+      icon: L.divIcon({
+        className: "", iconSize: null,
+        html: '<div style="background:#263238;color:#fff;padding:2px 6px;border-radius:4px;' +
+          'font-size:11px;font-weight:700;white-space:nowrap;transform:translate(-50%,-50%);' +
+          'box-shadow:0 1px 3px rgba(0,0,0,.4)">' + Math.round(distFt) + ' ft</div>'
+      }),
+      interactive: false
+    }).addTo(rmState.dimensionLayerGroup);
+  }
+}
 function rmDrawFinalOutline(outline){
   rmState.outline = outline;
   rmClearLinkedFeatures(); /* a freshly captured outline is never linked yet */
@@ -6413,6 +6487,7 @@ function rmDrawFinalOutline(outline){
   rmState.outlineLayer = L.polygon(outline.ring.map(function(p){ return [p.lat, p.lng]; }), {
     color: "#E8600A", weight: 3, dashArray: outline.isSiteBoundary ? "6,6" : null, fillColor: "#E8600A", fillOpacity: 0.15
   }).addTo(map);
+  rmDrawEdgeDimensions(outline);
   /* Search results just left the map fit to EVERY candidate footprint --
      zoom straight into the one actually chosen so there's real room to
      work (Mark: "the current map feels small"), instead of leaving the
@@ -6420,6 +6495,7 @@ function rmDrawFinalOutline(outline){
   rmZoomToOutline();
   rmRenderOutlineStats(outline);
   rmUpdateExportHint();
+  rmUpdateControlVisibility();
   document.getElementById("rm-outline-panel").scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 function rmGenerateOutline(){
@@ -6456,7 +6532,6 @@ function rmGenerateOutline(){
 var rmTraceState = { active: false, mode: "manual", points: [], previewLayer: null, vertexLayers: [] };
 var rmTraceClickHandler = null;
 function rmShowTracePanel(){
-  document.getElementById("rm-trace-panel").style.display = "";
   document.getElementById("rm-footprint-panel").style.display = "none";
   var isWalk = rmTraceState.mode === "walk";
   document.getElementById("rm-trace-title").textContent = isWalk ? "Walk the Corners" : "Trace Roof Outline";
@@ -6467,6 +6542,7 @@ function rmShowTracePanel(){
     "Tap the roof's corners in order, all the way around, right on the satellite map above.";
   document.getElementById("rm-walk-record-btn").style.display = isWalk ? "" : "none";
   rmUpdateTraceButtons();
+  rmUpdateControlVisibility(); /* shows #rm-trace-panel (rmTraceState.active is already true here), hides search buttons */
   document.getElementById("rm-trace-panel").scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 function rmStartManualTrace(){
@@ -6563,9 +6639,9 @@ function rmCancelTrace(){
   rmTraceState.vertexLayers = [];
   rmTraceState.previewLayer = null;
   rmTraceState.mode = "manual";
-  document.getElementById("rm-trace-panel").style.display = "none";
   document.getElementById("rm-walk-record-btn").style.display = "none";
   rmUpdateTraceButtons();
+  rmUpdateControlVisibility(); /* hides #rm-trace-panel (rmTraceState.active is already false here), restores search buttons if still relevant */
 }
 function rmFinishTrace(){
   var isWalk = rmTraceState.mode === "walk";
@@ -6693,6 +6769,13 @@ async function rmSaveOutlineToBuilding(buildingId, roofId){
     rmShowFeaturePanel(bld.name);
     await rmLoadLinkedAssets();
     rmUpdateExportHint();
+    /* Mark: "after I saved it, the add features should just pop up right
+       below the map -- there's no sense in having all this other stuff on
+       here." rmState.linkedBuildingId is set above, so this now hides the
+       search/mode-switch controls and the footprint panel -- #rm-features-
+       panel (already shown by rmShowFeaturePanel() above) sits right after
+       the map in the DOM, so it's the very next thing visible. */
+    rmUpdateControlVisibility();
   }catch(e){ toast("Couldn't save: " + e.message); }
 }
 async function rmCreateBuildingAndSave(){
@@ -6942,10 +7025,12 @@ function rmLoadLocalOutline(id){
   rmState.outlineLayer = L.polygon(o.ring.map(function(p){ return [p.lat, p.lng]; }), {
     color: "#E8600A", weight: 3, fillColor: "#E8600A", fillOpacity: 0.15
   }).addTo(map);
+  rmDrawEdgeDimensions(o);
   map.fitBounds(rmState.outlineLayer.getBounds(), { padding: [30, 30] });
   setTimeout(function(){ map.invalidateSize(); }, 60);
   rmRenderOutlineStats(o);
   rmUpdateExportHint();
+  rmUpdateControlVisibility();
   toast("Loaded saved outline — ready to save to a building or export.");
 }
 function rmDeleteLocalOutline(id){

@@ -482,15 +482,30 @@ Goal: turn each building into a long-term roof record.
   same gating as the existing card) when the linked roof has a custom base
   map, reusing the exact same admin-gated `clearRoofBaseMap()` path, not a
   new one. See "RoofMapper: surfaced Clear Base Map" in `DEV_NOTES.md`.
+- ✅ **Shipped (dev only, 2026-07-10)**: RoofMapper UI cleanup, from Mark
+  testing the trace flow live. Search-again buttons (Search This
+  Area/Wider/Relocate) no longer linger once an outline exists or is being
+  traced; mode-switch buttons (satellite/trace/walk) shrunk from full-width
+  to small/compact, three in a row; trace controls (Undo/Finish/Cancel/
+  Record) moved to sit directly below the map instead of a separate card
+  requiring a scroll to reach; and once an outline is saved, all of that
+  capture-phase clutter disappears and "Roof Features" (Add Feature) is the
+  very next thing visible below the map. One centralized
+  `rmUpdateControlVisibility()`, called at every phase transition, drives
+  all of it. See "RoofMapper UI cleanup" in `DEV_NOTES.md`.
 - **Dimensions** (next major RoofMapper capability after the movable/
-  deletable-icons + delete work above; confirmed with Mark, not yet built).
-  Two distinct parts:
-  1. **Automatic per-edge perimeter dimensions**: the length in feet of
-     EVERY side of the roof outline, computed and labeled automatically,
-     shown right on the map — not just the single total-perimeter number
-     RoofMapper already shows today. Applies to any captured outline
-     (OSM footprint, manual trace, or the planned walk-the-corners method)
-     since it's pure geometry off the existing `ring` points.
+  deletable-icons + delete work above; confirmed with Mark). Three parts:
+  1. ✅ **Shipped**: automatic per-edge perimeter dimensions — the length
+     in feet of EVERY side of the roof outline, computed and labeled
+     automatically, shown right on the map (small label at each edge's
+     midpoint) — not just the single total-perimeter number RoofMapper
+     already showed. Applies to any captured outline (OSM footprint,
+     manual trace, or walk-the-corners) since it's pure geometry off the
+     existing `ring` points, using the same distance helper the perimeter
+     total already used. **Read-only for now** — the labels display the
+     GPS/geometry-derived length; tapping to edit one (needed for #3,
+     calibrate-by-known-edge) is not built yet. See "RoofMapper UI
+     cleanup: contextual controls + per-edge dimensions" in `DEV_NOTES.md`.
   2. **User-added dimension lines to features**: let the tech draw/add a
      measurement line FROM a placed feature (e.g. a drain) to a roof edge
      or to another feature, so the export/blueprint shows exactly how far
