@@ -684,6 +684,21 @@
         its corners and tap to record each one — both work even where satellite imagery isn't good enough to trace.</p>
     </div>
 
+    <!-- Which roof (of possibly several on this building) RoofMapper is
+         currently showing/editing -- Mark: "on a multi-roof building he
+         must be able to clearly pick WHICH roof he's editing... not obvious
+         right now." Deliberately placed HERE, right after the map and
+         before Roof Features -- NOT inside the Roof Outline card further
+         down, even though that's conceptually where it lives -- because
+         Mark separately, explicitly asked that "Add Feature" be the very
+         next thing visible after the map once a roof is saved (see
+         rmShowFeaturePanel()'s own comment below), and this needs to be
+         seen/used BEFORE that, not after it. Same element/render function
+         either way (rmRenderRoofSwitcher()), just relocated in the DOM --
+         only a building with more than one roof ever sees it. See "Roof
+         switcher discoverability" in DEV_NOTES.md. -->
+    <div id="rm-roof-switcher"></div>
+
     <div class="card" id="rm-features-panel" style="display:none">
       <h2 class="cond">Roof Features</h2>
       <p class="hint" id="rm-features-hint">Tap a marker on the map above to edit it, or add a new one. These are
@@ -731,15 +746,6 @@
 
     <div class="card" id="rm-outline-panel" style="display:none">
       <h2 class="cond">Roof Outline</h2>
-      <!-- Which roof (of possibly several on this building) RoofMapper is
-           currently showing/editing -- Mark: "on a multi-roof building he
-           must be able to clearly pick WHICH roof he's editing... not
-           obvious right now." First thing in the panel, above even the
-           stats, so it's the first thing seen once a roof is linked.
-           Populated by rmRenderRoofSwitcher(), only for a building with
-           more than one roof (see there). See "Roof switcher" in
-           DEV_NOTES.md. -->
-      <div id="rm-roof-switcher"></div>
       <div id="rm-outline-warning"></div>
       <div class="rm-outline-stats" id="rm-outline-stats"></div>
       <div class="btnrow" style="margin:0 0 6px">
@@ -10404,9 +10410,15 @@ function rmRenderRoofSwitcher(buildingId, roofs, activeRoofId){
   var host = document.getElementById("rm-roof-switcher");
   if (!host) return;
   if (!roofs || roofs.length <= 1){ host.innerHTML = ""; return; }
-  host.innerHTML = '<div class="fld" style="max-width:280px;margin:0 0 10px">' +
-    '<label>Editing roof (' + roofs.length + ' on this building)</label>' +
-    '<select onchange="rmOpenRoofInMapper(\'' + buildingId + '\', this.value)">' +
+  /* A light bordered box of its own -- not just a bare <select> -- so it
+     reads as an intentional, prominent control sitting between the map
+     and Roof Features, not a stray dropdown. Blue tint deliberately
+     matches the roof-label marker's own color on the map (#1976D2), tying
+     the two together visually as "the same roof-identity concept." */
+  host.innerHTML = '<div style="background:#EAF2FB;border:1px solid #BBD6F0;border-radius:6px;padding:10px 12px;margin-bottom:12px">' +
+    '<label style="display:block;font-size:12px;font-weight:700;color:#1976D2;text-transform:uppercase;letter-spacing:.03em;margin-bottom:4px">' +
+    '🔀 Editing roof (' + roofs.length + ' on this building)</label>' +
+    '<select onchange="rmOpenRoofInMapper(\'' + buildingId + '\', this.value)" style="width:100%;max-width:320px">' +
     roofs.map(function(r){
       return '<option value="' + esc(r.id) + '"' + (r.id === activeRoofId ? ' selected' : '') + '>' + esc(r.label || "Roof") + '</option>';
     }).join('') +

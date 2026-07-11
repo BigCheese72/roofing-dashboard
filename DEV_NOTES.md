@@ -6149,6 +6149,49 @@ a sane, properly-capped size; called Preview/PNG/PDF/SVG all four for the
 multi-roof case — confirmed none threw and Preview's modal actually
 displayed the combined SVG. All test state cleared, console clean.
 
+## Discoverability pass on RoofMapper's roof-level actions (shipped 2026-07-11, dev only)
+
+Mark's standard: "the user should not have to search for how to do it."
+Audited every roof-level action against that bar (select roof, edit roof,
+rename roof, export roof(s), add another roof) by actually rendering a
+saved multi-roof building in the browser and inspecting the real DOM order
+top to bottom, not just reasoning about where each piece of HTML happened
+to land.
+
+Four of the five were already fine as shipped in earlier passes this
+session: Edit Shape and Rename are both primary buttons at the top of the
+Roof Outline card; Export's checklist sits directly above the export
+buttons; "➕ Trace Another Roof" is a full-width primary button, the very
+first thing in Roof Features. **One real gap, found by looking, not
+assuming**: the roof switcher (previous entry above) rendered inside the
+Roof Outline card, which — confirmed via the actual DOM order once a roof
+is linked — sits BELOW the Roof Features card. A tech opening a
+multi-roof building would see "Add Feature" / "Trace Another Roof" before
+ever seeing which roof they're even on, let alone a way to switch it.
+
+**Not fixed by reordering the panels** — Roof Features sitting immediately
+after the map is itself a deliberate, explicit prior ask from Mark ("after
+I saved it, the add features should just pop up right below the map --
+there's no sense in having all this other stuff on here," see "RoofMapper
+<-> Roof Map unification -- Phase 2" above) and reordering would undo it.
+Instead, relocated ONLY the roof switcher's `<div id="rm-roof-switcher">`
+in the HTML to sit between the map and Roof Features — same element, same
+`rmRenderRoofSwitcher()` render function, no JS logic changed at all, just
+a different place in the DOM for it to render into. Also gave it its own
+light bordered box (`#EAF2FB` background, matching the roof-label map
+marker's blue) instead of a bare `<select>`, so it reads as an intentional
+control, not a stray dropdown — empty/invisible with zero height for a
+still-single-roof building, same as before.
+
+Tested in the browser with a mocked `fdb`: saved a 2-roof building —
+confirmed the real DOM order is now map → roof switcher → Roof Features →
+Roof Outline (previously Roof Features came before the switcher);
+confirmed the switcher still fully works from its new position (a real
+`<select>` `change` event correctly switches the active roof, same as
+verified in the original roof-switcher pass); confirmed a single-roof
+building renders zero height for the switcher container (fully absent
+visually, no empty bordered box). All test state cleared, console clean.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |
