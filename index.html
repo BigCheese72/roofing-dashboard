@@ -510,9 +510,16 @@
       <h2 class="cond">RoofMapper</h2>
       <p class="hint">Stand at the building, find its footprint from GPS, tap the correct outline, then save it to
         this building's record or export it.</p>
-      <div class="rm-actions">
-        <button class="btn primary rm-bigbtn" id="rm-locate-btn" onclick="rmUseMyLocation()">📍 Use My Location</button>
+      <div class="btnrow" style="margin:0 0 10px">
+        <button class="btn primary" id="rm-locate-btn" onclick="rmUseMyLocation()">📍 Use My Location</button>
       </div>
+      <div class="btnrow" style="margin:0 0 10px">
+        <input type="text" id="rm-address-search" placeholder="…or type any address" style="flex:1;min-width:160px"
+          onkeydown="if(event.key==='Enter'){event.preventDefault();rmSearchByAddress();}">
+        <button class="btn" id="rm-address-search-btn" onclick="rmSearchByAddress()">🔍 Search</button>
+      </div>
+      <p class="hint" style="margin:-6px 0 12px">Works for any address — a brand-new roof, a scouting stop, anywhere
+        — whether or not it matches CompanyCam or an existing building.</p>
       <p class="rm-status" id="rm-status"></p>
       <div id="rm-map" style="height:min(70vh,640px);border-radius:6px;overflow:hidden;margin-bottom:12px;display:none"></div>
 
@@ -6977,6 +6984,50 @@ function rmUseMyLocation(){
     btn.disabled = false; btn.textContent = "📍 Use My Location";
     rmSetStatus(err.friendly || "Couldn't get your location.", "error");
   });
+}
+/* Free-typed address search -- Mark's ask: RoofMapper (and the "find a
+   place to work" flow generally) shouldn't require standing at the GPS
+   location OR a match against CompanyCam/an existing building. Any typed
+   address geocodes via the same geocodeAddress()/Nominatim path pin
+   placement already uses, and lands in the exact same rmState.lat/lng +
+   rmSearchBuildings() pipeline rmUseMyLocation() uses on GPS success -- so
+   everything downstream (footprint search, manual trace, walk-the-corners,
+   save-to-new-building) works identically regardless of which entry point
+   located the map. See "Address search" in DEV_NOTES.md. */
+async function rmSearchByAddress(){
+  var addr = val("rm-address-search").trim();
+  if (!addr){ toast("Type an address to search."); return; }
+  var btn = document.getElementById("rm-address-search-btn");
+  btn.disabled = true; btn.textContent = "Searching…";
+  rmSetStatus("Looking up that address…");
+  try{
+    var geo = await geocodeAddress(addr);
+    if (!geo){
+      rmSetStatus("Couldn't find that address — try a more complete one (street, city, state).", "error");
+      return;
+    }
+    /* No real GPS accuracy for a geocoded address -- rmState.accuracy gets
+       a nominal placeholder just so rmPickInitialRadiusIndex() (expects a
+       meters value) behaves sensibly; no accuracy circle is drawn since
+       showing a fake "±Nm GPS accuracy" would be misleading for a
+       street-address lookup. */
+    rmState.lat = geo.lat; rmState.lng = geo.lng; rmState.accuracy = 30;
+    rmState.radiusIndex = rmPickInitialRadiusIndex(rmState.accuracy);
+    var map = rmEnsureMap();
+    if (rmState.userMarker) map.removeLayer(rmState.userMarker);
+    if (rmState.accuracyCircle) map.removeLayer(rmState.accuracyCircle);
+    rmState.userMarker = L.circleMarker([geo.lat, geo.lng], { radius: 7, color: "#fff", weight: 2, fillColor: "#1976D2", fillOpacity: 1 }).addTo(map);
+    rmState.accuracyCircle = null;
+    map.setView([geo.lat, geo.lng], 19);
+    setTimeout(function(){ map.invalidateSize(); }, 60);
+    rmSetStatus("Found “" + addr + "” — searching for footprints nearby.");
+    rmUpdateControlVisibility();
+    rmSearchBuildings();
+  }catch(e){
+    rmSetStatus("Couldn't search that address: " + e.message, "error");
+  }finally{
+    btn.disabled = false; btn.textContent = "🔍 Search";
+  }
 }
 function rmClearLinkedFeatures(){
   /* Drops the "linked to a building" state (and its feature markers) --

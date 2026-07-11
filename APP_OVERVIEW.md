@@ -306,9 +306,13 @@ RoofMapper (a tab in the header, alongside Edit/Preview/Saved/Building History/R
 helps a tech capture a clean roof outline for a building on the spot:
 
 1. Open the **RoofMapper** tab and tap **"📍 Use My Location"** — the app requests
-   high-accuracy GPS and shows your current location and its accuracy on a map.
+   high-accuracy GPS and shows your current location and its accuracy on a map. Not
+   standing at the building? Type any address into the box right below it and tap
+   **Search** instead — works for anywhere, whether or not it matches a CompanyCam
+   project or an existing building, so a brand-new roof or a quick scouting stop
+   works exactly the same way.
 2. The app automatically searches free OpenStreetMap data for building footprints near
-   you.
+   you (or near the searched address).
 3. Tap the correct building's outline on the map — its name/address/type (if OSM has
    them) show below. Tapped the wrong one? **"✕ Wrong Building? Choose Again"**
    clears it (and any outline already generated for it) without losing the search

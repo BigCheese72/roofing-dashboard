@@ -74,6 +74,16 @@ Goal: preserve and harden the existing RoofOps Field / Watkins work order workfl
   CompanyCam consolidation/merge cleanup task, not this picker) — every
   project is selectable. See "Change Order building picker" in
   `DEV_NOTES.md`.
+- ✅ **Shipped (dev only, 2026-07-10)**: two small RoofMapper polish items
+  from Mark. "📍 Use My Location" shrunk from an oversized full-width
+  button to the same compact size as everything else on the card. Address
+  search no longer requires standing at the GPS location or matching
+  CompanyCam/an existing building — type any address and it geocodes
+  (same Nominatim path pin placement uses) straight into the same
+  location-found pipeline GPS success already uses, so a brand-new roof or
+  scouting stop with zero CompanyCam/building match works exactly like any
+  other located point. See "RoofMapper: compact locate button + free-typed
+  address search" in `DEV_NOTES.md`.
 - ✅ **Shipped (dev only, 2026-07-10)**: Send Feedback — a 💬 button reachable
   from every screen (fixed corner, present on all tabs) opens a quick-type
   picker (👍 Works great / 🤔 Confusing / 🐞 Bug / 💡 Feature request) plus

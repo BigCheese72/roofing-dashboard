@@ -4369,6 +4369,47 @@ unchanged. All test state (`fdb`, `ccApi`/`ensureCustomerAndBuilding`
 stubs, form fields, `bpCache`/`bpCcCache`/`bpCcVisibleCache`, the picker
 modal) cleared, page reloaded, console clean.
 
+## RoofMapper: compact locate button + free-typed address search (shipped 2026-07-10, dev only)
+
+Two small polish items from Mark.
+
+**"📍 Use My Location" was oversized** — still `rm-bigbtn` (full-width,
+52px min-height) from before the earlier RoofMapper UI cleanup pass shrunk
+the other buttons around it. Dropped to plain `btn primary`, matching every
+other compact control in this card (confirmed via `preview_inspect`: 17px
+tall / content-width now, vs. the old 52px full-width).
+
+**Address search, unmatched-address included** — RoofMapper's only
+"find a location" entry point was `rmUseMyLocation()` (GPS), which by
+definition requires physically standing there. New `rmSearchByAddress()`
+sits right below it: types into `#rm-address-search`, geocodes via the
+same `geocodeAddress()`/Nominatim path pin placement already uses (no new
+geocoding logic), and feeds the result into the *exact* same
+`rmState.lat/lng` + `rmSearchBuildings()` pipeline `rmUseMyLocation()`'s
+GPS-success branch already uses — so everything downstream (footprint
+search, manual trace, walk-the-corners, save-to-new-building) works
+identically no matter which entry point located the map, and a
+zero-Overpass-match address (a brand-new roof, a scouting stop) just falls
+through to Manual Trace/Walk-the-Corners like any other no-footprint-found
+case already does. Deliberately does NOT draw a GPS accuracy circle for a
+geocoded point (`rmState.accuracy` gets a nominal 30 just so
+`rmPickInitialRadiusIndex()` has a sane input) — showing a fake "±Nm GPS
+accuracy" badge for a street-address lookup would be misleading. Enter-key
+submits (`onkeydown`), not just the Search button.
+
+Tested with mocked `geocodeAddress()`/`rmSearchBuildings()` (no real
+Nominatim/Overpass calls): confirmed a successful geocode sets
+`rmState.lat/lng`, skips the accuracy circle, and calls
+`rmSearchBuildings()`; confirmed empty input, a no-match geocode result,
+and a thrown geocode error each show the right message and correctly
+re-enable the Search button (`finally` block); confirmed Enter-key
+submission dispatches the same call as clicking Search; confirmed
+`rmUseMyLocation()`'s own GPS path (real accuracy circle, its own status
+text) is completely unaffected by any of the above. All test state
+(`rmState.lat/lng/accuracy/userMarker/accuracyCircle`, the address input,
+stubbed `geocodeAddress`/`rmSearchBuildings`/`rmGeoRequest`/`toast`)
+cleared, page reloaded, console clean.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |
