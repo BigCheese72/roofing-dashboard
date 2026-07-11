@@ -4943,6 +4943,110 @@ roof to confirm it still renders at the normal 20px/ft scale (well under
 the new cap, `RM_EXPORT_MIN_SCALE`/`MAX_SCALE` don't kick in unnecessarily). All
 test state cleared, page reloaded, console clean.
 
+## Multi-roof: stay in RoofMapper, trace another roof (shipped 2026-07-11, dev only, URGENT -- Mark live on a roof)
+
+Mark, mid-job: traced one roof, saved it, added features -- and had NO way
+to trace a SECOND roof without backing all the way out of RoofMapper and
+re-entering (which also lost the building context, forcing a fresh
+search). His words: "I should be able to save, label, add another trace
+outline on the same page. I shouldn't have to go back." Two more live bugs
+folded in from a different entry point (Building History → View Timeline
+→ "Add another roof"): it created an empty, permanently-untraceable roof
+record (a dead end), and the reference layer it half-showed only rendered
+outlines, not pins/features.
+
+**"➕ Trace Another Roof"** — new button in the features panel (next to
+"🔧 Add Feature"), shown the moment a roof is saved. Reads
+`rmState.linkedBuildingId` (the building just saved to) and hands off to a
+new shared entry point, `rmEnterMultiRoofCapture(buildingId)`.
+
+**`rmEnterMultiRoofCapture(buildingId)` is now the ONE path into "trace a
+new roof on a known building"** — used by both the in-RoofMapper button
+above AND the fixed Building History entry point (see below), so they
+behave identically by construction rather than by two separately-
+maintained implementations. It: switches to RoofMapper if not already
+there, resets any in-progress trace/search state, draws every already-
+traced roof on the building as a dimmed **reference layer** (see below),
+and zooms/fits the map to the best known location instead of leaving it
+at Leaflet's zoomed-out default — Mark's separate live "map starts zoomed
+way out" report, folded in here since it's the same code path: priority
+is (1) any existing roof's latest outline centroid, (2) the building's
+`geoCache`/geocoded address, (3) GPS as a last resort.
+
+**Reference layer — outlines AND pins/features, not just outlines**
+(Mark's Bug 2, and the item explicitly un-deferred from "Individual-roof
+tracing + labels"): a new `rmDrawReferenceRoofs(buildingId, bld,
+excludeRoofId)` draws, for every existing roof, its latest outline
+(dimmed slate-gray, dashed stroke, low fill), a muted gray label (visually
+distinct from both the blue "linked roof" label and the orange active-
+trace outline — gray = already mapped, orange = what you're tracing now),
+its permanent `roof_assets[]` (dimmed icon markers, same shape as the live
+ones so still instantly recognizable), and its historical finding pins
+(dimmed circle markers, fetched once via a new
+`rmFetchAllRoofsPinsGrouped()` — one `building_history_events` query for
+the whole building, grouped by `roofId` client-side, rather than one query
+per roof). Kept in its own `rmState.referenceLayerGroup`, deliberately
+never touched by `rmClearFootprintLayers()`/`rmClearGeneratedOutline()`
+(the per-search/per-trace reset functions) so it survives "search here
+again" or switching to manual trace while adding the new roof, and only
+gets redrawn by its own dedicated functions.
+
+**Building History → View Timeline → "Add another roof" — was a dead
+end, now real** (Mark's Bug 1): `promptAddRoof()` used to prompt for a
+name and create a bare `roof_outlines: []` roof record right there, then
+just re-render Building History showing that now-permanently-untraceable
+roof — there was no path from it into an actual trace flow. Fixed by
+routing straight into `rmEnterMultiRoofCapture(buildingId)` instead of
+pre-creating anything; the new roof's label is now assigned exactly where
+every other roof's already was — the "+ Add a new roof…" option in the
+save-time picker (`rmConfirmSaveToChosenRoof()`) — so there's no longer a
+way to end up with an orphaned, outline-less roof record from this button
+at all.
+
+**Save-time fast path**: `rmEnterMultiRoofCapture()` sets
+`rmState.pendingBuildingId`/`pendingBuildingName` before the new trace
+starts. The "💾 Save Outline to Building" modal now shows a
+"↩️ Continuing on {building}" banner at the top when this is set (a new
+`rmRenderContinueBuildingBanner()`), with a one-tap "Use This Building"
+button (`rmContinueOnPendingBuilding()`, a fresh single-doc fetch — same
+"don't trust the stale list cache" pattern already established for the
+CompanyCam picker) that jumps straight to that building's roof picker,
+skipping the search entirely. The normal search/list still loads below it
+too, in case he wants a different building instead. Cleared once consumed
+(right after a successful save) so a stale banner can't linger into an
+unrelated later outline.
+
+Tested end-to-end with a mocked `fdb` (in-memory `buildings`/
+`building_history_events` stores, no real network/writes): saved roof 1
+(outline + a placed HVAC feature + a finding pin) to a fresh building —
+confirmed the features panel shows both "🔧 Add Feature" and "➕ Trace
+Another Roof" right after save; tapped Trace Another Roof — confirmed the
+reference layer renders exactly roof 1's outline + label + feature + pin
+(4 layers), `pendingBuildingId` is set, and the map is zoomed to it
+(zoom 20, centered on roof 1) instead of starting wide; traced and saved
+roof 2 via the "+ Add a new roof…" fast path — confirmed it got its own
+id/label/outline, `pendingBuildingId` cleared; tapped Trace Another Roof
+again — confirmed the reference layer now shows BOTH roofs (2 outlines, 2
+labels, 2 features, roof 1's pin — 7 layers total); called `promptAddRoof()`
+directly from the Building History view (not RoofMapper) — confirmed it
+switches to RoofMapper and produces the identical reference layer/zoom/
+pending-building state as the in-RoofMapper button, proving both entry
+points now share one real code path; confirmed the save modal's
+"Continuing on Watkins Test Warehouse" banner renders and
+`rmContinueOnPendingBuilding()` opens a roof picker listing both real
+roofs plus "+ Add a new roof…". **Caught two bugs during this testing,
+both fixed before shipping**: `rmTraceAnotherRoof()` wasn't `async`/didn't
+return the underlying promise (harmless for the real onclick handler,
+which doesn't await it either, but wrong for testability and any future
+caller) — made it properly `async`; and an early draft used `esc()` (HTML-
+entity escaping) inside a `rmSetStatus()` message that's assigned via
+`textContent`, which would have shown literal `&amp;`-style entity text
+on screen for any building name containing a special character — removed
+the unnecessary escaping (`textContent` doesn't need it; `innerHTML`
+usages elsewhere still escape correctly). All test state was in-memory
+mock objects only; `fdb` restored and page reloaded afterward, console
+clean.
+
 ## Mobile header/toolbar pass (shipped 2026-07-11, dev only)
 
 Mark: on mobile, the top banner and buttons take up way too much screen —

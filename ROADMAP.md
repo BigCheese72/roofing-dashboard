@@ -346,11 +346,11 @@ Goal: make every work order contribute to a durable customer/building record.
   once, at creation), and Building History's roof map now shows **every
   roof on a building at once**, each labeled, instead of switching
   one-at-a-time — roofs genuinely "coexist" now. See "Individual-roof
-  tracing + labels" in `DEV_NOTES.md` for the full scope, including one
-  deliberately deferred piece (showing already-traced roofs as a live
-  reference layer while tracing a new one, in RoofMapper's own capture
-  view — a real UX/state design question bigger than this pass, flagged
-  as a follow-up).
+  tracing + labels" in `DEV_NOTES.md` for the full scope. The one piece
+  deliberately deferred here (showing already-traced roofs as a live
+  reference layer while tracing a new one) is no longer deferred — Mark
+  hit exactly this gap live, on a roof, blocked on it — see "Multi-roof:
+  stay in RoofMapper, trace another roof" below.
 - ⚠️ **Partially shipped**: possible-duplicate buildings (same customer, very similar
   name) are now flagged with a badge in Building History, conservatively (same
   customer required, to avoid false positives). Merging flagged duplicates is
@@ -556,6 +556,23 @@ Goal: turn each building into a long-term roof record.
   embedded image was coming out ~22MB uncompressed, ~<100KB with it). See
   "RoofMapper export: fix broken PDF / single shared render path" in
   `DEV_NOTES.md`.
+- ✅ **Shipped (dev only, 2026-07-11), URGENT (Mark live on a roof,
+  blocked)**: multi-roof workflow actually works end-to-end now. After
+  saving a traced roof, RoofMapper stays right there and offers "➕ Trace
+  Another Roof" — no more backing out and re-entering (which also lost
+  the building link, forcing a fresh search) to trace a second roof on
+  the same building. While tracing the new one, the building's already-
+  traced roofs show as a dimmed, labeled reference layer — outlines AND
+  their pins/features, not just outlines — so a new roof is never traced
+  blind next to one that already exists. Two more live bugs fixed via a
+  different entry point (Building History → View Timeline → "Add another
+  roof"): it was a dead end (created an empty, untraceable roof record —
+  now routes into the real trace flow, same shared code path as the
+  RoofMapper button) and its reference layer was outline-only (now shows
+  pins/features too, same fix). Folded in: the map now zooms/fits to the
+  known roof location on open instead of starting wide — fit-to-outline,
+  then geocoded address, then GPS, in that order. See "Multi-roof: stay in
+  RoofMapper, trace another roof" in `DEV_NOTES.md`.
 - ✅ **Shipped (dev only, 2026-07-11)**: mobile header/toolbar pass — Mark:
   the top banner and buttons eat too much screen on mobile. Measured
   first: the header was 264–288px tall on a 375px phone (9 nav buttons

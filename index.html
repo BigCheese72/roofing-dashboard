@@ -634,6 +634,7 @@
       <p class="hint" id="rm-basemap-status"></p>
       <div class="rm-actions" id="rm-features-actions">
         <button class="btn primary rm-bigbtn" onclick="rmAddFeature()">🔧 Add Feature</button>
+        <button class="btn rm-bigbtn" onclick="rmTraceAnotherRoof()">➕ Trace Another Roof</button>
       </div>
       <div id="rm-feature-form" style="display:none">
         <p class="hint">Drag the marker on the map above to position it, or tap the map to move it there.</p>
@@ -829,6 +830,7 @@
       <button class="btn" onclick="closeRmSaveModal()">Close</button>
     </div>
     <div style="padding:14px 16px;overflow:auto">
+      <div id="rm-continue-building-banner" style="display:none"></div>
       <h2 class="cond" style="font-size:15px;margin:0 0 8px">Link to Existing Building</h2>
       <input type="text" id="rm-bp-search" placeholder="Search by building, customer, or address…" style="width:100%;margin-bottom:10px;box-sizing:border-box" oninput="rmBpFilter(); rmBpDebouncedCcSearch();">
       <div id="rm-bp-list" class="hint">Loading…</div>
@@ -4934,26 +4936,24 @@ function historySelectRoof(buildingId, roofId){
   historySelectedRoofId = roofId;
   return openBuildingHistory(buildingId);
 }
-async function promptAddRoof(buildingId){
-  var label = prompt("Name for the new roof (e.g. \"Main Building\", \"East Wing\"):");
-  if (label === null) return;
-  label = label.trim();
-  if (!label) { toast("Enter a name for the roof."); return; }
-  toast("Adding roof\u2026");
-  try{
-    var snap = await fdb.collection("buildings").doc(buildingId).get();
-    var bld = snap.exists ? snap.data() : {};
-    var roofs = getBuildingRoofs(bld);
-    roofs.push({
-      id: genId("roof"), label: label, roofSystem: "",
-      roof_base_map_type: null, roof_base_map_url: null, roof_base_map_bounds: null,
-      roof_assets: [], roof_outlines: [], createdAt: Date.now(), updatedAt: Date.now()
-    });
-    await saveBuildingRoofs(buildingId, roofs);
-    historySelectedRoofId = roofs[roofs.length - 1].id;
-    toast("Roof added \u2713");
-    openBuildingHistory(buildingId);
-  }catch(e){ toast("Couldn't add roof: " + e.message); }
+/* Bug fix (2026-07-11) -- Mark: "it lets him ADD another roof, but then he
+   CAN'T TRACE IT... a dead end." This used to prompt for a name and create
+   a bare, empty roof record (roof_outlines: []) right here, then just
+   re-render Building History showing that new, permanently-untraceable
+   roof -- there was no path from this button into the actual trace flow.
+   Fixed by routing straight into RoofMapper's real capture flow instead
+   of pre-creating anything: rmEnterMultiRoofCapture() (shared with the
+   in-RoofMapper "\u2795 Trace Another Roof" button -- see "Multi-roof: stay in
+   RoofMapper, trace another roof" in DEV_NOTES.md) switches to RoofMapper,
+   shows this building's already-traced roofs as a dimmed reference layer,
+   zooms to them, and leaves him ready to trace outline + Square Up +
+   vertex-edit + Calibrate + place features, same as tracing normally. The
+   new roof's label is now assigned where it always was for every other
+   roof -- the "+ Add a new roof\u2026" picker option at SAVE time
+   (rmConfirmSaveToChosenRoof()) -- so there's no longer a way to end up
+   with an empty, outline-less roof record from this button at all. */
+function promptAddRoof(buildingId){
+  rmEnterMultiRoofCapture(buildingId);
 }
 /* A roof's label was previously only ever set once, at promptAddRoof()
    creation time -- no way to fix a typo or rename it later. Same
@@ -7347,7 +7347,26 @@ var rmState = {
   orthoActive: false,
   orthoOverlayLayer: null,
   orthoDataUrl: null,
-  orthoBounds: null
+  orthoBounds: null,
+  /* Multi-roof workflow (Mark, live on a roof: "I should be able to save,
+     label, add another trace outline on the same page. I shouldn't have
+     to go back."). referenceLayerGroup holds the dimmed outlines/pins/
+     assets of a building's ALREADY-traced roofs while tracing the next
+     one -- deliberately kept SEPARATE from every other layer group (never
+     touched by rmClearFootprintLayers()/rmClearGeneratedOutline(), which
+     reset per-search/per-trace state) so it survives across "search here
+     again" / "trace manually instead" while adding a new roof, and is
+     only redrawn/cleared by its own dedicated functions.
+     pendingBuildingId/pendingBuildingName are set by rmEnterMultiRoofCapture()
+     right before a fresh trace starts on a KNOWN building, so the next
+     "Save Outline to Building" can fast-path straight back to that same
+     building instead of making him search for it again -- cleared once
+     that save completes (rmSaveOutlineToBuilding() sets linkedBuildingId
+     instead at that point). See "Multi-roof: stay in RoofMapper, trace
+     another roof" in DEV_NOTES.md. */
+  referenceLayerGroup: null,
+  pendingBuildingId: null,
+  pendingBuildingName: null
 };
 var RM_LOCAL_KEY = "roofmapper-local-outlines-v1";
 /* A commercial building — especially a hospital/medical campus — can easily
@@ -8420,6 +8439,7 @@ function openRmSaveModal(){
   if (!rmState.outline){ toast("Generate a roof outline first."); return; }
   document.getElementById("rm-save-modal").style.display = "";
   lockBodyScroll();
+  rmRenderContinueBuildingBanner();
   document.getElementById("rm-bp-search").value = "";
   document.getElementById("rm-roof-picker").innerHTML = "";
   var list = document.getElementById("rm-bp-list");
@@ -8449,6 +8469,35 @@ function closeRmSaveModal(){
   document.getElementById("rm-save-modal").style.display = "none";
   unlockBodyScroll();
   if (rmBpCcDebounceTimer) clearTimeout(rmBpCcDebounceTimer);
+}
+/* Multi-roof fast path -- Mark: shouldn't have to search for the same
+   building again when saving roof #2/#3/etc right after roof #1.
+   rmState.pendingBuildingId is set by rmEnterMultiRoofCapture() right
+   before the new trace starts; this banner (top of the modal, above the
+   normal search/list) offers a one-tap way to reuse it, without removing
+   the normal search below in case he genuinely wants a different
+   building this time. */
+function rmRenderContinueBuildingBanner(){
+  var el = document.getElementById("rm-continue-building-banner");
+  if (!el) return;
+  if (!rmState.pendingBuildingId){ el.style.display = "none"; el.innerHTML = ""; return; }
+  el.style.display = "";
+  el.innerHTML = '<div class="rm-footprint-info" style="margin-bottom:14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
+    '<span>↩️ Continuing on <b>' + esc(rmState.pendingBuildingName || "the same building") +
+    '</b> — the building your last roof on this page was saved to</span>' +
+    '<button class="btn primary" onclick="rmContinueOnPendingBuilding()" style="margin-left:auto">Use This Building</button></div>';
+}
+async function rmContinueOnPendingBuilding(){
+  var buildingId = rmState.pendingBuildingId;
+  if (!buildingId) return;
+  var picker = document.getElementById("rm-roof-picker");
+  picker.innerHTML = '<p class="hint">Loading…</p>';
+  try{
+    var snap = await fdb.collection("buildings").doc(buildingId).get();
+    var bld = snap.exists ? Object.assign({ id: buildingId }, snap.data()) : {};
+    rmRenderRoofPickerFor(buildingId, bld);
+    picker.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }catch(e){ toast("Couldn't load that building: " + e.message); }
 }
 function rmBpFilter(){
   if (!rmBpCache) return;
@@ -8652,6 +8701,14 @@ async function rmSaveOutlineToBuilding(buildingId, roofId){
        the building from there instead. */
     rmState.linkedBuildingId = buildingId;
     rmState.linkedRoofId = roof.id;
+    /* This save just consumed whatever fast-path rmEnterMultiRoofCapture()
+       set up (if any) -- linkedBuildingId above is now the authoritative
+       "what building am I on" for the next "Trace Another Roof" tap, which
+       re-derives a fresh pendingBuildingId of its own. Clearing here stops
+       a stale "Continuing on X" banner from lingering into an unrelated
+       later outline. */
+    rmState.pendingBuildingId = null;
+    rmState.pendingBuildingName = null;
     /* Persistent label on the outline just saved, using the roof it was
        actually saved to -- so Mark sees which roof this is at a glance,
        not just in the picker dropdown. See "Individual-roof tracing +
@@ -8775,6 +8832,181 @@ function rmDrawLinkedAssets(assets){
       rmDuplicateFeature(a.id);
     });
   });
+}
+
+/* ---- Multi-roof: reference layer + "trace another roof" without leaving
+   RoofMapper ----
+   Mark, live on a roof: traced one roof, saved it, added features -- and
+   had NO way to trace a SECOND roof without backing all the way out and
+   re-entering RoofMapper (which also meant re-searching for the same
+   building from scratch). This section fixes both the re-entry
+   friction AND the "tracing roof #2 blind next to roof #1" problem by
+   drawing the building's already-traced roofs (outlines AND their pins/
+   features, not just outlines) on the map as a dimmed, labeled reference
+   layer while the NEW roof is being traced. See "Multi-roof: stay in
+   RoofMapper, trace another roof" in DEV_NOTES.md. */
+function rmClearReferenceLayer(){
+  if (rmState.map && rmState.referenceLayerGroup) rmState.map.removeLayer(rmState.referenceLayerGroup);
+  rmState.referenceLayerGroup = null;
+}
+/* Dimmed variant of assetIcon() -- same shape/icon so a feature is still
+   instantly recognizable, but muted color + reduced opacity so it reads as
+   "already there" rather than competing with whatever's being placed on
+   the roof actively being traced. */
+function rmRefAssetIcon(type){
+  var t = ROOF_ASSET_TYPES[type] || ROOF_ASSET_TYPES.other;
+  return L.divIcon({
+    className: "", iconSize: [22,22], iconAnchor: [11,11],
+    html: '<div style="background:' + t.color + ';opacity:.55;color:#fff;width:22px;height:22px;border-radius:6px;' +
+      'display:flex;align-items:center;justify-content:center;font-size:12px;border:1.5px solid #fff;' +
+      'box-shadow:0 1px 2px rgba(0,0,0,.3)">' + t.emoji + '</div>'
+  });
+}
+/* Muted gray label -- deliberately distinct from BOTH roofLabelMarker()'s
+   blue (the roof actively linked/being marked up) and the active trace's
+   orange outline, so at a glance: gray = already mapped, orange = what
+   you're tracing right now. */
+function rmRefLabelMarker(lat, lng, text){
+  return L.marker([lat, lng], {
+    icon: L.divIcon({
+      className: "", iconSize: null,
+      html: '<div style="background:#607D8B;opacity:.85;color:#fff;padding:3px 9px;border-radius:5px;' +
+        'font-size:11px;font-weight:700;white-space:nowrap;transform:translate(-50%,-50%);' +
+        'box-shadow:0 1px 3px rgba(0,0,0,.35)">' + esc(text) + '</div>'
+    }),
+    interactive: false
+  });
+}
+/* One query for every roof's pins (not one query per roof) -- same
+   building_history_events source rmFetchExportOverlayData() reads,
+   grouped by roofId client-side. */
+async function rmFetchAllRoofsPinsGrouped(buildingId){
+  var byRoof = {};
+  if (!fdb) return byRoof;
+  var qs = await fdb.collection("building_history_events")
+    .where("buildingId", "==", buildingId).orderBy("createdAt", "desc").limit(50).get();
+  qs.forEach(function(d){
+    var e = d.data();
+    (e.pins || []).forEach(function(p){
+      if (typeof p.lat !== "number" || typeof p.lng !== "number") return; /* x/y custom-base-map pins have no spot here, same limitation as rmDrawLinkedAssets() */
+      var rid = p.roofId || "roof_default";
+      (byRoof[rid] = byRoof[rid] || []).push(p);
+    });
+  });
+  return byRoof;
+}
+/* Draws every roof already on this building (each one's LATEST outline,
+   its permanent roof_assets[], and its historical finding pins) as a
+   dimmed reference layer. excludeRoofId skips one roof entirely (for the
+   rare case this gets called while a roof is still actively linked);
+   pass null to show all of them, which is the normal "about to trace a
+   new one" case. Returns the combined lat/lng bounds of everything drawn
+   (or null if the building has no traceable roofs yet), so the caller can
+   fit/zoom the map to it. */
+async function rmDrawReferenceRoofs(buildingId, bld, excludeRoofId){
+  rmClearReferenceLayer();
+  var map = rmEnsureMap();
+  rmState.referenceLayerGroup = L.layerGroup().addTo(map);
+  var roofs = getBuildingRoofs(bld || {}).filter(function(r){ return r.id !== excludeRoofId; });
+  var pinsByRoof = await rmFetchAllRoofsPinsGrouped(buildingId);
+  var bounds = [];
+  roofs.forEach(function(roof){
+    var outlines = roof.roof_outlines || [];
+    var outline = outlines[outlines.length - 1]; /* newest is current, same convention as everywhere else */
+    if (outline && outline.ring && outline.ring.length >= 3){
+      L.polygon(outline.ring.map(function(p){ return [p.lat, p.lng]; }), {
+        color: "#607D8B", weight: 2, dashArray: "6,4", fillColor: "#607D8B", fillOpacity: 0.08
+      }).addTo(rmState.referenceLayerGroup);
+      var labelCenter = outline.center || rmGeomRingCentroid(outline.ring);
+      rmRefLabelMarker(labelCenter.lat, labelCenter.lng, roof.label || "Roof").addTo(rmState.referenceLayerGroup);
+      outline.ring.forEach(function(p){ bounds.push([p.lat, p.lng]); });
+    }
+    (roof.roof_assets || []).forEach(function(a){
+      if (typeof a.lat !== "number" || typeof a.lng !== "number") return;
+      L.marker([a.lat, a.lng], { icon: rmRefAssetIcon(a.type) }).addTo(rmState.referenceLayerGroup);
+      bounds.push([a.lat, a.lng]);
+    });
+    (pinsByRoof[roof.id] || []).forEach(function(p){
+      L.circleMarker([p.lat, p.lng], {
+        radius: 6, color: "#fff", weight: 1.5, fillColor: warrantyColor(p.warranty), fillOpacity: 0.5
+      }).addTo(rmState.referenceLayerGroup);
+      bounds.push([p.lat, p.lng]);
+    });
+  });
+  return bounds.length ? bounds : null;
+}
+/* Best-known location for a building with no active trace yet -- tries,
+   in order: (1) any existing roof's latest outline centroid [already-
+   traced roofs are the most reliable signal, exactly what's about to be
+   shown as the reference layer anyway], (2) a cached/geocoded address
+   (geoCache, same field Buildings Near Me populates and reads), (3) a
+   fresh geocode of the building's address if neither exists yet. Returns
+   null (caller falls back to GPS) only if all three come up empty. */
+async function rmGetBuildingKnownLocation(bld){
+  var roofs = getBuildingRoofs(bld || {});
+  for (var i = 0; i < roofs.length; i++){
+    var outlines = roofs[i].roof_outlines || [];
+    var outline = outlines[outlines.length - 1];
+    if (outline && outline.center) return outline.center;
+    if (outline && outline.ring && outline.ring.length) return rmGeomRingCentroid(outline.ring);
+  }
+  if (bld && bld.geoCache && typeof bld.geoCache.lat === "number") return { lat: bld.geoCache.lat, lng: bld.geoCache.lng };
+  if (bld && bld.address){
+    try{ var geo = await geocodeAddress(bld.address); if (geo) return geo; }catch(e){ /* fall through to GPS */ }
+  }
+  return null;
+}
+/* The shared entry point for BOTH ways into "trace another roof on this
+   building": the "➕ Trace Another Roof" button shown right after a save
+   (already inside RoofMapper), and Building History -> View Timeline ->
+   "+ Add Roof" (previously a dead end -- see promptAddRoof() below).
+   Switches to RoofMapper if needed, resets any in-progress
+   trace/search/linked-roof state (but NOT the reference layer, which this
+   function draws fresh right after), shows every already-traced roof on
+   this building dimmed for reference, and zooms/fits the map to the best
+   known location instead of leaving it at whatever wide/default view it
+   would otherwise start at -- Mark: "it should open zoomed TO THE ROOF."
+   rmState.pendingBuildingId/pendingBuildingName carry through to the next
+   Save Outline modal so he doesn't have to search for this same building
+   again either. */
+async function rmEnterMultiRoofCapture(buildingId){
+  if (currentViewName !== "roofmapper") showView("roofmapper");
+  rmClearFootprintLayers(); /* wipes any in-progress trace/search/linked-roof state */
+  toast("Loading this building's roofs…");
+  try{
+    var snap = await fdb.collection("buildings").doc(buildingId).get();
+    var bld = snap.exists ? snap.data() : {};
+    rmState.pendingBuildingId = buildingId;
+    rmState.pendingBuildingName = bld.name || "this building";
+    var bounds = await rmDrawReferenceRoofs(buildingId, bld, null);
+    var map = rmEnsureMap();
+    var center = await rmGetBuildingKnownLocation(bld);
+    if (center){
+      rmState.lat = center.lat; rmState.lng = center.lng; rmState.accuracy = 30;
+      if (bounds && bounds.length > 1) map.fitBounds(bounds, { padding: [40, 40] });
+      else map.setView([center.lat, center.lng], 20);
+      setTimeout(function(){ map.invalidateSize(); }, 60);
+      rmSetStatus("Tracing another roof on " + (bld.name || "this building") +
+        " — existing roofs shown dimmed for reference. Search for a footprint here, or trace manually.", null,
+        bounds ? ' <span class="rm-accuracy good">' + (getBuildingRoofs(bld).length) + ' roof' +
+          (getBuildingRoofs(bld).length === 1 ? "" : "s") + ' already mapped</span>' : '');
+      rmUpdateControlVisibility();
+      rmSearchBuildings(); /* auto-search footprints here, same pattern rmUseMyLocation()/rmSearchByAddress() already use */
+    } else {
+      rmSetStatus("Tracing another roof on " + (bld.name || "this building") +
+        " — couldn't find a known location yet, requesting GPS…");
+      rmUseMyLocation();
+    }
+  }catch(e){ toast("Couldn't load this building: " + e.message); }
+}
+/* "➕ Trace Another Roof" -- shown in the features panel right after a
+   save, alongside "🔧 Add Feature". Reads the building this outline was
+   JUST saved to (rmState.linkedBuildingId) since that's the whole point:
+   staying on the SAME building for the next roof without a fresh search. */
+async function rmTraceAnotherRoof(){
+  var buildingId = rmState.linkedBuildingId;
+  if (!buildingId){ toast("Save this roof to a building first."); return; }
+  await rmEnterMultiRoofCapture(buildingId);
 }
 
 /* ---- Phase 2.5: place features RIGHT ON RoofMapper's own map, no modal ----
