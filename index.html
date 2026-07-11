@@ -882,6 +882,23 @@
       </div>
       <p class="hint" id="rm-edit-shape-hint" style="margin:0 0 10px;display:none">Drag any dot to move that corner —
         the shape, area, and dimensions update as you go. Tap <b>✓ Done Editing</b> when it looks right.</p>
+      <!-- Mark's real Tri-Delta case: traced on satellite (several metres of
+           registration error, common for satellite tiles), then uploaded his
+           RTK ortho (cm-accurate -- the ortho is right, the satellite trace
+           is wrong). Dragging 20 vertices one at a time onto the ortho isn't
+           realistic -- this is the fast global fix first: grab the whole
+           outline and translate/rotate/scale it as one unit, THEN fine-tune
+           individual corners with Edit Shape above. See
+           rmToggleAlignMode()/rmAlignState and "Whole-outline alignment" in
+           DEV_NOTES.md. -->
+      <div class="btnrow" style="margin:0 0 6px">
+        <button class="btn" id="rm-align-btn" onclick="rmToggleAlignMode()">↔️ Move/Rotate/Scale Outline</button>
+        <button class="btn" id="rm-undo-align-btn" style="display:none" onclick="rmUndoAlign()">↩️ Undo Alignment</button>
+      </div>
+      <p class="hint" id="rm-align-hint" style="margin:0 0 10px;display:none">Drag the big center dot to move the whole
+        outline. Drag the blue dot to rotate, the green dot to resize. Tap <b>✓ Done Aligning</b> when it lines up with
+        the ortho.</p>
+      <p class="hint" id="rm-align-status" style="margin:0 0 10px"></p>
       <div class="btnrow" style="margin:0 0 6px">
         <button class="btn" id="rm-square-up-btn" onclick="rmSquareUpOutline()">🟦 Square Up</button>
         <button class="btn" id="rm-undo-square-btn" style="display:none" onclick="rmUndoSquareUp()">↩️ Undo Square Up</button>
@@ -9875,6 +9892,10 @@ function rmClearGeneratedOutline(){
   if (undoResnapBtn) undoResnapBtn.style.display = "none";
   var resnapStatus = document.getElementById("rm-resnap-status");
   if (resnapStatus) resnapStatus.textContent = "";
+  rmState.preAlignRing = null;
+  var undoAlignBtn = document.getElementById("rm-undo-align-btn");
+  if (undoAlignBtn) undoAlignBtn.style.display = "none";
+  if (rmAlignState.active) rmExitAlignMode(false); /* discard, nothing left to save it to */
   if (rmState.vertexEditActive) rmExitVertexEdit(false); /* discard, nothing left to save it to */
   rmClearLinkedFeatures();
   rmClearSplitState(); /* a torn-down outline takes any pending split sections of it down too */
@@ -10115,6 +10136,7 @@ function rmEnterVertexEdit(){
   document.getElementById("rm-edit-shape-hint").style.display = "";
   document.getElementById("rm-square-up-btn").disabled = true; /* two edit modes fighting over the same ring mid-drag is asking for trouble */
   document.getElementById("rm-resnap-btn").disabled = true;
+  document.getElementById("rm-align-btn").disabled = true;
   rmSetPrecisionMode(true);
   rmDrawVertexHandles();
 }
@@ -10128,6 +10150,8 @@ function rmExitVertexEdit(persist){
   if (sqBtn) sqBtn.disabled = false;
   var resnapBtn = document.getElementById("rm-resnap-btn");
   if (resnapBtn) resnapBtn.disabled = false;
+  var alignBtn = document.getElementById("rm-align-btn");
+  if (alignBtn) alignBtn.disabled = false;
   if (rmState.map && rmState.vertexHandleLayerGroup) rmState.map.removeLayer(rmState.vertexHandleLayerGroup);
   rmState.vertexHandleLayerGroup = null;
   rmClearSnapIndicator();
@@ -10199,9 +10223,9 @@ function rmOnVertexDragEnd(vertexIndex, droppedLatLng, marker){
   /* A manual point move invalidates any prior "this shape is square" /
      "this edge is calibrated" guarantee -- clearing both rather than
      silently leaving stale metadata that no longer matches the actual
-     shape. Also drops the Square Up and Re-Snap to Neighbors undo
-     snapshots, since "undo" against a ring that's since been hand-edited
-     wouldn't mean what either used to. */
+     shape. Also drops the Square Up, Re-Snap to Neighbors, and Align
+     undo snapshots, since "undo" against a ring that's since been
+     hand-edited wouldn't mean what any of them used to. */
   delete outline.squared;
   delete outline.calibration;
   rmState.preSquareRing = null;
@@ -10210,6 +10234,9 @@ function rmOnVertexDragEnd(vertexIndex, droppedLatLng, marker){
   rmState.preResnapRing = null;
   var undoResnapBtn = document.getElementById("rm-undo-resnap-btn");
   if (undoResnapBtn) undoResnapBtn.style.display = "none";
+  rmState.preAlignRing = null;
+  var undoAlignBtn = document.getElementById("rm-undo-align-btn");
+  if (undoAlignBtn) undoAlignBtn.style.display = "none";
   rmDrawEdgeDimensions(outline);
   rmRenderOutlineStats(outline);
 }
@@ -10256,6 +10283,10 @@ function rmDrawFinalOutline(outline){
   if (undoResnapBtn) undoResnapBtn.style.display = "none";
   var resnapStatus = document.getElementById("rm-resnap-status");
   if (resnapStatus) resnapStatus.textContent = "";
+  rmState.preAlignRing = null; /* a fresh outline was never aligned -- no stale Undo button */
+  var undoAlignBtn = document.getElementById("rm-undo-align-btn");
+  if (undoAlignBtn) undoAlignBtn.style.display = "none";
+  if (rmAlignState.active) rmExitAlignMode(false); /* a fresh outline replaces whatever was being aligned */
   if (rmState.vertexEditActive) rmExitVertexEdit(false); /* a fresh outline replaces whatever was being hand-edited */
   var map = rmEnsureMap();
   if (rmState.outlineLayer) map.removeLayer(rmState.outlineLayer);
@@ -10547,6 +10578,253 @@ function rmUndoResnapToNeighbors(){
   document.getElementById("rm-resnap-status").textContent = "";
   toast("Re-Snap to Neighbors undone ✓");
   rmPersistOutlineGeometryEdit();
+}
+/* ---- Whole-outline alignment (translate/rotate/scale as one unit) ----
+   Mark's real Tri-Delta case: traced a building's outline on satellite
+   (which commonly has several METRES of registration error), then
+   uploaded his georeferenced RTK orthomosaic (centimetre-accurate -- the
+   ortho is right, the satellite trace is wrong). The offset between the
+   two is usually a near-uniform shift, so dragging the WHOLE outline once
+   gets him ~90% aligned; individual-vertex Edit Shape (already usable on
+   a reopened outline -- see the empty state of rmEnterVertexEdit(), no
+   ortho-blocking condition anywhere in it) finishes the last few corners.
+   Without this he'd be dragging 20 vertices one at a time across the same
+   offset.
+
+   Three transforms, composed together and reapplied to the ORIGINAL ring
+   captured at align-mode entry (never applied cumulatively/incrementally,
+   which would drift with rounding over many small drags) -- current state
+   is always "originalRing rotated by angle, scaled by scale, both around
+   origin, then translated by translateOffset":
+   - translate: pure shift, preserves every distance/angle/area exactly --
+     never "corrupts" a measurement, same reasoning already documented for
+     Square Up/Re-Snap moving vertices non-uniformly (this doesn't).
+   - rotate: also preserves every distance/area exactly, just orientation
+     changes.
+   - scale: the one transform that DOES change dimensions -- deliberately
+     optional, a tech choosing to resize, not an accident. With a
+     georeferenced ortho the true scale already comes from the ortho's own
+     geodata (see "GeoTIFF georeferenced ortho support"/rmOpenRoofInMapper's
+     drone_ortho branch), so scale is rarely needed there; it matters more
+     for the older flattened/non-georeferenced ortho path where the
+     meters-per-pixel is a guess (RM_ORTHO_METERS_PER_PIXEL_GUESS).
+
+   Math done in a local meters-from-centroid frame (rmGeomToLocalXY/
+   rmGeomFromLocalXY, the same flat-earth-at-building-scale approximation
+   already used throughout this file), not naively in lat/lng degrees,
+   which distort non-uniformly with latitude and would skew the shape.
+   Works identically whether the outline is a fresh trace or reopened from
+   Building History with an ortho attached (rmOpenRoofInMapper()) -- this
+   only ever touches rmState.outline/rmState.map, the exact same state
+   Square Up/vertex-edit already operate on regardless of how it got
+   there. See "Whole-outline alignment" in DEV_NOTES.md. */
+var rmAlignState = {
+  active: false, originalRing: null, origin: null, handleDist: 0,
+  translateOffset: { dLat: 0, dLng: 0 }, angle: 0, scale: 1,
+  moveMarker: null, rotateMarker: null, scaleMarker: null
+};
+function rmToggleAlignMode(){
+  if (rmAlignState.active) rmExitAlignMode(true);
+  else rmEnterAlignMode();
+}
+function rmEnterAlignMode(){
+  var outline = rmState.outline;
+  if (!outline || !rmState.map) return;
+  if (rmState.vertexEditActive) rmExitVertexEdit(false); /* two edit modes fighting over the same ring is asking for trouble, same guard Edit Shape already uses against Square Up */
+  rmAlignState.active = true;
+  rmAlignState.originalRing = outline.ring.map(function(p){ return { lat: p.lat, lng: p.lng }; });
+  rmAlignState.origin = outline.center || rmGeomRingCentroid(outline.ring);
+  rmAlignState.translateOffset = { dLat: 0, dLng: 0 };
+  rmAlignState.angle = 0;
+  rmAlignState.scale = 1;
+  /* Handle distance from centroid: a bit beyond the ring's own farthest
+     corner, so the rotate/scale handles sit clear of the shape itself
+     instead of overlapping it. */
+  var maxDist = 0;
+  rmAlignState.originalRing.forEach(function(p){
+    var xy = rmGeomToLocalXY(p, rmAlignState.origin);
+    var d = Math.sqrt(xy.x * xy.x + xy.y * xy.y);
+    if (d > maxDist) maxDist = d;
+  });
+  rmAlignState.handleDist = Math.max(maxDist * 1.3, 5); /* 5m floor so a tiny roof still gets usable, separated handles */
+
+  document.getElementById("rm-edit-shape-btn").disabled = true;
+  document.getElementById("rm-square-up-btn").disabled = true;
+  document.getElementById("rm-resnap-btn").disabled = true;
+  document.getElementById("rm-align-btn").textContent = "✓ Done Aligning";
+  document.getElementById("rm-align-hint").style.display = "";
+
+  var moveIcon = L.divIcon({ className: "", iconSize: [26, 26], iconAnchor: [13, 13],
+    html: '<div style="width:22px;height:22px;border-radius:50%;background:#E8600A;border:3px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.5)"></div>' });
+  var rotateIcon = L.divIcon({ className: "", iconSize: [22, 22], iconAnchor: [11, 11],
+    html: '<div style="width:18px;height:18px;border-radius:50%;background:#1976D2;border:3px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.5)"></div>' });
+  var scaleIcon = L.divIcon({ className: "", iconSize: [22, 22], iconAnchor: [11, 11],
+    html: '<div style="width:18px;height:18px;border-radius:3px;background:#2E7D32;border:3px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.5)"></div>' });
+
+  rmAlignState.moveMarker = L.marker([rmAlignState.origin.lat, rmAlignState.origin.lng], { draggable: true, icon: moveIcon }).addTo(rmState.map);
+  var rotateStart = rmGeomFromLocalXY({ x: 0, y: rmAlignState.handleDist }, rmAlignState.origin); /* due north of centroid */
+  rmAlignState.rotateMarker = L.marker([rotateStart.lat, rotateStart.lng], { draggable: true, icon: rotateIcon }).addTo(rmState.map);
+  var scaleStart = rmGeomFromLocalXY({ x: rmAlignState.handleDist, y: 0 }, rmAlignState.origin); /* due east of centroid */
+  rmAlignState.scaleMarker = L.marker([scaleStart.lat, scaleStart.lng], { draggable: true, icon: scaleIcon }).addTo(rmState.map);
+
+  rmAlignState.moveMarker.on("drag", function(e){ rmApplyAlignFromMove(e.target.getLatLng()); });
+  rmAlignState.moveMarker.on("dragend", rmFinalizeAlignTransform);
+  rmAlignState.rotateMarker.on("drag", function(e){ rmApplyAlignFromRotate(e.target.getLatLng()); });
+  rmAlignState.rotateMarker.on("dragend", rmFinalizeAlignTransform);
+  rmAlignState.scaleMarker.on("drag", function(e){ rmApplyAlignFromScale(e.target.getLatLng()); });
+  rmAlignState.scaleMarker.on("dragend", rmFinalizeAlignTransform);
+}
+/* Recomputes the ring from originalRing + the current
+   {translateOffset, angle, scale} and pushes it onto the live polygon --
+   called on every drag frame of any of the three handles for immediate
+   visual feedback, cheap enough (a handful of points) to run continuously. */
+function rmRecomputeAlignedRing(){
+  var rotatedScaled = rmRotateScaleRing(rmAlignState.originalRing, rmAlignState.origin, rmAlignState.angle, rmAlignState.scale);
+  var ring = rmTranslateRing(rotatedScaled, rmAlignState.translateOffset.dLat, rmAlignState.translateOffset.dLng);
+  rmState.outline.ring = ring;
+  if (rmState.outlineLayer) rmState.outlineLayer.setLatLngs(ring.map(function(p){ return [p.lat, p.lng]; }));
+  return ring;
+}
+/* rmRotateScaleRing() above only knows how to rotate/scale points that are
+   already real ring points (it re-derives their local offset from origin
+   itself), which doesn't work for repositioning the handles at their own
+   FIXED local offsets -- this is that same rotate/scale math applied
+   directly to an arbitrary local {x,y} offset instead of a lat/lng point. */
+function rmRotateScaleLocalPoint(localX, localY, origin, angleRad, scaleFactor){
+  var cos = Math.cos(angleRad), sin = Math.sin(angleRad);
+  var sx = localX * scaleFactor, sy = localY * scaleFactor;
+  var rx = sx * cos - sy * sin, ry = sx * sin + sy * cos;
+  return rmGeomFromLocalXY({ x: rx, y: ry }, origin);
+}
+/* The rotate/scale handles orbit the shape's CURRENT centroid at their own
+   fixed local offset (0,handleDist) / (handleDist,0) from origin,
+   transformed by the same angle/scale/translate as the ring itself, so
+   they visually stay attached to the shape as it moves/rotates/resizes
+   instead of drifting away from it. */
+function rmRepositionAlignHandles(){
+  var newCenter = { lat: rmAlignState.origin.lat + rmAlignState.translateOffset.dLat, lng: rmAlignState.origin.lng + rmAlignState.translateOffset.dLng };
+  if (rmAlignState.moveMarker) rmAlignState.moveMarker.setLatLng([newCenter.lat, newCenter.lng]);
+  if (rmAlignState.rotateMarker){
+    var rp = rmRotateScaleLocalPoint(0, rmAlignState.handleDist, rmAlignState.origin, rmAlignState.angle, rmAlignState.scale);
+    rmAlignState.rotateMarker.setLatLng([rp.lat + rmAlignState.translateOffset.dLat, rp.lng + rmAlignState.translateOffset.dLng]);
+  }
+  if (rmAlignState.scaleMarker){
+    var sp = rmRotateScaleLocalPoint(rmAlignState.handleDist, 0, rmAlignState.origin, rmAlignState.angle, rmAlignState.scale);
+    rmAlignState.scaleMarker.setLatLng([sp.lat + rmAlignState.translateOffset.dLat, sp.lng + rmAlignState.translateOffset.dLng]);
+  }
+}
+function rmApplyAlignFromMove(newLatLng){
+  rmAlignState.translateOffset = { dLat: newLatLng.lat - rmAlignState.origin.lat, dLng: newLatLng.lng - rmAlignState.origin.lng };
+  rmRecomputeAlignedRing();
+  rmRepositionAlignHandles();
+}
+function rmApplyAlignFromRotate(newLatLng){
+  /* The handle's CURRENT position (undoing the current translate, since
+     angle is defined relative to the untranslated origin) directly gives
+     the new absolute angle -- not a cumulative delta, so repeated small
+     drags never drift/compound rounding error. */
+  var untranslated = { lat: newLatLng.lat - rmAlignState.translateOffset.dLat, lng: newLatLng.lng - rmAlignState.translateOffset.dLng };
+  var xy = rmGeomToLocalXY(untranslated, rmAlignState.origin);
+  rmAlignState.angle = Math.atan2(xy.x, xy.y); /* angle from north (matches how the handle starts due north at angle 0) */
+  rmRecomputeAlignedRing();
+  rmRepositionAlignHandles();
+}
+function rmApplyAlignFromScale(newLatLng){
+  var untranslated = { lat: newLatLng.lat - rmAlignState.translateOffset.dLat, lng: newLatLng.lng - rmAlignState.translateOffset.dLng };
+  var xy = rmGeomToLocalXY(untranslated, rmAlignState.origin);
+  var dist = Math.sqrt(xy.x * xy.x + xy.y * xy.y);
+  rmAlignState.scale = Math.max(0.1, dist / rmAlignState.handleDist); /* floor so a wild drag can't collapse the shape to nothing */
+  rmRecomputeAlignedRing();
+  rmRepositionAlignHandles();
+}
+function rmFinalizeAlignTransform(){
+  var outline = rmState.outline;
+  if (!outline) return;
+  outline.areaSqFt = rmGeomPolygonAreaSqMeters(outline.ring) * 10.7639;
+  outline.perimeterFt = rmGeomPolygonPerimeterMeters(outline.ring) * 3.28084;
+  outline.center = rmGeomRingCentroid(outline.ring);
+  rmDrawEdgeDimensions(outline);
+  rmRenderOutlineStats(outline);
+  var moved = rmAlignState.translateOffset.dLat !== 0 || rmAlignState.translateOffset.dLng !== 0 ||
+    rmAlignState.angle !== 0 || rmAlignState.scale !== 1;
+  document.getElementById("rm-align-status").textContent = moved ?
+    "Outline " + (rmAlignState.translateOffset.dLat !== 0 || rmAlignState.translateOffset.dLng !== 0 ? "moved" : "") +
+    (rmAlignState.angle !== 0 ? (rmAlignState.translateOffset.dLat !== 0 ? ", rotated" : "rotated") : "") +
+    (rmAlignState.scale !== 1 ? ((rmAlignState.translateOffset.dLat !== 0 || rmAlignState.angle !== 0) ? ", resized" : "resized") : "") + "." :
+    "";
+}
+function rmExitAlignMode(persist){
+  if (!rmAlignState.active) return;
+  var outline = rmState.outline;
+  var moved = rmAlignState.translateOffset.dLat !== 0 || rmAlignState.translateOffset.dLng !== 0 ||
+    rmAlignState.angle !== 0 || rmAlignState.scale !== 1;
+  rmAlignState.active = false;
+  document.getElementById("rm-edit-shape-btn").disabled = false;
+  document.getElementById("rm-square-up-btn").disabled = false;
+  document.getElementById("rm-resnap-btn").disabled = false;
+  document.getElementById("rm-align-btn").textContent = "↔️ Move/Rotate/Scale Outline";
+  document.getElementById("rm-align-hint").style.display = "none";
+  if (rmState.map){
+    if (rmAlignState.moveMarker) rmState.map.removeLayer(rmAlignState.moveMarker);
+    if (rmAlignState.rotateMarker) rmState.map.removeLayer(rmAlignState.rotateMarker);
+    if (rmAlignState.scaleMarker) rmState.map.removeLayer(rmAlignState.scaleMarker);
+  }
+  rmAlignState.moveMarker = null; rmAlignState.rotateMarker = null; rmAlignState.scaleMarker = null;
+  if (persist && moved && outline){
+    /* A transform invalidates any prior "square"/"calibrated" guarantee,
+       same reasoning already applied to a manual vertex drag -- and drops
+       the Square Up/Re-Snap undo snapshots for the same reason ("undo"
+       against a ring that's since moved wouldn't mean what it used to). */
+    delete outline.squared;
+    delete outline.calibration;
+    rmState.preSquareRing = null;
+    document.getElementById("rm-undo-square-btn").style.display = "none";
+    rmState.preResnapRing = null;
+    document.getElementById("rm-undo-resnap-btn").style.display = "none";
+    rmState.preAlignRing = rmAlignState.originalRing;
+    document.getElementById("rm-undo-align-btn").style.display = "";
+    toast("Outline aligned ✓");
+    rmPersistOutlineGeometryEdit();
+  } else if (!persist && outline && rmAlignState.originalRing){
+    /* Cancel path (rmClearGeneratedOutline() etc. calling this with
+       persist=false) -- discard whatever was mid-drag, restore exactly
+       what was there before align mode started. */
+    outline.ring = rmAlignState.originalRing;
+    outline.areaSqFt = rmGeomPolygonAreaSqMeters(outline.ring) * 10.7639;
+    outline.perimeterFt = rmGeomPolygonPerimeterMeters(outline.ring) * 3.28084;
+    outline.center = rmGeomRingCentroid(outline.ring);
+    if (rmState.outlineLayer) rmState.outlineLayer.setLatLngs(outline.ring.map(function(p){ return [p.lat, p.lng]; }));
+    rmDrawEdgeDimensions(outline);
+    rmRenderOutlineStats(outline);
+  }
+  rmAlignState.originalRing = null;
+  document.getElementById("rm-align-status").textContent = "";
+}
+function rmUndoAlign(){
+  var outline = rmState.outline;
+  if (!outline || !rmState.preAlignRing) return;
+  outline.ring = rmState.preAlignRing;
+  outline.areaSqFt = rmGeomPolygonAreaSqMeters(outline.ring) * 10.7639;
+  outline.perimeterFt = rmGeomPolygonPerimeterMeters(outline.ring) * 3.28084;
+  outline.center = rmGeomRingCentroid(outline.ring);
+  rmState.preAlignRing = null;
+  if (rmState.outlineLayer) rmState.outlineLayer.setLatLngs(outline.ring.map(function(p){ return [p.lat, p.lng]; }));
+  rmDrawEdgeDimensions(outline);
+  rmRenderOutlineStats(outline);
+  rmUpdateExportHint();
+  document.getElementById("rm-undo-align-btn").style.display = "none";
+  toast("Alignment undone ✓");
+  rmPersistOutlineGeometryEdit();
+}
+function rmTranslateRing(ring, dLat, dLng){
+  return ring.map(function(p){ return { lat: p.lat + dLat, lng: p.lng + dLng }; });
+}
+function rmRotateScaleRing(ring, origin, angleRad, scaleFactor){
+  return ring.map(function(p){
+    var xy = rmGeomToLocalXY(p, origin);
+    var r = rmRotateScaleLocalPoint(xy.x, xy.y, origin, angleRad, scaleFactor);
+    return r;
+  });
 }
 function rmGenerateOutline(){
   var fp = rmState.footprints.find(function(f){ return f.id === rmState.selectedId; });
