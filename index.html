@@ -5835,6 +5835,94 @@ function promptAddRoof(buildingId){
    other building-wide query in this app already uses (rmFetchAllRoofsPinsGrouped()
    etc.) -- a real, documented limit, not silently unbounded. See "GPS
    auto-assign photos to roofs" in DEV_NOTES.md. */
+/* Shared by rmAutoAssignExistingPinsToRoofs()/backfillMissingHistoryEvents()/
+   countFindingsWithoutGps() below -- workorders has no buildingId field of
+   its own (see DATA_MODEL.md), so every one of these recomputes the same
+   cust_/bld_ slug ensureCustomerAndBuilding() uses at report-save time from
+   each candidate's own jobName/billTo, rather than trusting a stored field.
+   Capped at the same 100-most-recent-saved window cloudFetchIndex() already
+   uses everywhere else in this file. Pure read, no writes. */
+async function findBuildingWorkOrderCandidates(buildingId){
+  var qs = await fdb.collection("workorders").orderBy("savedAt", "desc").limit(100).get();
+  var candidates = [];
+  qs.forEach(function(d){
+    var v = d.data();
+    var bldName = (v.jobName || "").trim();
+    if (!bldName) return;
+    var custId = (v.billTo || "").trim() ? ("cust_" + slugify(v.billTo.trim())) : null;
+    var bldId = "bld_" + slugify((custId || "nocust") + "_" + bldName);
+    if (bldId === buildingId) candidates.push({ id: d.id, jobName: bldName, savedAt: v.savedAt || 0 });
+  });
+  return candidates;
+}
+/* Splits findBuildingWorkOrderCandidates()'s result into candidates that
+   already have a building_history_events doc vs. don't -- one existence
+   check per candidate rather than a single big "in" query, since
+   Firestore's whereIn caps at 30 values and candidates can exceed that for
+   a busy building. Pure read, no writes. */
+async function findMissingHistoryEventCandidates(buildingId){
+  var candidates = await findBuildingWorkOrderCandidates(buildingId);
+  var missing = [];
+  for (var i = 0; i < candidates.length; i++){
+    var snap = await fdb.collection("building_history_events").doc("evt_" + candidates[i].id).get();
+    if (!snap.exists) missing.push(candidates[i]);
+  }
+  return { candidates: candidates, missing: missing };
+}
+/* Actually writes the missing events -- separated from the confirm/toast
+   UX in backfillMissingHistoryEvents() so rmAutoAssignExistingPinsToRoofs()
+   below can call it silently as a pre-step (purely additive, never
+   overwrites a real report action -- see the sticky reportType logic in
+   logReportAndHistoryEvent() -- same "safe enough to run without asking"
+   reasoning as any other quiet autosave in this file). */
+async function recoverHistoryEvents(missing){
+  var recovered = 0, failed = 0;
+  for (var j = 0; j < missing.length; j++){
+    try{
+      var o = await cloudFetchOrder(missing[j].id);
+      if (!o) { failed++; continue; }
+      await logReportAndHistoryEvent(o, "Saved", null, undefined);
+      recovered++;
+    }catch(e){ failed++; }
+  }
+  return { recovered: recovered, failed: failed };
+}
+/* Distinguishes "no photos at all" from "photos exist but none carry a
+   location" for rmAutoAssignExistingPinsToRoofs()'s error messaging below
+   -- Mark: a blanket "no GPS-linked photos" was both wrong (his photos DID
+   have GPS, the scan just wasn't finding them -- see the backfill call in
+   rmAutoAssignExistingPinsToRoofs()) and unhelpful when it WAS genuinely
+   true (didn't say what to do about it). Walks the building's actual
+   workorders (not just building_history_events.pins[], which only ever
+   holds a finding that already got a pin -- a finding with a photo but NO
+   pin at all isn't in that array to be counted) and splits findings/
+   checklist items that have at least one photo by whether maybeAutoPinFinding()
+   ever fired for them. A finding with a photo but no pin means either the
+   photo carries no GPS at all (camera location denied, or a CompanyCam
+   import with no location in CompanyCam's own metadata either -- ccImport()
+   already uses CompanyCam's own photo.gps when CompanyCam provides it,
+   see p.gps in ccImport()) or it predates auto-pin existing. Either way it
+   needs a human to place the pin, not another automatic pass -- never
+   silently guessed at. */
+async function countFindingsWithoutGps(buildingId){
+  var candidates = await findBuildingWorkOrderCandidates(buildingId);
+  var withGps = 0, withoutGps = 0;
+  for (var i = 0; i < candidates.length; i++){
+    var o = await cloudFetchOrder(candidates[i].id);
+    if (!o) continue;
+    var photoFindingIds = {};
+    (o.photos || []).forEach(function(p){ if (p.finding_id) photoFindingIds[p.finding_id] = true; });
+    (o.findings || []).forEach(function(f){
+      if (!photoFindingIds[f.id]) return;
+      if (f.pin && typeof f.pin.lat === "number") withGps++; else withoutGps++;
+    });
+    (o.inspectionChecklist || []).forEach(function(item){
+      if (!photoFindingIds[item.id]) return;
+      if (item.pin && typeof item.pin.lat === "number") withGps++; else withoutGps++;
+    });
+  }
+  return { withGps: withGps, withoutGps: withoutGps, totalWithPhotos: withGps + withoutGps };
+}
 async function rmAutoAssignExistingPinsToRoofs(buildingId){
   if (!fdb){ toast("Needs cloud sync (internet connection)."); return; }
   toast("Checking roofs and existing pins…");
@@ -5845,6 +5933,22 @@ async function rmAutoAssignExistingPinsToRoofs(buildingId){
     if (roofs.length <= 1){ toast("This building only has one roof — nothing to reassign."); return; }
     var hasTracedRoof = roofs.some(function(r){ return (r.roof_outlines || []).length > 0; });
     if (!hasTracedRoof){ toast("None of this building's roofs have a traced outline yet — trace them in RoofMapper first."); return; }
+
+    /* Same root cause as the empty Building History timeline (see
+       "Building History on Save" in DEV_NOTES.md): this scan reads pins
+       from building_history_events, which used to only get written on a
+       PDF Download/Email/Share. A work order Saved but never exported
+       (Mark's real Tri-Delta leak report) had photos/pins sitting in
+       `workorders` with real GPS but nothing in building_history_events
+       for this scan to find, so it wrongly reported "no GPS-linked
+       photos" when GPS-linked photos genuinely existed. Silently backfill
+       any missing history events first -- no confirm dialog here, unlike
+       the explicit "Recover Unlogged Work Orders" button, since this is
+       purely additive and never overwrites a real report action -- so the
+       scan below sees everything that's actually saved for this building,
+       not just whatever happened to get exported. */
+    var missingInfo = await findMissingHistoryEventCandidates(buildingId);
+    if (missingInfo.missing.length) await recoverHistoryEvents(missingInfo.missing);
 
     var evtQs = await fdb.collection("building_history_events").where("buildingId", "==", buildingId).limit(50).get();
     var updates = []; /* { id, pins } -- one per event doc that actually changed */
@@ -5865,9 +5969,25 @@ async function rmAutoAssignExistingPinsToRoofs(buildingId){
     });
 
     if (!updates.length){
-      toast(reassignedCount === 0 && uncheckedCount === 0 ?
-        "No GPS-tagged pins found for this building — nothing to check." :
-        "Checked every pin — they’re already on the right roof, nothing to change.");
+      /* Three real cases behind "nothing to reassign," each needing a
+         different message: no photos logged for this building at all;
+         photos logged but genuinely none carry a location (needs manual
+         assignment, not a repeat of this button); or everything's already
+         correctly assigned. */
+      var noGpsInfo = await countFindingsWithoutGps(buildingId);
+      if (noGpsInfo.totalWithPhotos === 0){
+        toast("No photos found for this building yet.");
+      } else if (reassignedCount === 0 && uncheckedCount === 0 && noGpsInfo.withGps === 0){
+        toast(noGpsInfo.withoutGps + " photo" + (noGpsInfo.withoutGps === 1 ? "" : "s") + " found, but none carry " +
+          "location data (e.g. imported from CompanyCam with no GPS of its own) — assign " +
+          (noGpsInfo.withoutGps === 1 ? "it" : "them") + " to a roof manually from that finding's pin picker.");
+      } else if (noGpsInfo.withoutGps > 0){
+        toast("Checked every pin — they’re already on the right roof. " + noGpsInfo.withoutGps + " other photo" +
+          (noGpsInfo.withoutGps === 1 ? "" : "s") + " " + (noGpsInfo.withoutGps === 1 ? "has" : "have") +
+          " no location data and need" + (noGpsInfo.withoutGps === 1 ? "s" : "") + " manual assignment.");
+      } else {
+        toast("Checked every pin — they’re already on the right roof, nothing to change.");
+      }
       return;
     }
     if (!confirm(updates.length + " report" + (updates.length === 1 ? "" : "s") + " have pins that will move to a " +
@@ -5986,65 +6106,33 @@ async function applyBulkReassign(){
    shipped, but never Downloaded/Emailed/Shared, has NO building_history_events
    doc at all (that write used to be PDF-action-only -- see
    logReportAndHistoryEvent()/saveOrder()). One-time, one-tap recovery for
-   whatever's already sitting in `workorders` for this building.
-
-   workorders has no buildingId field of its own (see DATA_MODEL.md) -- a
-   work order only ever gets tied to a building indirectly, via
-   ensureCustomerAndBuilding() recomputing the same cust_/bld_ slug from
-   its own jobName/billTo at report-save time. So this recomputes that
-   exact same slug for every candidate and keeps only the ones that match
-   THIS building, rather than trusting any stored field. Capped at the
-   same 100-most-recent-saved window cloudFetchIndex() already uses
-   everywhere else in this file -- a real, documented limit (matches every
-   other building-wide recovery pass here), not silently unbounded. */
+   whatever's already sitting in `workorders` for this building -- the
+   explicit, confirm-first UI version of the same silent pre-step
+   rmAutoAssignExistingPinsToRoofs() now runs automatically before its own
+   scan (see findMissingHistoryEventCandidates()/recoverHistoryEvents()
+   above, shared by both). */
 async function backfillMissingHistoryEvents(buildingId){
   if (!fdb){ toast("Needs cloud sync (internet connection)."); return; }
   toast("Checking saved work orders for unlogged reports…");
   try{
-    var qs = await fdb.collection("workorders").orderBy("savedAt", "desc").limit(100).get();
-    var candidates = [];
-    qs.forEach(function(d){
-      var v = d.data();
-      var bldName = (v.jobName || "").trim();
-      if (!bldName) return;
-      var custId = (v.billTo || "").trim() ? ("cust_" + slugify(v.billTo.trim())) : null;
-      var bldId = "bld_" + slugify((custId || "nocust") + "_" + bldName);
-      if (bldId === buildingId) candidates.push({ id: d.id, jobName: bldName, savedAt: v.savedAt || 0 });
-    });
-    if (!candidates.length){
+    var info = await findMissingHistoryEventCandidates(buildingId);
+    if (!info.candidates.length){
       toast("No saved work orders found for this building in the last 100 saved.");
       return;
     }
-    /* One existence check per candidate rather than one big "in" query --
-       Firestore's whereIn caps at 30 values and candidates can exceed that
-       for a busy building, so per-doc .get() (cheap, direct-by-id reads)
-       is simpler and correct at any candidate count. */
-    var missing = [];
-    for (var i = 0; i < candidates.length; i++){
-      var snap = await fdb.collection("building_history_events").doc("evt_" + candidates[i].id).get();
-      if (!snap.exists) missing.push(candidates[i]);
-    }
-    if (!missing.length){
-      toast("Checked " + candidates.length + " saved work order" + (candidates.length === 1 ? "" : "s") +
+    if (!info.missing.length){
+      toast("Checked " + info.candidates.length + " saved work order" + (info.candidates.length === 1 ? "" : "s") +
         " for this building — every one already has a history entry.");
       return;
     }
-    if (!confirm(missing.length + " saved work order" + (missing.length === 1 ? "" : "s") +
-      " for this building " + (missing.length === 1 ? "has" : "have") + " no Building History entry yet " +
-      "(saved but never Downloaded/Emailed/Shared). Recover " + (missing.length === 1 ? "it" : "them") +
+    if (!confirm(info.missing.length + " saved work order" + (info.missing.length === 1 ? "" : "s") +
+      " for this building " + (info.missing.length === 1 ? "has" : "have") + " no Building History entry yet " +
+      "(saved but never Downloaded/Emailed/Shared). Recover " + (info.missing.length === 1 ? "it" : "them") +
       " now?")) return;
-    toast("Recovering " + missing.length + " report" + (missing.length === 1 ? "" : "s") + "…");
-    var recovered = 0, failed = 0;
-    for (var j = 0; j < missing.length; j++){
-      try{
-        var o = await cloudFetchOrder(missing[j].id);
-        if (!o) { failed++; continue; }
-        await logReportAndHistoryEvent(o, "Saved", null, undefined);
-        recovered++;
-      }catch(e){ failed++; }
-    }
-    toast(recovered + " report" + (recovered === 1 ? "" : "s") + " recovered into Building History" +
-      (failed ? " (" + failed + " couldn't be read — try again)" : "") + " ✓");
+    toast("Recovering " + info.missing.length + " report" + (info.missing.length === 1 ? "" : "s") + "…");
+    var result = await recoverHistoryEvents(info.missing);
+    toast(result.recovered + " report" + (result.recovered === 1 ? "" : "s") + " recovered into Building History" +
+      (result.failed ? " (" + result.failed + " couldn't be read — try again)" : "") + " ✓");
     openBuildingHistory(buildingId);
   }catch(e){ toast("Couldn't check for unlogged work orders: " + e.message); }
 }
