@@ -274,25 +274,32 @@ async function cloudSaveOrder(o){
   for (var i = 0; i < ph.length; i++){
     var p = ph[i];
     var storageRef = p.storageRef || null;
-    var legacyImg = null; // only set when preserving an existing old-shape cloud photo below
+    var existingImg = null; // base64 backup already in Firestore -- carried forward as-is unless this save uploads a fresh replacement
     var uploadAttemptedAndFailed = false;
     if (p.img){
       try{ storageRef = await uploadPhotoToStorage(o.id, i, p.img); }
       catch(e){ uploadFailures++; uploadAttemptedAndFailed = true; console.warn("photo upload failed, will retry on next save", e); }
     }
-    if (!storageRef){
-      /* Either no img was ever provided (a stripped/incomplete local
-         record), or one was provided but the upload just failed above --
-         either way there's nothing new and reliable to persist for this
-         photo. Check what's already in the cloud before writing anything
-         that could blank it out. */
+    if (!p.img || !storageRef){
+      /* Look up the existing cloud doc whenever this save isn't supplying
+         a fresh, successfully-uploaded image for this photo. Covers both
+         the dangerous case (no storageRef survives at all -- see the
+         preserve/preservedCount logic below) and the routine one: a photo
+         that already has a storageRef and whose base64 the client never
+         loaded (cloudFetchOrder doesn't hydrate it for display). Caught
+         by testing against real data: without this, a plain .set() below
+         silently dropped the existing base64 backup on every ordinary
+         edit->save of an already-migrated photo -- nothing was lost from
+         Storage, but it defeated the deliberate cooling-off period (both
+         copies kept until the migration is fully trusted) the backup was
+         there for. */
       try{
         var existingSnap = await ref.collection("photos").doc("p" + i).get();
         if (existingSnap.exists){
           var existing = existingSnap.data();
-          if (existing.img || existing.storageRef){
+          existingImg = existing.img || null;
+          if (!storageRef && (existing.img || existing.storageRef)){
             storageRef = existing.storageRef || null;
-            legacyImg = existing.img || null;
             preservedCount++;
           }
         }
@@ -303,7 +310,7 @@ async function cloudSaveOrder(o){
       finding_id: p.finding_id || null, ccPhotoId: p.ccPhotoId || null, gps: p.gps || null,
       storageRef: storageRef, thumb: p.thumb || null
     };
-    if (legacyImg) photoDoc.img = legacyImg;
+    if (existingImg) photoDoc.img = existingImg;
     ops.push(ref.collection("photos").doc("p" + i).set(photoDoc));
   }
   for (var j = ph.length; j < prevCount; j++){
