@@ -836,6 +836,28 @@ var globalPhotoSizePref = "small";
 function photoPreset(){
   return SIZE_PRESETS[globalPhotoSizePref] || SIZE_PRESETS.small;
 }
+/* Small, fast-loading companion to the full compressed photo -- stored in
+   Firestore alongside a storageRef (see cloudSaveOrder() in core.js) so
+   the photo gallery renders instantly without a Storage round-trip for
+   every thumbnail; the full-resolution image is only fetched on demand
+   (lightbox, PDF/preview export -- see resolvePhotoImg()/
+   ensurePhotosLoadedForExport() in js/export.js). Drawn from the SAME
+   already-decoded <img> element the full-size compression already loaded,
+   never a second file read. See "Photo storage migration" in
+   DEV_NOTES.md. */
+var PHOTO_THUMB_MAX_DIM = 200;
+var PHOTO_THUMB_QUALITY = 0.6;
+function makeThumbDataUrl(img){
+  var w = img.width, h = img.height;
+  if (w > PHOTO_THUMB_MAX_DIM || h > PHOTO_THUMB_MAX_DIM){
+    if (w >= h){ h = Math.round(h * PHOTO_THUMB_MAX_DIM / w); w = PHOTO_THUMB_MAX_DIM; }
+    else { w = Math.round(w * PHOTO_THUMB_MAX_DIM / h); h = PHOTO_THUMB_MAX_DIM; }
+  }
+  var c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  c.getContext("2d").drawImage(img, 0, 0, w, h);
+  return c.toDataURL("image/jpeg", PHOTO_THUMB_QUALITY);
+}
 async function loadGlobalPhotoSizePref(){
   if (!fdb) return;
   try{
@@ -899,7 +921,7 @@ function addPhotosFromFiles(files, findingId){
         var c = document.createElement("canvas");
         c.width = w; c.height = h;
         c.getContext("2d").drawImage(img, 0, 0, w, h);
-        results[idx] = { caption:"", img: c.toDataURL("image/jpeg", preset.q), w: w, h: h, finding_id: findingId || null };
+        results[idx] = { caption:"", img: c.toDataURL("image/jpeg", preset.q), thumb: makeThumbDataUrl(img), w: w, h: h, finding_id: findingId || null };
         done();
       };
       img.onerror = function(){ toast("Couldn't read one of the photos"); done(); };
@@ -1041,7 +1063,7 @@ function addPhotosFromCamera(files, findingId){
           var c = document.createElement("canvas");
           c.width = w; c.height = h;
           c.getContext("2d").drawImage(img, 0, 0, w, h);
-          results[idx] = { caption:"", img: c.toDataURL("image/jpeg", preset.q), w: w, h: h, finding_id: findingId || null, gps: gps, gpsFailReason: gpsFailReason };
+          results[idx] = { caption:"", img: c.toDataURL("image/jpeg", preset.q), thumb: makeThumbDataUrl(img), w: w, h: h, finding_id: findingId || null, gps: gps, gpsFailReason: gpsFailReason };
           done();
         };
         img.onerror = function(){ toast("Couldn't read the photo"); done(); };
@@ -1177,10 +1199,19 @@ function photoDrop(e, i){
   photoDragFromIndex = null;
   renderPhotos();
 }
-function openPhotoLightbox(i){
+/* Photos off base64/localStorage onto Storage (see "Photo storage
+   migration" in DEV_NOTES.md) means p.img is no longer guaranteed to
+   already be in memory -- shows the small thumb instantly as a
+   placeholder (if one's cached) while resolvePhotoImg() fetches the real
+   full-resolution image from Storage in the background, then swaps to it
+   once loaded. */
+async function openPhotoLightbox(i){
   var p = photos[i];
-  if (!p || !p.img) return;
-  openImageLightbox(p.img);
+  if (!p) return;
+  if (p.thumb || p.img) openImageLightbox(p.thumb || p.img);
+  var full = await resolvePhotoImg(p);
+  if (full) openImageLightbox(full);
+  else if (!p.thumb && !p.img) toast("Couldn't load this photo — check your internet connection.");
 }
 /* Pulled out of openPhotoLightbox() so anything with a bare image data-URL
    (not necessarily an index into the global photos[] array -- e.g. a

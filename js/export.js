@@ -447,25 +447,42 @@ function pdfFileName(){
    whatever's currently in the live photos[] array, by design
    (renderLeakReportDoc() is deliberately synchronous, no Firestore
    access). This is the last line of defense for any OTHER way that array
-   could end up missing bytes (offline reopen, a future bug, etc.): checks
-   for any photo missing .img, and if the current work order has a real id
-   and a cloud connection, attempts exactly one fetch of the full cloud
-   copy and restores bytes by array position -- ONLY when the photo count
-   still matches (a mismatch means photos were added/removed since
-   whatever got cached, so position no longer reliably corresponds to the
-   same photo; safer to report it unresolved than guess wrong). Never
+   could end up missing bytes (offline reopen, a future bug, etc.). Never
    silently proceeds with missing images -- every caller below blocks and
    shows a loud, impossible-to-miss warning instead of producing an
    incomplete customer-facing document. See "PDF/preview missing photos"
-   in DEV_NOTES.md. */
+   in DEV_NOTES.md.
+
+   Two-layer recovery, since photos can now be in either shape (see "Photo
+   storage migration" in DEV_NOTES.md): layer 1 tries Storage directly via
+   resolvePhotoImg() for anything with a storageRef -- precise, per-photo,
+   no guessing needed since the reference identifies exactly which photo
+   it is. Layer 2 is the ORIGINAL fallback for anything Storage couldn't
+   resolve (a not-yet-migrated record with neither img nor storageRef
+   locally, but the cloud Firestore doc might still hold img directly):
+   one cloud refetch, restoring bytes by array position, ONLY when the
+   photo count still matches (a mismatch means photos were added/removed
+   since whatever got cached, so position no longer reliably corresponds
+   to the same photo -- safer to report it unresolved than guess wrong). */
 async function ensurePhotosLoadedForExport(){
   var missing = (photos || []).filter(function(p){ return !p.img; });
   if (!missing.length) return { ok: true };
-  if (!currentId || !fdb) return { ok: false, missingCount: missing.length };
+
+  var stillMissingAfterStorage = [];
+  for (var mi = 0; mi < missing.length; mi++){
+    var resolved = missing[mi].storageRef ? await resolvePhotoImg(missing[mi]) : null;
+    if (!resolved) stillMissingAfterStorage.push(missing[mi]);
+  }
+  if (!stillMissingAfterStorage.length){
+    renderPhotos();
+    return { ok: true, recovered: missing.length };
+  }
+
+  if (!currentId || !fdb) return { ok: false, missingCount: stillMissingAfterStorage.length };
   try{
     var cloudCopy = await cloudFetchOrder(currentId);
     if (!cloudCopy || !cloudCopy.photos || cloudCopy.photos.length !== photos.length){
-      return { ok: false, missingCount: missing.length };
+      return { ok: false, missingCount: stillMissingAfterStorage.length };
     }
     var stillMissing = 0;
     photos.forEach(function(p, i){

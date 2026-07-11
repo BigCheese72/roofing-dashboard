@@ -249,7 +249,7 @@ function ccCompress(dataUrl){
       var c = document.createElement("canvas");
       c.width = w; c.height = h;
       c.getContext("2d").drawImage(img, 0, 0, w, h);
-      res({ caption:"", img: c.toDataURL("image/jpeg", preset.q), w: w, h: h, finding_id: null });
+      res({ caption:"", img: c.toDataURL("image/jpeg", preset.q), thumb: makeThumbDataUrl(img), w: w, h: h, finding_id: null });
     };
     img.onerror = function(){ rej(new Error("bad image")); };
     img.src = dataUrl;

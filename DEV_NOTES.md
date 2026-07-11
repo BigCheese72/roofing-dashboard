@@ -7132,6 +7132,99 @@ Firestore doc and the rendered list. Confirmed `rmClearLinkedFeatures()`
 in-progress placement rather than leaving it orphaned, and hides the
 panel/clears the layer group.
 
+## Photo storage migration: base64/localStorage -> Firebase Storage (Stage a+b shipped, dev only)
+
+Mark's real bug: PDFs and Preview showing captions but no photos, traced
+to `loadOrder()` trusting a photo-stripped local cache over a stale
+`savedAt` comparison (see "PDF/preview missing photos" above) — itself
+downstream of the real architectural flaw: photos were base64 blobs
+crammed into Firestore documents AND the ~5-10MB localStorage quota,
+which is what forced `pruneCachedPhotoDrafts()`/`stripPhotoBytes()` to
+exist at all. This migrates photos off both onto Firebase Storage
+(`gs://watkins-service-orders.firebasestorage.app`), which removes the
+underlying pressure entirely rather than patching around it again.
+
+**Architecture decision (Mark's, not a default choice): the client never
+talks to Storage directly.** This app has no user auth yet, so Storage
+security rules must stay deny-all — an open bucket would make every
+customer's roof photos world-readable to anyone who guessed a URL, unlike
+Firestore's rules, which are already open (`allow read, write: if true`)
+under the same "no login yet" tradeoff. So `netlify/functions/photos.js`
+is a server-side proxy using the Firebase Admin SDK (reuses the existing
+`FIREBASE_SERVICE_ACCOUNT` env var — same credential `admin.js` already
+uses, no new secret needed) — not admin-PIN-gated like `admin.js`, since
+regular techs upload/view photos constantly in normal field use; it's a
+trusted proxy for a resource that can't have open client rules, at the
+same "no auth yet" tier every other collection already has. The client
+posts `{action, workOrderId, photoIndex, dataUrl}` and gets back a
+`storageRef` (upload) or `dataUrl` (get/get_batch) — `workOrderId`/
+`photoIndex` are validated server-side and the actual Storage path
+(`workorders/{workOrderId}/{photoIndex}.jpg`) is ALWAYS built server-side
+from them, never accepted as a raw path from the client, which is what
+makes path-injection structurally impossible rather than just filtered.
+
+**New photo shape** (Firestore `workorders/{id}/photos/{pN}` docs):
+`{ caption, w, h, finding_id, ccPhotoId, gps, storageRef, thumb }` — no
+more `img`. `thumb` is a small (200px, q0.6) companion generated
+client-side from the same already-decoded `<img>` element the full-size
+compression already loaded (`makeThumbDataUrl()` in js/photos.js, called
+from every capture path: `addPhotosFromCamera`/`addPhotosFromFiles`/
+`ccCompress`) — stored directly in Firestore so the photo gallery renders
+instantly with zero Storage round-trips; the full-resolution image is
+only ever fetched on demand (lightbox open, PDF/preview export) via
+`resolvePhotoImg()`, which caches the resolved bytes onto `p.img` in
+memory ONLY (never written back to Firestore/localStorage).
+
+**Backward compatible with every existing un-migrated record**:
+`cloudFetchOrder()` still reads `v.img` directly off older photo docs
+that predate this (exactly what Mark's 5 real existing work orders look
+like today, confirmed via a live read-only check) — those display and
+export with zero Storage calls, no different from before. `storageRef`
+simply takes over once a record has been migrated or a photo freshly
+captured/saved.
+
+**`ensurePhotosLoadedForExport()`** (see "PDF/preview missing photos"
+above) now has two recovery layers instead of one: Storage first (precise
+per-photo resolution via `resolvePhotoImg()`, no guessing needed since
+`storageRef` identifies exactly which photo it is), falling back to the
+original Firestore-refetch-by-position recovery for anything not yet
+migrated. Still blocks PDF generation with a loud `alert()` if a photo
+genuinely can't be resolved either way.
+
+**Local caching (`saveDb`/`pruneCachedPhotoDrafts`/`stripPhotoBytes`)
+deliberately UNCHANGED for now** — still caches the full in-memory order
+(including any raw `.img` still sitting in memory for a freshly-captured,
+not-yet-resolved-elsewhere photo) exactly as before, still subject to the
+existing prune/quota logic. Kept as a safety net through the remaining
+migration stages on purpose; ripping it out is its own explicit later
+step (Stage d) once existing-photo migration (Stage c) is verified, not
+bundled in here.
+
+**Tested** with a mocked `fdb` AND a mocked `fetch` (intercepting only
+`/.netlify/functions/photos`, backed by an in-memory fake bucket — the
+real function can only be verified once deployed, no way to run Node/
+Firebase Admin SDK in this static-file preview sandbox): full round trip
+(capture with real img+thumb -> `cloudSaveOrder` uploads and persists
+`storageRef`+`thumb`, no `img`, in Firestore -> `cloudFetchOrder` on a
+"different device" gets `storageRef`+`thumb` with no `img` yet ->
+`resolvePhotoImg()` fetches and caches the real bytes -> confirmed) all
+passed. Backward compatibility confirmed separately: an old-shape record
+(img present, no storageRef, exactly what's really in Firestore today)
+resolves instantly with **zero** Storage function calls. Confirmed
+`ensurePhotosLoadedForExport()` recovers via Storage and `generatePdf()`
+succeeds end to end. Confirmed the photo gallery (both
+`findingPhotoGalleryHtml()` and the global list) renders from `thumb`
+without needing the full image, and `openPhotoLightbox()` shows the thumb
+instantly then swaps to the resolved full-resolution image.
+
+**Not done yet, explicitly staged, no data touched**: (c) migrating
+Mark's 5 real existing photo-bearing work orders from base64-in-Firestore
+to Storage — built and tested against mocked data only; runs against real
+records ONLY with Mark's explicit go-ahead, non-destructive (base64 stays
+in Firestore until the Storage copy is verified readable), idempotent/
+resumable. (d) removing `pruneCachedPhotoDrafts()`/`stripPhotoBytes()`/
+the "storage is full" toast entirely — only after (c) is verified.
+
 ## Roadmap (not built yet, foundation only)
 
 - **RoofOps Dashboard**: cross-building reporting, search, filters — reads from

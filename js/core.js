@@ -159,6 +159,64 @@ async function sendPasswordReset(){
   }catch(e){ toast("Couldn't send reset email: " + e.message); }
 }
 
+/* Client-side wrappers around netlify/functions/photos.js -- the ONLY
+   place this app is allowed to touch Firebase Storage. Mark's explicit
+   architecture decision: the app has no user auth yet, so Storage
+   security rules must stay deny-all (an open bucket would make every
+   customer's roof photos world-readable to anyone who guessed a URL) --
+   the client therefore never talks to Storage directly, only through this
+   server-side proxy (Admin SDK, service-account credentials, not subject
+   to Storage rules). The bucket itself stays completely sealed to the
+   browser. See "Photo storage migration" in DEV_NOTES.md. */
+async function uploadPhotoToStorage(workOrderId, photoIndex, dataUrl){
+  var r = await fetch("/.netlify/functions/photos", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "upload", workOrderId: workOrderId, photoIndex: photoIndex, dataUrl: dataUrl })
+  });
+  var out = null;
+  try{ out = await r.json(); }catch(e){}
+  if (!r.ok || !out || !out.ok) throw new Error((out && out.error) || ("upload failed: server error " + r.status));
+  return out.storageRef;
+}
+async function deletePhotoFromStorage(workOrderId, photoIndex){
+  try{
+    var r = await fetch("/.netlify/functions/photos", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "delete", workOrderId: workOrderId, photoIndex: photoIndex })
+    });
+    await r.json().catch(function(){});
+  }catch(e){ console.warn("photo delete from storage failed (non-fatal — orphaned Storage object, no user-visible impact)", e); }
+}
+async function fetchPhotoFromStorage(workOrderId, photoIndex){
+  var r = await fetch("/.netlify/functions/photos", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "get", workOrderId: workOrderId, photoIndex: photoIndex })
+  });
+  var out = null;
+  try{ out = await r.json(); }catch(e){}
+  if (!r.ok || !out || !out.ok) throw new Error((out && out.error) || ("couldn't load photo: server error " + r.status));
+  return out.dataUrl;
+}
+/* Resolves ONE photo's full-resolution image, fetching from Storage on
+   demand if it isn't already in memory -- returns the data URI, or null
+   if there's genuinely nothing to show (no cached img, no storageRef: an
+   incomplete/corrupt record). Caches the result onto p.img in memory only
+   (never written back to Firestore/localStorage) so repeated calls this
+   session (gallery -> lightbox -> PDF) don't re-fetch the same photo.
+   Parses workOrderId/photoIndex back out of storageRef rather than
+   assuming "whatever currentId is right now" -- correct regardless of
+   which work order p actually belongs to. */
+async function resolvePhotoImg(p){
+  if (p.img) return p.img;
+  if (!p.storageRef) return null;
+  var m = /^workorders\/([^/]+)\/(\d+)\.jpg$/.exec(p.storageRef);
+  if (!m) return null;
+  try{
+    var dataUrl = await fetchPhotoFromStorage(m[1], +m[2]);
+    p.img = dataUrl;
+    return dataUrl;
+  }catch(e){ return null; }
+}
 async function cloudSaveOrder(o){
   if (!fdb) throw new Error("cloud not available");
   var main = {};
@@ -173,17 +231,43 @@ async function cloudSaveOrder(o){
     if (snap.exists && snap.data().photoCount) prevCount = snap.data().photoCount;
   }catch(e){}
   await ref.set(main);
+  /* Photos off base64/localStorage onto Storage (Mark's "photos gone in
+     PDFs" bug, and the storage-is-full/pruning mess it grew out of -- see
+     "Photo storage migration" in DEV_NOTES.md): a photo already carrying
+     a storageRef and no raw .img was loaded from a previous save and
+     never re-captured -- already in Storage, re-uploading identical bytes
+     would be wasted work. Only a photo with real .img bytes right now
+     (freshly captured/edited this session) gets uploaded. A failed
+     upload does NOT abort the whole save -- findings/captions/pins still
+     need to persist -- but is counted and surfaced as a thrown error
+     after everything else commits, so saveOrder()'s existing
+     never-silent cloud-error toast (see "Silent cloud-save failure" in
+     DEV_NOTES.md) tells the tech to retry rather than the app quietly
+     leaving a photo un-uploaded. */
+  var uploadFailures = 0;
   var ops = [];
-  ph.forEach(function(p, i){
+  for (var i = 0; i < ph.length; i++){
+    var p = ph[i];
+    var storageRef = p.storageRef || null;
+    if (p.img){
+      try{ storageRef = await uploadPhotoToStorage(o.id, i, p.img); }
+      catch(e){ uploadFailures++; console.warn("photo upload failed, will retry on next save", e); }
+    }
     ops.push(ref.collection("photos").doc("p" + i).set({
-      caption: p.caption || "", img: p.img || "", w: p.w || 0, h: p.h || 0, i: i,
-      finding_id: p.finding_id || null, ccPhotoId: p.ccPhotoId || null, gps: p.gps || null
+      caption: p.caption || "", w: p.w || 0, h: p.h || 0, i: i,
+      finding_id: p.finding_id || null, ccPhotoId: p.ccPhotoId || null, gps: p.gps || null,
+      storageRef: storageRef, thumb: p.thumb || null
     }));
-  });
-  for (var i = ph.length; i < prevCount; i++){
-    ops.push(ref.collection("photos").doc("p" + i).delete());
+  }
+  for (var j = ph.length; j < prevCount; j++){
+    ops.push(ref.collection("photos").doc("p" + j).delete());
+    ops.push(deletePhotoFromStorage(o.id, j));
   }
   await Promise.all(ops);
+  if (uploadFailures > 0){
+    throw new Error(uploadFailures + " photo" + (uploadFailures === 1 ? "" : "s") +
+      " couldn't be uploaded to cloud storage. Work order data was saved — save again to retry the photo(s).");
+  }
 }
 async function cloudFetchIndex(){
   if (!fdb) return [];
@@ -209,8 +293,15 @@ async function cloudFetchOrder(id){
     var ps = await ref.collection("photos").get();
     ps.forEach(function(d){
       var v = d.data();
-      photosArr[v.i] = { caption: v.caption || "", img: v.img || "", w: v.w || 0, h: v.h || 0,
-        finding_id: v.finding_id || null, ccPhotoId: v.ccPhotoId || null, gps: v.gps || null };
+      /* storageRef/thumb are the current shape (see cloudSaveOrder() above)
+         -- img is kept for backward compatibility with a photo doc saved
+         BEFORE the Storage migration (still holds its full base64 bytes
+         directly in Firestore, no storageRef at all yet); a migrated or
+         freshly-captured photo relies on storageRef + resolvePhotoImg()
+         instead. See "Photo storage migration" in DEV_NOTES.md. */
+      photosArr[v.i] = { caption: v.caption || "", img: v.img || null, w: v.w || 0, h: v.h || 0,
+        finding_id: v.finding_id || null, ccPhotoId: v.ccPhotoId || null, gps: v.gps || null,
+        storageRef: v.storageRef || null, thumb: v.thumb || null };
     });
   }catch(e){}
   o.photos = photosArr.filter(Boolean);
@@ -976,7 +1067,7 @@ function renderPhotos(){
     d.ondrop = function(e){ photoDrop(e, i); };
     d.innerHTML =
       '<div class="photo-row"><b>Photo ' + (i+1) + '</b>' +
-      (p.img ? '<img class="thumb" src="' + p.img + '" onclick="openPhotoLightbox(' + i + ')" title="Tap to enlarge">' : '') +
+      ((p.thumb || p.img) ? '<img class="thumb" src="' + (p.thumb || p.img) + '" onclick="openPhotoLightbox(' + i + ')" title="Tap to enlarge">' : '') +
       '<input type="text" style="flex:1" placeholder="Caption" data-i="' + i + '" value="' + esc(p.caption) + '" list="dl-photoCaption" onblur="rememberFieldValue(\'photoCaption\', this.value)">' +
       '<div class="photo-move-btns">' +
         '<button class="btn" onclick="movePhoto(' + i + ', -1)"' + (i === 0 ? " disabled" : "") + ' title="Move up">▲</button>' +
@@ -1024,7 +1115,7 @@ function renderChangeOrderPhotos(){
       var locNote = p.pin ? '<span class="hint" style="display:block;margin:2px 0 0;color:#2E7D32">📍 Located</span>' :
         '<span class="hint" style="display:block;margin:2px 0 0">No location</span>';
       return '<div class="finding-photo-item">' +
-        (p.img ? '<img class="thumb" src="' + p.img + '" onclick="openPhotoLightbox(' + gi + ')" title="Tap to enlarge">' : '') +
+        ((p.thumb || p.img) ? '<img class="thumb" src="' + (p.thumb || p.img) + '" onclick="openPhotoLightbox(' + gi + ')" title="Tap to enlarge">' : '') +
         '<input type="text" placeholder="Caption" data-cophoto="' + gi + '" value="' + esc(p.caption) + '" list="dl-photoCaption" onblur="rememberFieldValue(\'photoCaption\', this.value)">' +
         locNote +
         '<button class="btn danger" onclick="removePhoto(' + gi + ')">✕ Remove</button>' +
