@@ -7687,6 +7687,15 @@ async function ccImport(){
   renderFindings();
   if (ccTargetFindingId && inspectionChecklistItemById(ccTargetFindingId)) renderInspectionChecklist();
   renderCCLinkInfo();
+  /* Mark: modal was staying open through the whole locking/save/history-sync
+     tail below (several more awaited round-trips) after he'd already tapped
+     Import Selected -- looked stuck/unresponsive. The photos themselves are
+     already imported and rendered by this point, so close immediately; the
+     rest (project lock, save, CompanyCam history sync) finishes in the
+     background with its own toast, same as before, just not gating the
+     modal. Read every ccTargetFindingId/ccSelected-dependent value above
+     this line -- closeCC() clears both. */
+  closeCC();
   if (ok){
     toast("Locking CompanyCam project and syncing history...");
     await applyCompanyCamProjectDetail(ccLinkedProjectId);
@@ -7701,9 +7710,7 @@ async function ccImport(){
     } else {
       toast(importSummary + "Project locked and saved; history sync failed: " + syncResult.error);
     }
-  }
-  closeCC();
-  if (!ok){
+  } else {
     toast("No CompanyCam photos were imported" + (fail ? " (" + fail + " failed)" : "") + ".");
   }
 }
