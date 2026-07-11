@@ -75,6 +75,16 @@
         <option value="large">Large — max detail, big files</option>
       </select>
     </div>
+    <!-- Stage c of the photo storage migration -- see "Photo storage
+         migration" in DEV_NOTES.md. Scans first (writes nothing), shows
+         the real count, and requires an explicit confirm before touching
+         anything -- nothing runs just from this button existing. -->
+    <div class="fld" style="max-width:400px;margin:10px 0 0">
+      <label style="font-size:12px">Admin: Migrate Existing Photos to Cloud Storage</label>
+      <button class="btn" onclick="runPhotoStorageMigration()">☁️ Scan &amp; Migrate Photos</button>
+      <p class="hint" style="margin:4px 0 0">One-time cleanup — moves already-saved photos out of Firestore
+        into Firebase Storage. Non-destructive: nothing is deleted, safe to run more than once.</p>
+    </div>
   </div>
 
   <!-- ================= HOME / LAUNCHER VIEW ================= -->

@@ -538,6 +538,68 @@ async function callAdminApi(body){
   if (!r.ok || !out) throw new Error((out && out.error) || ("server error " + r.status));
   return out;
 }
+async function callPhotosApi(body){
+  var r = await fetch("/.netlify/functions/photos", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  });
+  var out = null;
+  try{ out = await r.json(); }catch(e){}
+  if (!r.ok || !out) throw new Error((out && out.error) || ("server error " + r.status));
+  return out;
+}
+/* Stage c of the photo storage migration (see "Photo storage migration"
+   in DEV_NOTES.md) -- migrates already-saved base64-in-Firestore photos
+   into Firebase Storage. Admin-gated client-side (same isAdmin/adminPin
+   every other bulk/privileged action here already uses) AND the deployed
+   function independently re-checks the PIN itself (netlify/functions/
+   photos.js's migrate_scan/migrate_photo actions) -- defense in depth,
+   not just a client-side gate, matching Mark's explicit "runs against
+   real data ONLY with my go-ahead" requirement being enforced server-side
+   too, not just left to whoever happens to be running this session.
+
+   Dry-run first (migrate_scan writes nothing at all, Storage or
+   Firestore) so the tech sees the exact real scope and explicitly
+   confirms before anything real happens. Then migrates one photo at a
+   time -- migrate_photo is idempotent server-side (a photo that already
+   has a storageRef is skipped, reported, untouched), so re-running this
+   whole function after a partial failure (a dropped connection partway
+   through, say) is always safe; nothing is ever deleted, the original img
+   field stays exactly as it was regardless of outcome. */
+async function runPhotoStorageMigration(){
+  if (!isAdmin){ toast("Admin mode required."); return; }
+  toast("Scanning for photos to migrate…");
+  var scan;
+  try{ scan = await callPhotosApi({ action: "migrate_scan", pin: adminPin }); }
+  catch(e){ toast("Scan failed: " + e.message); return; }
+
+  if (!scan.needsMigration.length){
+    toast("Nothing to migrate — " + scan.alreadyMigrated.length + " photo" +
+      (scan.alreadyMigrated.length === 1 ? "" : "s") + " already in Storage, " +
+      scan.empty.length + " photo-less record" + (scan.empty.length === 1 ? "" : "s") + ".");
+    return { migrated: 0, alreadyDone: scan.alreadyMigrated.length, failed: 0, failures: [] };
+  }
+  if (!confirm(scan.needsMigration.length + " photo" + (scan.needsMigration.length === 1 ? "" : "s") +
+    " across " + scan.totalWorkOrders + " work order" + (scan.totalWorkOrders === 1 ? "" : "s") +
+    " will be uploaded to Firebase Storage. The original data stays in Firestore untouched — " +
+    "nothing is deleted. Proceed?")) return null;
+
+  var migrated = 0, alreadyDone = 0, failed = 0, failures = [];
+  for (var i = 0; i < scan.needsMigration.length; i++){
+    var item = scan.needsMigration[i];
+    toast("Migrating photo " + (i + 1) + " of " + scan.needsMigration.length + "…");
+    try{
+      var out = await callPhotosApi({ action: "migrate_photo", pin: adminPin, workOrderId: item.workOrderId, photoIndex: item.photoIndex });
+      if (out.alreadyMigrated) alreadyDone++; else migrated++;
+    }catch(e){ failed++; failures.push({ workOrderId: item.workOrderId, photoIndex: item.photoIndex, error: e.message }); }
+  }
+  toast(migrated + " photo" + (migrated === 1 ? "" : "s") + " migrated to Storage ✓" +
+    (alreadyDone ? ", " + alreadyDone + " already done" : "") +
+    (failed ? ", " + failed + " FAILED (safe to retry — nothing was deleted, run this again)" : "") + ".");
+  if (failures.length) console.warn("Photo migration failures (safe to retry):", failures);
+  return { migrated: migrated, alreadyDone: alreadyDone, failed: failed, failures: failures };
+}
 async function toggleAdminMode(){
   if (isAdmin){
     isAdmin = false;

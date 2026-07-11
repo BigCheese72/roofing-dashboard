@@ -38,6 +38,9 @@ function resp(code, obj) {
 function getBucket() {
   return getAdmin().storage().bucket(BUCKET_NAME);
 }
+function getDb() {
+  return getAdmin().firestore();
+}
 
 // The client never sends a raw path -- only a workOrderId + photoIndex, both
 // validated, and the path is always built here server-side. This is what
@@ -144,6 +147,90 @@ exports.handler = async function (event) {
       const path = storagePathFor(workOrderId, photoIndex);
       await getBucket().file(path).delete({ ignoreNotFound: true });
       return resp(200, { ok: true });
+    }
+
+    // ---- Existing-photo migration (Stage c, see "Photo storage migration"
+    // in DEV_NOTES.md) -- ADMIN_PIN-gated, unlike every action above. Those
+    // are normal field-use operations (any tech uploads/views photos
+    // constantly); this is a one-time bulk rewrite of already-saved data,
+    // explicitly gated on Mark's own go-ahead per his own instruction, not
+    // just something this session chose not to call yet -- the PIN check
+    // makes that a real constraint the deployed function enforces, not
+    // just self-restraint. Same ADMIN_PIN env var admin.js already uses.
+    if (body.action === "migrate_scan" || body.action === "migrate_photo") {
+      const configuredPin = process.env.ADMIN_PIN;
+      if (!configuredPin) return resp(500, { error: "ADMIN_PIN is not set. Add it in Netlify > Environment variables, then redeploy." });
+      if (String(body.pin || "") !== configuredPin) return resp(403, { error: "Wrong admin PIN" });
+    }
+
+    // Dry run -- reports exactly what migrate_photo WOULD do, writes
+    // nothing at all (not Storage, not Firestore). Scans every workorders
+    // doc (this app has a handful of real records, not thousands -- no
+    // pagination needed) and every photo doc under it, classifying each as
+    // already-migrated (has storageRef), needs-migration (has img, no
+    // storageRef), or empty (neither -- a genuinely photo-less record,
+    // nothing to do). Lets Mark see the exact scope before anything real
+    // runs, and lets this be re-run anytime afterward to confirm nothing
+    // was missed.
+    if (body.action === "migrate_scan") {
+      const woSnap = await getDb().collection("workorders").get();
+      const alreadyMigrated = [];
+      const needsMigration = [];
+      const empty = [];
+      for (const woDoc of woSnap.docs) {
+        const photosSnap = await getDb().collection("workorders").doc(woDoc.id).collection("photos").get();
+        for (const pDoc of photosSnap.docs) {
+          const v = pDoc.data();
+          const entry = { workOrderId: woDoc.id, photoIndex: typeof v.i === "number" ? v.i : null, photoDocId: pDoc.id };
+          if (v.storageRef) alreadyMigrated.push(entry);
+          else if (v.img) needsMigration.push(entry);
+          else empty.push(entry);
+        }
+      }
+      return resp(200, { ok: true, totalWorkOrders: woSnap.size, alreadyMigrated, needsMigration, empty });
+    }
+
+    // Migrates ONE photo -- idempotent (a photo that already has a
+    // storageRef is reported as already-migrated and untouched, so
+    // re-running this over the same photo, or the whole migration after a
+    // partial failure, is always safe) and non-destructive (img is never
+    // deleted here, only storageRef is added -- see DEV_NOTES.md for why
+    // removing img is a deliberately separate, later step). Uploads, then
+    // immediately reads the upload back and verifies it decodes to the
+    // exact same bytes as the original BEFORE writing storageRef onto the
+    // Firestore doc -- so a Firestore doc only ever claims a storageRef
+    // once that reference has been proven to actually work, not just
+    // "the upload call didn't throw."
+    if (body.action === "migrate_photo") {
+      const workOrderId = body.workOrderId;
+      const photoIndex = body.photoIndex;
+      if (!validateWorkOrderId(workOrderId)) return resp(400, { error: "Invalid workOrderId" });
+      if (!validatePhotoIndex(photoIndex)) return resp(400, { error: "Invalid photoIndex" });
+      const photoRef = getDb().collection("workorders").doc(workOrderId).collection("photos").doc("p" + photoIndex);
+      const snap = await photoRef.get();
+      if (!snap.exists) return resp(404, { error: "Photo doc not found" });
+      const v = snap.data();
+      if (v.storageRef) return resp(200, { ok: true, alreadyMigrated: true, storageRef: v.storageRef });
+      if (!v.img) return resp(200, { ok: true, skipped: true, reason: "no img to migrate" });
+      const buf = decodeDataUrl(v.img);
+      if (!buf) return resp(400, { error: "Existing img field is not a valid data:image/jpeg or data:image/png URI" });
+
+      const path = storagePathFor(workOrderId, photoIndex);
+      const file = getBucket().file(path);
+      await file.save(buf, { contentType: "image/jpeg", resumable: false });
+
+      // Verify: read the just-written object back and confirm it matches
+      // byte-for-byte before Firestore is ever told this storageRef is
+      // good. A mismatch here is the ONE case worth treating as a hard
+      // failure -- better a migration that reports "unverified, retry"
+      // than a Firestore doc pointing at a corrupt/incomplete upload.
+      const [readBack] = await file.download();
+      if (!readBack.equals(buf)) {
+        return resp(500, { error: "Upload verification failed (readback did not match) -- storageRef NOT saved, img untouched, safe to retry" });
+      }
+
+      await photoRef.set({ storageRef: path }, { merge: true });
+      return resp(200, { ok: true, migrated: true, storageRef: path, bytes: buf.length });
     }
 
     return resp(400, { error: "Unknown action" });
