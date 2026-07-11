@@ -1364,6 +1364,17 @@ var STORE_KEY = "leak-workorders-v1";
    the underlying imagery doesn't get any sharper. Shared by the pin modal,
    asset modal, and building-history roof map — all satellite mode. */
 var SAT_MAX_NATIVE_ZOOM = 20;
+/* Mark: his RTK ortho is ~2cm/pixel -- vastly more detail than satellite
+   tiles top out at (SAT_MAX_NATIVE_ZOOM above is the real, empirically-
+   verified Esri ceiling). An ortho/GeoTIFF overlay itself never raises the
+   MAP's own zoom ceiling in Leaflet -- L.imageOverlay and GeoRasterLayer
+   aren't zoom-bound tile layers with a maxZoom of their own, so whichever
+   BASE tile layer happens to be showing underneath (RoofMapper's satellite
+   at 22, or its default OSM view at 20) is what silently capped how far in
+   a tech could zoom even with the ortho loaded on top -- exactly what was
+   blocking precision corner placement now that all tracing is by hand.
+   See rmUpdateMapZoomCap() and "Ortho zoom cap" in DEV_NOTES.md. */
+var RM_ORTHO_MAX_ZOOM = 26;
 /* ================= cloud sync (Firebase Firestore) ================= */
 var FIREBASE_CONFIG = {
   apiKey: "AIzaSyBZRMpIWde-6DPpg7yAvNOqJAQF5ZBxlAg",
@@ -9639,6 +9650,23 @@ function rmSetBaseLayer(type){
   var btn = document.getElementById("rm-baselayer-btn");
   if (btn) btn.textContent = type === "satellite" ? "🗺️ Map View" : "🛰️ Satellite View";
 }
+/* Explicitly setting the map's own maxZoom overrides Leaflet's default
+   "derive it from whatever layers are currently added" behavior entirely
+   -- so this is what actually lets a tech zoom in past whichever base
+   tile layer's own cap (satellite 22, OSM 20) is lower, once an ortho or
+   GeoTIFF is loaded. The ortho/GeoTIFF layer itself (L.imageOverlay /
+   GeoRasterLayer) keeps rendering sharp at any zoom regardless -- neither
+   is a zoom-bound tile layer with a resolution ceiling of its own, so this
+   one call is the whole fix. Called at every point ortho/geoTiffActive
+   flips (rmStartOrthoTrace/rmStartGeoTiffTrace/rmOpenRoofInMapper turning
+   one on, rmClearOrthoOverlay/rmClearGeoTiffLayer turning it back off) so
+   plain satellite-only tracing keeps its existing, already-tuned ceiling
+   unchanged. See RM_ORTHO_MAX_ZOOM above and "Ortho zoom cap" in
+   DEV_NOTES.md. */
+function rmUpdateMapZoomCap(){
+  if (!rmState.map) return;
+  rmState.map.setMaxZoom((rmState.orthoActive || rmState.geoTiffActive) ? RM_ORTHO_MAX_ZOOM : 22);
+}
 function rmToggleBaseLayer(){
   rmSetBaseLayer(rmState.baseLayerType === "satellite" ? "osm" : "satellite");
 }
@@ -10721,6 +10749,7 @@ function rmClearGeoTiffLayer(){
   if (rmState.map && rmState.geoTiffLayer) rmState.map.removeLayer(rmState.geoTiffLayer);
   rmState.geoTiffLayer = null;
   rmState.geoTiffActive = false;
+  rmUpdateMapZoomCap();
 }
 /* Starts a trace session directly on a rendered, correctly-georeferenced
    GeoTIFF -- deliberately much simpler than rmStartOrthoTrace() (the
@@ -10733,6 +10762,7 @@ function rmStartGeoTiffTrace(georaster){
   rmClearFootprintLayers(); /* same clean-slate as any other fresh capture start */
   rmState.geoTiffLayer = new GeoRasterLayer({ georaster: georaster, resolution: 128 }).addTo(map);
   rmState.geoTiffActive = true;
+  rmUpdateMapZoomCap();
   var bounds = rmState.geoTiffLayer.getBounds();
   map.fitBounds(bounds);
   var center = bounds.getCenter();
@@ -10874,6 +10904,7 @@ function rmClearOrthoOverlay(){
   rmState.orthoDataUrl = null;
   rmState.orthoBounds = null;
   rmState.orthoActive = false;
+  rmUpdateMapZoomCap();
 }
 /* Image pixel (0,0) is the top-left / north-west corner; local XY here
    follows the same x=east/y=north convention rmGeomToLocalXY/
@@ -10905,6 +10936,7 @@ function rmStartOrthoTrace(dataUrl, pixelW, pixelH){
   var computed = rmComputeOrthoBounds(pixelW, pixelH);
   rmState.orthoOverlayLayer = L.imageOverlay(dataUrl, computed.latLngBounds).addTo(map);
   rmState.orthoActive = true;
+  rmUpdateMapZoomCap();
   rmState.orthoDataUrl = dataUrl;
   rmState.orthoBounds = computed.orthoBounds;
   rmState.lat = RM_ORTHO_ORIGIN.lat; rmState.lng = RM_ORTHO_ORIGIN.lng; rmState.accuracy = null;
@@ -12091,6 +12123,12 @@ async function rmOpenRoofInMapper(buildingId, roofId){
         toast("Roof opened, but couldn't reload its saved drone image: " + e.message);
       }
     }
+    /* Covers both branches above (and the plain-satellite "neither" case,
+       where rmClearFootprintLayers() already reset orthoActive to false)
+       in one call, now that this roof's base image state is fully
+       resolved -- reopening a roof that HAS an ortho attached needs the
+       same raised zoom ceiling a freshly-traced one gets. */
+    rmUpdateMapZoomCap();
     /* roof_plan / hand-sketch base maps are x/y CRS.Simple -- Building
        History's own separate map instance only, a different/incompatible
        coordinate system from RoofMapper's real lat/lng map -- nothing to
