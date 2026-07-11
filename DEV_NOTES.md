@@ -6033,6 +6033,50 @@ instead of silently continuing to point at the wrong building. All test
 state cleared, real `fdb`/`callAdminApi`/`isAdmin` restored, console clean
 throughout.
 
+## Roof switcher (shipped 2026-07-11, dev only)
+
+Mark: on a multi-roof building "he must be able to clearly pick WHICH
+roof he's editing... not obvious right now." A plain `<select>`
+(`rmRenderRoofSwitcher(buildingId, roofs, activeRoofId)`), first thing in
+the outline panel — above even the area/perimeter stats — listing every
+roof on the building with the active one pre-selected; switching calls
+`rmOpenRoofInMapper()` (the same "open" path Building History's own
+button uses, see the entry above) for whichever roof is picked. Never
+shown for a still-single-roof building (`roofs.length <= 1`, same
+convention every other multi-roof-only control in this app already
+uses). Wired in at both places a roof becomes "linked" — right after
+`rmOpenRoofInMapper()` finishes loading one, and right after
+`rmSaveOutlineToBuilding()` finishes saving one — and cleared by
+`rmClearLinkedFeatures()` alongside the rest of the "roof is linked" UI
+whenever that link drops, so it never shows a stale roof list for a
+building that's no longer the one on screen.
+
+Also closes out Mark's related "stop re-geolocating a saved building"
+complaint — folded into this pass since it's the same underlying gap:
+`rmOpenRoofInMapper()` (see the "Reopen a saved roof" entry above) never
+calls `rmUseMyLocation()`/`rmSearchBuildings()`/any geocode at all, so
+switching roofs via this new selector — or opening one from Building
+History — never re-triggers GPS. Confirmed no OTHER RoofMapper entry
+point does either: `rmEnterMultiRoofCapture()` (used by "Trace Another
+Roof"/"+ Add Roof") already prioritized a known location
+(`rmGetBuildingKnownLocation()`) over GPS before this pass, falling back
+to GPS only when a building genuinely has no known location yet (a
+brand-new building, correctly still worth locating); `rmOnShow()`
+(RoofMapper's own view-entry hook) only calls `invalidateSize()`, no
+auto-search. GPS/geocoding now only ever fires from an explicit "📍 Use
+My Location" tap or a fresh address search — never as a side effect of
+opening something already mapped.
+
+Tested in the browser with a mocked `fdb` (no real writes): saved a
+single roof to a fresh building — confirmed the switcher stays empty
+(hidden) since there's only one; added a second roof ("North Wing") and
+saved it — confirmed the switcher now lists both, with the just-saved
+roof selected; changed the `<select>` to the first roof (a real DOM
+`change` event, not a direct function call) — confirmed it loads that
+roof's outline/label without calling `rmGeoRequest` (wrapped to detect
+any call — none fired) and the switcher re-renders showing the new
+selection. All test state cleared, console clean.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |

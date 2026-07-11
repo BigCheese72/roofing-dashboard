@@ -731,6 +731,15 @@
 
     <div class="card" id="rm-outline-panel" style="display:none">
       <h2 class="cond">Roof Outline</h2>
+      <!-- Which roof (of possibly several on this building) RoofMapper is
+           currently showing/editing -- Mark: "on a multi-roof building he
+           must be able to clearly pick WHICH roof he's editing... not
+           obvious right now." First thing in the panel, above even the
+           stats, so it's the first thing seen once a roof is linked.
+           Populated by rmRenderRoofSwitcher(), only for a building with
+           more than one roof (see there). See "Roof switcher" in
+           DEV_NOTES.md. -->
+      <div id="rm-roof-switcher"></div>
       <div id="rm-outline-warning"></div>
       <div class="rm-outline-stats" id="rm-outline-stats"></div>
       <div class="btnrow" style="margin:0 0 6px">
@@ -8182,6 +8191,8 @@ function rmClearLinkedFeatures(){
   if (rmState.map && rmState.roofLabelLayer) rmState.map.removeLayer(rmState.roofLabelLayer);
   rmState.roofLabelLayer = null;
   rmSetDisp("rm-rename-roof-btn", false);
+  var switcherHost = document.getElementById("rm-roof-switcher");
+  if (switcherHost) switcherHost.innerHTML = "";
   var panel = document.getElementById("rm-features-panel");
   if (panel) panel.style.display = "none";
   var bmStatus = document.getElementById("rm-basemap-status");
@@ -10028,6 +10039,7 @@ async function rmSaveOutlineToBuilding(buildingId, roofId){
          see rmRenameLinkedRoof() and roofLabelMarker()'s comment above. */
       rmState.roofLabelLayer = roofLabelMarker(labelCenter.lat, labelCenter.lng, roof.label || "Roof", rmRenameLinkedRoof).addTo(rmState.map);
     }
+    rmRenderRoofSwitcher(buildingId, roofs, roof.id);
     rmShowFeaturePanel(bld.name);
     await rmLoadLinkedAssets();
     rmUpdateExportHint();
@@ -10141,10 +10153,33 @@ async function rmOpenRoofInMapper(buildingId, roofId){
        "see everything else while you work" a fresh trace gets, just as
        useful for context/vertex-snapping while editing an existing one. */
     await rmDrawReferenceRoofs(buildingId, bld, roof.id);
+    rmRenderRoofSwitcher(buildingId, roofs, roof.id);
     rmSetStatus("Opened " + (roof.label || "this roof") + (rmState.orthoActive ? " on its saved drone image." : ".") +
       (roofs.length > 1 ? " " + roofs.length + " roofs on this building." : ""));
     setTimeout(function(){ map.invalidateSize(); }, 60);
   }catch(e){ toast("Couldn't open that roof: " + e.message); }
+}
+/* Mark: "on a multi-roof building he must be able to clearly pick WHICH
+   roof he's editing... not obvious right now." A plain <select> at the top
+   of the outline panel -- every roof on the building, current one
+   pre-selected, switching calls rmOpenRoofInMapper() (the same "open" path
+   Building History's own button uses) for whichever one is picked. Never
+   shown for a single-roof building (nothing to switch between -- roofs.length
+   check mirrors every other multi-roof-only control in this app, e.g.
+   Building History's own roof picker). Cleared by rmClearLinkedFeatures()
+   alongside the rest of the "roof is linked" UI whenever that link drops.
+   See "Roof switcher" in DEV_NOTES.md. */
+function rmRenderRoofSwitcher(buildingId, roofs, activeRoofId){
+  var host = document.getElementById("rm-roof-switcher");
+  if (!host) return;
+  if (!roofs || roofs.length <= 1){ host.innerHTML = ""; return; }
+  host.innerHTML = '<div class="fld" style="max-width:280px;margin:0 0 10px">' +
+    '<label>Editing roof (' + roofs.length + ' on this building)</label>' +
+    '<select onchange="rmOpenRoofInMapper(\'' + buildingId + '\', this.value)">' +
+    roofs.map(function(r){
+      return '<option value="' + esc(r.id) + '"' + (r.id === activeRoofId ? ' selected' : '') + '>' + esc(r.label || "Roof") + '</option>';
+    }).join('') +
+    '</select></div>';
 }
 async function rmCreateBuildingAndSave(){
   if (!rmState.outline){ toast("Generate a roof outline first."); return; }
