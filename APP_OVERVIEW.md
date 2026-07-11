@@ -401,8 +401,22 @@ somewhere around 10–30 feet per corner, so this is a rough-but-adjustable foot
 not survey-grade, but it's a real field method for the buildings where nothing else
 works.
 
-However it's captured — OSM search, hand-traced, or walked — an outline works exactly
-the same from there: same save, export, and feature-placement steps above.
+**Have a sharper drone orthomosaic than satellite imagery gives you?** Tap
+**"📷 Trace on My Own Drone Image"** right at the start, before any location search —
+pick an image straight from your device (phone or laptop) and trace directly on it,
+no CompanyCam project or GPS fix needed first. This is different from the "Drone
+orthomosaic" base-map upload above (which needs the companion script and real GPS
+corner coordinates for a whole building's base map): this is a quick, no-prep way to
+trace a roof outline on your own image right now. Since a plain exported image has no
+GPS data built in, the shape starts at an arbitrary size — use Calibrate (tap any edge,
+enter its real measured length) right after tracing to fix the true scale, same as any
+other outline. Square Up and Edit Shape work on it exactly the same way too. (Not yet
+built: the image itself isn't retained with the saved roof for reopening later — that's
+a planned follow-up. Save the outline once you're happy with it.)
+
+However it's captured — OSM search, hand-traced, walked, or traced on your own drone
+image — an outline works exactly the same from there: same save, export, and
+feature-placement steps above.
 
 **Zoom**: the map has real zoom in/out (scroll, pinch, +/- buttons) and a bigger
 default size for working on large roofs. Generating an outline zooms straight into it

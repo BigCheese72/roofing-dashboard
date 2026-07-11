@@ -373,12 +373,21 @@ leak was" and "where the roof drain has always been."
   center,         // {lat,lng} centroid
   areaSqFt,
   perimeterFt,
-  source,         // "osm" (Phase 1 — always OpenStreetMap/Overpass)
-  osmId,          // e.g. "way/12345"
-  osmType,        // "way" | "relation"
-  tags,           // raw OSM tags at capture time (name, building, addr:*, ...)
+  source,         // "osm" (OpenStreetMap/Overpass footprint) | "manual_trace"
+                  // (tapped points) | "walk_corners" (GPS-recorded corners) |
+                  // "ortho_trace" (tapped points on an uploaded drone
+                  // orthomosaic — see "Trace directly on an uploaded drone
+                  // orthomosaic" in DEV_NOTES.md)
+  osmId,          // e.g. "way/12345" — only set when source is "osm"
+  osmType,        // "way" | "relation" — only set when source is "osm"
+  tags,           // raw OSM tags at capture time — only set when source is "osm"
   isSiteBoundary, // true if this was a fallback property/site polygon, not a
                   // real building footprint — see "RoofMapper" in DEV_NOTES.md
+  tracedOnOrtho,  // optional — true only when source is "ortho_trace". Flags
+                  // that ring/center sit at a synthetic (Null Island) origin,
+                  // not a real-world position, until manual alignment (not
+                  // built) happens — shape/area/perimeter are exact once
+                  // calibrated, only WHERE on Earth it sits is a placeholder.
   createdAt,
   calibration     // optional — set once a tech taps an edge dimension label and
                   // enters a real tape-measured length (calibrate-by-known-edge).
@@ -406,10 +415,10 @@ leak was" and "where the roof drain has always been."
 ```
 
 A building can have more than one — re-surveyed later, multiple roof sections, a
-correction — the array is append-only; the newest entry is the current one. Always
-real lat/lng (from Overpass), same as a finding pin or roof asset in satellite mode;
-not rendered on a building's custom `roof_plan`/`sketch` base map for the same
-coordinate-system reason pins/assets aren't (see `DEV_NOTES.md`).
+correction — the array is append-only; the newest entry is the current one. Real
+lat/lng in every case except `source: "ortho_trace"` (synthetic Null Island origin,
+see `tracedOnOrtho` above); not rendered on a building's custom `roof_plan`/`sketch`
+base map for the same coordinate-system reason pins/assets aren't (see `DEV_NOTES.md`).
 
 Notes:
 

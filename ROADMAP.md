@@ -523,6 +523,22 @@ Goal: turn each building into a long-term roof record.
   included) the app-buildings path already used — that roof-add flow now
   works from either origin for free, no new code needed there. See
   "RoofMapper save flow: full CompanyCam picker" in `DEV_NOTES.md`.
+- ✅ **Shipped (dev only, 2026-07-11), part 1 of 2**: trace directly on an
+  uploaded drone orthomosaic — Mark: adding orthos to CompanyCam projects
+  but no way to use one as RoofMapper's tracing base. New "📷 Trace on My
+  Own Drone Image" button, local upload from the device as the PRIMARY
+  path (no CompanyCam project needed first). Since an exported ortho
+  carries no geodata, this reuses the existing trace/Square Up/vertex-edit/
+  Calibrate pipeline anchored at a synthetic (Null Island) origin instead
+  of attempting real georeferencing — that pipeline already operates in
+  local meters relative to a centroid, so it works with zero changes to
+  any downstream geometry code. Outlines tagged `source:"ortho_trace"` +
+  `tracedOnOrtho:true`. **Part 2, not yet built**: retaining the ortho WITH
+  the roof so it can be reopened later (needs a small `admin.js`
+  `set_building_roof_map` addition, admin-mode gated); pulling an ortho
+  FROM an already-linked CompanyCam project instead of local upload
+  (lower-priority secondary path per Mark). See "Trace directly on an
+  uploaded drone orthomosaic" in `DEV_NOTES.md`.
 - ✅ **Shipped (dev only, 2026-07-10)**: easier map navigation — Mark found
   the map "a little hard to navigate." `touch-action:none` on the map
   container (the likely actual cause — without it the page's own scroll

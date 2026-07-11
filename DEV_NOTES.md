@@ -4884,6 +4884,98 @@ call, and a CompanyCam failure shows a fallback message without touching
 the app-buildings list. All test state cleared, page reloaded, console
 clean.
 
+## RoofMapper: trace directly on an uploaded drone orthomosaic (shipped 2026-07-11, dev only, part 1 of 2)
+
+Mark: he's flying drone orthos and attaching them to CompanyCam projects,
+but RoofMapper had no way to use one as the tracing base — satellite
+imagery is all it could trace on. Requirement: local upload from his
+device must be the PRIMARY path (no CompanyCam project required first);
+pulling an ortho FROM an already-linked CompanyCam project is a separate,
+lower-priority path, not built yet.
+
+**Architecture — flat canvas via a synthetic origin, not real
+georeferencing.** A plain exported ortho JPG/PNG carries no embedded GPS
+data, so this doesn't attempt to place it on the real map. Instead it
+reuses the exact same trace → Square Up → vertex-edit → Calibrate
+pipeline RoofMapper already has, anchored at a fixed synthetic origin
+(`{lat:0, lng:0}` — "Null Island," a standard GIS placeholder convention,
+deliberately not a real jobsite location) with a guessed initial
+pixels-per-meter scale (`RM_ORTHO_METERS_PER_PIXEL_GUESS = 0.05`). This
+works with zero changes to any downstream geometry code because the whole
+outline pipeline already operates in LOCAL METERS relative to a centroid
+(`rmGeomToLocalXY`/`rmGeomFromLocalXY`) — it never assumed its origin was
+a real GPS fix. Shape, angles, and proportions traced are exactly correct
+from the first tap; only the absolute scale is a guess until Calibrate
+(tap an edge, enter its real measured length, same UI as every other
+outline) fixes it — exactly the "flat canvas + calibrate" approach Mark
+asked for. `L.CRS.Simple` (a genuine pixel-space CRS) was considered and
+rejected — it would need a parallel x/y ring data model instead of
+reusing lat/lng everywhere else already does.
+
+New: a "📷 Trace on My Own Drone Image" button on RoofMapper's initial
+capture card, next to Use My Location / address search. Picking a file
+runs it through the same canvas-resize pattern `resizeImageFile` already
+uses for hand-drawn base maps, but with its own tighter cap
+(`RM_ORTHO_MAX_DIM = 3200`px vs. 2000px for sketches — ortho sharpness is
+the entire point of this feature — quality 0.82) chosen to stay well
+under CompanyCam's ~30MB upload ceiling and a safe margin under typical
+serverless function payload limits. Once resized, `rmStartOrthoTrace()`
+computes a synthetic image-overlay bounding box around the Null Island
+origin, drops it on the map via `L.imageOverlay`, and auto-starts a
+manual trace session with ortho-specific instructional text. Starting any
+real-location capture afterward (GPS locate, address search, or a fresh
+building search — all funnel through `rmClearFootprintLayers()`) tears
+the ortho overlay back down via the new `rmClearOrthoOverlay()`, so a
+stale synthetic origin can never bleed into a real search.
+
+Outlines traced on an ortho are tagged `source: "ortho_trace"` (vs.
+`"manual_trace"`/`"walk_corners"`) plus an explicit `tracedOnOrtho: true`
+flag, so any code inspecting a saved outline later can tell at a glance
+its position is a placeholder, not a real-world fix, until manual
+alignment (not built) happens.
+
+**Deliberately incremental — this is part 1 of 2.** This piece covers
+upload + trace + refine (Square Up, vertex editing, Calibrate) on the
+ortho as a working canvas. NOT yet included: retaining the ortho WITH the
+roof so it can be reopened later (requirement from Mark's original ask) —
+that needs a small `admin.js` `set_building_roof_map` change (a new
+`roof_base_map_synthetic` flag) and only works in admin mode, since base
+image persistence goes through the same admin-gated write path building
+base maps already use. Shipping this trace-and-refine piece now, per
+"ship incrementally rather than one big drop," with the retain/reopen
+piece to follow as its own commit.
+
+**Storage flagged as a real (not hard) constraint**, per Mark's ask to
+flag it: `RM_ORTHO_MAX_DIM=3200`/quality 0.82 keeps a typical ortho JPEG
+in the low single-digit MB range as a data URL, comfortably under
+CompanyCam's cap, but well above what's safe to also mirror into
+localStorage the way small photos are — the eventual persistence piece
+should go straight to CompanyCam/Firestore and skip any localStorage
+mirror entirely for this asset type.
+
+Tested (mocked file input — called `rmStartOrthoTrace()` directly with a
+synthetic image, plus real `rmTraceAddPoint`/`rmFinishTrace()` calls, no
+real `fdb`/`ccApi` writes): confirmed synthetic bounds math (2000×1500px
+at the 0.05 m/px guess → correct half-width/height in degrees around
+Null Island); confirmed the image overlay renders and a 4-corner manual
+trace on top of it finishes correctly with `source: "ortho_trace"` and
+`tracedOnOrtho: true`; confirmed Square Up, vertex-edit enter/exit (4
+handles for 4 vertices), and Calibrate (rescale to a field-measured 120ft
+edge, area scaled proportionally, `tracedOnOrtho` flag preserved) all
+work completely unchanged on an ortho-traced outline — validates the
+core architectural bet that local-meters geometry doesn't care whether
+its origin is a real GPS fix or a synthetic one. Confirmed
+`rmClearFootprintLayers()` (shared by GPS locate/address search/building
+search) fully tears down ortho state (`orthoActive`, overlay layer, data
+URL, bounds all reset). **Caught and fixed before shipping**: the first
+draft of `rmStartOrthoTrace()` called `rmClearFootprintLayers()` AFTER
+building the overlay — since that function now also clears any active
+ortho overlay (needed so a subsequent real-location search resets it),
+calling it last would have immediately wiped out the overlay the function
+had just built. Fixed by moving the clear to the front of the function,
+before the overlay is constructed. All test state cleared, page reloaded,
+console clean.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |

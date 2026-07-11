@@ -537,6 +537,12 @@
       </div>
       <p class="hint" style="margin:-6px 0 12px">Works for any address — a brand-new roof, a scouting stop, anywhere
         — whether or not it matches CompanyCam or an existing building.</p>
+      <div class="btnrow" style="margin:0 0 6px">
+        <button class="btn" id="rm-ortho-upload-btn" onclick="document.getElementById('rm-ortho-file-input').click()">📷 Trace on My Own Drone Image</button>
+        <input type="file" id="rm-ortho-file-input" accept="image/*" style="display:none" onchange="rmUploadOrthoFile(this)">
+      </div>
+      <p class="hint" id="rm-ortho-hint" style="margin:-6px 0 12px">Have a sharper drone orthomosaic than satellite
+        imagery? Upload it from this device and trace directly on it — no CompanyCam project needed first.</p>
       <p class="rm-status" id="rm-status"></p>
       <div id="rm-map-wrap" style="display:none;margin-bottom:12px">
         <div id="rm-map" style="height:min(70vh,640px);border-radius:6px;overflow:hidden"></div>
@@ -7236,7 +7242,19 @@ var rmState = {
   /* Vertex (per-corner) edit mode -- rmToggleVertexEdit(). vertexHandleLayerGroup
      holds the draggable per-vertex markers, only populated while active. */
   vertexEditActive: false,
-  vertexHandleLayerGroup: null
+  vertexHandleLayerGroup: null,
+  /* Trace-on-your-own-drone-image mode (Finding A -- Mark: "no way to use
+     my orthomosaic as the base for roof tracing"). orthoOverlayLayer is
+     the L.imageOverlay itself; orthoDataUrl/orthoBounds are kept so the
+     image can be re-persisted with the roof once saved (see
+     rmSaveOutlineToBuilding()). orthoActive just tracks whether the
+     CURRENT session is tracing on an uploaded image vs. GPS/satellite, so
+     a fresh location-based search knows to tear the overlay down. See
+     "Ortho upload + flat-canvas tracing" in DEV_NOTES.md. */
+  orthoActive: false,
+  orthoOverlayLayer: null,
+  orthoDataUrl: null,
+  orthoBounds: null
 };
 var RM_LOCAL_KEY = "roofmapper-local-outlines-v1";
 /* A commercial building — especially a hospital/medical campus — can easily
@@ -7545,6 +7563,7 @@ function rmDeleteOutline(){
 }
 function rmClearFootprintLayers(){
   rmCancelTrace(); /* starting fresh (new search, or a new trace) aborts any in-progress trace too */
+  rmClearOrthoOverlay(); /* GPS/address search means a real location, not the ortho's synthetic Null Island one */
   var map = rmState.map;
   if (map){
     Object.keys(rmState.footprintLayers).forEach(function(id){ map.removeLayer(rmState.footprintLayers[id]); });
@@ -8079,6 +8098,111 @@ function rmStartManualTrace(){
   rmSetStatus("Tracing manually — tap the roof's corners in order below, then Finish Outline.");
   rmShowTracePanel();
 }
+/* ---- Trace on your own drone image (Finding A) ----
+   Mark: "no way to use my orthomosaic as the base for roof tracing" --
+   drone orthos are far sharper than satellite, and tracing on them is the
+   whole point of flying them. Primary path is a local upload (no
+   CompanyCam project required first); pulling one FROM an already-linked
+   CompanyCam project is a separate, later piece.
+
+   Architecture: a plain exported ortho (JPG/PNG) carries no geodata, so
+   this does NOT attempt real georeferencing. Instead it reuses the SAME
+   map/trace/Square-Up/vertex-edit/Calibrate pipeline everything else in
+   RoofMapper already uses, just anchored at a fixed SYNTHETIC origin
+   (0,0 -- "Null Island," a deliberately obvious non-real GIS convention)
+   with a guessed initial pixels-per-meter scale. That works because the
+   whole outline pipeline already computes in LOCAL METERS relative to a
+   centroid (rmGeomToLocalXY/rmGeomFromLocalXY), not real-world lat/lng
+   directly -- it doesn't care whether the origin is a real GPS fix or a
+   synthetic anchor. The shape/angles/proportions traced are exactly
+   correct from the start; only the ABSOLUTE scale is a guess until
+   Calibrate (tap an edge, enter its real measured length) fixes it --
+   exactly the "flat canvas + calibrate" path Mark asked for. See "Ortho
+   upload + flat-canvas tracing" in DEV_NOTES.md. */
+var RM_ORTHO_MAX_DIM = 3200; /* sharper than the 2000px cap used for hand-drawn
+  roof_plan/sketch base maps -- ortho sharpness is the entire point of this
+  feature -- but still bounded to stay well under CompanyCam's ~30MB upload
+  cap and a safe margin under typical serverless function payload limits.
+  Tunable; flagged as a real constraint, not a hard technical ceiling, in
+  DEV_NOTES.md. */
+var RM_ORTHO_QUALITY = 0.82;
+var RM_ORTHO_ORIGIN = { lat: 0, lng: 0 };
+var RM_ORTHO_METERS_PER_PIXEL_GUESS = 0.05; /* arbitrary -- only affects the
+  shape's initial on-screen size before Calibrate corrects it to a real
+  measurement; never affects final accuracy. */
+function rmLoadAndResizeOrtho(file, maxDim, quality){
+  return new Promise(function(res, rej){
+    var reader = new FileReader();
+    reader.onload = function(){
+      var img = new Image();
+      img.onload = function(){
+        var w = img.width, h = img.height;
+        if (w > maxDim || h > maxDim){
+          if (w >= h){ h = Math.round(h * maxDim / w); w = maxDim; }
+          else { w = Math.round(w * maxDim / h); h = maxDim; }
+        }
+        var c = document.createElement("canvas");
+        c.width = w; c.height = h;
+        c.getContext("2d").drawImage(img, 0, 0, w, h);
+        res({ dataUrl: c.toDataURL("image/jpeg", quality), w: w, h: h });
+      };
+      img.onerror = function(){ rej(new Error("Couldn't read the image")); };
+      img.src = reader.result;
+    };
+    reader.onerror = function(){ rej(new Error("Couldn't read the file")); };
+    reader.readAsDataURL(file);
+  });
+}
+async function rmUploadOrthoFile(input){
+  var file = input.files && input.files[0];
+  input.value = "";
+  if (!file) return;
+  toast("Preparing image…");
+  try{
+    var result = await rmLoadAndResizeOrtho(file, RM_ORTHO_MAX_DIM, RM_ORTHO_QUALITY);
+    rmStartOrthoTrace(result.dataUrl, result.w, result.h);
+  }catch(e){ toast("Couldn't load that image: " + e.message); }
+}
+function rmClearOrthoOverlay(){
+  if (rmState.map && rmState.orthoOverlayLayer) rmState.map.removeLayer(rmState.orthoOverlayLayer);
+  rmState.orthoOverlayLayer = null;
+  rmState.orthoDataUrl = null;
+  rmState.orthoBounds = null;
+  rmState.orthoActive = false;
+}
+function rmStartOrthoTrace(dataUrl, pixelW, pixelH){
+  var map = rmEnsureMap();
+  rmClearFootprintLayers(); /* same clean-slate as any other fresh capture start --
+    MUST run before the overlay is built below: this also calls
+    rmClearOrthoOverlay(), which would otherwise wipe the overlay we're
+    about to create if called after. */
+  var mpp = RM_ORTHO_METERS_PER_PIXEL_GUESS;
+  var halfWM = (pixelW * mpp) / 2, halfHM = (pixelH * mpp) / 2;
+  var origin = RM_ORTHO_ORIGIN;
+  /* Image pixel (0,0) is the top-left / north-west corner; local XY here
+     follows the same x=east/y=north convention rmGeomToLocalXY/
+     rmGeomFromLocalXY already use everywhere else. */
+  var nw = rmGeomFromLocalXY({ x: -halfWM, y: halfHM }, origin);
+  var se = rmGeomFromLocalXY({ x: halfWM, y: -halfHM }, origin);
+  var bounds = L.latLngBounds([se.lat, nw.lng], [nw.lat, se.lng]);
+  rmState.orthoOverlayLayer = L.imageOverlay(dataUrl, bounds).addTo(map);
+  rmState.orthoActive = true;
+  rmState.orthoDataUrl = dataUrl;
+  rmState.orthoBounds = { north: nw.lat, south: se.lat, east: se.lng, west: nw.lng };
+  rmState.lat = origin.lat; rmState.lng = origin.lng; rmState.accuracy = null;
+  map.fitBounds(bounds);
+  rmTraceState.active = true;
+  rmTraceState.mode = "manual";
+  rmTraceState.points = [];
+  rmTraceClickHandler = function(e){ rmTraceAddPoint(e.latlng); };
+  map.on("click", rmTraceClickHandler);
+  rmShowTracePanel();
+  document.getElementById("rm-trace-mode-hint").textContent =
+    "Tap the roof's corners in order, right on your uploaded image above. Once finished, use Calibrate on any " +
+    "edge (tap its length label, enter the real measurement) to set the true scale — this image has no GPS data, " +
+    "so the shape starts at an arbitrary size until you do.";
+  rmUpdateControlVisibility();
+}
 /* Walk-the-corners: no map-click handler -- points come from a GPS fix each
    time the tech taps Record, not from tapping the map (satellite imagery
    may be blank/wrong/unavailable here at all, which is exactly the case
@@ -8172,16 +8296,26 @@ function rmFinishTrace(){
   }
   var ring = rmGeomCleanRing(rmTraceState.points.concat([rmTraceState.points[0]]));
   if (ring.length < 4){ toast("Those points are too close together — try " + (isWalk ? "spacing corners further apart" : "tracing wider corners") + "."); return; }
+  var tracedOnOrtho = rmState.orthoActive;
   var outline = {
     ring: ring,
     center: rmGeomRingCentroid(ring),
     areaSqFt: rmGeomPolygonAreaSqMeters(ring) * 10.7639,
     perimeterFt: rmGeomPolygonPerimeterMeters(ring) * 3.28084,
-    source: isWalk ? "walk_corners" : "manual_trace",
+    source: isWalk ? "walk_corners" : (tracedOnOrtho ? "ortho_trace" : "manual_trace"),
     osmId: null, osmType: null, tags: {},
     isSiteBoundary: false,
     createdAt: Date.now()
   };
+  /* tracedOnOrtho'd outlines carry a synthetic (Null Island) origin, not a
+     real-world position -- flagged explicitly rather than silently baked
+     into `source` alone, so any future code inspecting an outline can
+     tell at a glance not to trust its absolute position on a real-world
+     map until manual alignment (not yet built) happens. Shape/area/
+     perimeter are exactly correct once calibrated; only WHERE on Earth
+     it sits is a placeholder. See "Ortho upload + flat-canvas tracing" in
+     DEV_NOTES.md. */
+  if (tracedOnOrtho) outline.tracedOnOrtho = true;
   rmCancelTrace();
   rmDrawFinalOutline(outline);
   toast(isWalk ? "Roof outline captured from walked corners ✓" : "Roof outline traced ✓");
