@@ -5047,6 +5047,17 @@ async function openBuildingHistory(buildingId){
        "Individual-roof tracing + labels" in DEV_NOTES.md. */
     var renameBtnHtml = '<button class="btn" style="margin-left:6px" onclick="promptRenameRoof(\'' +
       buildingId + '\', \'' + historySelectedRoofId + '\')">✏️ Rename</button>';
+    /* THE fix for "RoofMapper can't reopen a saved roof" -- Mark refreshed,
+       came back to a roof Building History shows intact, and RoofMapper
+       opened blank (no code path anywhere ever loaded a saved
+       roof_outlines[] entry back onto the map -- every RoofMapper entry
+       point only ever started a NEW trace). This is where he'll look for
+       it, since this is where he can actually SEE the roof exists. Routes
+       to rmOpenRoofInMapper(), the one real "open" path, shared with
+       RoofMapper's own roof switcher. See "Reopen a saved roof in
+       RoofMapper" in DEV_NOTES.md. */
+    var openInMapperBtnHtml = '<button class="btn primary" style="margin-left:6px" onclick="rmOpenRoofInMapper(\'' +
+      buildingId + '\', \'' + historySelectedRoofId + '\')">🗺️ Open in RoofMapper</button>';
     var roofPickerHtml = roofs.length > 1 ?
       '<div class="fld" style="max-width:320px;margin-bottom:8px">' +
         '<label>Roof</label><div class="btnrow" style="margin:0;align-items:center">' +
@@ -5056,8 +5067,8 @@ async function openBuildingHistory(buildingId){
           return '<option value="' + esc(r.id) + '"' + (r.id === historySelectedRoofId ? ' selected' : '') + '>' +
             esc(r.label || "Roof") + (cond ? " — " + esc(cond) : "") + '</option>';
         }).join('') +
-        '</select>' + renameBtnHtml + '</div></div>' :
-      '<p class="hint" style="margin:0 0 8px">Roof: <b>' + esc(roof.label || "Roof") + '</b>' + renameBtnHtml + '</p>';
+        '</select>' + renameBtnHtml + openInMapperBtnHtml + '</div></div>' :
+      '<p class="hint" style="margin:0 0 8px">Roof: <b>' + esc(roof.label || "Roof") + '</b>' + renameBtnHtml + openInMapperBtnHtml + '</p>';
     var addRoofBtnHtml = '<button class="btn" onclick="promptAddRoof(\'' + buildingId + '\')">+ Add Roof</button>';
     var addFeatureBtnHtml = '<button class="btn" onclick="openAssetModal(\'' + buildingId + '\', null, \'' + historySelectedRoofId + '\')">+ Add Roof Feature</button>';
     var addActivityBtnHtml = '<button class="btn" onclick="openActivityModal(\'' + buildingId + '\')">+ Log Activity</button>';
@@ -8921,27 +8932,40 @@ function rmClearOrthoOverlay(){
   rmState.orthoBounds = null;
   rmState.orthoActive = false;
 }
+/* Image pixel (0,0) is the top-left / north-west corner; local XY here
+   follows the same x=east/y=north convention rmGeomToLocalXY/
+   rmGeomFromLocalXY already use everywhere else. Extracted out of
+   rmStartOrthoTrace() so rmOpenRoofInMapper() can reconstruct the IDENTICAL
+   bounds when reopening a previously-persisted synthetic ortho: neither
+   RM_ORTHO_ORIGIN nor RM_ORTHO_METERS_PER_PIXEL_GUESS are persisted
+   per-upload (they're fixed constants), so re-running this exact math
+   against the same pixel dimensions is deterministic -- no separate
+   bounds field needs to be stored in Firestore at all. See "Reopen a
+   saved roof in RoofMapper" in DEV_NOTES.md. */
+function rmComputeOrthoBounds(pixelW, pixelH){
+  var mpp = RM_ORTHO_METERS_PER_PIXEL_GUESS;
+  var halfWM = (pixelW * mpp) / 2, halfHM = (pixelH * mpp) / 2;
+  var origin = RM_ORTHO_ORIGIN;
+  var nw = rmGeomFromLocalXY({ x: -halfWM, y: halfHM }, origin);
+  var se = rmGeomFromLocalXY({ x: halfWM, y: -halfHM }, origin);
+  return {
+    latLngBounds: L.latLngBounds([se.lat, nw.lng], [nw.lat, se.lng]),
+    orthoBounds: { north: nw.lat, south: se.lat, east: se.lng, west: nw.lng }
+  };
+}
 function rmStartOrthoTrace(dataUrl, pixelW, pixelH){
   var map = rmEnsureMap();
   rmClearFootprintLayers(); /* same clean-slate as any other fresh capture start --
     MUST run before the overlay is built below: this also calls
     rmClearOrthoOverlay(), which would otherwise wipe the overlay we're
     about to create if called after. */
-  var mpp = RM_ORTHO_METERS_PER_PIXEL_GUESS;
-  var halfWM = (pixelW * mpp) / 2, halfHM = (pixelH * mpp) / 2;
-  var origin = RM_ORTHO_ORIGIN;
-  /* Image pixel (0,0) is the top-left / north-west corner; local XY here
-     follows the same x=east/y=north convention rmGeomToLocalXY/
-     rmGeomFromLocalXY already use everywhere else. */
-  var nw = rmGeomFromLocalXY({ x: -halfWM, y: halfHM }, origin);
-  var se = rmGeomFromLocalXY({ x: halfWM, y: -halfHM }, origin);
-  var bounds = L.latLngBounds([se.lat, nw.lng], [nw.lat, se.lng]);
-  rmState.orthoOverlayLayer = L.imageOverlay(dataUrl, bounds).addTo(map);
+  var computed = rmComputeOrthoBounds(pixelW, pixelH);
+  rmState.orthoOverlayLayer = L.imageOverlay(dataUrl, computed.latLngBounds).addTo(map);
   rmState.orthoActive = true;
   rmState.orthoDataUrl = dataUrl;
-  rmState.orthoBounds = { north: nw.lat, south: se.lat, east: se.lng, west: nw.lng };
-  rmState.lat = origin.lat; rmState.lng = origin.lng; rmState.accuracy = null;
-  map.fitBounds(bounds);
+  rmState.orthoBounds = computed.orthoBounds;
+  rmState.lat = RM_ORTHO_ORIGIN.lat; rmState.lng = RM_ORTHO_ORIGIN.lng; rmState.accuracy = null;
+  map.fitBounds(computed.latLngBounds);
   rmTraceState.active = true;
   rmTraceState.mode = "manual";
   rmTraceState.points = [];
@@ -9822,6 +9846,105 @@ async function rmSaveOutlineToBuilding(buildingId, roofId){
        with the roof for reopening" in DEV_NOTES.md. */
     if (rmState.orthoActive) rmPersistOrthoBaseMap(buildingId, roof.id);
   }catch(e){ toast("Couldn't save: " + e.message); }
+}
+/* THE fix for "RoofMapper can't reopen a saved roof" -- Mark refreshed,
+   went back into RoofMapper for a roof Building History shows intact and
+   saved, and got a blank map: NO code path anywhere in RoofMapper ever
+   loaded a previously-saved roof_outlines[] entry back onto the map --
+   every entry point (address search, GPS, rmEnterMultiRoofCapture) only
+   ever starts a NEW trace. A saved roof was effectively stranded: visible,
+   but not editable/exportable/addable-to without retracing from scratch.
+   This is the one real "open" path, shared by Building History's "Open in
+   RoofMapper" button and RoofMapper's own roof switcher. Deliberately
+   never touches GPS/rmUseMyLocation/rmSearchBuildings -- Mark's other live
+   complaint, "don't re-locate a building I already mapped" -- the saved
+   outline's own coordinates ARE the location; there's nothing to search
+   for. See "Reopen a saved roof in RoofMapper" in DEV_NOTES.md. */
+async function rmOpenRoofInMapper(buildingId, roofId){
+  if (currentViewName !== "roofmapper") showView("roofmapper");
+  if (!fdb){ toast("Opening a saved roof needs cloud sync (internet connection)."); return; }
+  toast("Opening roof…");
+  try{
+    var snap = await fdb.collection("buildings").doc(buildingId).get();
+    var bld = snap.exists ? snap.data() : {};
+    var roofs = getBuildingRoofs(bld);
+    var roof = roofs.find(function(r){ return r.id === roofId; }) || roofs[0];
+    if (!roof){ toast("Couldn't find that roof."); return; }
+    var outlines = roof.roof_outlines || [];
+    var outline = outlines[outlines.length - 1]; /* newest is current, same convention as everywhere else */
+    if (!outline || !outline.ring || outline.ring.length < 3){
+      toast((roof.label || "This roof") + " has no traced outline yet — use Trace Another Roof to add one.");
+      return;
+    }
+    var map = rmEnsureMap();
+    rmState.preserveOrthoOnClear = false; /* opening a roof always rebuilds its OWN base image below, never inherits whatever was on screen before */
+    rmClearFootprintLayers(); /* full reset -- footprints/outline/linked state/ortho/geotiff, same clean slate rmEnterMultiRoofCapture() uses */
+    var center = outline.center || rmGeomRingCentroid(outline.ring);
+    rmState.lat = center.lat; rmState.lng = center.lng; rmState.accuracy = null;
+
+    /* Base image, if this roof has one persisted -- BEFORE rmDrawFinalOutline()
+       below so it's already on the map underneath the outline, not layered
+       on top of it. */
+    if (roof.roof_base_map_type === "drone_ortho" && roof.roof_base_map_url && roof.roof_base_map_bounds){
+      var b = roof.roof_base_map_bounds;
+      rmState.orthoOverlayLayer = L.imageOverlay(roof.roof_base_map_url, [[b.south, b.west], [b.north, b.east]]).addTo(map);
+      rmState.orthoActive = true;
+      rmState.orthoBounds = b;
+    } else if (roof.roof_base_map_type === "sketch" && roof.roof_base_map_synthetic && roof.roof_base_map_url){
+      /* RoofMapper's own persisted flat-canvas ortho (Finding A, part 2) --
+         its lat/lng bounds were never stored in Firestore (only the image
+         URL), but they're fully reconstructible: reload the image to read
+         its real pixel dimensions, then rerun rmComputeOrthoBounds() with
+         those same fixed constants -- deterministically identical to the
+         bounds computed the day it was uploaded. A failure here (e.g. the
+         image URL no longer resolves) doesn't block the roof itself from
+         opening -- the outline loads regardless, just without its photo. */
+      try{
+        var dims = await new Promise(function(res, rej){
+          var img = new Image();
+          img.onload = function(){ res({ w: img.naturalWidth, h: img.naturalHeight }); };
+          img.onerror = function(){ rej(new Error("couldn't reload the saved image")); };
+          img.src = roof.roof_base_map_url;
+        });
+        var computed = rmComputeOrthoBounds(dims.w, dims.h);
+        rmState.orthoOverlayLayer = L.imageOverlay(roof.roof_base_map_url, computed.latLngBounds).addTo(map);
+        rmState.orthoActive = true;
+        rmState.orthoDataUrl = roof.roof_base_map_url;
+        rmState.orthoBounds = computed.orthoBounds;
+      }catch(e){
+        toast("Roof opened, but couldn't reload its saved drone image: " + e.message);
+      }
+    }
+    /* roof_plan / hand-sketch base maps are x/y CRS.Simple -- Building
+       History's own separate map instance only, a different/incompatible
+       coordinate system from RoofMapper's real lat/lng map -- nothing to
+       overlay here, the outline (always real lat/lng) still loads
+       correctly below regardless. geotiff_trace outlines have no
+       persisted base image at all yet (documented gap, see "GeoTIFF
+       georeferenced ortho support" in DEV_NOTES.md) -- same result: outline
+       loads on plain satellite, no photo underneath. */
+
+    rmDrawFinalOutline(outline); /* draws the polygon, edge dims, zooms to it, renders stats -- also resets linked state, restored right after */
+    rmState.linkedBuildingId = buildingId;
+    rmState.linkedRoofId = roof.id;
+    rmState.pendingBuildingId = null;
+    rmState.pendingBuildingName = null;
+    if (rmState.roofLabelLayer) map.removeLayer(rmState.roofLabelLayer);
+    var labelCenter = outline.center || rmGeomRingCentroid(outline.ring);
+    rmState.roofLabelLayer = roofLabelMarker(labelCenter.lat, labelCenter.lng, roof.label || "Roof", rmRenameLinkedRoof).addTo(map);
+    rmShowFeaturePanel(bld.name);
+    await rmLoadLinkedAssets();
+    rmUpdateExportHint();
+    rmUpdateControlVisibility();
+    rmRenderBaseMapStatus(roof.roof_base_map_type || null);
+    /* Other roofs on this building as the dimmed reference layer -- same
+       "see everything else while you work" a fresh trace gets, just as
+       useful for context/vertex-snapping while editing an existing one. */
+    await rmDrawReferenceRoofs(buildingId, bld, roof.id);
+    rmSetStatus("Opened " + (roof.label || "this roof") + (rmState.orthoActive ? " on its saved drone image." : ".") +
+      (roofs.length > 1 ? " " + roofs.length + " roofs on this building." : ""));
+    setTimeout(function(){ map.invalidateSize(); }, 60);
+  }catch(e){ toast("Couldn't open that roof: " + e.message); }
 }
 async function rmCreateBuildingAndSave(){
   if (!rmState.outline){ toast("Generate a roof outline first."); return; }

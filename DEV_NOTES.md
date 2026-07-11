@@ -5833,6 +5833,105 @@ named the same as one pending section) and confirmed it auto-resolved to
 roofs with their own outline entries, and the screen landed correctly on
 the last one. All test state cleared, page reloaded, console clean.
 
+## Reopen a saved roof in RoofMapper (shipped 2026-07-11, dev only, TOP-PRIORITY bug fix)
+
+Mark, live: refreshed, went back into RoofMapper for a roof he'd been
+working on, and got a blank map — he'd have had to retrace the whole
+roof from scratch. The roof was never actually lost: Building History
+showed it completely intact. Root cause, confirmed by reading the code
+rather than guessing: **no function anywhere in RoofMapper ever loaded a
+previously-saved `roof_outlines[]` entry back onto the map.** Every
+existing entry point — address search, GPS, `rmEnterMultiRoofCapture()`
+("Trace Another Roof") — only ever starts a brand-new trace. A saved roof
+was effectively write-only: visible in Building History, permanently
+stranded from RoofMapper itself, uneditable/unexportable/unable to have
+features added without retracing.
+
+**`rmOpenRoofInMapper(buildingId, roofId)`** is the fix — the one real
+"open" path, reusing the exact same pieces a fresh trace already draws
+with instead of inventing a second rendering path: `rmDrawFinalOutline()`
+for the polygon/edge-dimensions/zoom/stats (same function
+`rmSaveOutlineToBuilding()` and a fresh trace both already use), then
+`linkedBuildingId`/`linkedRoofId` set right after (same ordering
+`rmSaveOutlineToBuilding()` uses, since `rmDrawFinalOutline()` itself
+calls `rmClearLinkedFeatures()` internally), the tappable `roofLabelMarker()`
+label, `rmLoadLinkedAssets()` for features/pins, and
+`rmDrawReferenceRoofs(buildingId, bld, roof.id)` so every OTHER roof on
+the building shows as the same dimmed reference layer a fresh trace gets
+— just as useful for context/vertex-snapping while editing an existing
+roof as while adding a new one. Calibrated scale needs no special
+handling at all — it already lives on the outline object itself
+(`outline.calibration`), so loading the outline restores it automatically.
+
+**Base image reload — the trickiest part, since it was never fully
+persisted:**
+- `roof_base_map_type === "drone_ortho"` (real georeferenced bounds,
+  admin-set): straightforward, `roof_base_map_bounds` is already stored,
+  just `L.imageOverlay(url, bounds)`.
+- `roof_base_map_type === "sketch"` with `roof_base_map_synthetic: true`
+  (RoofMapper's OWN persisted flat-canvas ortho, "Ortho upload: persist
+  with the roof for reopening") — its lat/lng bounds were never actually
+  stored in Firestore, only the image URL (`rmPersistOrthoBaseMap()` never
+  passed `roof_base_map_bounds` to `set_building_roof_map` for this type).
+  Fully reconstructible anyway: `RM_ORTHO_ORIGIN`/
+  `RM_ORTHO_METERS_PER_PIXEL_GUESS` are fixed constants, not persisted
+  per-upload, so reloading the image to read its real pixel dimensions and
+  re-running the exact same math (`rmComputeOrthoBounds()`, extracted out
+  of `rmStartOrthoTrace()` so both paths share one implementation) produces
+  bounds byte-for-byte identical to the day it was uploaded — no new
+  Firestore field needed. A failure here (bad/expired URL) doesn't block
+  the roof from opening — the outline loads regardless, just without its
+  photo, with a toast explaining why.
+- `roof_base_map_type === "roof_plan"` or a genuine hand-drawn `"sketch"`
+  (no `synthetic` flag): x/y `CRS.Simple` pixel space, Building History's
+  own separate map instance only — a fundamentally different, incompatible
+  coordinate system from RoofMapper's real lat/lng map. Deliberately
+  skipped; the outline (always real lat/lng regardless of source) still
+  loads correctly on plain satellite underneath.
+- `source: "geotiff_trace"` outlines have no persisted base image at all
+  yet (a separate, already-documented gap — see "GeoTIFF georeferenced
+  ortho support" above). Same result: outline loads fine, no photo.
+
+**Deliberately never touches GPS or search** — no `rmUseMyLocation()`,
+`rmSearchBuildings()`, or any geocoding call anywhere in this path. Folds
+in Mark's other live complaint, "don't re-locate a building I already
+mapped": the saved outline's own coordinates ARE the location, there's
+nothing to search for. `rmState.lat/lng` are set directly from the
+outline's centroid for state consistency, never from a GPS/geocode call.
+
+**Entry point (this pass): Building History's roof picker**, a new
+"🗺️ Open in RoofMapper" button next to the existing "✏️ Rename" button —
+shown for both the single-roof and multi-roof cases, since that's where
+Mark can actually SEE a roof exists and will look for a way back into it.
+RoofMapper's own in-app roof switcher (picking a sibling roof without
+bouncing back to Building History) is deliberately a separate, later
+pass — this fix is scoped to making a saved roof reachable AT ALL.
+
+Tested in the browser with a mocked `fdb` (in-memory `buildings` store, no
+real writes): traced a rectangular outline, saved it to a fresh building,
+added a feature (HVAC/RTU-9) — confirmed both persisted. Simulated a hard
+refresh (reset every relevant `rmState` field, including `outline`/
+`linkedBuildingId`/`lat`/`lng`, WITHOUT touching the mock Firestore data,
+mirroring what an actual page reload does) — confirmed `rmOpenRoofInMapper()`
+restores the exact outline (same vertex count, same area to the sq ft),
+the tappable label with its pencil hint, and the HVAC feature, and
+confirmed `rmGeoRequest` (wrapped to detect a call) was NEVER invoked.
+Set the roof's `roof_base_map_type` to `"sketch"`+`synthetic:true` with a
+real (tiny, valid) test PNG data URL, reset state again, reopened —
+confirmed the image reloads, `orthoActive` becomes true, and the
+reconstructed bounds are computed from the image's real dimensions (not
+guessed). Repeated for `"drone_ortho"` with stored bounds — confirmed it
+uses those bounds directly. Round-trip: opened the roof, nudged a vertex,
+called `rmPersistVertexEdit()` (Edit Shape's own in-place save), reopened
+a THIRD time — confirmed exactly ONE `roof_outlines[]` entry throughout
+(updated in place by its own id, never appended as a duplicate), the
+edited vertex position carried through, and the feature count stayed at
+1 (no orphaning). Clicked the actual "Open in RoofMapper" button rendered
+by `openBuildingHistory()` (real DOM `button.click()`, not a direct
+function call) — confirmed it switches views and loads the roof
+end-to-end. All test state cleared, real `fdb` restored, console clean
+throughout.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |
