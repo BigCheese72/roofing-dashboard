@@ -6077,6 +6077,78 @@ roof's outline/label without calling `rmGeoRequest` (wrapped to detect
 any call — none fired) and the switcher re-renders showing the new
 selection. All test state cleared, console clean.
 
+## Multi-roof export selection (shipped 2026-07-11, dev only)
+
+Mark: "he must be able to CHOOSE which roofs are included in an export...
+export one roof, a couple, or the whole building." A checkbox list
+(`rmRenderExportRoofSelect()`, default all checked) appears in the outline
+panel right above the export buttons, but only for a building with more
+than one roof — wired in at the same two places the roof switcher is
+(right after `rmOpenRoofInMapper()`/`rmSaveOutlineToBuilding()`), same
+`roofs.length <= 1` guard, cleared by `rmClearLinkedFeatures()` alongside
+the rest of the "roof is linked" UI.
+
+**One shared decision point, `rmBuildExportOutput()`**, now called by
+every export format (SVG/PNG/PDF) AND Preview — continuing the "one
+render path" principle the single-roof fix already established. It falls
+back to the ORIGINAL, byte-for-byte-unchanged single-outline path whenever
+the checklist isn't showing at all (a still-single-roof building, or an
+outline never saved to a building), so nothing about today's single-roof
+export can regress. When 1+ roofs are checked, it fetches each one's
+latest outline + its own permanent features + its own historical finding
+pins (`rmFetchMultiRoofExportData()` — one `building_history_events` query
+for the whole building via the existing `rmFetchAllRoofsPinsGrouped()`,
+grouped client-side, same pattern `rmDrawReferenceRoofs()` already uses)
+and renders them together via a new `rmBuildMultiRoofOutlineSvg()`.
+
+**`rmBuildMultiRoofOutlineSvg()`** projects every selected roof into ONE
+shared local-feet coordinate space — a single origin (the centroid of
+every selected roof's combined vertices), not each roof individually
+re-centered — so roofs render in their real position/orientation relative
+to each other, like an actual site plan, not disconnected shapes. Each
+roof gets its own outline fill/stroke, edge dimensions (same real-world
+haversine lengths as everywhere else), feature/pin markers, and — per
+Mark's exact ask, "each selected roof drawn, labeled, with its area/
+dimensions" — its own label and area in sq ft at its centroid. Combined
+header shows total area across every included roof and a roof count
+("3 Roofs"); a shared legend covers every feature type across all of them;
+a north arrow (the projection's "up" genuinely IS geographic north here,
+not decorative) and a disclaimer footer line round out the target spec
+from the original export-fix pass. Reuses the same
+`RM_EXPORT_MAX_CANVAS_DIM` cap as the single-roof path so a multi-roof
+combined export stays a sane, bounded size regardless of how far apart
+the roofs are.
+
+**Real bug caught while building this, fixed in BOTH the new multi-roof
+path and the existing single-roof `rmBuildOutlineSvg()`**: the scale-clamp
+formula, `Math.max(RM_EXPORT_MIN_SCALE, Math.min(RM_EXPORT_MAX_SCALE,
+RM_EXPORT_MAX_CANVAS_DIM / Math.max(w,h)))`, had the MIN_SCALE floor
+wrapped AROUND the whole clamp — meaning for anything spanning more than
+~550ft on its long side (trivial for several roofs combined, but also
+possible for one genuinely large single roof), it forced the scale back
+UP to 4px/ft regardless of the fit ratio, directly contradicting the
+canvas cap's own documented purpose ("caps the canvas regardless of roof
+size" — see the export-fix entry above). Never triggered before because
+no single roof traced through RoofMapper so far happened to exceed that
+span; a multi-roof COMBINED bounding box hits it easily and immediately
+exposed it. Fixed to a plain `Math.min(RM_EXPORT_MAX_SCALE, fitRatio)` —
+`RM_EXPORT_MIN_SCALE` provided no real value (`MAX_SCALE` already caps the
+opposite, over-zoomed-tiny-roof direction) and has been removed.
+
+Tested in the browser with a mocked `fdb` (no real writes): saved 3 roofs
+to one building (one with a placed HVAC feature) — confirmed the checklist
+renders with all 3, all checked by default; built the export output
+directly — confirmed all 3 roof labels, the "3 Roofs" title, total area,
+north arrow, and disclaimer text all appear, AND (after the scale-clamp
+fix) the canvas stays within the intended cap instead of the ~7650px-tall
+runaway canvas the bug produced on first attempt; unchecked one roof —
+confirmed the rebuilt export correctly drops it and updates to "2 Roofs";
+reset to a fresh SINGLE, unlinked outline — confirmed the checklist stays
+hidden and the export falls back to the original single-outline path with
+a sane, properly-capped size; called Preview/PNG/PDF/SVG all four for the
+multi-roof case — confirmed none threw and Preview's modal actually
+displayed the combined SVG. All test state cleared, console clean.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |

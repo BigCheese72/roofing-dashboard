@@ -777,6 +777,16 @@
         <button class="btn danger rm-bigbtn" onclick="rmDeleteOutline()">🗑️ Delete Outline</button>
       </div>
       <div id="rm-split-panel"></div>
+      <!-- Which roof(s) an export includes -- Mark: "he must be able to
+           CHOOSE which roofs are included in an export... export one roof,
+           a couple, or the whole building." Only rendered for a building
+           with more than one roof (rmRenderExportRoofSelect()); default all
+           checked. A still-single-roof building (or an outline never saved
+           to a building at all) sees nothing here and exports exactly as
+           before -- rmBuildExportOutput() falls back to the original
+           single-outline path whenever this list is empty/absent. See
+           "Multi-roof export selection" in DEV_NOTES.md. -->
+      <div id="rm-export-roof-select"></div>
       <div class="btnrow">
         <button class="btn" onclick="rmZoomToOutline()">🔍 Zoom to Roof</button>
         <button class="btn primary" onclick="rmPreviewExport()">👁️ Preview Export</button>
@@ -7612,10 +7622,12 @@ function rmOutlineTitle(outline){
    implementation below, which drew an unfilled, undimensioned, unlabeled
    outline through totally different code that could silently diverge from
    what Preview showed). Capping the long edge of the canvas keeps exports
-   a sane, predictable size regardless of roof size, while MIN_SCALE keeps
-   small roofs from shrinking into illegibility. */
+   a sane, predictable size regardless of roof size; MAX_SCALE keeps a tiny
+   roof from being blown up past a sensible px/ft (a former MIN_SCALE floor
+   was removed -- see the scale-clamp fix note below rmBuildOutlineSvg()'s
+   own `scale` line -- it fought the canvas-size cap instead of serving it). */
 var RM_EXPORT_MAX_CANVAS_DIM = 2200;
-var RM_EXPORT_MIN_SCALE = 4, RM_EXPORT_MAX_SCALE = 20; /* px per foot */
+var RM_EXPORT_MAX_SCALE = 20; /* px per foot */
 /* overlay ({assets, pins, buildingName, buildingAddress, roofLabel}, from
    rmFetchExportOverlayData()) is optional -- omitting it (or passing null)
    produces the original outline-only export, so a locally-saved/unlinked
@@ -7641,7 +7653,20 @@ function rmBuildOutlineSvg(outline, overlay){
   var minY = Math.min.apply(null, allYs), maxY = Math.max.apply(null, allYs);
   var padFt = Math.max(6, (maxX - minX) * 0.08);
   var w = (maxX - minX) + padFt * 2, h = (maxY - minY) + padFt * 2;
-  var scale = Math.max(RM_EXPORT_MIN_SCALE, Math.min(RM_EXPORT_MAX_SCALE, RM_EXPORT_MAX_CANVAS_DIM / Math.max(w, h)));
+  /* Real bug, caught while building the multi-roof export below and
+     confirmed to affect this single-roof path too (just never triggered --
+     no single roof traced through RoofMapper so far has exceeded ~550ft on
+     its long side): Math.max(RM_EXPORT_MIN_SCALE, ...) wrapped AROUND the
+     whole clamp forces scale back UP to 4px/ft whenever the natural
+     shrink-to-fit ratio (RM_EXPORT_MAX_CANVAS_DIM / longest side) comes out
+     below that floor -- which is exactly backwards for a roof large enough
+     to need it, and directly contradicts this cap's whole documented
+     purpose ("caps the canvas regardless of roof size" -- see the export
+     fix entry in DEV_NOTES.md). RM_EXPORT_MIN_SCALE never actually needs to
+     raise the scale: MAX_SCALE already prevents a small roof's ratio from
+     going too high, so the floor was dead weight at best and cap-breaking
+     at worst. Plain Math.min(MAX_SCALE, fitRatio) is the correct clamp. */
+  var scale = Math.min(RM_EXPORT_MAX_SCALE, RM_EXPORT_MAX_CANVAS_DIM / Math.max(w, h));
   var hasBuildingInfo = !!(overlay && (overlay.buildingName || overlay.buildingAddress));
   var headerH = hasBuildingInfo ? 76 : 60;
   var footerH = overlay ? 64 : 40; /* extra room for the legend line when features are included */
@@ -7737,10 +7762,215 @@ function rmBuildOutlineSvg(outline, overlay){
   '</svg>';
   return { svg: svg, width: svgW, height: svgH };
 }
+/* ---- Multi-roof export selection ----
+   Mark: "he must be able to CHOOSE which roofs are included in an export
+   -- e.g. checkboxes... export one roof, a couple, or the whole
+   building." Only meaningful for a building with more than one roof --
+   wired in at the same two places rmRenderRoofSwitcher() is (right after
+   rmOpenRoofInMapper()/rmSaveOutlineToBuilding() finish), same
+   roofs.length<=1 guard. Default all checked, per Mark's explicit ask. */
+function rmRenderExportRoofSelect(buildingId, roofs, activeRoofId){
+  var host = document.getElementById("rm-export-roof-select");
+  if (!host) return;
+  if (!roofs || roofs.length <= 1){ host.innerHTML = ""; return; }
+  host.innerHTML = '<div class="fld" style="margin:0 0 10px">' +
+    '<label>Include in export</label>' +
+    roofs.map(function(r){
+      return '<label class="hint" style="display:flex;align-items:center;gap:6px;margin:2px 0">' +
+        '<input type="checkbox" class="rm-export-roof-cb" value="' + esc(r.id) + '" checked' +
+        (r.id === activeRoofId ? ' data-active="1"' : '') + '> ' + esc(r.label || "Roof") + '</label>';
+    }).join('') + '</div>';
+}
+/* Empty/absent means "no checklist showing" (a still-single-roof building,
+   or an outline never saved to a building at all) -- rmBuildExportOutput()
+   below treats that as "use the original single-outline path," so nothing
+   about today's single-roof export changes. */
+function rmGetSelectedExportRoofIds(){
+  var boxes = document.querySelectorAll("#rm-export-roof-select .rm-export-roof-cb");
+  if (!boxes.length) return null;
+  return Array.from(boxes).filter(function(b){ return b.checked; }).map(function(b){ return b.value; });
+}
+/* Fetches every SELECTED roof's latest outline + its own permanent
+   features + its own historical finding pins -- one building_history_events
+   query for the whole building (rmFetchAllRoofsPinsGrouped(), already
+   built for the reference-layer/RoofMapper drawing, reused here instead of
+   one query per roof) grouped client-side by roofId, same pattern
+   rmDrawReferenceRoofs() already established. */
+async function rmFetchMultiRoofExportData(buildingId, roofIds){
+  var snap = await fdb.collection("buildings").doc(buildingId).get();
+  var bld = snap.exists ? snap.data() : {};
+  var allRoofs = getBuildingRoofs(bld);
+  var pinsByRoof = await rmFetchAllRoofsPinsGrouped(buildingId);
+  var roofsData = roofIds.map(function(roofId){
+    var roof = allRoofs.find(function(r){ return r.id === roofId; });
+    if (!roof) return null;
+    var outlines = roof.roof_outlines || [];
+    var outline = outlines[outlines.length - 1];
+    if (!outline || !outline.ring || outline.ring.length < 3) return null;
+    return {
+      roofId: roofId, label: roof.label || "Roof", outline: outline,
+      assets: (roof.roof_assets || []).filter(function(a){ return typeof a.lat === "number" && typeof a.lng === "number"; }),
+      pins: pinsByRoof[roofId] || []
+    };
+  }).filter(Boolean);
+  return { buildingName: bld.name || null, buildingAddress: bld.address || null, roofs: roofsData };
+}
+/* Multi-roof counterpart to rmBuildOutlineSvg() above -- same overall
+   design (one shared render path for Preview/SVG/PNG/PDF, capped canvas
+   size, edge dimensions, feature/pin markers, legend) but for SEVERAL
+   roofs on one page instead of one. Projects every roof into ONE shared
+   local-feet coordinate space (a single origin -- the centroid of every
+   selected roof's combined vertices -- rather than each roof centered on
+   its own) so the roofs render in their real position/orientation
+   RELATIVE TO EACH OTHER, like an actual site plan, not as disconnected
+   individually-centered shapes. See "Multi-roof export selection" in
+   DEV_NOTES.md. */
+function rmBuildMultiRoofOutlineSvg(data){
+  var allRingPts = [];
+  data.roofs.forEach(function(r){ allRingPts = allRingPts.concat(r.outline.ring); });
+  var origin = rmGeomRingCentroid(allRingPts);
+  var roofsProjected = data.roofs.map(function(r, i){
+    var pts = r.outline.ring.map(function(p){ return rmExportProjectPoint(p, origin); });
+    var assetPts = r.assets.map(function(a){ return Object.assign({}, rmExportProjectPoint(a, origin), { type: a.type, label: a.label }); });
+    var pinPts = r.pins.map(function(p){ return Object.assign({}, rmExportProjectPoint(p, origin), { warranty: p.warranty }); });
+    var labelPt = rmExportProjectPoint(r.outline.center || rmGeomRingCentroid(r.outline.ring), origin);
+    return { label: r.label, outline: r.outline, pts: pts, assetPts: assetPts, pinPts: pinPts, labelPt: labelPt };
+  });
+  var allXs = [], allYs = [];
+  roofsProjected.forEach(function(r){
+    r.pts.concat(r.assetPts, r.pinPts).forEach(function(p){ allXs.push(p.x); allYs.push(p.y); });
+  });
+  var minX = Math.min.apply(null, allXs), maxX = Math.max.apply(null, allXs);
+  var minY = Math.min.apply(null, allYs), maxY = Math.max.apply(null, allYs);
+  var padFt = Math.max(10, (maxX - minX) * 0.08);
+  var w = (maxX - minX) + padFt * 2, h = (maxY - minY) + padFt * 2;
+  var scale = Math.min(RM_EXPORT_MAX_SCALE, RM_EXPORT_MAX_CANVAS_DIM / Math.max(w, h)); /* see the same fix + explanation in rmBuildOutlineSvg() above */
+  var hasBuildingInfo = !!(data.buildingName || data.buildingAddress);
+  var headerH = hasBuildingInfo ? 76 : 60;
+  var footerH = 78; /* legend + disclaimer, taller than the single-roof footer */
+  var svgW = Math.max(240, w * scale), svgH = Math.max(240, h * scale) + headerH + footerH;
+  function toSvg(p){
+    return { x: (p.x - minX + padFt) * scale, y: headerH + (h * scale) - ((p.y - minY + padFt) * scale) };
+  }
+  var totalAreaSqFt = data.roofs.reduce(function(sum, r){ return sum + (r.outline.areaSqFt || 0); }, 0);
+  var bodySvg = "", legendTypesPresent = {}, anyPins = false;
+  roofsProjected.forEach(function(r, i){
+    var pathPts = r.pts.map(toSvg);
+    var pathD = "M " + pathPts.map(function(p){ return p.x.toFixed(1) + "," + p.y.toFixed(1); }).join(" L ") + " Z";
+    bodySvg += '<path d="' + pathD + '" fill="rgba(232,96,10,0.15)" stroke="#E8600A" stroke-width="2.5" stroke-linejoin="round"/>';
+    /* Edge dimensions, same real-world haversine lengths the single-roof
+       export/live map both use. */
+    var calibratedIdx = r.outline.calibration ? r.outline.calibration.edgeIndex : -1;
+    for (var e = 0; e < r.outline.ring.length - 1; e++){
+      var ea = r.outline.ring[e], eb = r.outline.ring[e + 1];
+      var distFt = rmGeomHaversineMeters(ea, eb) * 3.28084;
+      if (distFt < 1) continue;
+      var midFeet = { x: (rmExportProjectPoint(ea, origin).x + rmExportProjectPoint(eb, origin).x) / 2,
+                       y: (rmExportProjectPoint(ea, origin).y + rmExportProjectPoint(eb, origin).y) / 2 };
+      var svgMid = toSvg(midFeet);
+      var isCal = e === calibratedIdx;
+      var dimLabel = (isCal ? "✓ " : "") + Math.round(distFt) + " ft";
+      var dimW = Math.max(28, dimLabel.length * 6 + 8);
+      bodySvg += '<rect x="' + (svgMid.x - dimW / 2).toFixed(1) + '" y="' + (svgMid.y - 8).toFixed(1) + '" width="' +
+        dimW.toFixed(1) + '" height="16" rx="4" fill="' + (isCal ? "#2E7D32" : "#263238") + '"/>' +
+        '<text x="' + svgMid.x.toFixed(1) + '" y="' + (svgMid.y + 3.5).toFixed(1) +
+        '" font-family="Arial, sans-serif" font-size="9.5" font-weight="700" fill="#fff" text-anchor="middle">' +
+        rmEscXml(dimLabel) + '</text>';
+    }
+    r.assetPts.forEach(function(a){
+      var svgP = toSvg(a);
+      var t = ROOF_ASSET_TYPES[a.type] || ROOF_ASSET_TYPES.other;
+      legendTypesPresent[a.type] = true;
+      var labelText = a.label || t.label;
+      bodySvg += '<circle cx="' + svgP.x.toFixed(1) + '" cy="' + svgP.y.toFixed(1) + '" r="9" fill="' + t.color +
+        '" stroke="#fff" stroke-width="2"/><text x="' + svgP.x.toFixed(1) + '" y="' + (svgP.y + 4).toFixed(1) +
+        '" font-family="Arial, sans-serif" font-size="11" text-anchor="middle">' + rmEscXml(t.emoji) + '</text>' +
+        '<text x="' + (svgP.x + 13).toFixed(1) + '" y="' + (svgP.y + 4).toFixed(1) +
+        '" font-family="Arial, sans-serif" font-size="10.5" font-weight="600" fill="#263238" ' +
+        'stroke="#ffffff" stroke-width="3" paint-order="stroke fill">' + rmEscXml(labelText) + '</text>';
+    });
+    r.pinPts.forEach(function(p){
+      anyPins = true;
+      var svgP = toSvg(p);
+      bodySvg += '<circle cx="' + svgP.x.toFixed(1) + '" cy="' + svgP.y.toFixed(1) + '" r="7" fill="' +
+        warrantyColor(p.warranty) + '" stroke="#fff" stroke-width="2"/>';
+    });
+    /* Roof label + its own area, at its outline's centroid -- "each
+       selected roof drawn, labeled, with its area/dimensions" per Mark's
+       exact ask. White-halo text (not a background pill like the roof
+       label marker on the live map) so it sits cleanly over the outline
+       fill regardless of roof size/shape. */
+    var lp = toSvg(r.labelPt);
+    bodySvg += '<text x="' + lp.x.toFixed(1) + '" y="' + (lp.y - 4).toFixed(1) +
+      '" font-family="Arial, sans-serif" font-size="13" font-weight="700" fill="#263238" text-anchor="middle" ' +
+      'stroke="#ffffff" stroke-width="4" paint-order="stroke fill">' + rmEscXml(r.label) + '</text>' +
+      '<text x="' + lp.x.toFixed(1) + '" y="' + (lp.y + 12).toFixed(1) +
+      '" font-family="Arial, sans-serif" font-size="11" fill="#263238" text-anchor="middle" ' +
+      'stroke="#ffffff" stroke-width="4" paint-order="stroke fill">' + Math.round(r.outline.areaSqFt || 0) + ' sq ft</text>';
+  });
+  var legendParts = Object.keys(legendTypesPresent).map(function(k){
+    var t = ROOF_ASSET_TYPES[k] || ROOF_ASSET_TYPES.other; return t.emoji + " " + t.label;
+  });
+  if (anyPins) legendParts.push("● Finding pin (color = warranty status)");
+  var legendSvg = legendParts.length ?
+    '<text x="16" y="' + (svgH - footerH + 16) + '" font-family="Arial, sans-serif" font-size="11" fill="#5B6770">' +
+      rmEscXml(legendParts.join("   ·   ")) + '</text>' : '';
+  var disclaimerSvg = '<text x="16" y="' + (svgH - 12) + '" font-family="Arial, sans-serif" font-size="9.5" fill="#8a8f93" font-style="italic">' +
+    'Measurements are derived from GPS/mapped data and are approximate -- verify critical dimensions in the field before ordering materials.</text>';
+  var title = (data.buildingName || "Roof Export") + " — " + data.roofs.length + " Roof" + (data.roofs.length === 1 ? "" : "s");
+  var headerSvg = '<text x="16" y="26" font-family="Arial, sans-serif" font-size="18" font-weight="700" fill="#263238">' +
+    rmEscXml(title) + '</text>';
+  var statsY = hasBuildingInfo ? 60 : 44;
+  if (hasBuildingInfo && data.buildingAddress){
+    headerSvg += '<text x="16" y="44" font-family="Arial, sans-serif" font-size="12" fill="#5B6770">' +
+      rmEscXml(data.buildingAddress) + '</text>';
+  }
+  headerSvg += '<text x="16" y="' + statsY + '" font-family="Arial, sans-serif" font-size="12" fill="#5B6770">Total area: ' +
+    Math.round(totalAreaSqFt) + ' sq ft &#183; Generated ' + rmEscXml(new Date().toLocaleDateString()) + '</text>';
+  var scaleBarFt = 20, scaleBarPx = scaleBarFt * scale;
+  /* North arrow -- this projection's "up" (toSvg's y flip) genuinely is
+     geographic north (rmExportProjectPoint/rmGeomToLocalXY use a plain
+     x=east/y=north local tangent-plane projection throughout this app), so
+     a simple up-pointing arrow is accurate, not decorative-only. Placed in
+     the top-right corner, clear of the title/stats block on the left. */
+  var naX = svgW - 34, naY = headerH + 8;
+  var northArrowSvg = '<g transform="translate(' + naX + ',' + naY + ')">' +
+    '<line x1="0" y1="26" x2="0" y2="0" stroke="#263238" stroke-width="2.5"/>' +
+    '<path d="M -6,8 L 0,0 L 6,8 Z" fill="#263238"/>' +
+    '<text x="0" y="40" font-family="Arial, sans-serif" font-size="12" font-weight="700" fill="#263238" text-anchor="middle">N</text>' +
+    '</g>';
+  var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + svgW + '" height="' + svgH + '" viewBox="0 0 ' + svgW + ' ' + svgH + '">' +
+    '<rect width="100%" height="100%" fill="#ffffff"/>' +
+    headerSvg + northArrowSvg + bodySvg + legendSvg + disclaimerSvg +
+    '<g transform="translate(16,' + (svgH - footerH + 34) + ')">' +
+      '<line x1="0" y1="0" x2="' + scaleBarPx + '" y2="0" stroke="#263238" stroke-width="2"/>' +
+      '<line x1="0" y1="-4" x2="0" y2="4" stroke="#263238" stroke-width="2"/>' +
+      '<line x1="' + scaleBarPx + '" y1="-4" x2="' + scaleBarPx + '" y2="4" stroke="#263238" stroke-width="2"/>' +
+      '<text x="' + (scaleBarPx / 2) + '" y="-8" font-family="Arial, sans-serif" font-size="11" fill="#263238" text-anchor="middle">' + scaleBarFt + ' ft</text>' +
+    '</g>' +
+  '</svg>';
+  return { svg: svg, width: svgW, height: svgH };
+}
+/* Single decision point every export format AND Preview call, so they stay
+   guaranteed identical to each other -- same "one shared render path"
+   principle rmBuildOutlineSvg() itself already established for the
+   single-roof case. Falls back to the ORIGINAL single-outline path
+   (byte-for-byte the same code that ran before this feature existed)
+   whenever the multi-roof checklist isn't showing at all -- a still-
+   single-roof building, or an outline never saved to a building -- so nothing
+   about today's single-roof export can regress. */
+async function rmBuildExportOutput(){
+  var selectedIds = rmGetSelectedExportRoofIds();
+  if (rmState.linkedBuildingId && selectedIds && selectedIds.length){
+    var data = await rmFetchMultiRoofExportData(rmState.linkedBuildingId, selectedIds);
+    if (data && data.roofs.length) return rmBuildMultiRoofOutlineSvg(data);
+  }
+  var overlay = await rmFetchExportOverlayData();
+  return rmBuildOutlineSvg(rmState.outline, overlay);
+}
 async function rmExportSVG(){
   if (!rmState.outline){ toast("Generate a roof outline first."); return; }
-  var overlay = await rmFetchExportOverlayData();
-  var built = rmBuildOutlineSvg(rmState.outline, overlay);
+  var built = await rmBuildExportOutput();
   rmDownloadBlob(rmExportFilenameBase() + ".svg", new Blob([built.svg], { type: "image/svg+xml" }));
 }
 /* Shared by PNG and PDF export -- rasterizes rmBuildOutlineSvg()'s SVG onto
@@ -7768,8 +7998,7 @@ function rmRasterizeSvgToCanvas(svgStr, w, h){
 }
 async function rmExportPNG(){
   if (!rmState.outline){ toast("Generate a roof outline first."); return; }
-  var overlay = await rmFetchExportOverlayData();
-  var built = rmBuildOutlineSvg(rmState.outline, overlay);
+  var built = await rmBuildExportOutput();
   try{
     var canvas = await rmRasterizeSvgToCanvas(built.svg, built.width, built.height);
     var blob = await new Promise(function(res){ canvas.toBlob(res, "image/png"); });
@@ -7792,8 +8021,7 @@ async function rmExportPNG(){
 async function rmExportPDF(){
   if (!rmState.outline){ toast("Generate a roof outline first."); return; }
   if (!(window.jspdf && window.jspdf.jsPDF)){ toast("PDF export isn't available right now."); return; }
-  var overlay = await rmFetchExportOverlayData();
-  var built = rmBuildOutlineSvg(rmState.outline, overlay);
+  var built = await rmBuildExportOutput();
   try{
     var canvas = await rmRasterizeSvgToCanvas(built.svg, built.width, built.height);
     var pngDataUrl = canvas.toDataURL("image/png");
@@ -7825,8 +8053,7 @@ async function rmExportPDF(){
 async function rmPreviewExport(){
   if (!rmState.outline){ toast("Generate a roof outline first."); return; }
   toast("Building preview…");
-  var overlay = await rmFetchExportOverlayData();
-  var built = rmBuildOutlineSvg(rmState.outline, overlay);
+  var built = await rmBuildExportOutput();
   var host = document.getElementById("rm-preview-svg-host");
   host.innerHTML = built.svg;
   var svgEl = host.querySelector("svg");
@@ -8193,6 +8420,8 @@ function rmClearLinkedFeatures(){
   rmSetDisp("rm-rename-roof-btn", false);
   var switcherHost = document.getElementById("rm-roof-switcher");
   if (switcherHost) switcherHost.innerHTML = "";
+  var exportSelectHost = document.getElementById("rm-export-roof-select");
+  if (exportSelectHost) exportSelectHost.innerHTML = "";
   var panel = document.getElementById("rm-features-panel");
   if (panel) panel.style.display = "none";
   var bmStatus = document.getElementById("rm-basemap-status");
@@ -10040,6 +10269,7 @@ async function rmSaveOutlineToBuilding(buildingId, roofId){
       rmState.roofLabelLayer = roofLabelMarker(labelCenter.lat, labelCenter.lng, roof.label || "Roof", rmRenameLinkedRoof).addTo(rmState.map);
     }
     rmRenderRoofSwitcher(buildingId, roofs, roof.id);
+    rmRenderExportRoofSelect(buildingId, roofs, roof.id);
     rmShowFeaturePanel(bld.name);
     await rmLoadLinkedAssets();
     rmUpdateExportHint();
@@ -10154,6 +10384,7 @@ async function rmOpenRoofInMapper(buildingId, roofId){
        useful for context/vertex-snapping while editing an existing one. */
     await rmDrawReferenceRoofs(buildingId, bld, roof.id);
     rmRenderRoofSwitcher(buildingId, roofs, roof.id);
+    rmRenderExportRoofSelect(buildingId, roofs, roof.id);
     rmSetStatus("Opened " + (roof.label || "this roof") + (rmState.orthoActive ? " on its saved drone image." : ".") +
       (roofs.length > 1 ? " " + roofs.length + " roofs on this building." : ""));
     setTimeout(function(){ map.invalidateSize(); }, 60);
