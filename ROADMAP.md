@@ -824,7 +824,7 @@ Goal: support office/admin workflows and controlled access.
   rules) rather than just hidden in the UI. Real enforcement, but one shared PIN
   rather than per-user accounts — replace with real accounts/roles below rather
   than extending it further.
-- 🔄 **In progress (dev only, Phase 1 of 5 shipped 2026-07-10)**: real user
+- 🔄 **In progress (dev only, Phases 1-2 of 5 shipped 2026-07-11)**: real user
   accounts, data-driven roles, and permissions — this is that line, underway.
   Full 5-phase plan and design in `docs/AUTH_DESIGN.md`. **Phase 1 shipped**:
   Firebase Auth (email+password) added alongside the existing PIN-based admin
@@ -845,11 +845,24 @@ Goal: support office/admin workflows and controlled access.
   alike, via `request.auth.token.role`. **Mandatory negative tests passed**
   (10 scenarios, including "admin attempts to lock out the owner" and "a
   field_tech attempts to self-promote") — see `docs/AUTH_DESIGN.md` for the
-  full results table. Phases 2-5 (dual rules+function enforcement + immutable
-  audit log; archive/void/restore + 5-stage change-order workflow; MFA +
-  session/recovery; hardening + the app actually requiring login) not yet
-  built. **Dev only — production's PIN-based admin mode is completely
-  unaffected**, and the app does not require login anywhere yet.
+  full results table. **Phase 2 shipped**: immutable audit logging expanded
+  from Phase 1's 3 highest-risk actions to every mutating `admin.js` action
+  (`delete_building`, `delete_history_event`, `set_building_roof_map`,
+  `set_roof_profile`), with a new "🔒 Audit Log (admin)" view in Reports.
+  **Second real, documented scope decision**: full "migrate admin.js off the
+  PIN system onto claims-based checks" isn't done — production sends zero
+  Firebase Auth tokens at all, so removing/weakening the shared PIN (the only
+  thing actually gating admin.js today, for both dev and production) would
+  break every admin action in production with no fallback. Audit logging
+  opportunistically captures a real signed-in identity when one's available
+  and degrades cleanly to "PIN only" otherwise — genuine progress without
+  touching the one thing actually protecting production. Full PIN removal
+  stays Phase 5 territory, tied to "app requires login." See "Phase 2" in
+  `docs/AUTH_DESIGN.md` for the full reasoning. Phases 3-5 (archive/void/
+  restore + 5-stage change-order workflow; MFA + session/recovery; hardening
+  + the app actually requiring login) not yet built. **Dev only —
+  production's PIN-based admin mode is completely unaffected**, and the app
+  does not require login anywhere yet.
 - Add an admin/dashboard experience for searching customers, buildings, work orders, reports, and history events.
 - Add account/company settings for branding, default emails, report templates, and integration settings.
 - Add user assignment, technician tracking, and audit metadata.

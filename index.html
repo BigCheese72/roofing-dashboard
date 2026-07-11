@@ -537,6 +537,16 @@
       </div>
       <div id="feedback-backlog-list"><p class="hint">Tap Refresh to load.</p></div>
     </div>
+    <div class="card" id="audit-log-card" style="display:none">
+      <h2 class="cond">🔒 Audit Log (admin)</h2>
+      <p class="hint">Every destructive or privileged admin.js action, newest first — who (when signed in) or
+        "PIN only" (when not), what changed, before/after. Append-only; nothing here can be edited or deleted, not
+        even by the owner.</p>
+      <div class="btnrow" style="margin:0 0 10px">
+        <button class="btn" onclick="loadAuditLogBacklog()">Refresh</button>
+      </div>
+      <div id="audit-log-list"><p class="hint">Tap Refresh to load.</p></div>
+    </div>
     <div class="card">
       <h2 class="cond">All Reports</h2>
       <p class="hint">Every generated report across every building, most recent first — read-only. Tap a report
@@ -1718,6 +1728,14 @@ function updateAdminUI(){
     if (isAdmin && document.getElementById("view-reports") &&
         document.getElementById("view-reports").style.display !== "none"){
       loadFeedbackBacklog();
+    }
+  }
+  var alCard = document.getElementById("audit-log-card");
+  if (alCard){
+    alCard.style.display = isAdmin ? "" : "none";
+    if (isAdmin && document.getElementById("view-reports") &&
+        document.getElementById("view-reports").style.display !== "none"){
+      loadAuditLogBacklog();
     }
   }
 }
@@ -3385,6 +3403,45 @@ function renderFeedbackBacklog(){
         (f.adminMode ? ' · (admin mode)' : '') + '</p>' +
       (f.screenshot ? '<img src="' + esc(f.screenshot) + '" style="max-width:180px;max-height:120px;border:1px solid var(--line);' +
         'border-radius:4px;margin-top:6px;cursor:pointer" onclick="openImageLightbox(this.src)">' : '') +
+    '</div>';
+  }).join("");
+}
+/* Auth Phase 2 -- surfaces what admin.js's writeAuditLog() records for
+   every destructive/privileged action (delete_building,
+   delete_history_event, set_building_roof_map, set_roof_profile). See
+   "Audit log" and "Phase 2" in docs/AUTH_DESIGN.md. Same load/render
+   pattern as the feedback backlog just above. */
+var auditLogBacklog = [];
+async function loadAuditLogBacklog(){
+  if (!isAdmin) return;
+  var host = document.getElementById("audit-log-list");
+  if (host) host.innerHTML = '<p class="hint">Loading…</p>';
+  try{
+    var out = await callAdminApi({ action: "list_audit_log" });
+    auditLogBacklog = out.items || [];
+    renderAuditLogBacklog();
+  }catch(e){
+    if (host) host.innerHTML = '<p class="hint">Couldn\'t load the audit log: ' + esc(e.message) + '</p>';
+  }
+}
+function renderAuditLogBacklog(){
+  var host = document.getElementById("audit-log-list");
+  if (!host) return;
+  if (!auditLogBacklog.length){ host.innerHTML = '<p class="hint">No audit log entries yet.</p>'; return; }
+  host.innerHTML = auditLogBacklog.map(function(a){
+    var who = a.actorMethod === "claims" ?
+      esc((a.actorEmail || a.actorUid || "signed-in user") + (a.actorRole ? " (" + a.actorRole + ")" : "")) :
+      "PIN only (not signed in)";
+    var targetStr = a.target ? esc((a.target.collection || "") + "/" + (a.target.id || "") +
+      (a.target.roofId ? " (roof " + a.target.roofId + ")" : "")) : "";
+    return '<div class="card" style="margin:0 0 8px">' +
+      '<div style="display:flex;justify-content:space-between;align-items:start;gap:8px">' +
+      '<b>' + esc(a.action || "") + '</b>' +
+      '<span class="hint" style="margin:0;white-space:nowrap">' + esc(a.ts ? new Date(a.ts).toLocaleString() : "") + '</span></div>' +
+      '<p class="hint" style="margin:2px 0">Target: ' + targetStr + '</p>' +
+      '<p class="hint" style="margin:2px 0">By: ' + who + '</p>' +
+      (a.before ? '<p class="hint" style="margin:2px 0">Before: ' + esc(JSON.stringify(a.before)) + '</p>' : '') +
+      (a.after ? '<p class="hint" style="margin:2px 0">After: ' + esc(JSON.stringify(a.after)) + '</p>' : '') +
     '</div>';
   }).join("");
 }
@@ -6663,7 +6720,7 @@ function showView(v){
   if (v === "preview") renderDoc();
   if (v === "saved") renderSaved();
   if (v === "history") renderHistoryList();
-  if (v === "reports"){ renderReportsList(); if (isAdmin) loadFeedbackBacklog(); }
+  if (v === "reports"){ renderReportsList(); if (isAdmin){ loadFeedbackBacklog(); loadAuditLogBacklog(); } }
   if (v === "roofmapper") rmOnShow();
   window.scrollTo(0,0);
   if (v === "edit" && pendingPinFindingId){

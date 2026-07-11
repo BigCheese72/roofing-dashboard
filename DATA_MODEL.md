@@ -116,24 +116,50 @@ directly.
 `firestore.rules`: readable by any signed-in user, `write: if false` always —
 every write goes through `seed_roles` (Admin SDK).
 
-### `audit_logs` (implemented, Phase 1 foundation — see `docs/AUTH_DESIGN.md`)
+### `audit_logs` (implemented — Phase 1 foundation + Phase 2 coverage expansion,
+see `docs/AUTH_DESIGN.md`)
 
 Append-only. **Immutable by design**: `firestore.rules` denies `update`/`delete`
 to every client without exception, including the owner. Written by server
 functions only (Admin SDK, not subject to rules) — started in Phase 1 for the
 highest-risk actions (`bootstrap_owner`, `assign_role`, `transfer_owner`); Phase 2
-formalizes coverage across every other privileged action in the app.
+adds every other mutating `admin.js` action (`delete_building`,
+`delete_history_event`, `set_building_roof_map`, `set_roof_profile`).
 
 ```js
 // audit_logs/{genId}
 {
-  actorUid, actorRole,  // who did it, and what role they held at the time
-  ts,                    // Date.now() — server-set, not client-supplied
-  target: { collection, id }, // what was acted on
-  action,                 // e.g. "assign_role", "bootstrap_owner", "transfer_owner"
+  actorUid, actorRole,  // who did it (if known), and what role they held at the
+                        // time. null/null for a PIN-only caller (see actorMethod)
+  actorEmail,           // Phase 2 addition — null for PIN-only callers, and for
+                        // Phase 1 entries written before this field existed
+  actorMethod,          // Phase 2 addition — "claims" (a real signed-in Firebase
+                        // Auth identity was available) | "pin_only" (the shared
+                        // ADMIN_PIN only — still true for 100% of production
+                        // traffic and most of dev today, since admin mode
+                        // doesn't require login yet). Absent on Phase 1 entries
+                        // (bootstrap_owner/assign_role/transfer_owner always have
+                        // a real caller by construction, so this wasn't needed
+                        // there).
+  ts,                    // Date.now() — server-set, not client-supplied. Every
+                         // writer uses this same plain-number field (not a
+                         // Firestore serverTimestamp()) — kept deliberately
+                         // consistent across every audit_logs writer in the app.
+  target: { collection, id, roofId }, // what was acted on. roofId only present
+                                       // for roof-scoped actions (Phase 2)
+  action,                 // e.g. "assign_role", "bootstrap_owner", "transfer_owner",
+                          // "delete_building", "set_roof_profile"
   before, after           // shallow before/after snapshot of the changed field(s)
+                          // -- an action-appropriate SUMMARY, not a full-document
+                          // backup (e.g. delete_building's "before" is name/
+                          // address/customerId + deleted-record counts, not the
+                          // entire building doc with its full roofs[]/history)
 }
 ```
+
+Surfaced in-app via a new "🔒 Audit Log (admin)" card in the Reports view
+(`list_audit_log` admin.js action, same PIN-gated precedent as the existing
+`list_feedback` action).
 
 Read access: gated by the caller's live `roles/{role}.permissions['audit.view']`
 (a rules `get()` on the caller's own role doc — the same resolve-at-check-time

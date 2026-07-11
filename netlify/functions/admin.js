@@ -10,9 +10,51 @@
 // what actually closes the gap where anyone could open devtools and call
 // the Firestore SDK directly to delete data regardless of the UI.
 const admin = require("firebase-admin");
+const { tryVerifyCaller } = require("./lib/authGuard");
 
 function resp(code, obj) {
   return { statusCode: code, headers: { "Content-Type": "application/json" }, body: JSON.stringify(obj) };
+}
+
+// Auth Phase 2 -- immutable audit log for admin.js's mutating actions (see
+// "Audit log" in docs/AUTH_DESIGN.md: append-only, rules deny update/delete
+// to EVERYONE including owner, written only via the Admin SDK here, never
+// subject to rules at all).
+//
+// Deliberately does NOT require login -- the shared ADMIN_PIN (checked
+// above, unchanged) remains the only thing actually gating this file,
+// because it's the only thing PRODUCTION'S code sends at all (zero
+// Firebase Auth tokens there). tryVerifyCaller() opportunistically
+// captures a real actor identity when a dev caller happens to be signed
+// in (richer log: who, not just "PIN was correct"), and degrades cleanly
+// to actorMethod:"pin_only" otherwise. A logging failure NEVER blocks the
+// underlying admin action -- the write already happened; losing the
+// audit trail for one action is a lesser failure than silently reporting
+// the action itself failed when it didn't.
+async function writeAuditLog(db, event, action, target, before, after) {
+  try {
+    const caller = await tryVerifyCaller(event);
+    // ts:Date.now() (not a Firestore serverTimestamp) matches the exact
+    // shape auth.js's writeAudit() already established in Phase 1 for
+    // bootstrap_owner/assign_role/transfer_owner -- one consistent shape
+    // across every audit_logs writer, not a second timestamp field.
+    // actorEmail/actorMethod are additive fields Phase 1's writer doesn't
+    // set (a plain `undefined` field is simply absent on read, same as
+    // every other optional field elsewhere in this app).
+    await db.collection("audit_logs").doc().set({
+      ts: Date.now(),
+      actorUid: caller ? caller.uid : null,
+      actorEmail: caller ? caller.email : null,
+      actorRole: caller ? (caller.owner ? "owner" : caller.role) : null,
+      actorMethod: caller ? "claims" : "pin_only",
+      action: action,
+      target: target,
+      before: before === undefined ? null : before,
+      after: after === undefined ? null : after
+    });
+  } catch (e) {
+    console.error("audit log write failed (action still succeeded):", action, e && e.message);
+  }
 }
 
 // Server-side mirror of getBuildingRoofs()/saveBuildingRoofs() in index.html
@@ -75,25 +117,39 @@ exports.handler = async function (event) {
     if (body.action === "delete_building") {
       const buildingId = String(body.buildingId || "");
       if (!buildingId) return resp(400, { error: "Missing buildingId" });
-      const [evtSnap, repSnap] = await Promise.all([
+      const [bldSnapBefore, evtSnap, repSnap] = await Promise.all([
+        db.collection("buildings").doc(buildingId).get(),
         db.collection("building_history_events").where("buildingId", "==", buildingId).get(),
         db.collection("reports").where("buildingId", "==", buildingId).get()
       ]);
+      // "before" is a summary, not a full backup (name/address/customerId
+      // plus counts) -- enough to identify what was destroyed and by whom,
+      // not a restore mechanism; roofs[]/history content can be large and
+      // isn't what this log is for.
+      const bldBefore = bldSnapBefore.exists ? bldSnapBefore.data() : null;
       const batch = db.batch();
       evtSnap.forEach(d => batch.delete(d.ref));
       repSnap.forEach(d => batch.delete(d.ref));
       batch.delete(db.collection("buildings").doc(buildingId));
       await batch.commit();
+      await writeAuditLog(db, event, "delete_building", { collection: "buildings", id: buildingId },
+        bldBefore ? { name: bldBefore.name || null, address: bldBefore.address || null,
+          customerId: bldBefore.customerId || null, deletedEvents: evtSnap.size, deletedReports: repSnap.size } : null,
+        null);
       return resp(200, { ok: true, deletedEvents: evtSnap.size, deletedReports: repSnap.size });
     }
 
     if (body.action === "delete_history_event") {
       const eventId = String(body.eventId || "");
       if (!eventId) return resp(400, { error: "Missing eventId" });
+      const evtSnapBefore = await db.collection("building_history_events").doc(eventId).get();
+      const evtBefore = evtSnapBefore.exists ? evtSnapBefore.data() : null;
       const batch = db.batch();
       batch.delete(db.collection("building_history_events").doc(eventId));
       batch.delete(db.collection("reports").doc(eventId)); // same id — see logReportAndHistoryEvent in index.html
       await batch.commit();
+      await writeAuditLog(db, event, "delete_history_event", { collection: "building_history_events", id: eventId },
+        evtBefore ? { buildingId: evtBefore.buildingId || null, workOrderType: evtBefore.workOrderType || null } : null, null);
       return resp(200, { ok: true });
     }
 
@@ -140,6 +196,8 @@ exports.handler = async function (event) {
       const roofs = getBuildingRoofsServer(bld);
       const foundIdx = roofId ? roofs.findIndex(r => r.id === roofId) : 0;
       const idx = foundIdx >= 0 ? foundIdx : 0;
+      const roofBefore = { roof_base_map_type: roofs[idx].roof_base_map_type || null,
+        roof_base_map_url: roofs[idx].roof_base_map_url || null };
       roofs[idx] = Object.assign({}, roofs[idx], {
         roof_base_map_type: type,
         roof_base_map_url: url,
@@ -161,6 +219,8 @@ exports.handler = async function (event) {
         patch.roof_base_map_updated_at = Date.now();
       }
       await bldRef.set(patch, { merge: true });
+      await writeAuditLog(db, event, "set_building_roof_map", { collection: "buildings", id: buildingId, roofId: roofs[idx].id },
+        roofBefore, { roof_base_map_type: type, roof_base_map_url: url });
       return resp(200, { ok: true });
     }
 
@@ -192,6 +252,7 @@ exports.handler = async function (event) {
       const roofs = getBuildingRoofsServer(bld);
       const foundIdx = roofId ? roofs.findIndex(r => r.id === roofId) : 0;
       const idx = foundIdx >= 0 ? foundIdx : 0;
+      const profileBefore = roofs[idx].profile || null;
       const updatedRoof = Object.assign({}, roofs[idx], { profile: profile });
       if (roofSystem !== undefined) updatedRoof.roofSystem = roofSystem;
       roofs[idx] = updatedRoof;
@@ -205,6 +266,8 @@ exports.handler = async function (event) {
         patch.roofSystem = roofSystem;
       }
       await bldRef.set(patch, { merge: true });
+      await writeAuditLog(db, event, "set_roof_profile", { collection: "buildings", id: buildingId, roofId: roofs[idx].id },
+        profileBefore, profile);
       return resp(200, { ok: true });
     }
 
@@ -216,6 +279,24 @@ exports.handler = async function (event) {
       // only way to list them, so the backlog view is inherently
       // admin-PIN-gated with no separate check needed.
       const snap = await db.collection("feedback").orderBy("createdAt", "desc").limit(200).get();
+      const items = snap.docs.map(d => Object.assign({ id: d.id }, d.data()));
+      return resp(200, { ok: true, items });
+    }
+
+    if (body.action === "list_audit_log") {
+      // Auth Phase 2 -- surfaces what writeAuditLog() above records.
+      // firestore.rules already lets a signed-in caller with audit.view
+      // (or owner) read audit_logs directly, but this PIN-gated path
+      // works for the CURRENT PIN-only admin mode too, same precedent as
+      // list_feedback just above (a client-side Firestore read would need
+      // a real signed-in claims-bearing user, which Phase 2 doesn't yet
+      // require of admin mode -- see "Shared Firestore, dev/prod risk
+      // boundary" in docs/AUTH_DESIGN.md for why that's still true).
+      // ts is a plain Date.now() number (see writeAuditLog()'s comment on
+      // why -- matches auth.js's Phase 1 audit writer exactly), not a
+      // Firestore Timestamp, so no server->client conversion is needed
+      // here the way there would be for a serverTimestamp() field.
+      const snap = await db.collection("audit_logs").orderBy("ts", "desc").limit(200).get();
       const items = snap.docs.map(d => Object.assign({ id: d.id }, d.data()));
       return resp(200, { ok: true, items });
     }

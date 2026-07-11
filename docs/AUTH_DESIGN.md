@@ -1,7 +1,8 @@
 # RoofOps Authentication & Authorization — Design (Rev 3, approved)
 
-Status: **Phase 1 in progress.** Dev branch only — this system does not exist on
-`main` and must not be deployed there until a separate, explicit go-live decision.
+Status: **Phase 1 and Phase 2 shipped.** Dev branch only — this system does not
+exist on `main` and must not be deployed there until a separate, explicit go-live
+decision.
 
 This document is written and updated as each phase ships, per Mark's request that
 the design live in the repo, version-controlled, rather than only in chat history.
@@ -275,3 +276,93 @@ environment).
   actually deployed on Netlify with `FIREBASE_SERVICE_ACCOUNT` and
   `OWNER_BOOTSTRAP_SECRET` set, and the Firebase project's Email/Password provider
   enabled. Flagging this explicitly rather than claiming a false "fully tested."
+
+---
+
+## Phase 2 — what actually shipped (and a scope decision worth flagging)
+
+**Scope decision, made explicitly rather than following the original phase
+description literally**: the original ask was "Firestore rules + server-function
+guards for dual enforcement on EXISTING admin.js actions, migrating them off the
+PIN system onto claims-based checks." Building this out, the "Shared Firestore,
+dev/prod risk boundary" section above (already in this doc, Phase 1) turned out to
+directly constrain how far that migration can safely go right now:
+`admin.js`'s entire handler is gated by one thing — a shared `ADMIN_PIN` compared
+against every request body — and **production sends zero Firebase Auth tokens at
+all**. Removing or weakening the PIN gate, or making a claims-bearing token
+*required* for any existing admin.js action, would immediately break every admin
+action in production (delete building, base map upload, etc.) with no fallback,
+since production has no login flow and isn't getting one this phase (that's
+explicitly Phase 5's "app requires login" decision, not Phase 2's).
+
+**What Phase 2 actually does, staying inside that boundary**: adds claims-aware
+**audit logging** to every mutating admin.js action, opportunistically capturing a
+real signed-in identity when one happens to be available (dev, someone signed in)
+and degrading cleanly to `"pin_only"` otherwise (today's reality, everywhere,
+including all of production) — rather than a hard migration that would require a
+token. This is genuine progress toward "dual enforcement" (a real audit trail now
+exists, where none did before beyond "the PIN was correct") without touching the
+one thing that's actually protecting production today. Full removal of PIN-only
+access is deliberately left for Phase 5, when "require login" is decided.
+
+- `netlify/functions/lib/authGuard.js`: new `tryVerifyCaller(event)` — same
+  verification as `verifyCaller()`, but returns `null` instead of throwing when
+  there's no bearer token or it's invalid/expired. Used only for optional,
+  best-effort identity capture (audit logging); never for actual authorization
+  decisions (those still throw via `verifyCaller`/`requirePermission`, unchanged).
+- `netlify/functions/admin.js`: new `writeAuditLog(db, event, action, target,
+  before, after)`, called from all four existing mutating actions —
+  `delete_building`, `delete_history_event`, `set_building_roof_map`,
+  `set_roof_profile`. Each writes one `audit_logs` doc: `actorUid`/`actorEmail`/
+  `actorRole` (from `tryVerifyCaller`, or all `null`), `actorMethod` (`"claims"` or
+  `"pin_only"`), `action`, `target` (`{collection, id, roofId?}`), `before`/`after`
+  (an action-appropriate summary, not a full-document backup — e.g.
+  `delete_building`'s "before" is name/address/customerId + deleted-record counts,
+  not the entire building doc with its full `roofs[]`/history), `ts: Date.now()`
+  (matches `auth.js`'s Phase 1 audit writer exactly — one consistent shape across
+  every `audit_logs` writer, caught and fixed during this phase: an early draft
+  used a Firestore `serverTimestamp()` under a differently-named `createdAt` field
+  instead). **A logging failure never blocks the underlying action** — the real write already
+  happened by the time `writeAuditLog` runs; treating "couldn't write the audit
+  entry" as a failure of the admin action itself would be strictly worse than a
+  quietly-incomplete log. `set_photo_size_pref` (a cosmetic global preference, not
+  destructive/privileged) deliberately isn't logged — kept the log focused on
+  actions matching the design doc's own framing ("destructive or privileged").
+  `firestore.rules`'s `audit_logs` block (already correct from Phase 1: read gated
+  by `audit.view`/owner, create/update/delete `false` for every client) needed no
+  changes — the Admin SDK writes here aren't subject to rules at all.
+- New `list_audit_log` admin.js action + a "🔒 Audit Log (admin)" card in the
+  Reports view (admin-only, same visibility/load pattern as the existing Feedback
+  Backlog card right above it) — write-only logging with no way to see it would
+  have been a weak deliverable. Same PIN-gated precedent as the existing
+  `list_feedback` action (a genuine claims-gated client-side Firestore read is
+  possible today via the rules already in place, but would require every admin-
+  mode user to also be signed in with Firebase Auth, which Phase 2 doesn't yet
+  require — consistent with the scope decision above).
+
+### Testing performed
+
+Same environment constraint as Phase 1 (no Node runtime in this sandbox, cannot
+invoke a deployed Netlify Function): `admin.js`/`authGuard.js` changes validated by
+full manual read-through for syntax correctness (balanced braces/parens/requires,
+correct variable scope for every `writeAuditLog(db, event, ...)` call site) rather
+than a `node -c` syntax check (confirmed unavailable — `node` is not on PATH in
+this environment). Client-side pieces tested for real in the browser (mocked
+`callAdminApi`, no real network calls):
+
+- Confirmed `renderAuditLogBacklog()` correctly renders a realistic mixed log (one
+  `"claims"`-method entry with email+role, one `"pin_only"` entry) — action name,
+  target string (including the roofId suffix for roof-scoped actions), actor
+  string (email+role, or "PIN only (not signed in)"), and JSON before/after all
+  present and correctly formatted.
+- Confirmed the empty state (`"No audit log entries yet."`) and the error state
+  (`callAdminApi` rejecting → `"Couldn't load the audit log: <message>"`) both
+  render correctly, matching the existing Feedback Backlog card's precedent.
+- Confirmed the "🔒 Audit Log (admin)" card's visibility is driven by
+  `updateAdminUI()` exactly like the Feedback Backlog card (hidden when not admin,
+  shown + auto-loaded when admin mode is toggled on while already on the Reports
+  view) — an initial test that set `isAdmin` directly without going through
+  `updateAdminUi()`/`toggleAdminMode()` correctly showed the card was still hidden
+  (accurately reflecting that the real toggle flow, not a raw variable set, is what
+  drives visibility), then re-verified correctly visible once `updateAdminUI()` ran.
+  All test state cleared, page reloaded, console clean.
