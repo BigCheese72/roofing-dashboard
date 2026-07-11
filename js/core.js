@@ -243,21 +243,68 @@ async function cloudSaveOrder(o){
      after everything else commits, so saveOrder()'s existing
      never-silent cloud-error toast (see "Silent cloud-save failure" in
      DEV_NOTES.md) tells the tech to retry rather than the app quietly
-     leaving a photo un-uploaded. */
-  var uploadFailures = 0;
+     leaving a photo un-uploaded.
+
+     CRITICAL DATA-LOSS GUARD, added after a real near-miss: a photo with
+     NEITHER img NOR storageRef locally is the ONE dangerous case -- it
+     means "write nothing for this photo," and if the in-memory record
+     got here via a stripped/stale local cache (see
+     orderPhotosAreStrippedLocally()) rather than a genuinely photo-less
+     finding, blindly writing that would silently blank out real image
+     data already sitting safely in the cloud. Before ever writing such a
+     doc, check what's ALREADY there -- if the cloud already has real
+     data at this exact photo, PRESERVE it instead of overwriting with
+     nulls. This makes the destructive case structurally impossible at
+     the one function every save path funnels through (saveOrder(),
+     autosaves, ccImport's quiet save, the recover-unlogged-work-orders
+     backfill -- all of them call this, not just the explicit Save
+     button), rather than relying on every caller to have already fixed
+     its own upstream data.
+
+     Caught by testing, not just reasoned about: a photo WITH real .img
+     whose UPLOAD ATTEMPT ITSELF FAILS (network blip, function down) is
+     JUST AS DANGEROUS as one with no img at all -- both end up with
+     nothing new and reliable to write. The guard below covers both:
+     "no storageRef after this photo's upload attempt (whether none was
+     ever tried, or one was tried and failed)" is the one condition that
+     triggers a preserve-existing check, not just "no img provided." See
+     "Save-time photo data-loss guard" in DEV_NOTES.md. */
+  var uploadFailures = 0, preservedCount = 0;
   var ops = [];
   for (var i = 0; i < ph.length; i++){
     var p = ph[i];
     var storageRef = p.storageRef || null;
+    var legacyImg = null; // only set when preserving an existing old-shape cloud photo below
+    var uploadAttemptedAndFailed = false;
     if (p.img){
       try{ storageRef = await uploadPhotoToStorage(o.id, i, p.img); }
-      catch(e){ uploadFailures++; console.warn("photo upload failed, will retry on next save", e); }
+      catch(e){ uploadFailures++; uploadAttemptedAndFailed = true; console.warn("photo upload failed, will retry on next save", e); }
     }
-    ops.push(ref.collection("photos").doc("p" + i).set({
+    if (!storageRef){
+      /* Either no img was ever provided (a stripped/incomplete local
+         record), or one was provided but the upload just failed above --
+         either way there's nothing new and reliable to persist for this
+         photo. Check what's already in the cloud before writing anything
+         that could blank it out. */
+      try{
+        var existingSnap = await ref.collection("photos").doc("p" + i).get();
+        if (existingSnap.exists){
+          var existing = existingSnap.data();
+          if (existing.img || existing.storageRef){
+            storageRef = existing.storageRef || null;
+            legacyImg = existing.img || null;
+            preservedCount++;
+          }
+        }
+      }catch(e){ console.warn("couldn't check existing photo before save (proceeding without it — no data was overwritten)", e); }
+    }
+    var photoDoc = {
       caption: p.caption || "", w: p.w || 0, h: p.h || 0, i: i,
       finding_id: p.finding_id || null, ccPhotoId: p.ccPhotoId || null, gps: p.gps || null,
       storageRef: storageRef, thumb: p.thumb || null
-    }));
+    };
+    if (legacyImg) photoDoc.img = legacyImg;
+    ops.push(ref.collection("photos").doc("p" + i).set(photoDoc));
   }
   for (var j = ph.length; j < prevCount; j++){
     ops.push(ref.collection("photos").doc("p" + j).delete());
@@ -267,6 +314,10 @@ async function cloudSaveOrder(o){
   if (uploadFailures > 0){
     throw new Error(uploadFailures + " photo" + (uploadFailures === 1 ? "" : "s") +
       " couldn't be uploaded to cloud storage. Work order data was saved — save again to retry the photo(s).");
+  }
+  if (preservedCount > 0){
+    throw new Error(preservedCount + " photo" + (preservedCount === 1 ? "" : "s") +
+      " on this device had no image data to save (likely an older cached copy) — the existing cloud photo(s) were kept, nothing was lost, but reload this work order to see them.");
   }
 }
 async function cloudFetchIndex(){
@@ -1344,9 +1395,24 @@ function orderHasCachedPhotoBytes(o){
 /* Local record has photos worth caring about (findings/captions/etc. that
    imply real images belong here) but this specific cached copy doesn't
    actually have the bytes -- the exact condition loadOrder() must never
-   silently trust over a cloud refetch. */
+   silently trust over a cloud refetch.
+
+   CRITICAL FIX: checking photosStripped alone missed every record that
+   was ALREADY stripped in a tech's browser BEFORE that flag started being
+   set (this fix shipped today -- any local cache entry written by the
+   OLD stripPhotoBytes(), which never stamped the flag, is invisible to a
+   flag-only check even though it's exactly as stripped). That's what let
+   Mark's EDIT view open with zero photos even after the flag-based
+   loadOrder() fix landed: his local cache predated the flag. Now also
+   detects the SYMPTOM directly -- every photo entry has metadata
+   (implying a real photo once existed here) but NONE carry any way to
+   actually show one (no img, no storageRef, no thumb) -- regardless of
+   whether photosStripped happens to be set. See "PDF/preview missing
+   photos" and "Photo storage migration" in DEV_NOTES.md. */
 function orderPhotosAreStrippedLocally(o){
-  return !!(o && o.photosStripped && (o.photos || []).length > 0);
+  if (!o || !(o.photos && o.photos.length)) return false;
+  if (o.photosStripped) return true;
+  return o.photos.every(function(p){ return !p.img && !p.storageRef && !p.thumb; });
 }
 function pruneCachedPhotoDrafts(db){
   var withPhotos = db.index.filter(function(e){
