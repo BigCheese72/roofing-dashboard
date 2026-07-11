@@ -356,8 +356,22 @@ async function cloudFetchOrder(id){
          BEFORE the Storage migration (still holds its full base64 bytes
          directly in Firestore, no storageRef at all yet); a migrated or
          freshly-captured photo relies on storageRef + resolvePhotoImg()
-         instead. See "Photo storage migration" in DEV_NOTES.md. */
-      photosArr[v.i] = { caption: v.caption || "", img: v.img || null, w: v.w || 0, h: v.h || 0,
+         instead. See "Photo storage migration" in DEV_NOTES.md.
+
+         Deliberately NOT hydrated when a storageRef already exists, even
+         though Firestore may still be holding a base64 backup there too
+         (see cloudSaveOrder()'s cooling-off-period preservation) --
+         cloudSaveOrder uses "does this photo carry .img client-side" as
+         its ONLY signal for "the user captured/attached a new image this
+         session, upload it." Hydrating the backup here would make every
+         ordinary load->save of an already-migrated photo look exactly
+         like a fresh capture: it would get needlessly re-uploaded, and
+         -- because a real fresh upload intentionally does NOT re-carry an
+         old backup forward -- the very backup being round-tripped would
+         get silently dropped again right after being restored. Caught by
+         testing: this happened for real immediately after restoring St
+         Joe Hospital's photos. */
+      photosArr[v.i] = { caption: v.caption || "", img: v.storageRef ? null : (v.img || null), w: v.w || 0, h: v.h || 0,
         finding_id: v.finding_id || null, ccPhotoId: v.ccPhotoId || null, gps: v.gps || null,
         storageRef: v.storageRef || null, thumb: v.thumb || null };
     });
