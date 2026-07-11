@@ -872,6 +872,16 @@
            single-outline path whenever this list is empty/absent. See
            "Multi-roof export selection" in DEV_NOTES.md. -->
       <div id="rm-export-roof-select"></div>
+      <!-- Mark: exports had "no base image (ortho/satellite) under the
+           outlines." Opt-in (default off -- an unlinked export shouldn't
+           silently get slower/heavier) toggle to fetch + stitch the same
+           free Esri World_Imagery tiles the live map uses and render them
+           beneath the line art. See rmFetchBasemapImage()/"Export layout
+           pass" in DEV_NOTES.md. -->
+      <label class="hint" style="display:flex;align-items:center;gap:6px;margin:0 0 10px">
+        <input type="checkbox" id="rm-export-basemap-cb" onchange="rmState.exportIncludeBasemap = this.checked">
+        🛰️ Include satellite imagery under the drawing
+      </label>
       <div class="btnrow">
         <button class="btn" onclick="rmZoomToOutline()">🔍 Zoom to Roof</button>
         <button class="btn primary" onclick="rmPreviewExport()">👁️ Preview Export</button>
@@ -8368,6 +8378,21 @@ function rmBuildOutlineSvg(outline, overlay){
   function toSvg(p){
     return { x: (p.x - minX + padFt) * scale, y: headerH + (h * scale) - ((p.y - minY + padFt) * scale) };
   }
+  /* Satellite basemap, drawn FIRST so the outline/dimensions/markers all
+     render on top of it. The stitched tile image's corners are projected
+     through the exact same origin+toSvg pipeline as everything else, so
+     it lines up with the line art regardless of scale/roof size --
+     preserveAspectRatio="none" because the target rect (computed from
+     real corner projections) is already the correct aspect; stretching
+     to fill it exactly beats letterboxing a near-identical aspect. */
+  var basemapSvg = "";
+  if (overlay && overlay.basemap){
+    var bm = overlay.basemap;
+    var bmNw = toSvg(rmExportProjectPoint({ lat: bm.nwLat, lng: bm.nwLng }, origin));
+    var bmSe = toSvg(rmExportProjectPoint({ lat: bm.seLat, lng: bm.seLng }, origin));
+    basemapSvg = '<image href="' + bm.dataUrl + '" x="' + Math.min(bmNw.x, bmSe.x).toFixed(1) + '" y="' + Math.min(bmNw.y, bmSe.y).toFixed(1) +
+      '" width="' + Math.abs(bmSe.x - bmNw.x).toFixed(1) + '" height="' + Math.abs(bmSe.y - bmNw.y).toFixed(1) + '" preserveAspectRatio="none"/>';
+  }
   var pathPts = pts.map(toSvg);
   var pathD = "M " + pathPts.map(function(p){ return p.x.toFixed(1) + "," + p.y.toFixed(1); }).join(" L ") + " Z";
   var title = (overlay && overlay.buildingName) || rmOutlineTitle(outline);
@@ -8463,7 +8488,7 @@ function rmBuildOutlineSvg(outline, overlay){
     rmEscXml(new Date(outline.createdAt || Date.now()).toLocaleDateString()) + '</text>';
   var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + svgW + '" height="' + svgH + '" viewBox="0 0 ' + svgW + ' ' + svgH + '">' +
     '<rect width="100%" height="100%" fill="#ffffff"/>' +
-    headerSvg +
+    headerSvg + basemapSvg +
     '<path d="' + pathD + '" fill="rgba(232,96,10,0.15)" stroke="#E8600A" stroke-width="2.5" stroke-linejoin="round"/>' +
     dimSvg + markersSvg + legendSvg +
     '<g transform="translate(16,' + (svgH - 18) + ')">' +
@@ -8569,6 +8594,16 @@ function rmBuildMultiRoofOutlineSvg(data){
   var svgW = Math.max(240, w * scale), svgH = Math.max(240, h * scale) + headerH + footerH;
   function toSvg(p){
     return { x: (p.x - minX + padFt) * scale, y: headerH + (h * scale) - ((p.y - minY + padFt) * scale) };
+  }
+  /* Satellite basemap -- same approach as rmBuildOutlineSvg() above, just
+     projected against this function's own shared multi-roof origin. */
+  var basemapSvg = "";
+  if (data.basemap){
+    var bm = data.basemap;
+    var bmNw = toSvg(rmExportProjectPoint({ lat: bm.nwLat, lng: bm.nwLng }, origin));
+    var bmSe = toSvg(rmExportProjectPoint({ lat: bm.seLat, lng: bm.seLng }, origin));
+    basemapSvg = '<image href="' + bm.dataUrl + '" x="' + Math.min(bmNw.x, bmSe.x).toFixed(1) + '" y="' + Math.min(bmNw.y, bmSe.y).toFixed(1) +
+      '" width="' + Math.abs(bmSe.x - bmNw.x).toFixed(1) + '" height="' + Math.abs(bmSe.y - bmNw.y).toFixed(1) + '" preserveAspectRatio="none"/>';
   }
   var totalAreaSqFt = data.roofs.reduce(function(sum, r){ return sum + (r.outline.areaSqFt || 0); }, 0);
   /* Two passes: first draw every fixed shape (outlines, dimension pills,
@@ -8702,7 +8737,7 @@ function rmBuildMultiRoofOutlineSvg(data){
     '</g>';
   var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + svgW + '" height="' + svgH + '" viewBox="0 0 ' + svgW + ' ' + svgH + '">' +
     '<rect width="100%" height="100%" fill="#ffffff"/>' +
-    headerSvg + northArrowSvg + bodySvg + legendSvg + disclaimerSvg +
+    headerSvg + basemapSvg + northArrowSvg + bodySvg + legendSvg + disclaimerSvg +
     '<g transform="translate(16,' + (svgH - footerH + 34) + ')">' +
       '<line x1="0" y1="0" x2="' + scaleBarPx + '" y2="0" stroke="#263238" stroke-width="2"/>' +
       '<line x1="0" y1="-4" x2="0" y2="4" stroke="#263238" stroke-width="2"/>' +
@@ -8724,9 +8759,24 @@ async function rmBuildExportOutput(){
   var selectedIds = rmGetSelectedExportRoofIds();
   if (rmState.linkedBuildingId && selectedIds && selectedIds.length){
     var data = await rmFetchMultiRoofExportData(rmState.linkedBuildingId, selectedIds);
-    if (data && data.roofs.length) return rmBuildMultiRoofOutlineSvg(data);
+    if (data && data.roofs.length){
+      if (rmState.exportIncludeBasemap){
+        var allRingPts = [];
+        data.roofs.forEach(function(r){ allRingPts = allRingPts.concat(r.outline.ring); });
+        /* Basemap is a nice-to-have, not the point of the export -- a
+           flaky/offline tile fetch must never block or blank the actual
+           roof outline export, so failures here are swallowed and the
+           export just proceeds without imagery. */
+        try{ data.basemap = await rmFetchBasemapImage(rmComputeLatLngBounds(allRingPts)); }catch(e){}
+      }
+      return rmBuildMultiRoofOutlineSvg(data);
+    }
   }
   var overlay = await rmFetchExportOverlayData();
+  if (rmState.exportIncludeBasemap){
+    overlay = overlay || {};
+    try{ overlay.basemap = await rmFetchBasemapImage(rmComputeLatLngBounds(rmState.outline.ring)); }catch(e){}
+  }
   return rmBuildOutlineSvg(rmState.outline, overlay);
 }
 async function rmExportSVG(){
@@ -8854,6 +8904,10 @@ var rmState = {
   linkedBuildingId: null, linkedRoofId: null, assetLayerGroup: null, linkedAssetsCache: [],
   /* Phase 3: which base tile layer is currently showing (rmSetBaseLayer()). */
   baseLayer: null, baseLayerType: "osm",
+  /* Export panel: whether to stitch + embed satellite imagery beneath the
+     line art (rm-export-basemap-cb checkbox, rmFetchBasemapImage()).
+     Default off -- opt-in weight/load-time tradeoff. */
+  exportIncludeBasemap: false,
   /* Per-edge dimension labels drawn on the current outline (rmDrawEdgeDimensions()). */
   dimensionLayerGroup: null,
   /* This roof's persistent name label, once saved (roofLabelMarker()). */
@@ -9001,6 +9055,69 @@ function rmSetStatus(msg, kind, extraHtml){
    (asset/pin placement) -- no new/paid service. */
 var RM_TILE_OSM = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
 var RM_TILE_SAT = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
+/* ---- Export base imagery (satellite/ortho beneath the line art) ----
+   Mark's fourth export complaint: "no base image (ortho/satellite) under
+   the outlines... needs a toggle to include one beneath the line-art."
+   Fetches + stitches just the tiles covering the drawing's own bounding
+   box from the SAME free Esri World_Imagery tiles the live map already
+   uses (RM_TILE_SAT) -- no new/paid service. Standard slippy-map tile
+   math (see e.g. OSM's "Slippy map tilenames" wiki page). Confirmed this
+   tile server allows canvas use cross-origin (drawImage + toDataURL, no
+   tainted-canvas SecurityError) with img.crossOrigin="anonymous" before
+   building this out. */
+function rmLatLngToTile(lat, lng, z){
+  var latRad = lat * Math.PI / 180;
+  var n = Math.pow(2, z);
+  return { x: (lng + 180) / 360 * n, y: (1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2 * n };
+}
+function rmTileToLatLng(x, y, z){
+  var n = Math.pow(2, z);
+  var latRad = Math.atan(Math.sinh(Math.PI * (1 - 2 * y / n)));
+  return { lat: latRad * 180 / Math.PI, lng: x / n * 360 - 180 };
+}
+function rmComputeLatLngBounds(points){
+  var lats = points.map(function(p){ return p.lat; }), lngs = points.map(function(p){ return p.lng; });
+  var minLat = Math.min.apply(null, lats), maxLat = Math.max.apply(null, lats);
+  var minLng = Math.min.apply(null, lngs), maxLng = Math.max.apply(null, lngs);
+  var padLat = (maxLat - minLat) * 0.15 || 0.0003, padLng = (maxLng - minLng) * 0.15 || 0.0003;
+  return { minLat: minLat - padLat, maxLat: maxLat + padLat, minLng: minLng - padLng, maxLng: maxLng + padLng };
+}
+/* Tile-count cap keeps a big multi-roof site from triggering hundreds of
+   fetches -- picks the HIGHEST zoom (sharpest imagery) whose tile grid for
+   this bbox still fits under the cap, walking down from 20 (typical max
+   for this tile set) rather than using one fixed zoom for every roof size. */
+var RM_BASEMAP_MAX_TILES = 64;
+async function rmFetchBasemapImage(bounds){
+  var z = 20, tl, br, tilesX, tilesY;
+  for (; z >= 14; z--){
+    tl = rmLatLngToTile(bounds.maxLat, bounds.minLng, z);
+    br = rmLatLngToTile(bounds.minLat, bounds.maxLng, z);
+    tilesX = Math.floor(br.x) - Math.floor(tl.x) + 1;
+    tilesY = Math.floor(br.y) - Math.floor(tl.y) + 1;
+    if (tilesX * tilesY <= RM_BASEMAP_MAX_TILES) break;
+  }
+  var x0 = Math.floor(tl.x), y0 = Math.floor(tl.y), x1 = Math.floor(br.x), y1 = Math.floor(br.y);
+  var canvas = document.createElement("canvas");
+  canvas.width = (x1 - x0 + 1) * 256;
+  canvas.height = (y1 - y0 + 1) * 256;
+  var ctx = canvas.getContext("2d");
+  var loads = [];
+  for (var ty = y0; ty <= y1; ty++){
+    for (var tx = x0; tx <= x1; tx++){
+      loads.push(new Promise(function(resolve){
+        var img = new Image();
+        img.crossOrigin = "anonymous";
+        var px = (tx - x0) * 256, py = (ty - y0) * 256;
+        img.onload = function(){ ctx.drawImage(img, px, py); resolve(); };
+        img.onerror = function(){ resolve(); }; /* missing tile -- leave that patch blank rather than fail the whole basemap */
+        img.src = RM_TILE_SAT.replace("{z}", z).replace("{x}", tx).replace("{y}", ty);
+      }));
+    }
+  }
+  await Promise.all(loads);
+  var nw = rmTileToLatLng(x0, y0, z), se = rmTileToLatLng(x1 + 1, y1 + 1, z);
+  return { dataUrl: canvas.toDataURL("image/jpeg", 0.85), nwLat: nw.lat, nwLng: nw.lng, seLat: se.lat, seLng: se.lng };
+}
 function rmEnsureMap(){
   if (rmState.map) return rmState.map;
   document.getElementById("rm-map-wrap").style.display = "";

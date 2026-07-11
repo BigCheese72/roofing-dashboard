@@ -6981,6 +6981,68 @@ renders untouched. Font-size bump confirmed via the rendered SVG's actual
 `font-size` attributes (17px roof names ×11, 13px dimensions ×58, 20px
 title, etc., all present as expected).
 
+### Export layout pass, part 2: satellite basemap toggle (shipped)
+
+Mark's fourth export complaint, held back from part 1 above as a separate
+commit since it needed live network verification, not just code reading:
+"no base image (ortho/satellite) under the outlines... needs a toggle to
+include one beneath the line-art."
+
+New opt-in checkbox in the export panel ("🛰️ Include satellite imagery
+under the drawing", default off — `rmState.exportIncludeBasemap`, next to
+the multi-roof export checklist). When checked, `rmBuildExportOutput()`
+fetches + stitches the tiles covering the drawing's own bounding box from
+the same free Esri World_Imagery tile set the live map already uses
+(`RM_TILE_SAT`) before calling the (synchronous) SVG builders — new
+`rmFetchBasemapImage(bounds)` does standard slippy-map tile math
+(`rmLatLngToTile`/`rmTileToLatLng`), auto-picks the highest zoom whose
+tile grid for that bbox stays under a 64-tile cap (`RM_BASEMAP_MAX_TILES`,
+walks down from zoom 20), fetches every covering tile with
+`img.crossOrigin = "anonymous"`, stitches them onto one canvas, and
+returns `{dataUrl, nwLat, nwLng, seLat, seLng}` — a data: URI plus the
+real-world extent it actually covers (tile-grid-aligned, so usually a bit
+larger than the requested bbox). Both `rmBuildOutlineSvg` and
+`rmBuildMultiRoofOutlineSvg` project that extent through the exact same
+origin+toSvg pipeline as the rest of the drawing and place it as an
+`<image>` element FIRST (before the outline path), so it sits directly
+beneath the already-semi-transparent orange outline fill — imagery shows
+through the fill exactly like tracing over a real photo.
+
+A real gap worth calling out precisely because it *looked* like a bug
+during testing: the stitched tile image's real-world footprint often came
+out noticeably bigger than the drawing's own canvas (in one test, a
+roughly 180×180ft roof got a 307×409ft basemap) — because whole-tile
+rounding at high zoom can add up to a full tile's width of extra coverage
+on each edge. Confirmed this is NOT a bug: the basemap's projected extent
+still fully contains the outline's own bounding box every time (checked
+the actual numbers), and an SVG root element clips to its `viewBox` by
+default, so the oversized `<image>` just renders correctly cropped, using
+a bit more fetched-tile-area than strictly needed rather than leaving any
+gap at the drawing's edge. Confirmed the crop behavior survives the ACTUAL
+rasterization path (not just live DOM rendering) by running the built SVG
+(with a real fetched basemap embedded) through `rmRasterizeSvgToCanvas` —
+the same function PNG/PDF export calls — and checking the resulting
+canvas: correct declared dimensions, real (non-blank) pixel data at both
+center and corner via `getImageData`, no tainted-canvas `SecurityError`.
+
+Failure handling: a flaky/offline tile fetch must never block or blank
+the actual roof outline export (the whole point of the export), so the
+fetch is wrapped in try/catch in `rmBuildExportOutput()` — on failure,
+`data.basemap`/`overlay.basemap` is just never set, `basemapSvg` stays
+empty, and the export proceeds exactly as it did before this feature
+existed. Verified by stubbing `rmFetchBasemapImage` to always reject and
+confirming `rmBuildExportOutput()` still resolves with a valid outline-
+only SVG (no `<image>` element) rather than throwing.
+
+**Tested end-to-end against the real Esri tile server** (this needed live
+network, not a mock — confirmed the preview environment has real internet
+access first): fetched and stitched real satellite tiles for an actual
+lat/lng bbox, rendered through both `rmBuildOutlineSvg` and
+`rmBuildMultiRoofOutlineSvg`, rasterized the result the same way PNG/PDF
+export does, and confirmed the checkbox's onchange handler correctly
+flips `rmState.exportIncludeBasemap`. All test state cleared and the page
+reloaded clean after.
+
 ## Roadmap (not built yet, foundation only)
 
 - **RoofOps Dashboard**: cross-building reporting, search, filters — reads from
