@@ -305,7 +305,11 @@ coordinate-system reason pins/assets aren't (see `DEV_NOTES.md`).
 
 Notes:
 
-- Current app derives buildings from Job Name and Bill To.
+- Current app derives buildings from Job Name and Bill To. As of 2026-07-10 this also
+  happens eagerly from the "Select Existing Building" picker when a tech picks a
+  CompanyCam-only project (not yet a building here) — `ensureCustomerAndBuilding()` is
+  the same idempotent upsert either way, just triggered at selection time instead of
+  save time. See "Change Order building picker" in `DEV_NOTES.md`.
 - The building should become the anchor for long-term roof history.
 - `roof_base_map_type`/`url`/`bounds` are implemented, not just proposed — see
   "Roof map: base maps + location pins" in `DEV_NOTES.md` for the full design (pin

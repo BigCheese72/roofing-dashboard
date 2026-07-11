@@ -90,7 +90,13 @@ exports.handler = async function (event) {
   try {
     if (p.action === "projects") {
       const q = String(p.q || "").slice(0, 100);
-      const url = "https://api.companycam.com/v2/projects?per_page=25" +
+      // per_page bumped from CompanyCam's default (25) to 100 -- both the
+      // Import-from-CompanyCam flow and the "Select Existing Building"
+      // picker's CompanyCam merge (see "Change Order building picker" in
+      // DEV_NOTES.md) want a browse-without-searching view that covers as
+      // much of the project list as one page reasonably can, not just the
+      // 25 most recent.
+      const url = "https://api.companycam.com/v2/projects?per_page=100" +
         (q ? "&query=" + encodeURIComponent(q) : "");
       const r = await fetch(url, { headers: H });
       if (!r.ok) {

@@ -729,8 +729,10 @@
       <button class="btn" onclick="closeBuildingPicker()">Close</button>
     </div>
     <div style="padding:14px 16px;overflow:auto">
-      <input type="text" id="bp-search" placeholder="Search by building, customer, or address…" style="width:100%;margin-bottom:10px;box-sizing:border-box" oninput="bpFilter()">
+      <input type="text" id="bp-search" placeholder="Search by building, customer, or address…" style="width:100%;margin-bottom:10px;box-sizing:border-box" oninput="bpFilter(); bpDebouncedCcSearch();">
       <div id="bp-list" class="hint">Loading…</div>
+      <h2 class="cond" style="font-size:14px;margin:16px 0 8px">☁️ From CompanyCam (not yet a building here)</h2>
+      <div id="bp-cc-list" class="hint">Loading…</div>
     </div>
   </div>
 </div>
@@ -1153,23 +1155,31 @@ async function openBuildingPicker(){
   var list = document.getElementById("bp-list");
   list.className = "hint";
   list.textContent = "Loading buildings…";
+  bpCcCache = [];
+  bpRenderCcList(); /* clears/resets the CC section's "Loading…" from a previous open */
   if (!fdb){
     list.textContent = "Building picker needs cloud sync (internet connection) to load.";
-    return;
+  } else {
+    try{
+      var qs = await fdb.collection("buildings").orderBy("updatedAt", "desc").limit(200).get();
+      bpCache = [];
+      qs.forEach(function(d){ bpCache.push(Object.assign({ id: d.id }, d.data())); });
+      bpRender(bpCache);
+    }catch(e){
+      list.className = "hint";
+      list.textContent = "Couldn't load buildings: " + e.message;
+    }
   }
-  try{
-    var qs = await fdb.collection("buildings").orderBy("updatedAt", "desc").limit(200).get();
-    bpCache = [];
-    qs.forEach(function(d){ bpCache.push(Object.assign({ id: d.id }, d.data())); });
-    bpRender(bpCache);
-  }catch(e){
-    list.className = "hint";
-    list.textContent = "Couldn't load buildings: " + e.message;
-  }
+  /* CompanyCam browse/search is entirely separate from the buildings load
+     above -- neither blocks the other, so a slow/unavailable CompanyCam API
+     never holds up the (usually much faster) existing-buildings list. See
+     "Change Order building picker" in DEV_NOTES.md. */
+  bpSearchCompanyCam("");
 }
 function closeBuildingPicker(){
   document.getElementById("bp-modal").style.display = "none";
   unlockBodyScroll();
+  if (bpCcDebounceTimer) clearTimeout(bpCcDebounceTimer);
 }
 function bpFilter(){
   if (!bpCache) return;
@@ -1193,6 +1203,89 @@ function bpRender(list){
       (b.companyCamProjectId ? ' · 🔗 CompanyCam linked' : "") + '</div></div>' +
       '<button class="btn">Select</button></div>';
   }).join("");
+}
+/* ---- CompanyCam merge (Mark's ask: "Select Existing Building" should
+   surface the WHOLE CompanyCam project file, not just buildings already
+   created in this app) ----
+   Debounced separately from bpFilter() (which is instant/local against the
+   already-loaded bpCache) since this one is a real network round-trip.
+   Dedupes against EVERY loaded app building (not just the currently
+   filtered/visible ones) so a CompanyCam project already linked to some
+   building never shows twice regardless of search state -- "prefer the app
+   building record" per spec. See "Change Order building picker" in
+   DEV_NOTES.md. */
+var bpCcCache = [];
+var bpCcDebounceTimer = null;
+function bpDebouncedCcSearch(){
+  if (bpCcDebounceTimer) clearTimeout(bpCcDebounceTimer);
+  var q = document.getElementById("bp-search").value.trim();
+  bpCcDebounceTimer = setTimeout(function(){ bpSearchCompanyCam(q); }, 400);
+}
+async function bpSearchCompanyCam(q){
+  var host = document.getElementById("bp-cc-list");
+  if (host){ host.className = "hint"; host.textContent = "Searching CompanyCam…"; }
+  try{
+    var out = await ccApi({ action: "projects", q: q || "" });
+    bpCcCache = out.projects || [];
+    bpRenderCcList();
+  }catch(e){
+    bpCcCache = [];
+    if (host){
+      host.className = "hint";
+      host.textContent = "Couldn't reach CompanyCam right now — showing existing buildings only.";
+    }
+  }
+}
+/* Deduped subset actually rendered/selectable -- kept separate from
+   bpCcCache (the raw fetch result) specifically so the onclick index below
+   always matches what's on screen. Indexing into bpCcCache directly here
+   was a real bug: once dedup removes an earlier entry, every later
+   CompanyCam-only row's index no longer lines up with its position in the
+   raw array, so tapping "Select" silently linked the WRONG CompanyCam
+   project/building. Caught in testing, not shipped. */
+var bpCcVisibleCache = [];
+function bpRenderCcList(){
+  var host = document.getElementById("bp-cc-list");
+  if (!host) return;
+  var linkedIds = {};
+  (bpCache || []).forEach(function(b){ if (b.companyCamProjectId) linkedIds[b.companyCamProjectId] = true; });
+  bpCcVisibleCache = bpCcCache.filter(function(p){ return !linkedIds[p.id]; });
+  if (!bpCcVisibleCache.length){
+    host.className = "hint";
+    host.textContent = "No other CompanyCam projects found.";
+    return;
+  }
+  host.className = "";
+  host.innerHTML = bpCcVisibleCache.map(function(p, i){
+    return '<div class="bld-item" onclick="bpSelectCompanyCamProject(' + i + ')"><div class="info">' +
+      '<div class="name">' + esc(p.name) + '</div>' +
+      '<div class="meta">' + (p.address ? esc(p.address) : "") + ' · ☁️ CompanyCam only</div></div>' +
+      '<button class="btn">Select</button></div>';
+  }).join("");
+}
+async function bpSelectCompanyCamProject(i){
+  var p = bpCcVisibleCache[i];
+  if (!p) return;
+  setVal("jobName", p.name || "");
+  setVal("location", p.address || "");
+  ccLinkedProjectId = p.id;
+  ccLinkedProjectName = p.name || "";
+  renderCCLinkInfo();
+  closeBuildingPicker();
+  toast("Loaded “" + p.name + "” from CompanyCam — review the fields below before saving");
+  /* Creates/links a real building record right away (not deferred to save)
+     so RoofMapper/Building History/reports all have something to attach to
+     immediately, matching how RoofMapper's "create a new building" flow
+     already works (ensureCustomerAndBuilding() is the same idempotent
+     upsert, keyed off billTo+jobName -- calling it again at save time, or
+     from RoofMapper later, just merges into the same building doc, never
+     creates a duplicate). */
+  try{
+    await ensureCustomerAndBuilding({
+      jobName: p.name || "", billTo: val("billTo") || "", location: p.address || "",
+      roofSystem: val("roofSystem") || "", companyCamProjectId: p.id
+    });
+  }catch(e){ console.warn("Couldn't create/link building from CompanyCam project", e); }
 }
 function bpSelectBuilding(buildingId){
   var b = (bpCache || []).find(function(x){ return x.id === buildingId; });

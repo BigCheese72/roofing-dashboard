@@ -57,6 +57,23 @@ Goal: preserve and harden the existing RoofOps Field / Watkins work order workfl
   specific, so it can be wired into other forms later — e.g. leak/
   non-warranty service-order signing, once the email-doc-attach feature
   lands. See "In-app signature capture" in `DEV_NOTES.md`.
+- ✅ **Shipped (dev only, 2026-07-10)**: "Select Existing Building" (Job
+  Information card, every work order type — Mark hit this from a Change
+  Order specifically) now surfaces the WHOLE CompanyCam project file, not
+  just buildings already created in this app. A new "☁️ From CompanyCam"
+  section alongside the existing app-buildings list, searchable (typing
+  searches both — CompanyCam's search reaches its whole project file, not
+  just an initial page); a CompanyCam project already linked to an app
+  building shows once, as that building (never duplicated); picking a
+  CompanyCam-only project fills the fields, links it, AND immediately
+  creates/links a real building record so RoofMapper/history/reports all
+  have something to attach to right away, not just at save time. Handles a
+  slow/unavailable CompanyCam API gracefully — falls back to the existing
+  buildings list with a message, never blocks it. Sheet-metal CompanyCam
+  projects are NOT excluded here (that exclusion applies only to a future
+  CompanyCam consolidation/merge cleanup task, not this picker) — every
+  project is selectable. See "Change Order building picker" in
+  `DEV_NOTES.md`.
 - ✅ **Shipped (dev only, 2026-07-10)**: Send Feedback — a 💬 button reachable
   from every screen (fixed corner, present on all tabs) opens a quick-type
   picker (👍 Works great / 🤔 Confusing / 🐞 Bug / 💡 Feature request) plus

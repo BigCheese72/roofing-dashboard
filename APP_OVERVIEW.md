@@ -28,6 +28,12 @@ form. Tapping the Watkins logo in the header also returns to Home from anywhere.
    To, Location, and Roof System fill in automatically instead of being re-typed
    (helps avoid accidentally creating a duplicate building record from a slightly
    different spelling). Skip this and just type if it's a brand-new job/customer.
+   The picker isn't limited to buildings already in this app, either — a "☁️ From
+   CompanyCam" section below the search box lists CompanyCam projects that haven't
+   been turned into a RoofOps building yet (search reaches your whole CompanyCam
+   project file, not just a first page). Pick one of those and it fills the fields
+   the same way, links the CompanyCam project, and creates the building record for
+   you right then — no separate step.
 3. The **Work Order Type** at the top of Job Information is already set from the tile
    picked on Home (defaults to Leak / Service for anything started another way) — change
    it here any time if needed. See "Work Order Types" below. Fill out the work order

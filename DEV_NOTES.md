@@ -4259,6 +4259,116 @@ zero Firestore reads. All test state (`fdb`, mocked `navigator.geolocation`
 via `Object.defineProperty`/restored, stubbed `geocodeAddress`/`toast`,
 `#bnm-results` contents) cleared, page reloaded, console clean.
 
+## Change Order building picker: CompanyCam merge (shipped 2026-07-10, dev only)
+
+Mark's report: "Select Existing Building" (the picker on every work order
+type's Job Information card, opened via `openBuildingPicker()` — he hit it
+from a Change Order specifically, but it's shared, not Change-Order-only)
+only ever surfaced buildings already created in this app's own Firestore.
+He wanted to be able to pick ANY CompanyCam project — the whole company
+file — not just ones he'd already turned into a RoofOps building.
+
+**Two independent lists in the same modal, neither blocking the other**:
+the existing app-buildings list (`bpCache`, unchanged — `fdb` query,
+client-side search via `bpFilter()`) renders exactly as before, and a new
+"☁️ From CompanyCam (not yet a building here)" section
+(`#bp-cc-list`/`bpCcCache`) loads separately via the existing
+`ccApi({action:"projects", q})` — same Netlify function/token the
+Import-from-CompanyCam flow already uses, no new secrets. `openBuildingPicker()`
+kicks off both loads in parallel (an empty-query CompanyCam browse plus the
+Firestore buildings fetch) so opening the picker shows a useful CompanyCam
+section immediately, not just after a search. Typing in the search box does
+two things: `bpFilter()` (instant, client-side, against the already-loaded
+`bpCache`, unchanged) and a debounced (400ms, cleared/reset on every
+keystroke so rapid typing only fires one network call) re-search against
+CompanyCam via `bpDebouncedCcSearch()`/`bpSearchCompanyCam(q)` — since
+CompanyCam's `query=` param searches server-side across their whole project
+file, not just whatever page was initially loaded, a search genuinely
+reaches "any CompanyCam project," while the un-searched default view is
+practically capped (see below) like every other list in this app.
+
+**`companycam.js`'s `projects` action `per_page` bumped 25 → 100** — a
+one-line, no-new-secret change benefiting this picker's default/no-query
+browse view AND the existing Import-from-CompanyCam project list for free.
+Still not literally "every CompanyCam project ever" without paging through
+multiple requests (not built — 100 covers the practical case, matching how
+every other list in this app is capped at 100-300 rather than truly
+unbounded), but a real search reaches the full project file via CompanyCam's
+own server-side query.
+
+**Merge/dedupe — "a CompanyCam project already mapped to an app building
+should show once, preferring the app building record"**: `bpRenderCcList()`
+builds a set of every loaded app building's `companyCamProjectId` (from the
+FULL `bpCache`, not just whatever's currently filtered/visible, so dedup
+stays correct regardless of search state) and filters those ids out of the
+CompanyCam results before rendering — an already-linked project only ever
+shows as its app-building row (with the pre-existing "🔗 CompanyCam linked"
+meta text), never duplicated in the CompanyCam section too.
+
+**Bug caught in testing, fixed before shipping**: the CompanyCam section's
+"Select" buttons were originally indexed into `bpCcCache` (the raw,
+un-deduped fetch result) by their position in the RENDERED (deduped) list.
+Once dedup actually removed an earlier entry, every later row's index no
+longer matched its position in the raw array — tapping "Select" silently
+linked the WRONG CompanyCam project (verified: with `[Acme (linked, index
+0), Charlie (index 1), Delta (index 2)]` and Acme deduped out, tapping the
+rendered "Delta" row (visible position 1) resolved `bpCcCache[1]`, i.e.
+Charlie, not Delta). Fixed by introducing `bpCcVisibleCache` — the actual
+deduped/rendered array — and indexing `bpSelectCompanyCamProject(i)` into
+THAT instead of the raw `bpCcCache`. Re-tested with the same fixture:
+selecting the rendered "Delta Depot" row now correctly resolves to Delta's
+real CompanyCam id.
+
+**Selecting a CompanyCam-only project** (`bpSelectCompanyCamProject(i)`):
+fills Job Name/Location from the CompanyCam project's name/address (same
+field-filling `bpSelectBuilding()` already does for an app building), sets
+`ccLinkedProjectId`/`ccLinkedProjectName` and re-renders the CompanyCam
+link banner (same mechanism Import-from-CompanyCam uses), closes the
+picker, and — the "so it attaches to a real building history" requirement —
+immediately calls the existing `ensureCustomerAndBuilding()` (the same
+idempotent, deterministic-id upsert RoofMapper's "create a new building"
+flow already uses) with the CompanyCam project's name/address plus
+`companyCamProjectId`, so a real `buildings` doc exists (or is updated, if
+one with the same Bill To + Job Name already existed) right away — not
+deferred until the work order is saved. Building it eagerly means RoofMapper/
+Building History/Reports all have something real to attach to immediately,
+matching how picking a CompanyCam project from RoofMapper's own
+"create a new building" flow already behaves. `ensureCustomerAndBuilding()`
+is idempotent (deterministic id from billTo+jobName), so a later normal save
+re-running it is a harmless merge, never a duplicate building.
+
+**Sheet-metal projects are NOT excluded from this picker** — an earlier
+version of the spec asked for a hard sheet-metal exclusion here, corrected
+by Mark before this was built: that rule applies only to a *future*
+CompanyCam consolidation/merge cleanup task (not yet built), not to this
+building picker. Sheet-metal CompanyCam projects appear and are selectable
+here exactly like any other project — explicitly tested (a
+"Charlie Sheet Metal Co" fixture project rendered and was selectable with
+no special-casing anywhere in this code path).
+
+**Graceful CompanyCam failure**: a failed/slow CompanyCam search
+(`bpSearchCompanyCam()`'s own try/catch) shows "Couldn't reach CompanyCam
+right now — showing existing buildings only." inside `#bp-cc-list` only —
+the app-buildings list/search above it is completely unaffected, since the
+two loads are independent from the start.
+
+Tested with mocked `fdb`/`ccApi` (no real network calls, no real writes):
+confirmed the app-buildings list and CompanyCam section both render
+correctly on open; confirmed dedup correctly hides a CompanyCam project
+already linked to an app building while leaving others (including the
+sheet-metal fixture) selectable; confirmed the index bug above, fixed it,
+and re-verified the fix with the same fixture; confirmed selecting a
+CompanyCam-only project fills the right fields, sets the CompanyCam link,
+closes the modal, and calls `ensureCustomerAndBuilding()` with exactly the
+expected arguments; confirmed rapid typing in the search box fires exactly
+one debounced CompanyCam search call, not one per keystroke; confirmed a
+CompanyCam failure shows the fallback message in the CompanyCam section
+only, with the app-buildings list/search still fully intact and unaffected;
+confirmed the original `bpSelectBuilding()` (existing app-building) path is
+unchanged. All test state (`fdb`, `ccApi`/`ensureCustomerAndBuilding`
+stubs, form fields, `bpCache`/`bpCcCache`/`bpCcVisibleCache`, the picker
+modal) cleared, page reloaded, console clean.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |
