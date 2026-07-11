@@ -976,6 +976,10 @@
     <div id="pin-map" style="height:min(55vh,480px);width:100%;background:#ECEFF1"></div>
     <div style="padding:12px 16px">
       <p class="hint" id="pin-hint" style="margin:0 0 10px"></p>
+      <!-- Mark: "if the pin is inside Roof 4 but the dropdown says Roof
+           10, flag the mismatch rather than silently disagreeing." See
+           checkPinRoofMismatch() in openPinModalSatellite(). -->
+      <p id="pin-roof-mismatch-warning" style="display:none;margin:-4px 0 10px;color:#D64545;font-weight:600;font-size:13px"></p>
       <div class="btnrow" style="margin:0">
         <button class="btn" id="pin-mylocation-btn" onclick="useMyLocationForPin()" style="display:none">📍 Use My Location</button>
         <button class="btn primary" onclick="savePinFromModal()">Save Pin</button>
@@ -2865,9 +2869,61 @@ async function openPinModal(findingId){
   pinMapMode = "latlng";
   await openPinModalSatellite(f, findingId);
 }
+/* Mark's screenshot: pin placement rendered raw satellite tiles only --
+   none of his 11 hand-traced Tri-Delta roofs, no labels, no history pins
+   for context, and a wide street-level zoom instead of framed on the
+   roof. Same underlying gap as the missing Building History timeline --
+   the traced roof data exists, it just wasn't being drawn where it
+   mattered. Pulls the SAME roofs info the roof dropdown above this map
+   already fetches (renderPinRoofPicker(), lookupProspectiveBuildingRoofInfo())
+   so this map can actually show what that dropdown is choosing between.
+   See "Pin placement map roof rendering" in DEV_NOTES.md. */
 async function openPinModalSatellite(f, findingId, orthoOverlay){
   document.getElementById("pin-mylocation-btn").style.display = navigator.geolocation ? "" : "none";
-  var center, zoom = 17, hint, fitOrthoBounds = false;
+  var warnEl = document.getElementById("pin-roof-mismatch-warning");
+  if (warnEl) warnEl.style.display = "none";
+
+  var roofInfo = await lookupProspectiveBuildingRoofInfo();
+  var roofs = (roofInfo && roofInfo.roofs) || [];
+  /* Same "which roof is active" resolution renderPinRoofPicker() already
+     uses, so this map highlights exactly whichever roof that dropdown
+     shows selected. */
+  var activeRoofId = (f.roofId && roofs.some(function(r){ return r.id === f.roofId; })) ? f.roofId :
+    (currentRoofIds && currentRoofIds.length ? currentRoofIds[0] :
+      ((currentRoofId && roofs.some(function(r){ return r.id === currentRoofId; })) ? currentRoofId :
+        (roofs[0] ? roofs[0].id : null)));
+  /* Every roof's most recent outline, tagged with its own label -- same
+     reduction openBuildingHistory() uses for its "every roof at once" map
+     (allRoofOutlinesForMap). _active flags the one the Roof dropdown has
+     selected right now, drawn distinctly from the rest below. */
+  var roofOutlines = roofs.reduce(function(acc, r){
+    var ol = r.roof_outlines || [];
+    var latest = ol[ol.length - 1];
+    if (latest && latest.ring && latest.ring.length >= 3){
+      acc.push(Object.assign({}, latest, {
+        _roofLabel: r.label || "Roof", _roofLabelPos: r.labelPos || null, _active: r.id === activeRoofId
+      }));
+    }
+    return acc;
+  }, []);
+  /* Existing pins from this building's history, for context -- dimmed,
+     non-interactive besides their popup, same convention Building
+     History's own map already uses for these. Best-effort: no cloud
+     connection or no history yet just means none show up. */
+  var historyPinsForContext = [];
+  if (fdb && roofInfo && roofInfo.buildingId){
+    try{
+      var evtQs = await fdb.collection("building_history_events")
+        .where("buildingId", "==", roofInfo.buildingId).limit(50).get();
+      evtQs.forEach(function(d){
+        ((d.data().pins) || []).forEach(function(p){
+          if (typeof p.lat === "number" && typeof p.lng === "number") historyPinsForContext.push(p);
+        });
+      });
+    }catch(e){ /* non-critical -- pin placement still works without this context layer */ }
+  }
+
+  var center, zoom = 17, hint, fitOrthoBounds = false, fitActiveRoofBounds = false;
   if (f.pin && typeof f.pin.lat === "number"){
     center = { lat: f.pin.lat, lng: f.pin.lng };
     pinInitialSource = f.pin.source || "tech_placed";
@@ -2888,16 +2944,28 @@ async function openPinModalSatellite(f, findingId, orthoOverlay){
       fitOrthoBounds = true;
       hint = "Tap the orthomosaic to place the pin.";
     } else {
-      pinInitialSource = "tech_placed";
-      var addr = val("location") || val("jobName") || "";
-      var geo = await geocodeAddress(addr);
-      if (geo){
-        center = geo;
-        hint = "Centered on the job address — drag the pin to the exact spot.";
+      /* Mark: "zoom/fit to the building's roofs on open, not a wide street
+         view" -- the active roof's own traced outline is the tightest,
+         most relevant thing to frame on, well before falling back to
+         geocoding the whole address. */
+      var activeOutline = roofOutlines.find(function(o){ return o._active; });
+      if (activeOutline){
+        pinInitialSource = "tech_placed";
+        center = activeOutline.center || rmGeomRingCentroid(activeOutline.ring);
+        fitActiveRoofBounds = true;
+        hint = "Tap the roof to place the pin.";
       } else {
-        center = { lat: 39.8283, lng: -98.5795 }; /* generic US center fallback */
-        zoom = 4;
-        hint = "Couldn't find that address automatically — zoom/pan and drag the pin to the right spot.";
+        pinInitialSource = "tech_placed";
+        var addr = val("location") || val("jobName") || "";
+        var geo = await geocodeAddress(addr);
+        if (geo){
+          center = geo;
+          hint = "Centered on the job address — drag the pin to the exact spot.";
+        } else {
+          center = { lat: 39.8283, lng: -98.5795 }; /* generic US center fallback */
+          zoom = 4;
+          hint = "Couldn't find that address automatically — zoom/pan and drag the pin to the right spot.";
+        }
       }
     }
   }
@@ -2913,12 +2981,56 @@ async function openPinModalSatellite(f, findingId, orthoOverlay){
       L.imageOverlay(orthoOverlay.url, boundsToLatLngBounds(orthoOverlay.bounds)).addTo(pinMap);
       if (fitOrthoBounds) pinMap.fitBounds(boundsToLatLngBounds(orthoOverlay.bounds));
     }
+    /* Every traced roof drawn -- the active one bold/highlighted (same
+       orange RoofMapper's own outline uses), every other one dimmed gray
+       so the whole building still reads as context without competing with
+       the roof actually being pinned right now. */
+    var activeLayerBounds = null;
+    roofOutlines.forEach(function(o){
+      var layer = L.polygon(o.ring.map(function(p){ return [p.lat, p.lng]; }), o._active ?
+        { color: "#E8600A", weight: 3, fillColor: "#E8600A", fillOpacity: 0.15 } :
+        { color: "#888", weight: 1.5, fillColor: "#888", fillOpacity: 0.06, dashArray: "4,4" }
+      ).addTo(pinMap);
+      if (o._active) activeLayerBounds = layer.getBounds();
+      var labelCenter = o._roofLabelPos || o.center || rmGeomRingCentroid(o.ring);
+      roofLabelMarker(labelCenter.lat, labelCenter.lng, o._roofLabel).addTo(pinMap);
+    });
+    historyPinsForContext.forEach(function(p){
+      L.circleMarker([p.lat, p.lng], {
+        radius: 6, color: "#fff", weight: 1.5, fillColor: "#90A4AE", fillOpacity: 0.7
+      }).addTo(pinMap).bindPopup(pinPopupHtml(p));
+    });
+    if (fitActiveRoofBounds && activeLayerBounds) pinMap.fitBounds(activeLayerBounds, { padding: [24, 24] });
     pinMarker = L.marker([center.lat, center.lng], { draggable: true }).addTo(pinMap);
-    pinMarker.on("dragend", function(){ pinInteracted = true; });
-    pinMap.on("click", function(e){ pinMarker.setLatLng(e.latlng); pinInteracted = true; });
+    pinMarker.on("drag", function(e){ checkPinRoofMismatch(e.target.getLatLng(), roofs, activeRoofId); });
+    pinMarker.on("dragend", function(e){ pinInteracted = true; checkPinRoofMismatch(e.target.getLatLng(), roofs, activeRoofId); });
+    pinMap.on("click", function(e){ pinMarker.setLatLng(e.latlng); pinInteracted = true; checkPinRoofMismatch(e.latlng, roofs, activeRoofId); });
+    checkPinRoofMismatch(pinMarker.getLatLng(), roofs, activeRoofId);
     pinMap.invalidateSize();
     setTimeout(function(){ if (pinMap) pinMap.invalidateSize(); }, 300);
   }, 50);
+}
+/* Mark: "if the pin is inside Roof 4 but the dropdown says Roof 10, flag
+   the mismatch rather than silently disagreeing." Same point-in-polygon
+   geometry the GPS auto-assign work already uses (rmAssignPointToRoof()),
+   run live as the pin is dragged/tapped/placed. Never auto-corrects the
+   dropdown -- just surfaces the disagreement so a tech notices and picks
+   deliberately, same "flag, don't guess" spirit as the rest of GPS
+   auto-assign. Silent no-op for a single-roof building (nothing to
+   disagree about) or a point outside every polygon (not confidently on
+   ANY roof, not specifically the wrong one). */
+function checkPinRoofMismatch(latlng, roofs, activeRoofId){
+  var warnEl = document.getElementById("pin-roof-mismatch-warning");
+  if (!warnEl) return;
+  if (!roofs || roofs.length <= 1){ warnEl.style.display = "none"; return; }
+  var result = rmAssignPointToRoof(latlng.lat, latlng.lng, roofs);
+  if (result && result.roofId && !result.outsideAll && result.roofId !== activeRoofId){
+    warnEl.textContent = "⚠️ This pin looks like it's actually on " + (result.label || "another roof") +
+      ", not the roof selected above.";
+    warnEl.style.display = "";
+  } else {
+    warnEl.style.display = "none";
+  }
 }
 function closePinModal(){
   document.getElementById("pin-modal").style.display = "none";
