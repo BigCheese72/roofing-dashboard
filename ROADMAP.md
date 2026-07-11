@@ -514,9 +514,8 @@ Goal: turn each building into a long-term roof record.
      already showed. Applies to any captured outline (OSM footprint,
      manual trace, or walk-the-corners) since it's pure geometry off the
      existing `ring` points, using the same distance helper the perimeter
-     total already used. **Read-only for now** — the labels display the
-     GPS/geometry-derived length; tapping to edit one (needed for #3,
-     calibrate-by-known-edge) is not built yet. See "RoofMapper UI
+     total already used. Labels display the GPS/geometry-derived length;
+     tapping one to calibrate is #3 below (shipped). See "RoofMapper UI
      cleanup: contextual controls + per-edge dimensions" in `DEV_NOTES.md`.
   2. **User-added dimension lines to features**: let the tech draw/add a
      measurement line FROM a placed feature (e.g. a drain) to a roof edge
@@ -524,31 +523,36 @@ Goal: turn each building into a long-term roof record.
      things are from each other, not just where they are. Distinct from
      #1 (perimeter is automatic and roof-wide; this is manual and
      feature-specific).
-  3. **Calibrate-by-known-edge** (Mark's idea, to be built together with #1
-     and the Walk-the-Corners capture method above — GPS corner-walking
-     gives an accurate SHAPE but only a rough absolute SIZE, consumer GPS
-     being ~10–30 ft off per corner; this is what turns that rough polygon
-     into an accurately-scaled one from a single tape measurement). Exact
-     UX, per Mark: the moment a footprint auto-draws (from walked corners,
-     or really any capture method), #1's automatic per-edge dimension
-     labels are already showing on every edge, straight from the GPS/geometry
-     estimate. The tech taps ONE of those edge labels and edits it to the
-     real field-measured length (tape-measured on site) — the app then
-     rescales the ENTIRE footprint proportionally off that one calibrated
-     edge, so every other edge's dimension label, plus total area and
-     perimeter, all update to match automatically. One field measurement,
-     one edit, the whole footprint (and everything computed from it)
+  3. ✅ **Shipped (dev only, 2026-07-10)**: Calibrate-by-known-edge (Mark's
+     idea — GPS corner-walking gives an accurate SHAPE but only a rough
+     absolute SIZE, consumer GPS being ~10–30 ft off per corner; this turns
+     that rough polygon into an accurately-scaled one from a single tape
+     measurement). Exact UX, per Mark: the tech taps ONE of #1's per-edge
+     dimension labels and edits it to the real field-measured length
+     (tape-measured on site) — the app rescales the ENTIRE footprint
+     proportionally off that one calibrated edge, so every other edge's
+     dimension label, plus total area and perimeter, all update to match
+     automatically. One field measurement, one edit, the whole footprint
      becomes accurate — not a separate calibration screen/flow, just
-     editing a dimension that was already on screen. A second edge can
-     optionally be entered/verified afterward as a confidence check (how
+     editing a dimension that was already on screen. The calibrated edge
+     stays visibly marked (green highlight + checkmark) on the map, and
+     tapping a different edge re-calibrates off that one instead — no
+     limit on re-calibrating. Works on any outline (OSM/manual-trace/
+     walk-corners) and, if the roof already has features placed, rescales
+     them right along with the outline so nothing visually detaches.
+     Persists immediately if the outline's already saved; otherwise rides
+     along with the next Save Outline like any other edit. The optional
+     second-edge confidence-check / best-fit-across-two-edges refinement
+     described below is **not built** — the single-edge-edit interaction
+     ships as the complete core capability. See "Self-scaling dimension
+     calibration" in `DEV_NOTES.md`.
+
+     *Original spec, kept for the not-yet-built refinement*: a second edge
+     can optionally be entered/verified afterward as a confidence check (how
      far off is it from what the first edge's scaling predicted) and/or
      folded into a best-fit scale across both known edges rather than
      trusting the single edge alone — a refinement on top of the core
-     single-edge-edit interaction, not required for it to work. Ties
-     directly into walk-the-corners (Phase 3, part 2, shipped) and #1
-     above (auto per-edge dimensions) — build all three together, this
-     is the piece that makes GPS-captured footprints actually
-     dimensionally trustworthy, not just correctly shaped.
+     single-edge-edit interaction, not required for it to work.
 - **Sections**: divide one roof outline into multiple labeled sections (e.g.
   by roof system or area), each with its own computed area, tying into the
   existing multi-roof/roof-section data model rather than a parallel one.

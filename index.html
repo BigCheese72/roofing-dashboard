@@ -5915,6 +5915,20 @@ function rmGeomToLocalXY(point, origin){
   var mPerDegLng = 111320 * Math.cos(origin.lat * Math.PI / 180);
   return { x: (point.lng - origin.lng) * mPerDegLng, y: (point.lat - origin.lat) * mPerDegLat };
 }
+/* Inverse of rmGeomToLocalXY -- turns a local meters-from-origin offset back
+   into {lat,lng}. Used by calibration to scale points about a centroid. */
+function rmGeomFromLocalXY(xy, origin){
+  var mPerDegLat = 111320;
+  var mPerDegLng = 111320 * Math.cos(origin.lat * Math.PI / 180);
+  return { lat: origin.lat + xy.y / mPerDegLat, lng: origin.lng + xy.x / mPerDegLng };
+}
+/* Scales a single point toward/away from origin by factor (origin itself is
+   unmoved). Building block for calibrate-by-known-edge -- see
+   rmCalibrateEdge() below. */
+function rmGeomScalePoint(point, origin, factor){
+  var xy = rmGeomToLocalXY(point, origin);
+  return rmGeomFromLocalXY({ x: xy.x * factor, y: xy.y * factor }, origin);
+}
 function rmGeomRingCentroid(ring){
   var lat = 0, lng = 0, n = ring.length;
   ring.forEach(function(p){ lat += p.lat; lng += p.lng; });
@@ -6693,20 +6707,31 @@ function rmDrawEdgeDimensions(outline){
   if (rmState.dimensionLayerGroup) map.removeLayer(rmState.dimensionLayerGroup);
   rmState.dimensionLayerGroup = L.layerGroup().addTo(map);
   var ring = outline.ring;
+  var calibratedIdx = outline.calibration ? outline.calibration.edgeIndex : -1;
   for (var i = 0; i < ring.length - 1; i++){
     var a = ring[i], b = ring[i + 1];
     var distFt = rmGeomHaversineMeters(a, b) * 3.28084;
     if (distFt < 1) continue; /* skip degenerate/near-zero edges from ring cleanup */
     var midLat = (a.lat + b.lat) / 2, midLng = (a.lng + b.lng) / 2;
-    L.marker([midLat, midLng], {
+    var isCalibrated = i === calibratedIdx;
+    var bg = isCalibrated ? "#2E7D32" : "#263238";
+    var label = (isCalibrated ? "✓ " : "") + Math.round(distFt) + " ft";
+    var marker = L.marker([midLat, midLng], {
       icon: L.divIcon({
         className: "", iconSize: null,
-        html: '<div style="background:#263238;color:#fff;padding:2px 6px;border-radius:4px;' +
+        html: '<div style="background:' + bg + ';color:#fff;padding:3px 7px;border-radius:4px;' +
           'font-size:11px;font-weight:700;white-space:nowrap;transform:translate(-50%,-50%);' +
-          'box-shadow:0 1px 3px rgba(0,0,0,.4)">' + Math.round(distFt) + ' ft</div>'
+          'box-shadow:0 1px 3px rgba(0,0,0,.4);cursor:pointer' +
+          (isCalibrated ? ";border:1.5px solid #fff" : "") + '">' + label + '</div>'
       }),
-      interactive: false
+      interactive: true
     }).addTo(rmState.dimensionLayerGroup);
+    /* Closure over i so each label's tap targets its own edge -- tapping
+       opens the calibrate-by-known-edge prompt for that edge specifically.
+       See "Self-scaling dimension calibration" in DEV_NOTES.md. */
+    (function(edgeIndex){
+      marker.on("click", function(){ rmCalibrateEdge(edgeIndex); });
+    })(i);
   }
 }
 function rmDrawFinalOutline(outline){
@@ -6727,6 +6752,89 @@ function rmDrawFinalOutline(outline){
   rmUpdateExportHint();
   rmUpdateControlVisibility();
   document.getElementById("rm-outline-panel").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+/* ---- Calibrate-by-known-edge (self-scaling dimension calibration) ----
+   GPS corner-walking (and OSM/manual-trace to a lesser degree) gives an
+   accurate SHAPE but only a rough absolute SIZE. Mark's exact UX: the tech
+   taps ONE edge's dimension label, enters the real tape-measured length,
+   and the WHOLE footprint rescales proportionally off that one edge --
+   every other edge, area, and perimeter update to match. One field
+   measurement, one edit, the whole outline becomes accurate. Works on any
+   outline (OSM/manual_trace/walk_corners) since it's pure geometry on the
+   ring -- see "Dimensions" > "Calibrate-by-known-edge" in ROADMAP.md. */
+function rmCalibrateEdge(edgeIndex){
+  var outline = rmState.outline;
+  if (!outline) return;
+  var ring = outline.ring;
+  var a = ring[edgeIndex], b = ring[edgeIndex + 1];
+  if (!a || !b) return;
+  var currentFt = rmGeomHaversineMeters(a, b) * 3.28084;
+  var input = prompt("Real field-measured length of this edge, in feet (currently ~" +
+    Math.round(currentFt) + " ft):", String(Math.round(currentFt)));
+  if (input === null) return; /* canceled */
+  var measuredFt = parseFloat(input);
+  if (!isFinite(measuredFt) || measuredFt <= 0){ toast("Enter a length greater than 0."); return; }
+  var factor = measuredFt / currentFt;
+  /* Uniform scale about the ring's own centroid -- preserves shape/angles,
+     changes only size, exactly matching "rescales proportionally." Fresh
+     centroid each call so repeated recalibrations (off the same or a
+     different edge) compound correctly with no drift. */
+  var centroid = rmGeomRingCentroid(ring);
+  var newRing = ring.map(function(p){ return rmGeomScalePoint(p, centroid, factor); });
+  outline.ring = newRing;
+  outline.areaSqFt = rmGeomPolygonAreaSqMeters(newRing) * 10.7639;
+  outline.perimeterFt = rmGeomPolygonPerimeterMeters(newRing) * 3.28084;
+  outline.center = centroid;
+  outline.calibration = { edgeIndex: edgeIndex, measuredFt: measuredFt, calibratedAt: Date.now() };
+  /* If features are already placed on a saved roof, keep them visually
+     anchored to the roof by applying the identical transform -- otherwise
+     a rescale would visibly detach drains/HVAC markers from the edges they
+     were placed against. */
+  var rescaledAssets = null;
+  if (rmState.linkedAssetsCache && rmState.linkedAssetsCache.length){
+    rescaledAssets = rmState.linkedAssetsCache.map(function(asset){
+      var p = rmGeomScalePoint({ lat: asset.lat, lng: asset.lng }, centroid, factor);
+      return Object.assign({}, asset, { lat: p.lat, lng: p.lng });
+    });
+    rmState.linkedAssetsCache = rescaledAssets;
+    rmDrawLinkedAssets(rescaledAssets);
+  }
+  if (rmState.outlineLayer) rmState.outlineLayer.setLatLngs(newRing.map(function(p){ return [p.lat, p.lng]; }));
+  rmDrawEdgeDimensions(outline);
+  rmRenderOutlineStats(outline);
+  rmUpdateExportHint();
+  rmPersistCalibration(rescaledAssets);
+}
+/* Only writes to Firestore if this outline is already linked+saved (has an
+   .id -- see rmSaveOutlineToBuilding()). Calibrating BEFORE the first save
+   just updates rmState.outline in memory; the next "Save Outline" tap picks
+   up the calibrated ring like any other edit, no separate write needed. */
+async function rmPersistCalibration(rescaledAssets){
+  var outline = rmState.outline;
+  if (!rmState.linkedBuildingId || !rmState.linkedRoofId || !outline.id){
+    toast("Recalibrated ✓ — will save with the outline.");
+    return;
+  }
+  if (!fdb){ toast("Recalibrated ✓ — will save with the outline."); return; }
+  toast("Saving calibration…");
+  try{
+    var snap = await fdb.collection("buildings").doc(rmState.linkedBuildingId).get();
+    var bld = snap.exists ? snap.data() : {};
+    var roofs = getBuildingRoofs(bld);
+    var roof = roofs.find(function(r){ return r.id === rmState.linkedRoofId; });
+    if (!roof){ toast("Couldn't find the linked roof to save calibration."); return; }
+    roof.roof_outlines = (roof.roof_outlines || []).map(function(o){
+      return o.id === outline.id ? Object.assign({}, o, {
+        ring: outline.ring, areaSqFt: outline.areaSqFt, perimeterFt: outline.perimeterFt,
+        center: outline.center, calibration: outline.calibration
+      }) : o;
+    });
+    if (rescaledAssets) roof.roof_assets = rescaledAssets;
+    var roofIdx = roofs.findIndex(function(r){ return r.id === roof.id; });
+    roofs[roofIdx] = roof;
+    await saveBuildingRoofs(rmState.linkedBuildingId, roofs);
+    toast("Recalibrated and saved ✓");
+  }catch(e){ toast("Recalibrated on screen, but couldn't save: " + e.message); }
 }
 function rmGenerateOutline(){
   var fp = rmState.footprints.find(function(f){ return f.id === rmState.selectedId; });
@@ -6980,6 +7088,11 @@ async function rmSaveOutlineToBuilding(buildingId, roofId){
     var roof = roofs.find(function(r){ return r.id === roofId; }) || roofs[0];
     var entry = Object.assign({}, rmState.outline, { id: genId("rmo") });
     roof.roof_outlines = (roof.roof_outlines || []).concat([entry]);
+    /* Record the saved id back onto the in-memory outline so a later
+       rmCalibrateEdge() call can find+update this exact saved entry
+       instead of only updating the on-screen copy. See "Self-scaling
+       dimension calibration" in DEV_NOTES.md. */
+    rmState.outline.id = entry.id;
     var roofIdx = roofs.findIndex(function(r){ return r.id === roof.id; });
     roofs[roofIdx] = roof;
     await saveBuildingRoofs(buildingId, roofs);

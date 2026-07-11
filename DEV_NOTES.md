@@ -3972,6 +3972,100 @@ non-Change-Order work order type (checked Leak/Service and Inspection) — no
 signature UI leaks onto other forms. All test state cleared, page reloaded,
 console clean.
 
+### Self-scaling dimension calibration (calibrate-by-known-edge, shipped 2026-07-10, dev only)
+
+The last piece of the Dimensions roadmap item — per-edge labels (shipped
+earlier the same day) were read-only; this makes them the calibration
+mechanism itself. Mark's exact UX: tap ONE edge's dimension label, type in
+the real tape-measured length, and the whole outline rescales proportionally
+off that one edge — every other edge, area, and perimeter update to match.
+One field measurement, one edit, the whole footprint becomes accurate.
+
+**Geometry**: two small additions next to the existing local-XY helpers —
+`rmGeomFromLocalXY(xy, origin)` (inverse of the existing `rmGeomToLocalXY`,
+turns a meters-from-origin offset back into `{lat,lng}`) and
+`rmGeomScalePoint(point, origin, factor)` (round-trips a point through
+local XY, scaling its offset from `origin` by `factor`, origin itself
+unmoved). `rmCalibrateEdge(edgeIndex)` is the entry point: computes the
+tapped edge's current haversine length in feet, `prompt()`s for the real
+length (pre-filled with the current rounded value — same lightweight
+`prompt()` pattern already used for the admin PIN and new-roof naming, no
+new modal needed), then computes `factor = measuredFt / currentFt` and
+scales every ring point about the ring's own **freshly recomputed**
+centroid (`rmGeomRingCentroid(ring)`, not the outline's original `center`)
+by that factor. A uniform scale about the centroid preserves the shape
+exactly (same angles/proportions, only size changes) — matches "rescales
+proportionally" precisely. Recomputing the centroid fresh on every call
+(rather than reusing a stored one) is what makes recalibrating a second
+time — off the same edge again, or a different one — compound correctly
+with no drift, since each calibration is a clean similarity transform of
+the shape as it currently stands. `areaSqFt`/`perimeterFt` are recomputed
+from the new ring with the exact same helpers the rest of RoofMapper
+already uses, so they never diverge from what's drawn.
+
+**UI**: `rmDrawEdgeDimensions(outline)` (existing, from the earlier
+per-edge-labels ship) now makes every label `interactive:true` with an
+`onclick` bound to its own edge index via closure, and reads
+`outline.calibration.edgeIndex` to render that one label with a green
+background + white border + a leading checkmark — "which edge was
+calibrated" stays visibly marked on the map itself, through every redraw,
+until a different edge is calibrated (`rmCalibrateEdge` always overwrites
+`outline.calibration` to point at whichever edge was tapped most
+recently — tapping a different label re-calibrates off that edge instead,
+no separate mode toggle needed).
+
+**Works on any outline** (OSM footprint, manual trace, or walk-the-corners)
+since it only touches `outline.ring`/`.calibration` — no `source`-specific
+branching anywhere in the calibration path.
+
+**Linked features stay anchored**: if the outline is already linked to a
+saved roof with placed features (`rmState.linkedAssetsCache` non-empty —
+e.g. re-calibrating a previously-saved roof that already has drains/HVAC
+placed), each asset's `{lat,lng}` is scaled through the identical
+`rmGeomScalePoint()` transform about the same centroid/factor, so
+everything on the roof rescales together instead of the outline moving out
+from under previously-placed markers. Redrawn via the existing
+`rmDrawLinkedAssets()`.
+
+**Persistence**: calibrating BEFORE the first save just updates
+`rmState.outline` in memory — the next "Save Outline" tap picks up the
+calibrated ring like any other edit, no separate write. Calibrating an
+outline that's **already saved** writes immediately: `rmSaveOutlineToBuilding()`
+now stamps the saved entry's id back onto `rmState.outline.id` (one-line
+addition — previously only the Firestore copy got an id, the in-memory
+outline never did), so `rmCalibrateEdge()`'s persistence step
+(`rmPersistCalibration()`) can find that exact `roof_outlines[]` entry by
+id, replace its `ring`/`areaSqFt`/`perimeterFt`/`center`/`calibration`, and
+(if features were rescaled too) `roof_assets`, then write through the same
+`saveBuildingRoofs()` every other roof edit already uses. An outline with
+no `.id` yet (never saved) or no linked building skips the write entirely
+and just toasts that it'll save with the outline — never attempts a
+premature/dangling write.
+
+Tested with mocked geometry (a plain rectangle, no real GPS/map/Firestore):
+calibrated a 100×60ft outline's 100ft edge to a real 120ft measurement,
+confirmed the adjacent edge scaled to exactly 72ft (proportional, matching
+the 1.2× factor) and perimeter scaled to exactly 384ft (320×1.2), with area
+scaling to the expected ~1.44× (small sub-1% variance vs. the theoretical
+value is the pre-existing flat-earth local-XY approximation re-projecting
+through two different centroids, not a calibration bug — same approximation
+already documented on `rmGeomToLocalXY`); confirmed recalibrating a second
+time off a *different* edge compounds correctly (verified against hand
+calculation); confirmed Cancel and an invalid/non-numeric/zero-or-negative
+entry both leave the outline completely untouched (deep-equality check
+before/after); confirmed a linked asset placed at an edge's midpoint stays
+exactly at that edge's midpoint after scaling (proving the transform is
+applied identically to outline and features); confirmed persistence with a
+mocked `fdb`: calibrating an outline with a `.id` and a linked
+building/roof correctly writes the rescaled ring/area/perimeter/calibration
+into the matching `roof_outlines[]` entry via `saveBuildingRoofs()`, while
+calibrating an unlinked/unsaved outline makes zero `fdb` calls; confirmed
+`rmSaveOutlineToBuilding()`'s new id-stamping line makes the in-memory
+outline's `.id` match the Firestore-saved entry's `.id` exactly. All test
+state (`rmState.outline`, `linkedAssetsCache`, `linkedBuildingId`/
+`linkedRoofId`, stubbed `fdb`/`prompt`/`toast`) cleared, page reloaded,
+console clean.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |

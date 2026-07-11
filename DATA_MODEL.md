@@ -274,7 +274,17 @@ leak was" and "where the roof drain has always been."
   tags,           // raw OSM tags at capture time (name, building, addr:*, ...)
   isSiteBoundary, // true if this was a fallback property/site polygon, not a
                   // real building footprint — see "RoofMapper" in DEV_NOTES.md
-  createdAt
+  createdAt,
+  calibration     // optional — set once a tech taps an edge dimension label and
+                  // enters a real tape-measured length (calibrate-by-known-edge).
+                  // Shape: { edgeIndex, measuredFt, calibratedAt }. edgeIndex
+                  // identifies which edge (ring[i] to ring[i+1]) was the
+                  // calibration reference — also drives the checkmark highlight
+                  // on that edge's label on the map. Absent/undefined for an
+                  // outline never calibrated. Calibrating scales the entire
+                  // ring/areaSqFt/perimeterFt/center by one uniform factor about
+                  // the ring's centroid — see "Self-scaling dimension
+                  // calibration" in DEV_NOTES.md.
 }
 ```
 
