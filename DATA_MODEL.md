@@ -549,11 +549,29 @@ Example fields:
   roofId, // which of buildingId's roofs[] this work order is for — see DEV_NOTES.md
           // "Multiple roofs per building, part 2". null/omitted means the
           // building's first roof (implemented as currentRoofId in index.html).
+          // Stays the PRIMARY roof (roofIds[0]) even when roofIds below is set,
+          // for backward compat with every reader that only knows this field.
+  roofIds, // optional array — Inspection-only (shipped 2026-07-11, see "Inspection
+           // multi-roof selector" in DEV_NOTES.md). Set only when an Inspection work
+           // order covers MORE THAN ONE roof (null/absent otherwise, including for
+           // every other work order type) — currentRoofIds in index.html. A finding
+           // covered by a multi-roof inspection carries its OWN roofId (see findings
+           // below) rather than sharing this work order's single roofId.
+  roofLabels, // optional object {roofId: label} — denormalized alongside roofIds so
+              // renderLeakReportDoc() (synchronous, no Firestore access mid-render)
+              // can show real roof names in the report instead of raw ids. Sourced
+              // from lastLookupRoofInfo, the last roofs[] lookup for this building.
   reportedArea, // Leak/Service intake field — hidden on the form for woType ===
                 // "Inspection" (an inspection isn't triggered by a reported leak, per
                 // Mark's "Inspection form overhaul"), field itself unaffected/still
                 // present in the schema for older/other-type data.
-  findings: [], // each: { id, condition, location, warranty, pin } — see DEV_NOTES.md
+  findings: [], // each: { id, condition, location, warranty, pin, roofId } — see
+                // DEV_NOTES.md. roofId (shipped 2026-07-11) is optional/per-finding —
+                // only ever set when its work order's roofIds above has more than one
+                // entry (pinSelectFindingRoof()), letting different findings in the
+                // SAME multi-roof inspection belong to different selected roofs;
+                // buildPinsForHistoryEvent() falls back to the work order's own
+                // singular roofId when a finding has none of its own.
                 // Not applicable/hidden on the form for woType === "Repair"/"Change
                 // Order", but the field itself is unchanged — those types just keep
                 // an empty/unused findings array. For woType === "Inspection", the
@@ -779,6 +797,14 @@ Example fields:
   technician,
   roofId, // which roof this report/event is for — see "Multiple roofs per building,
           // part 2" in DEV_NOTES.md. "roof_default" for anything predating this field.
+          // Stays the PRIMARY roof (roofIds[0]) when roofIds below is set.
+  roofIds, // optional array — Inspection-only, mirrors the work order's own roofIds
+           // (see "Inspection multi-roof selector" in DEV_NOTES.md). null/absent for
+           // every non-multi-roof event. pins[] below already carries the real
+           // per-pin roofId truth regardless of this field — this is display-only,
+           // for Building History's timeline to state which roofs were covered.
+  roofLabels, // optional array of label strings, same order as roofIds, denormalized
+              // for display (timelineEventHtml()) without a lookup.
   roofType,
   title,
   summary,

@@ -6192,6 +6192,96 @@ verified in the original roof-switcher pass); confirmed a single-roof
 building renders zero height for the switcher container (fully absent
 visually, no empty bordered box). All test state cleared, console clean.
 
+## Inspection multi-roof selector (shipped 2026-07-11, dev only)
+
+Mark: "he may inspect the whole building or just one section" — an
+Inspection needed to cover ONE roof, SEVERAL, or ALL, not the
+one-roof-per-work-order model every work order type has used until now.
+Found the existing pieces before building anything new: a single-`<select>`
+roof picker already existed for Inspection (`renderInspectionRoofPicker()`)
+and for placing any finding's pin (`renderPinRoofPicker()`), both writing
+to one shared `currentRoofId` — meaning every finding in a work order
+silently shared the SAME roof, confirmed by reading `buildPinsForHistoryEvent()`
+and `logReportAndHistoryEvent()`'s payload directly. Extended rather than
+replaced.
+
+**`currentRoofIds`** (new, plural, alongside the existing singular
+`currentRoofId`) — set only for a multi-roof Inspection;
+`null` for every other work order type or a single-roof building, so
+nothing about their existing behavior changes at all.
+`renderInspectionRoofPicker()` is now a checkbox list (default: every
+roof checked — "whole building" is the least-surprising default),
+`onInspectionRoofToggle()` refuses to let the last box uncheck (re-renders
+from the still-unchanged `currentRoofIds` to restore it, with a toast
+explaining why). `currentRoofId` stays in sync as `currentRoofIds[0]` so
+every pre-existing single-roof reader (`lookupProspectiveBuildingBaseMap()`,
+etc.) keeps working untouched.
+
+**Per-finding roofId — the actual mechanism that makes multi-roof
+attribution real, not just cosmetic.** `renderPinRoofPicker()` (the
+pin-modal roof picker, already called once per finding when its pin is
+placed) branches: when `currentRoofIds.length > 1`, it scopes its options
+to ONLY the selected roofs and writes to that SPECIFIC finding's own
+`roofId` field via a new `pinSelectFindingRoof()` — not the shared global.
+Every other case (Leak/Repair, or a single-roof-selected Inspection) is
+byte-for-byte the original `pinSelectRoof()`/shared-`currentRoofId`
+behavior. `buildPinsForHistoryEvent()` now reads `f.roofId || o.roofId ||
+"roof_default"` per finding pin instead of one blanket `o.roofId` — since
+every place a pin actually gets FILTERED onto a specific roof's map
+(Building History's Roof Map, RoofMapper's `rmLoadLinkedAssets()`,
+`rmFetchAllRoofsPinsGrouped()`) already keys off each pin's own `roofId`,
+this one change is what makes findings genuinely split across roofs
+everywhere they're displayed. Inspection checklist items (`inspectionChecklist[]`)
+deliberately keep their existing single-roofId behavior — their pins are
+auto-dropped from photo GPS with no manual placement modal at all
+(`maybeAutoPinInspectionItem()`), so there's no existing per-item picker to
+extend without building a whole new UI surface for a materially harder
+problem; documented as a known scope boundary, not a silent gap.
+
+**Report/PDF** (`renderLeakReportDoc()`, the actual template `window.print()`
+turns into the PDF): a "Roof(s) Inspected" row in the header
+(`o.roofIds.map(id => o.roofLabels[id])`, real names not raw ids) appears
+only when more than one roof is covered; the findings table splits into
+one sub-table per roof (in selection order, each renumbered from 1 within
+its own group) instead of one continuous list, again only when
+`o.roofIds.length > 1` — a single-roof report (Inspection or not) is
+completely unchanged. Labels are denormalized onto the work order itself
+at `collect()` time (`o.roofLabels`, sourced from a new `lastLookupRoofInfo`
+cache of whatever `lookupProspectiveBuildingRoofInfo()` last fetched)
+since `renderLeakReportDoc()` is synchronous with no Firestore access
+mid-render. `logReportAndHistoryEvent()`'s payload gains `roofIds`/
+`roofLabels` (null for every non-multi-roof case) alongside the existing
+singular `roofId` (which stays the PRIMARY roof for backward compat);
+Building History's `timelineEventHtml()` shows a "Roofs Inspected: A, B"
+line when present.
+
+Leak/Repair work orders keep their existing single-roof-per-work-order
+model entirely unchanged for now (Inspection was the stated priority),
+but `renderPinRoofPicker()`'s branch is written generically enough
+(keyed off `currentRoofIds.length`, not the work order type) that turning
+on multi-select for them later is a matter of populating `currentRoofIds`
+from wherever their own roof picker lives, not a rewrite.
+
+Tested in the browser with a mocked `fdb` (no real writes): a 3-roof
+building's Inspection picker rendered all 3 checked by default; unchecked
+one down to 2 — confirmed `currentRoofIds` updated correctly; unchecked
+all the way to zero — confirmed the guard fired (toast + restored the
+2-roof state, didn't allow zero); added two findings and opened each
+one's pin-roof picker — confirmed it only offered the 2 SELECTED roofs
+(not the building's 3rd, unselected one), and assigning each finding to a
+different one of those two set `finding.roofId` independently (not a
+shared value); called `collect()`/`buildPinsForHistoryEvent()` directly —
+confirmed `o.roofIds`/`o.roofLabels` matched the selection and each
+finding's pin carried its OWN correct `roofId`, not one blanket value;
+rendered the actual report HTML — confirmed the "Roof(s) Inspected" row,
+both roof labels, both findings, and correct per-roof grouping order, AND
+confirmed the third (unselected) roof's label never appeared anywhere.
+Regression-checked a plain Leak/Service work order and a single-roof
+building's Inspection — confirmed `roofIds`/`roofLabels` stay `null`, no
+"Roof(s) Inspected" row appears, the picker never renders, and the
+findings table is the single unchanged list. All test state cleared,
+real `fdb` restored, console clean.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |

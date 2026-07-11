@@ -1896,6 +1896,21 @@ var changeOrderSignature = null;
    this field existed. Set via the pin modal's roof picker, which only
    appears once a building actually has more than one roof. */
 var currentRoofId = null;
+/* Multi-roof Inspection (Mark: "he may inspect the whole building or just
+   one section" -- support one, several, or ALL roofs in one inspection,
+   not the one-roof-per-work-order model every other type still uses).
+   null unless an Inspection work order on a multi-roof building has this
+   set via renderInspectionRoofPicker()'s checkboxes -- kept in sync with
+   currentRoofId (always currentRoofIds[0], the "primary" roof) so every
+   existing singular-currentRoofId reader keeps working unchanged. See
+   "Inspection multi-roof selector" in DEV_NOTES.md. */
+var currentRoofIds = null;
+/* Cache of the last lookupProspectiveBuildingRoofInfo() result -- collect()
+   needs roof LABELS (not just ids) to denormalize onto the saved work
+   order for report rendering (renderLeakReportDoc() is synchronous, no
+   Firestore access mid-render), and this is the cheapest way to have them
+   on hand without a second fetch. */
+var lastLookupRoofInfo = null;
 var toastTimer = null;
 
 /* ================= admin mode =================
@@ -2440,25 +2455,49 @@ function renderInspectionChecklist(){
     });
   });
 }
-/* Mirrors renderPinRoofPicker() (the pin-modal roof picker) but lives right
-   on the main Inspection card instead of inside a modal -- an inspection
-   needs to know which roof it's for up front, not just at the point of
-   placing a pin. Writes straight to the same currentRoofId the pin picker
-   uses, so it round-trips through collect()/fill() with zero other
-   changes. Only ever shows up once the resolved building actually has more
-   than one roof, same as the pin picker. */
+/* Mark: "he may inspect the whole building or just one section" -- support
+   ONE roof, SEVERAL, or ALL, not the single-roof-per-work-order model every
+   other work order type still uses. A checkbox list (default: every roof
+   checked, since "the whole building" is the least-surprising default for
+   an inspection) rather than renderPinRoofPicker()'s single <select> --
+   writes to the plural currentRoofIds, kept in sync with the singular
+   currentRoofId (always currentRoofIds[0]) so every existing single-roof
+   reader (lookupProspectiveBuildingBaseMap(), buildPinsForHistoryEvent()'s
+   fallback, etc.) keeps working unchanged. Only ever shows up once the
+   resolved building actually has more than one roof -- a single-roof
+   building never sees this, never gets asked to pick. See "Inspection
+   multi-roof selector" in DEV_NOTES.md. */
 async function renderInspectionRoofPicker(){
   var host = document.getElementById("wo-inspection-roof-picker");
   if (!host) return;
   var info = await lookupProspectiveBuildingRoofInfo();
-  if (!info || info.roofs.length <= 1){ host.innerHTML = ""; return; }
-  if (!currentRoofId || !info.roofs.some(function(r){ return r.id === currentRoofId; })){
-    currentRoofId = info.roofs[0].id;
+  if (!info || info.roofs.length <= 1){ host.innerHTML = ""; currentRoofIds = null; return; }
+  if (!currentRoofIds || !currentRoofIds.length || !currentRoofIds.every(function(id){ return info.roofs.some(function(r){ return r.id === id; }); })){
+    currentRoofIds = info.roofs.map(function(r){ return r.id; });
   }
-  host.innerHTML = '<div class="fld" style="max-width:260px">' +
-    '<label>Which roof is this inspection for?</label><select onchange="currentRoofId=this.value">' +
-    info.roofs.map(function(r){ return '<option value="' + esc(r.id) + '"' + (r.id === currentRoofId ? ' selected' : '') + '>' + esc(r.label || "Roof") + '</option>'; }).join('') +
-    '</select></div>';
+  currentRoofId = currentRoofIds[0];
+  host.innerHTML = '<div class="fld">' +
+    '<label>Which roof(s) does this inspection cover?</label>' +
+    info.roofs.map(function(r){
+      var checked = currentRoofIds.indexOf(r.id) !== -1;
+      return '<label class="hint" style="display:flex;align-items:center;gap:6px;margin:2px 0;font-weight:400">' +
+        '<input type="checkbox" class="wo-inspection-roof-cb" value="' + esc(r.id) + '"' + (checked ? ' checked' : '') +
+        ' onchange="onInspectionRoofToggle()"> ' + esc(r.label || "Roof") + '</label>';
+    }).join('') + '</div>';
+}
+function onInspectionRoofToggle(){
+  var boxes = Array.from(document.querySelectorAll(".wo-inspection-roof-cb"));
+  var checked = boxes.filter(function(b){ return b.checked; }).map(function(b){ return b.value; });
+  if (!checked.length){
+    /* At least one roof must stay selected -- currentRoofIds hasn't been
+       reassigned yet at this point, so re-rendering from it restores
+       whichever box the tech just tried to uncheck. */
+    toast("At least one roof must stay selected.");
+    renderInspectionRoofPicker();
+    return;
+  }
+  currentRoofIds = checked;
+  currentRoofId = currentRoofIds[0];
 }
 function refreshInspectionRoofPickerIfNeeded(){
   if (val("woType") === "Inspection") renderInspectionRoofPicker();
@@ -2478,8 +2517,9 @@ async function lookupProspectiveBuildingRoofInfo(){
   var bldId = "bld_" + slugify((custId || "nocust") + "_" + bldName);
   try{
     var snap = await fdb.collection("buildings").doc(bldId).get();
-    if (!snap.exists) return { buildingId: bldId, roofs: [] };
-    return { buildingId: bldId, roofs: getBuildingRoofs(snap.data()) };
+    var result = !snap.exists ? { buildingId: bldId, roofs: [] } : { buildingId: bldId, roofs: getBuildingRoofs(snap.data()) };
+    lastLookupRoofInfo = result; /* see the var's own comment -- collect() denormalizes roof LABELS from this */
+    return result;
   }catch(e){ return null; }
 }
 /* Checks the CURRENT work order's selected roof (currentRoofId, defaulting
@@ -2518,12 +2558,30 @@ function jumpToAdjustPin(workOrderId, findingId){
    lives here, at the point placing a pin first matters, rather than as
    an always-visible field on the main form. Only renders (and only ever
    shows up) once the resolved building actually has more than one roof;
-   a single-roof building never sees this at all. */
+   a single-roof building never sees this at all.
+   EXCEPTION: a multi-roof Inspection (currentRoofIds.length > 1, see
+   renderInspectionRoofPicker()) breaks the "one roof per work order"
+   assumption on purpose -- different findings can legitimately be on
+   different SELECTED roofs, so this branches into a per-finding picker
+   (pinSelectFindingRoof(), writes finding.roofId) scoped to only the
+   roofs actually chosen for this inspection, instead of the shared
+   work-order-wide currentRoofId every other type still uses unchanged. */
 async function renderPinRoofPicker(){
   var host = document.getElementById("pin-roof-picker");
   if (!host) return;
   var info = await lookupProspectiveBuildingRoofInfo();
   if (!info || info.roofs.length <= 1){ host.innerHTML = ""; return; }
+  if (currentRoofIds && currentRoofIds.length > 1){
+    var f = findingById(pinModalFindingId);
+    var selectedRoofs = info.roofs.filter(function(r){ return currentRoofIds.indexOf(r.id) !== -1; });
+    var activeId = (f && f.roofId && currentRoofIds.indexOf(f.roofId) !== -1) ? f.roofId : currentRoofIds[0];
+    host.innerHTML = '<div class="fld" style="max-width:260px">' +
+      '<label>Which of the selected roofs is this finding on?</label>' +
+      '<select onchange="pinSelectFindingRoof(this.value, \'' + pinModalFindingId + '\')">' +
+      selectedRoofs.map(function(r){ return '<option value="' + esc(r.id) + '"' + (r.id === activeId ? ' selected' : '') + '>' + esc(r.label || "Roof") + '</option>'; }).join('') +
+      '</select></div>';
+    return;
+  }
   if (!currentRoofId || !info.roofs.some(function(r){ return r.id === currentRoofId; })){
     currentRoofId = info.roofs[0].id;
   }
@@ -2531,6 +2589,11 @@ async function renderPinRoofPicker(){
     '<label>Roof</label><select onchange="pinSelectRoof(this.value, \'' + pinModalFindingId + '\')">' +
     info.roofs.map(function(r){ return '<option value="' + esc(r.id) + '"' + (r.id === currentRoofId ? ' selected' : '') + '>' + esc(r.label || "Roof") + '</option>'; }).join('') +
     '</select></div>';
+}
+function pinSelectFindingRoof(roofId, findingId){
+  var f = findingById(findingId);
+  if (f) f.roofId = roofId;
+  openPinModal(findingId);
 }
 function pinSelectRoof(roofId, findingId){
   currentRoofId = roofId;
@@ -3972,12 +4035,22 @@ function collect(){
   o.companyCamProjectId = ccLinkedProjectId || null;
   o.companyCamProjectName = ccLinkedProjectName || "";
   o.roofId = currentRoofId || null;
+  /* Multi-roof Inspection only -- null for every other case (a single roof
+     selected, or a work order type that doesn't support this at all yet),
+     so nothing about the existing single-roofId shape changes unless this
+     is genuinely in play. roofLabels denormalizes id->label from the last
+     roof lookup so renderLeakReportDoc() (synchronous, no Firestore access)
+     can show real roof names in the report instead of raw ids. */
+  o.roofIds = (currentRoofIds && currentRoofIds.length > 1) ? currentRoofIds.slice() : null;
+  o.roofLabels = (o.roofIds && lastLookupRoofInfo && lastLookupRoofInfo.roofs) ?
+    lastLookupRoofInfo.roofs.reduce(function(m, r){ m[r.id] = r.label || "Roof"; return m; }, {}) : null;
   o.changeOrderSignature = changeOrderSignature || null;
   return o;
 }
 function fill(o){
   currentId = o.id;
   currentRoofId = o.roofId || null;
+  currentRoofIds = (o.roofIds && o.roofIds.length > 1) ? o.roofIds.slice() : null;
   /* Must be set before onWoTypeChange() below (Inspection's branch reads
      inspectionChecklist to render it) so a freshly loaded order's own
      checklist is what gets shown, not whatever was left over from
@@ -5188,6 +5261,10 @@ function timelineEventHtml(e, buildingId){
     (e.workOrderNo ? '<div class="evt-row">Job No. ' + esc(e.workOrderNo) + '</div>' : '') +
     (e.technician ? '<div class="evt-row">Technician: ' + esc(e.technician) + '</div>' : '') +
     (e.roofType ? '<div class="evt-row">Roof: ' + esc(e.roofType) + '</div>' : '') +
+    /* Multi-roof Inspection only (roofLabels set alongside roofIds -- see
+       logReportAndHistoryEvent()); every other event still shows nothing
+       extra here, unchanged. */
+    (e.roofLabels && e.roofLabels.length ? '<div class="evt-row">Roofs Inspected: ' + esc(e.roofLabels.join(", ")) + '</div>' : '') +
     (e.emailSent && (e.emailRecipients || []).length ?
       '<div class="evt-row">📧 Emailed to ' + esc(e.emailRecipients.join(", ")) + '</div>' : '') +
     (e.companyCamUploadStatus === "failed" && e.companyCamUploadError ?
@@ -5707,6 +5784,12 @@ function renderLeakReportDoc(o){
     ["Job No.",o.jobNo],["Bill To",o.billTo],["Billing Contact",o.billContact],
     ["Contact Phone",o.billPhone],["Site Contact",o.siteContact],["Technician",o.technician]]
     .concat(isInspection ? [] : [["Reported Leak Area",o.reportedArea]])
+    /* Multi-roof Inspection only -- states plainly which roofs this report
+       actually covers, by label (not raw ids). Mark: "must clearly STATE
+       which roof(s) were inspected." Absent entirely for every other
+       report, single-roof or not. */
+    .concat(isInspection && o.roofIds && o.roofIds.length > 1 ?
+      [["Roof(s) Inspected", o.roofIds.map(function(id){ return (o.roofLabels && o.roofLabels[id]) || id; }).join(", ")]] : [])
     .concat([["Roof System",o.roofSystem]]));
 
   if (isRepair){
@@ -5734,13 +5817,40 @@ function renderLeakReportDoc(o){
     }
     var ff = filledFindings();
     if (ff.length){
-      h += "<h3 class='cond'>" + (isInspection ? "Roofing Inspection Findings" : "Roof Investigation Findings") + "</h3><table><thead><tr>" +
-        "<th style='width:36px'>No.</th><th>Roof Condition Observed</th><th>Location / Detail</th>" +
-        "<th style='width:130px'>Warranty Opinion</th></tr></thead><tbody>" +
-        ff.map(function(f,i){
-          return "<tr><td>" + (i+1) + "</td><td>" + esc(f.condition) + "</td><td>" +
-            esc(f.location) + "</td><td>" + esc(f.warranty) + "</td></tr>";
-        }).join("") + "</tbody></table>";
+      var findingsTitle = isInspection ? "Roofing Inspection Findings" : "Roof Investigation Findings";
+      var findingRowsHtml = function(rows){
+        return "<table><thead><tr>" +
+          "<th style='width:36px'>No.</th><th>Roof Condition Observed</th><th>Location / Detail</th>" +
+          "<th style='width:130px'>Warranty Opinion</th></tr></thead><tbody>" +
+          rows.map(function(f,i){
+            return "<tr><td>" + (i+1) + "</td><td>" + esc(f.condition) + "</td><td>" +
+              esc(f.location) + "</td><td>" + esc(f.warranty) + "</td></tr>";
+          }).join("") + "</tbody></table>";
+      };
+      if (isInspection && o.roofIds && o.roofIds.length > 1){
+        /* Multi-roof Inspection: "show findings grouped/attributed by roof
+           when more than one is covered" -- one sub-table per roof, in the
+           same order the roofs were selected, each finding renumbered
+           within its own group (not one continuous count across roofs).
+           A finding with no roofId of its own (placed before this feature
+           existed, or on a single-roof work order re-typed to Inspection)
+           falls back to the work order's primary roof, same convention as
+           buildPinsForHistoryEvent(). */
+        var byRoof = {};
+        ff.forEach(function(f){
+          var rid = f.roofId || o.roofId || o.roofIds[0];
+          (byRoof[rid] = byRoof[rid] || []).push(f);
+        });
+        h += "<h3 class='cond'>" + findingsTitle + "</h3>";
+        o.roofIds.forEach(function(rid){
+          var group = byRoof[rid];
+          if (!group || !group.length) return;
+          h += "<p style='font-weight:700;margin:10px 0 4px'>" + esc((o.roofLabels && o.roofLabels[rid]) || rid) + "</p>" +
+            findingRowsHtml(group);
+        });
+      } else {
+        h += "<h3 class='cond'>" + findingsTitle + "</h3>" + findingRowsHtml(ff);
+      }
     }
   }
 
@@ -6378,7 +6488,11 @@ function buildPinsForHistoryEvent(o){
      (see currentRoofId above) — falls back to "roof_default" for a work
      order saved before roofs[] existed, which is always the correct id
      for a building's first/only roof (see getBuildingRoofs/DATA_MODEL.md),
-     so this is a no-op for every still-single-roof building. */
+     so this is a no-op for every still-single-roof building. A multi-roof
+     Inspection (o.roofIds set) is the one exception -- a finding with its
+     OWN f.roofId (set via pinSelectFindingRoof(), see renderPinRoofPicker())
+     overrides this shared fallback, so pins correctly split across
+     whichever of the selected roofs each finding actually belongs to. */
   var roofId = o.roofId || "roof_default";
   var findingPins = (o.findings || []).filter(function(f){ return f.pin && typeof f.pin.lat === "number"; }).map(function(f){
     return {
@@ -6386,7 +6500,7 @@ function buildPinsForHistoryEvent(o){
       lat: f.pin.lat, lng: f.pin.lng, x: f.pin.x, y: f.pin.y, source: f.pin.source,
       work_order_id: o.id, work_order_no: o.jobNo || "", service_date: o.serviceDate || "",
       photo_ids: (o.photos || []).filter(function(p){ return p.finding_id === f.id && p.ccPhotoId; }).map(function(p){ return p.ccPhotoId; }),
-      roofId: roofId
+      roofId: f.roofId || roofId
     };
   });
   /* Inspection checklist items pin the same way findings do (their own
@@ -6445,6 +6559,15 @@ async function logReportAndHistoryEvent(o, kind, emailInfo, ccUploadResult){
       workOrderId: o.id, workOrderNo: o.jobNo || "",
       date: o.serviceDate || "", technician: o.technician || "",
       roofId: o.roofId || "roof_default",
+      /* Multi-roof Inspection only -- null for every other case, so this
+         doesn't change the shape of any existing event doc. roofId above
+         stays the PRIMARY roof (roofIds[0]) for backward compat with every
+         reader that only knows the singular field; roofLabels lets
+         Building History's timeline show real names instead of raw ids
+         without a lookup (see timelineEventHtml()). See "Inspection
+         multi-roof selector" in DEV_NOTES.md. */
+      roofIds: o.roofIds || null,
+      roofLabels: (o.roofIds && o.roofLabels) ? o.roofIds.map(function(id){ return o.roofLabels[id] || id; }) : null,
       workOrderType: o.woType || WORK_ORDER_TYPES[0],
       roofType: o.roofSystem || "", reportType: kind,
       conditionsSummary: summarizeRows(o.findings || [], "condition", "location"),
