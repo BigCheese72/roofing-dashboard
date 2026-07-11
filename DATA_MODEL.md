@@ -255,10 +255,17 @@ Physical buildings/sites associated with a customer.
 {
   id,       // "roof_default" for a synthesized/first roof, or genId("roof")
   label,    // "Roof 1" by default, e.g. "East Wing", "Warehouse". Set at
-            // creation (promptAddRoof()) and renameable any time after
-            // (promptRenameRoof(), shipped 2026-07-10 — see "Individual-roof
-            // tracing + labels" in DEV_NOTES.md; before that, a roof's label
-            // could only ever be set once). Rendered as a persistent map
+            // creation (rmAddRoofAndSave()) and renameable any time after —
+            // from Building History (promptRenameRoof()) or, since
+            // 2026-07-11, natively from RoofMapper itself without leaving
+            // the screen (rmRenameLinkedRoof(), tap the map label or the
+            // "Rename Roof" button — see "Rename a roof, discoverable from
+            // RoofMapper" in DEV_NOTES.md; before that fix the function
+            // existed but had no reachable entry point from RoofMapper).
+            // NOT enforced unique at the Firestore level — collisions are
+            // caught at the UI layer only, by rmResolveUniqueRoofLabel()
+            // (warns + auto-suggests "{label} (2)"), shared by both the
+            // creation and rename paths. Rendered as a persistent map
             // label (not just a picker-dropdown option) via the shared
             // roofLabelMarker() helper in both RoofMapper and Building
             // History's roof map. Note: an outline object passed into

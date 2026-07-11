@@ -587,6 +587,24 @@ Goal: turn each building into a long-term roof record.
   with the roof for reopening (same as Finding A's persistence piece) is
   a deliberate follow-up, not built this pass. See "GeoTIFF georeferenced
   ortho support" in `DEV_NOTES.md`.
+- 🐛 **Fixed (dev only, 2026-07-11)**: roof rename was undiscoverable from
+  RoofMapper itself — Mark accidentally saved a second roof also named
+  "Roof 1" and had no way to fix it. The rename function existed
+  (`promptRenameRoof`, line 336 above claimed roofs are "renameable any
+  time") but its only entry point was buried in Building History, and it
+  navigated away on completion — unreachable and unusable from wherever
+  Mark actually was. Now: the roof's own label on the map is directly
+  tappable (shows a pencil hint) and RoofMapper's outline panel has an
+  explicit **"🏷️ Rename Roof"** button, visible whenever a roof is linked
+  including through Edit Shape mode — both stay on RoofMapper, no
+  navigation away. Also closed the root cause: **duplicate-name
+  detection**, shared by renaming and by "+ Add a new roof…" — reusing an
+  existing roof's name (case/whitespace-insensitive) now warns and
+  auto-suggests a unique alternative ("Roof 1 (2)") instead of silently
+  allowing the collision. Rename propagates everywhere the label is read
+  live (map, roof picker, Building History, exports) — none of it is a
+  cached copy. See "Rename a roof, discoverable from RoofMapper" in
+  `DEV_NOTES.md`.
 - 🐛 **Fixed (dev only, 2026-07-11), HIGH PRIORITY**: RoofMapper export was
   badly broken — Mark's actual exported file showed the outline missing
   entirely, features as unlabeled floating dots, layout crammed into one

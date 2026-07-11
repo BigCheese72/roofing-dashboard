@@ -5600,6 +5600,108 @@ bounding-box plausibility check and, end-to-end through
 rather than silently failing. All test state cleared, page reloaded,
 console clean.
 
+## Rename a roof, discoverable from RoofMapper (shipped 2026-07-11, dev only)
+
+Mark hit a real-world dead end: he accidentally saved a second roof on the
+same building also labeled "Roof 1" and had **no way to rename it**. The
+rename function already existed — `promptRenameRoof(buildingId, roofId)`
+— but its only call site was buried in Building History's roof-picker
+rendering, and it finishes with `openBuildingHistory(buildingId)`,
+navigating away. An earlier status report claimed roof labels are
+"renameable any time" (see the "Individual-roof tracing + labels" entry
+above and `ROADMAP.md` line ~345) — true of the underlying function, but
+not true in practice from where a tech actually is: mid-trace in
+RoofMapper, with no visible path to it. Root cause of the duplicate itself:
+`getBuildingRoofs()` defaults a building's first roof to literally "Roof
+1," and neither the rename prompt nor the "+ Add a new roof…" creation
+path checked for a collision before saving.
+
+**Two entry points added, both native to RoofMapper (no navigation
+away)**, per Mark's explicit ask ("in particular while in EDIT SHAPE mode,
+and on the roof itself"):
+1. **Tap the roof's own label on the map.** `roofLabelMarker(lat, lng,
+   text, onClick)` gained an optional 4th param — when passed, the marker
+   becomes `interactive:true`, shows a pointer cursor, appends a small
+   "✏️" to the label text (so it visibly reads as tappable, not just
+   guessable), and wires `onClick` as a Leaflet click handler. Building
+   History's own call site (`renderBuildingMap()`, a read-only overview of
+   every roof on a building) omits the 4th param and is completely
+   unchanged — still non-interactive. RoofMapper's own linked-roof label
+   (`rmSaveOutlineToBuilding()`) now passes `rmRenameLinkedRoof` here.
+2. **"🏷️ Rename Roof" button** in `#rm-outline-panel`, right next to
+   "✏️ Edit Shape" — that whole panel stays visible and functional through
+   Edit Shape mode (confirmed by reading `rmUpdateControlVisibility()`;
+   nothing in Edit Shape mode hides it), so the button is reachable exactly
+   when Mark asked for it. Shown/hidden via `rmSetDisp("rm-rename-roof-btn",
+   !!rmState.linkedRoofId)` — only meaningful once the outline is actually
+   saved to a named roof, same gating as the rest of the "saved" UI.
+
+**New `rmRenameLinkedRoof()`** (RoofMapper-native, distinct from
+`promptRenameRoof`) — acts on whichever roof is currently linked
+(`rmState.linkedBuildingId`/`linkedRoofId`), which is the realistic case
+since a roof has to be open in RoofMapper (via a fresh trace-and-save or
+Building History's "Continue") before it can be renamed from here at all:
+prompts for a new label, runs it through the duplicate guard below, writes
+via the existing `saveBuildingRoofs()`, then redraws `rmState.roofLabelLayer`
+in place at its current `getLatLng()` (not re-derived from `rmState.outline`,
+so it's correct even mid Edit Shape) and updates the roof-select dropdown's
+option text if present. Never navigates away. If no roof is linked yet
+(rename tapped from a state where it shouldn't even be reachable), toasts
+"Save this roof first, then you can rename it." instead of erroring.
+
+**Duplicate-name detection, closing the actual root cause** — shared by
+every place a roof label gets typed, not just rename:
+- `rmSuggestUniqueRoofLabel(roofs, label, excludeRoofId)` — pure helper,
+  case-insensitive/trimmed comparison against every other roof on the
+  building (`excludeRoofId` lets a rename compare against roofs OTHER than
+  itself, so renaming "Roof 1" to "Roof 1" unchanged isn't flagged as a
+  collision with itself). Returns `{isDuplicate, suggestion}`; suggestion
+  walks "{label} (2)", "(3)", ... until it finds one that's actually free
+  (verified: with both "Roof 1" and "Roof 1 (2)" already taken, suggests
+  "Roof 1 (3)", not "(2)" again).
+- `rmResolveUniqueRoofLabel(roofs, label, excludeRoofId)` — the shared
+  UI-facing wrapper: on a collision, `confirm()`s whether to accept the
+  auto-suggested name; Cancel drops into a `prompt()` to type something
+  else, then loops back through the same check (so retyping ANOTHER
+  duplicate on the retry gets caught too, not just the first attempt).
+  Returns the resolved label, or `null` if the tech backs out entirely.
+  Wired into both `rmAddRoofAndSave()` (the single choke point for
+  brand-new roof creation) and `rmRenameLinkedRoof()`; also backported into
+  the older `promptRenameRoof()` (Building History's rename) so the same
+  guard applies regardless of entry point.
+- Only blocking `prompt()`/`confirm()` dialogs are used, matching this
+  app's existing established pattern for this kind of quick text input —
+  no rich modal exists for it and building one wasn't warranted for a
+  two-field guard.
+
+**Propagation verified, not assumed**: the map label updates immediately
+(redrawn in place); the roof-select `<option>` text updates in the DOM
+directly; Building History and `rmFetchExportOverlayData()` (export's
+overlay data) both read `roof.label` fresh from Firestore on every open/
+export — there is no separate cached copy anywhere, so a rename is visible
+everywhere the next time each surface reads the roof.
+
+**The exact tap path from RoofMapper, confirmed by testing the built
+feature (not just the plan)**: open a roof in RoofMapper (fresh trace +
+save, or Building History → a building → "Continue" on an existing roof)
+→ either tap the blue label pin on the map (shows "✏️") or tap
+**"🏷️ Rename Roof"** next to "Edit Shape" in the Roof Outline panel →
+type the new name → done, still on RoofMapper, no navigation.
+
+Tested with a mocked `fdb` (`.doc().get()/.set()` only, no live writes):
+reproduced Mark's exact scenario (two roofs on one building both named
+"Roof 1") and renamed one via `rmRenameLinkedRoof()` with a duplicate
+retype — confirmed it correctly resolved to "Roof 1 (2)" while leaving the
+other roof's label untouched; confirmed the "no linked roof" guard toasts
+instead of erroring; confirmed a clean, non-duplicate rename never even
+calls `confirm()` (would have thrown in the test if it had); confirmed
+`rmAddRoofAndSave()` independently catches the same duplicate on the
+creation path; confirmed clicking the actual rendered, interactive map
+label element end-to-end (real Leaflet `L.divIcon` element `.click()`,
+mocked `prompt`) drives the whole save-and-redraw flow correctly, marker
+text updating from "Roof 1 ✏️" to "North Wing ✏️" in place. All test
+state cleared, page reloaded, console clean.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |

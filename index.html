@@ -735,6 +735,14 @@
       <div class="rm-outline-stats" id="rm-outline-stats"></div>
       <div class="btnrow" style="margin:0 0 6px">
         <button class="btn primary" id="rm-edit-shape-btn" onclick="rmToggleVertexEdit()">✏️ Edit Shape</button>
+        <!-- Only meaningful once this outline is actually saved to a named
+             roof -- shown/hidden alongside the rest of the "saved" controls
+             in rmUpdateControlVisibility(). Stays visible through Edit Shape
+             mode (this whole panel does), per Mark's explicit ask: rename
+             needs to be reachable "in particular while in EDIT SHAPE mode."
+             See rmRenameLinkedRoof() and "Rename a roof, discoverable from
+             RoofMapper" in DEV_NOTES.md. -->
+        <button class="btn" id="rm-rename-roof-btn" style="display:none" onclick="rmRenameLinkedRoof()">🏷️ Rename Roof</button>
       </div>
       <p class="hint" id="rm-edit-shape-hint" style="margin:0 0 10px;display:none">Drag any dot to move that corner —
         the shape, area, and dimensions update as you go. Tap <b>✓ Done Editing</b> when it looks right.</p>
@@ -1412,6 +1420,52 @@ function getBuildingRoofs(bld){
 function getRoofById(bld, roofId){
   var roofs = getBuildingRoofs(bld);
   return roofs.find(function(r){ return r.id === roofId; }) || roofs[0];
+}
+/* getBuildingRoofs() above defaults a building's first roof to literally
+   "Roof 1" -- so a tech adding a second roof later, without visibility into
+   what's already there, very easily retypes the same name (this is exactly
+   how Mark ended up with two roofs both named "Roof 1" and no way to tell
+   them apart). Case-insensitive/trimmed match; excludeRoofId lets a rename
+   compare against every OTHER roof without flagging itself as a duplicate
+   of its own current name. Auto-suggests "{label} (2)", "(3)", ... instead
+   of just refusing, since the tech may genuinely want two similarly-named
+   roofs (e.g. "Warehouse" + "Warehouse (2)" for a building with two). See
+   "Rename a roof, discoverable from RoofMapper" in DEV_NOTES.md. */
+function rmSuggestUniqueRoofLabel(roofs, label, excludeRoofId){
+  var norm = function(s){ return String(s || "").trim().toLowerCase(); };
+  var taken = (roofs || [])
+    .filter(function(r){ return r.id !== excludeRoofId; })
+    .map(function(r){ return norm(r.label); });
+  if (taken.indexOf(norm(label)) === -1) return { isDuplicate: false, suggestion: label };
+  var n = 2, candidate;
+  do {
+    candidate = label + " (" + n + ")";
+    n++;
+  } while (taken.indexOf(norm(candidate)) > -1);
+  return { isDuplicate: true, suggestion: candidate };
+}
+/* Shared duplicate-name guard used by every place a roof label gets typed
+   in (new-roof creation, rename from Building History, rename from
+   RoofMapper) -- one consistent warn/auto-suggest/retry experience so a
+   tech can never again end up with two same-named roofs on one building
+   and no way to tell them apart. Loops so retyping another duplicate on
+   retry gets caught too, not just the first attempt. Returns the label to
+   save, or null if the tech backed out entirely. */
+function rmResolveUniqueRoofLabel(roofs, label, excludeRoofId){
+  while (true){
+    var check = rmSuggestUniqueRoofLabel(roofs, label, excludeRoofId);
+    if (!check.isDuplicate) return label;
+    var useSuggested = confirm(
+      "A roof on this building is already named \"" + label + "\".\n\n" +
+      "OK to use \"" + check.suggestion + "\" instead, or Cancel to type a different name."
+    );
+    if (useSuggested) return check.suggestion;
+    var retry = prompt("Name for this roof:", label);
+    if (retry === null) return null;
+    retry = retry.trim();
+    if (!retry){ toast("Enter a name for the roof."); return null; }
+    label = retry;
+  }
 }
 async function saveBuildingRoofs(buildingId, roofs){
   var patch = { roofs: roofs, updatedAt: Date.now() };
@@ -5099,6 +5153,8 @@ async function promptRenameRoof(buildingId, roofId){
     if (label === null) return;
     label = label.trim();
     if (!label){ toast("Enter a name for the roof."); return; }
+    label = rmResolveUniqueRoofLabel(roofs, label, roofId);
+    if (label === null) return;
     roof.label = label;
     roof.updatedAt = Date.now();
     var idx = roofs.findIndex(function(r){ return r.id === roofId; });
@@ -6839,17 +6895,28 @@ function rmGeomRingCentroid(ring){
    roof, at that roof's most recent outline centroid, non-interactive (the
    outline polygon underneath keeps its own tap/popup). See "Individual-
    roof tracing + labels" in DEV_NOTES.md. */
-function roofLabelMarker(lat, lng, text){
-  return L.marker([lat, lng], {
+/* onClick is optional -- when passed (RoofMapper's own linked-roof label
+   only, see rmSaveOutlineToBuilding()/rmRenameLinkedRoof() below), the
+   label becomes tappable with a visible pencil hint, so renaming a roof
+   is discoverable right on the map itself, not buried in a menu. Building
+   History's own use of this same helper (renderBuildingMap(), viewing
+   every roof on a building at once) omits onClick and stays exactly as
+   before -- non-interactive, purely a label there. See "Rename a roof,
+   discoverable from RoofMapper" in DEV_NOTES.md. */
+function roofLabelMarker(lat, lng, text, onClick){
+  var marker = L.marker([lat, lng], {
     icon: L.divIcon({
       className: "", iconSize: null,
       html: '<div style="background:#1976D2;color:#fff;padding:4px 10px;border-radius:5px;' +
         'font-size:12px;font-weight:700;white-space:nowrap;transform:translate(-50%,-50%);' +
-        'box-shadow:0 1px 4px rgba(0,0,0,.45);border:1.5px solid rgba(255,255,255,.85)">' +
-        esc(text) + '</div>'
+        'box-shadow:0 1px 4px rgba(0,0,0,.45);border:1.5px solid rgba(255,255,255,.85)' +
+        (onClick ? ';cursor:pointer' : '') + '">' +
+        esc(text) + (onClick ? ' ✏️' : '') + '</div>'
     }),
-    interactive: false
+    interactive: !!onClick
   });
+  if (onClick) marker.on("click", onClick);
+  return marker;
 }
 function rmGeomPolygonAreaSqMeters(ring){
   var origin = rmGeomRingCentroid(ring);
@@ -7694,6 +7761,9 @@ function rmUpdateControlVisibility(){
      the map (see the HTML), not a separate card several scrolls away. */
   rmSetDisp("rm-trace-panel", tracing);
   if (saved) rmSetDisp("rm-footprint-panel", false);
+  /* Rename control: only meaningful once this outline belongs to an
+     actual saved/linked roof (see rmRenameLinkedRoof()). */
+  rmSetDisp("rm-rename-roof-btn", !!rmState.linkedRoofId);
 }
 function rmUseMyLocation(){
   var btn = document.getElementById("rm-locate-btn");
@@ -7780,6 +7850,7 @@ function rmClearLinkedFeatures(){
   rmState.linkedRoofId = null;
   if (rmState.map && rmState.roofLabelLayer) rmState.map.removeLayer(rmState.roofLabelLayer);
   rmState.roofLabelLayer = null;
+  rmSetDisp("rm-rename-roof-btn", false);
   var panel = document.getElementById("rm-features-panel");
   if (panel) panel.style.display = "none";
   var bmStatus = document.getElementById("rm-basemap-status");
@@ -9199,6 +9270,8 @@ async function rmAddRoofAndSave(buildingId, label){
     var snap = await fdb.collection("buildings").doc(buildingId).get();
     var bld = snap.exists ? snap.data() : {};
     var roofs = getBuildingRoofs(bld);
+    label = rmResolveUniqueRoofLabel(roofs, label, null);
+    if (label === null){ toast("Add roof cancelled."); return; }
     var newRoof = {
       id: genId("roof"), label: label, roofSystem: "",
       roof_base_map_type: null, roof_base_map_url: null, roof_base_map_bounds: null,
@@ -9208,6 +9281,56 @@ async function rmAddRoofAndSave(buildingId, label){
     await saveBuildingRoofs(buildingId, roofs);
     await rmSaveOutlineToBuilding(buildingId, newRoof.id);
   }catch(e){ toast("Couldn't add the new roof: " + e.message); }
+}
+/* Rename the CURRENTLY LINKED roof without leaving RoofMapper -- unlike
+   promptRenameRoof() (Building History's own rename, which finishes by
+   navigating to openBuildingHistory()), this stays right here: updates the
+   roof's label in Firestore, then redraws the on-map label + roof-select
+   dropdown in place. Reachable two ways per Mark's explicit ask: tapping
+   the roof's own label on the map (roofLabelMarker's onClick, wired in
+   rmSaveOutlineToBuilding above) and the "🏷️ Rename Roof" button in the
+   outline panel (visible whenever a roof is linked, including through Edit
+   Shape mode -- see rmUpdateControlVisibility()). Covers "any roof at any
+   time" per Mark's ask #2 by acting on whichever roof is currently linked
+   -- the realistic path, since renaming requires the roof to be open in
+   RoofMapper first (from Building History's "Continue" or a fresh trace).
+   See "Rename a roof, discoverable from RoofMapper" in DEV_NOTES.md. */
+async function rmRenameLinkedRoof(){
+  var buildingId = rmState.linkedBuildingId, roofId = rmState.linkedRoofId;
+  if (!buildingId || !roofId){ toast("Save this roof first, then you can rename it."); return; }
+  toast("Loading roof…");
+  try{
+    var snap = await fdb.collection("buildings").doc(buildingId).get();
+    var bld = snap.exists ? snap.data() : {};
+    var roofs = getBuildingRoofs(bld);
+    var roof = roofs.find(function(r){ return r.id === roofId; });
+    if (!roof){ toast("Couldn't find that roof."); return; }
+    var label = prompt("Rename this roof:", roof.label || "");
+    if (label === null) return;
+    label = label.trim();
+    if (!label){ toast("Enter a name for the roof."); return; }
+    label = rmResolveUniqueRoofLabel(roofs, label, roofId);
+    if (label === null) return;
+    roof.label = label;
+    roof.updatedAt = Date.now();
+    var idx = roofs.findIndex(function(r){ return r.id === roofId; });
+    roofs[idx] = roof;
+    await saveBuildingRoofs(buildingId, roofs);
+    /* Redraw in place at the same spot -- getLatLng() rather than
+       re-deriving from rmState.outline, so this works even if the outline
+       object has since changed shape (e.g. mid Edit Shape). */
+    if (rmState.map && rmState.roofLabelLayer){
+      var pos = rmState.roofLabelLayer.getLatLng();
+      rmState.map.removeLayer(rmState.roofLabelLayer);
+      rmState.roofLabelLayer = roofLabelMarker(pos.lat, pos.lng, label, rmRenameLinkedRoof).addTo(rmState.map);
+    }
+    var sel = document.getElementById("rm-roof-select");
+    if (sel){
+      var opt = sel.querySelector('option[value="' + roofId + '"]');
+      if (opt) opt.textContent = label;
+    }
+    toast("Roof renamed ✓");
+  }catch(e){ toast("Couldn't rename roof: " + e.message); }
 }
 function rmConfirmSiteBoundarySave(){
   if (!rmState.outline || !rmState.outline.isSiteBoundary) return true;
@@ -9266,7 +9389,10 @@ async function rmSaveOutlineToBuilding(buildingId, roofId){
     if (rmState.map){
       if (rmState.roofLabelLayer) rmState.map.removeLayer(rmState.roofLabelLayer);
       var labelCenter = rmState.outline.center || rmGeomRingCentroid(rmState.outline.ring);
-      rmState.roofLabelLayer = roofLabelMarker(labelCenter.lat, labelCenter.lng, roof.label || "Roof").addTo(rmState.map);
+      /* onClick makes this specific label (RoofMapper's own linked-roof
+         label, not Building History's read-only map) tappable to rename --
+         see rmRenameLinkedRoof() and roofLabelMarker()'s comment above. */
+      rmState.roofLabelLayer = roofLabelMarker(labelCenter.lat, labelCenter.lng, roof.label || "Roof", rmRenameLinkedRoof).addTo(rmState.map);
     }
     rmShowFeaturePanel(bld.name);
     await rmLoadLinkedAssets();

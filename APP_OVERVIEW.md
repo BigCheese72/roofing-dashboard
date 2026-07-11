@@ -409,11 +409,17 @@ campus with several separate buildings, etc. — get their own distinct, labeled
 instead of one combined footprint. When saving a traced outline to an existing
 building, pick which roof it's for from the list, or tap **"+ Add a new roof…"** to
 name a brand-new one right there (e.g. "Main Roof," "North Wing," "Warehouse") — no
-need to leave RoofMapper first. Every roof's name shows as a small label right on the
-map (not just in a dropdown), and Building History's Roof Map shows every roof on a
-building at once, each labeled, so you can tell them apart at a glance instead of
-switching one at a time. A roof's name can be changed any time via the
-**"✏️ Rename"** button next to the roof picker in Building History.
+need to leave RoofMapper first. If that name is already used by another roof on the
+same building, you'll be warned and offered a ready-made alternative (e.g. "Roof 1
+(2)") instead of silently ending up with two roofs that look the same in every list.
+Every roof's name shows as a small label right on the map (not just in a dropdown),
+and Building History's Roof Map shows every roof on a building at once, each labeled,
+so you can tell them apart at a glance instead of switching one at a time.
+A roof's name can be changed any time — right from RoofMapper, without leaving the
+screen: tap the roof's own label on the map (it shows a small "✏️"), or tap
+**"🏷️ Rename Roof"** next to "Edit Shape" in the Roof Outline panel. The same
+duplicate-name check applies to renames too. (It can also still be renamed from the
+**"✏️ Rename"** button next to the roof picker in Building History.)
 
 **No OpenStreetMap footprint for this building?** (Happens — some buildings, like
 hospitals, are only mapped as a whole property parcel, or not mapped at all.) Tap
