@@ -358,9 +358,15 @@ helps a tech capture a clean roof outline for a building on the spot:
 8. Tap **"👁️ Preview Export"** to see exactly what the outline + labels + placed
    features will look like before exporting — no guessing, then export **SVG**,
    **PNG**, or **PDF** right from the preview, or from the buttons below it any time.
-   All generated on the device, no internet required once the outline exists. Once
-   linked to a building, exports include everything marked up on the roof (features +
-   any leak/repair pins from past reports), not just the bare outline — a hint line
+   All three formats (and the preview) render from the exact same drawing now, so
+   what you see in Preview is exactly what SVG/PNG/PDF produce — no surprises between
+   them. Every export is a single clean page: the outline (filled, not just an
+   outline), every edge's real measured length labeled right on it, every placed
+   feature with its icon AND name, a legend, a scale bar, and a header with the
+   building name/address, roof label, area, perimeter, and date. All generated on
+   the device, no internet required once the outline exists. Once linked to a
+   building, exports include everything marked up on the roof (features + any
+   leak/repair pins from past reports), not just the bare outline — a hint line
    under the export buttons always says which you'll get.
 
 Finding the map itself hard to pan or zoom around? A **"🎯"** button floats right on

@@ -4829,6 +4829,120 @@ confirmed the modal's three export buttons carry the exact same `onclick`
 handlers as the outline panel's own export buttons. All test state
 cleared, page reloaded, console clean.
 
+## RoofMapper export: fix broken PDF / single shared render path (shipped 2026-07-11, dev only, HIGH PRIORITY bug fix)
+
+**Corrects the "Export preview" entry above** — its "PDF is explicitly the
+exception" note was accurate when written, but is exactly the design flaw
+this fix removes.
+
+Mark sent an actual exported file: the roof outline polygon didn't render
+at all (area/perimeter/date in the header were correct — the geometry
+existed, just never drawn), feature markers were unlabeled floating dots
+with no outline around them, everything was crammed into one corner of a
+mostly-empty canvas, content was split across two panels with an orphaned
+legend/scale-bar, dark background, and no edge dimensions despite
+calibration existing.
+
+**Root cause, found by actually generating and inspecting real output
+(not guessing from code review)**: the exported file's header text
+("Source: OpenStreetMap building footprint (RoofOps RoofMapper)") is
+PDF-specific — the SVG/PNG header only ever said "Source: OpenStreetMap".
+`rmExportPDF()` was a COMPLETELY SEPARATE, hand-rolled drawing built
+straight from jsPDF's vector primitives (`doc.lines`/`doc.circle`/
+`doc.text`) — a second implementation of the same drawing that had quietly
+diverged from SVG/PNG/Preview over time: no fill on the outline (stroke
+only, `"S"` style), no edge dimension labels (never built for export at
+all, only ever existed on the live map via `rmDrawEdgeDimensions`), no
+feature labels or icons (a plain filled circle, no text), fixed-radius
+markers that don't scale with the drawing, and no building name/address in
+the header. Combined — a thin unfilled stroke plus bold fixed-size dots
+plus no visual connection between them — this plausibly reads exactly as
+Mark described it: "outline missing, dots floating in space." Reproduced
+and root-caused by actually building real PDFs in the browser (a wrapped
+`jsPDF` subclass captures the instance before `.save()` fires, since
+`save` is set as an own-instance property jsPDF assigns in its
+constructor — patching `.prototype.save` silently does nothing) and
+decoding the raw PDF content stream to inspect the actual drawing
+operators, not just re-reading the source.
+
+**Fix: PDF no longer has its own drawing implementation at all.**
+`rmExportPDF()` now calls the exact same `rmBuildOutlineSvg()` every other
+format uses, rasterizes that SVG to a canvas via a new shared
+`rmRasterizeSvgToCanvas()` helper (also now used by `rmExportPNG()`,
+replacing its inline version), and embeds the resulting PNG as a single
+image on the PDF page via `doc.addImage()`, centered and fit to the page
+within a margin. There is no second render path left to drift out of
+sync — SVG, PNG, PDF, and Export Preview are now guaranteed pixel-identical
+(mod PDF's page-fit scaling, which is a uniform resize of the same image).
+The stale "PDF is the exception" language in Preview's code comment and
+modal copy is removed.
+
+**`rmBuildOutlineSvg()` itself gained the missing pieces**, so every format
+gets them for free:
+- Outline fill is preserved (it always had fill; PDF just wasn't using this
+  function before).
+- **Edge dimension labels**, one per edge, using the same real-world
+  haversine length `rmDrawEdgeDimensions()` shows on the live map (so a
+  calibrated outline's true measured lengths carry through), rendered as
+  the same dark pill/white-text style, with the calibrated edge
+  highlighted green + checkmark exactly like the live map.
+- **Feature labels**, not just the emoji icon: each marker now also draws
+  its name (the asset's own `.label` if set, e.g. "RTU-2", else the type's
+  default label, e.g. "Vent") in a small text with a white halo
+  (`paint-order="stroke fill"`) so it stays legible over the outline fill
+  or any marker it crosses.
+- **Building name/address + roof label in the header**: `rmFetchExportOverlayData()`
+  now also returns `buildingName`/`buildingAddress`/`roofLabel` (from the
+  linked building/roof docs) when the outline is saved to a building; the
+  header shows building name (falling back to the existing OSM-tag-based
+  title when unlinked) with the roof label appended, address on its own
+  line, and "Generated {date}" added to the stats line — satisfies Mark's
+  "Header/footer block: roof label, building name/address, area,
+  perimeter, date" ask in one pass.
+
+**Also fixed: unbounded canvas size for large roofs.** The old fixed
+20px/ft scale meant a ~50,000 sq ft roof produced an SVG several thousand
+pixels across — likely a real contributor to the "huge mostly-empty
+canvas" complaint even independent of the PDF-specific bugs above. New
+`RM_EXPORT_MAX_CANVAS_DIM` (2200px) caps the long edge of the canvas
+regardless of roof size, with `RM_EXPORT_MIN_SCALE`/`RM_EXPORT_MAX_SCALE`
+(4–20 px/ft) keeping small roofs from either shrinking illegibly or
+(previously) exceeding the cap unnecessarily.
+
+**Also fixed, found while testing rather than reported by Mark**: enabling
+image embedding in the PDF surfaced that jsPDF stores image XObject
+streams completely uncompressed unless `compress:true` is passed to the
+constructor — a single embedded roof export image (2200×1865, ~110KB as a
+PNG) produced a ~22MB PDF without it. Added `compress:true`; confirmed the
+same export drops to well under 100KB with it. Also fixed a real async bug
+caught while testing: `rmExportPNG()` was `async` but called
+`canvas.toBlob()`'s callback-based API without awaiting it, so the
+function technically resolved before the PNG's download actually fired —
+harmless in practice (nothing downstream depended on the await), but
+inconsistent with PDF's proper end-to-end await chain. Now wraps
+`toBlob()` in a `Promise` so the function only resolves once the blob (and
+thus the download) is ready.
+
+Tested by actually generating and inspecting output, not just code review
+(mocked `fdb`/`rmFetchExportOverlayData`, no real writes): built an
+L-shaped 7-vertex roof (calibrated + squared, matching Mark's report of a
+calibrated roof) with 3 features (one with a custom label, two using type
+defaults) and a finding pin, confirmed the generated SVG's `<path>`
+element has sane, non-degenerate coordinates; rasterized it to a canvas
+and sampled pixel data across the full frame — confirmed non-white content
+spans nearly the entire canvas (not clustered in one corner); generated a
+real PDF via a wrapped `jsPDF` subclass that intercepts the instance
+before `.save()` (see root-cause note above) and confirmed exactly 1 page,
+sane file size (48KB) with `compress:true` vs. ~22MB without; confirmed
+building name/address/roof label/custom feature label/default feature
+labels/6 edge dimension labels (matching the 7-vertex ring's 6 real edges)
+all appear in the generated SVG; re-tested the entire flow for an outline
+with NO linked building (overlay `null`) to confirm the original
+outline-only export still works unchanged; re-tested a small (12×10 ft)
+roof to confirm it still renders at the normal 20px/ft scale (well under
+the new cap, `RM_EXPORT_MIN_SCALE`/`MAX_SCALE` don't kick in unnecessarily). All
+test state cleared, page reloaded, console clean.
+
 ## RoofMapper save flow: full CompanyCam picker (shipped 2026-07-10, dev only)
 
 Mark: he could pick an existing app-created building when saving a traced

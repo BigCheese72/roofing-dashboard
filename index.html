@@ -6961,20 +6961,18 @@ function rmExportProjectFeet(ring){
   var origin = rmGeomRingCentroid(ring);
   return ring.map(function(p){ return rmExportProjectPoint(p, origin); });
 }
-function rmHexToRgb(hex){
-  var m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex || "");
-  return m ? { r: parseInt(m[1],16), g: parseInt(m[2],16), b: parseInt(m[3],16) } : { r: 0, g: 0, b: 0 };
-}
 /* Full-roof export: pulls in the linked roof's permanent features
    (roof_assets[]) and its historical finding pins (from
    building_history_events[].pins[], same source Building History's own Roof
    Map reads) so the export is the outline PLUS everything marked up on it,
-   not just the bare shape. Returns null (outline-only export, unchanged
-   from before Phase 2) when the outline was never saved to a building, or
-   there's no connection to fetch with. Only lat/lng-placed
-   assets/pins are included -- ones placed on a roof's custom base map
-   (x/y, no georeference) have no coordinate to plot on this lat/lng-based
-   export, same limitation as rmDrawLinkedAssets(). */
+   not just the bare shape. Also carries the building name/address and roof
+   label so the export header can show them (Mark: "Header/footer block:
+   roof label, building name/address, area, perimeter, date"). Returns null
+   (outline-only export, unchanged from before Phase 2) when the outline was
+   never saved to a building, or there's no connection to fetch with. Only
+   lat/lng-placed assets/pins are included -- ones placed on a roof's custom
+   base map (x/y, no georeference) have no coordinate to plot on this
+   lat/lng-based export, same limitation as rmDrawLinkedAssets(). */
 async function rmFetchExportOverlayData(){
   if (!rmState.linkedBuildingId || !rmState.linkedRoofId || !fdb) return null;
   try{
@@ -6995,8 +6993,11 @@ async function rmFetchExportOverlayData(){
         pins.push(p);
       });
     });
-    if (!assets.length && !pins.length) return null;
-    return { assets: assets, pins: pins };
+    var buildingName = bld.name || null;
+    var buildingAddress = bld.address || null;
+    var roofLabel = (roof && roof.label) || null;
+    if (!assets.length && !pins.length && !buildingName && !buildingAddress && !roofLabel) return null;
+    return { assets: assets, pins: pins, buildingName: buildingName, buildingAddress: buildingAddress, roofLabel: roofLabel };
   }catch(e){
     toast("Couldn't load placed features for export — exporting outline only. (" + e.message + ")");
     return null;
@@ -7023,15 +7024,32 @@ function rmOutlineTitle(outline){
   var base = tags.name || addr || "Roof Outline";
   return outline.isSiteBoundary ? "⚠ Site Boundary — " + base : base;
 }
-/* overlay ({assets, pins}, from rmFetchExportOverlayData()) is optional --
-   omitting it (or passing null) produces byte-identical output to the
-   original outline-only export, so a locally-saved/unlinked outline still
-   exports exactly as it always did. */
+/* Bug fix (2026-07-11): a fixed 20px/ft scale meant a large roof (tens of
+   thousands of sq ft) produced an SVG many thousands of pixels across --
+   Mark's report of a "huge mostly-empty canvas" with everything crammed
+   into one corner traces back to this (compounded by the OLD separate PDF
+   implementation below, which drew an unfilled, undimensioned, unlabeled
+   outline through totally different code that could silently diverge from
+   what Preview showed). Capping the long edge of the canvas keeps exports
+   a sane, predictable size regardless of roof size, while MIN_SCALE keeps
+   small roofs from shrinking into illegibility. */
+var RM_EXPORT_MAX_CANVAS_DIM = 2200;
+var RM_EXPORT_MIN_SCALE = 4, RM_EXPORT_MAX_SCALE = 20; /* px per foot */
+/* overlay ({assets, pins, buildingName, buildingAddress, roofLabel}, from
+   rmFetchExportOverlayData()) is optional -- omitting it (or passing null)
+   produces the original outline-only export, so a locally-saved/unlinked
+   outline still exports fine without a building link. This is the SINGLE
+   source of truth for what an outline+features export looks like -- Export
+   Preview, SVG, PNG, and PDF (rasterizes this same SVG, see rmExportPDF)
+   all call this one function, so they're guaranteed to render identically
+   rather than risk drifting out of sync the way the old hand-rolled jsPDF
+   vector drawing did. See "RoofMapper export: single shared render path"
+   in DEV_NOTES.md. */
 function rmBuildOutlineSvg(outline, overlay){
   var origin = rmGeomRingCentroid(outline.ring);
   var pts = outline.ring.map(function(p){ return rmExportProjectPoint(p, origin); });
   var assetPts = ((overlay && overlay.assets) || []).map(function(a){
-    return Object.assign({}, rmExportProjectPoint(a, origin), { type: a.type });
+    return Object.assign({}, rmExportProjectPoint(a, origin), { type: a.type, label: a.label });
   });
   var pinPts = ((overlay && overlay.pins) || []).map(function(p){
     return Object.assign({}, rmExportProjectPoint(p, origin), { warranty: p.warranty });
@@ -7042,23 +7060,59 @@ function rmBuildOutlineSvg(outline, overlay){
   var minY = Math.min.apply(null, allYs), maxY = Math.max.apply(null, allYs);
   var padFt = Math.max(6, (maxX - minX) * 0.08);
   var w = (maxX - minX) + padFt * 2, h = (maxY - minY) + padFt * 2;
-  var scale = 20; /* px per foot */
-  var headerH = 60, footerH = overlay ? 64 : 40; /* extra room for the legend line when features are included */
+  var scale = Math.max(RM_EXPORT_MIN_SCALE, Math.min(RM_EXPORT_MAX_SCALE, RM_EXPORT_MAX_CANVAS_DIM / Math.max(w, h)));
+  var hasBuildingInfo = !!(overlay && (overlay.buildingName || overlay.buildingAddress));
+  var headerH = hasBuildingInfo ? 76 : 60;
+  var footerH = overlay ? 64 : 40; /* extra room for the legend line when features are included */
   var svgW = Math.max(240, w * scale), svgH = Math.max(240, h * scale) + headerH + footerH;
   function toSvg(p){
     return { x: (p.x - minX + padFt) * scale, y: headerH + (h * scale) - ((p.y - minY + padFt) * scale) };
   }
   var pathPts = pts.map(toSvg);
   var pathD = "M " + pathPts.map(function(p){ return p.x.toFixed(1) + "," + p.y.toFixed(1); }).join(" L ") + " Z";
-  var title = rmOutlineTitle(outline);
+  var title = (overlay && overlay.buildingName) || rmOutlineTitle(outline);
+  if (overlay && overlay.roofLabel) title += " — " + overlay.roofLabel;
   var scaleBarFt = 20, scaleBarPx = scaleBarFt * scale;
+  /* Edge dimension labels -- same real-world lengths rmDrawEdgeDimensions()
+     shows on the live map (haversine on the ORIGINAL ring, so a calibrated
+     outline's real measured lengths carry through correctly), just
+     re-rendered as SVG pills instead of Leaflet divIcons. Mark: "No edge
+     dimensions are drawn on the outline, even though we built calibration/
+     dimensions" -- true gap, never wired into export before this fix. */
+  var calibratedIdx = outline.calibration ? outline.calibration.edgeIndex : -1;
+  var dimSvg = "";
+  for (var i = 0; i < outline.ring.length - 1; i++){
+    var ea = outline.ring[i], eb = outline.ring[i + 1];
+    var distFt = rmGeomHaversineMeters(ea, eb) * 3.28084;
+    if (distFt < 1) continue; /* skip degenerate/near-zero edges from ring cleanup */
+    var midFeet = { x: (rmExportProjectPoint(ea, origin).x + rmExportProjectPoint(eb, origin).x) / 2,
+                     y: (rmExportProjectPoint(ea, origin).y + rmExportProjectPoint(eb, origin).y) / 2 };
+    var svgMid = toSvg(midFeet);
+    var isCal = i === calibratedIdx;
+    var dimLabel = (isCal ? "✓ " : "") + Math.round(distFt) + " ft";
+    var dimW = Math.max(30, dimLabel.length * 6.4 + 10);
+    dimSvg += '<rect x="' + (svgMid.x - dimW / 2).toFixed(1) + '" y="' + (svgMid.y - 9).toFixed(1) + '" width="' +
+      dimW.toFixed(1) + '" height="18" rx="4" fill="' + (isCal ? "#2E7D32" : "#263238") + '"/>' +
+      '<text x="' + svgMid.x.toFixed(1) + '" y="' + (svgMid.y + 4).toFixed(1) +
+      '" font-family="Arial, sans-serif" font-size="10.5" font-weight="700" fill="#fff" text-anchor="middle">' +
+      rmEscXml(dimLabel) + '</text>';
+  }
   var markersSvg = "";
   assetPts.forEach(function(a){
     var svgP = toSvg(a);
     var t = ROOF_ASSET_TYPES[a.type] || ROOF_ASSET_TYPES.other;
+    var labelText = a.label || t.label;
     markersSvg += '<circle cx="' + svgP.x.toFixed(1) + '" cy="' + svgP.y.toFixed(1) + '" r="9" fill="' + t.color +
       '" stroke="#fff" stroke-width="2"/><text x="' + svgP.x.toFixed(1) + '" y="' + (svgP.y + 4).toFixed(1) +
-      '" font-family="Arial, sans-serif" font-size="11" text-anchor="middle">' + rmEscXml(t.emoji) + '</text>';
+      '" font-family="Arial, sans-serif" font-size="11" text-anchor="middle">' + rmEscXml(t.emoji) + '</text>' +
+      /* stroke+paint-order gives the label text a white halo so it stays
+         readable over the orange outline fill or any marker it crosses,
+         without needing a separate background pill like the dimension
+         labels get (markers are already small and numerous; a halo reads
+         cleaner than N more boxes). */
+      '<text x="' + (svgP.x + 13).toFixed(1) + '" y="' + (svgP.y + 4).toFixed(1) +
+      '" font-family="Arial, sans-serif" font-size="10.5" font-weight="600" fill="#263238" ' +
+      'stroke="#ffffff" stroke-width="3" paint-order="stroke fill">' + rmEscXml(labelText) + '</text>';
   });
   pinPts.forEach(function(p){
     var svgP = toSvg(p);
@@ -7078,13 +7132,21 @@ function rmBuildOutlineSvg(outline, overlay){
         rmEscXml(legendParts.join("   ·   ")) + '</text>';
     }
   }
+  var statsY = hasBuildingInfo ? 60 : 44;
+  var headerSvg = '<text x="16" y="26" font-family="Arial, sans-serif" font-size="18" font-weight="700" fill="#263238">' +
+    rmEscXml(title) + '</text>';
+  if (hasBuildingInfo && overlay.buildingAddress){
+    headerSvg += '<text x="16" y="44" font-family="Arial, sans-serif" font-size="12" fill="#5B6770">' +
+      rmEscXml(overlay.buildingAddress) + '</text>';
+  }
+  headerSvg += '<text x="16" y="' + statsY + '" font-family="Arial, sans-serif" font-size="12" fill="#5B6770">Area: ' +
+    outline.areaSqFt.toFixed(0) + ' sq ft &#183; Perimeter: ' + outline.perimeterFt.toFixed(0) + ' ft &#183; Generated ' +
+    rmEscXml(new Date(outline.createdAt || Date.now()).toLocaleDateString()) + '</text>';
   var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + svgW + '" height="' + svgH + '" viewBox="0 0 ' + svgW + ' ' + svgH + '">' +
     '<rect width="100%" height="100%" fill="#ffffff"/>' +
-    '<text x="16" y="26" font-family="Arial, sans-serif" font-size="18" font-weight="700" fill="#263238">' + rmEscXml(title) + '</text>' +
-    '<text x="16" y="44" font-family="Arial, sans-serif" font-size="12" fill="#5B6770">Area: ' + outline.areaSqFt.toFixed(0) +
-      ' sq ft &#183; Perimeter: ' + outline.perimeterFt.toFixed(0) + ' ft &#183; Source: OpenStreetMap</text>' +
+    headerSvg +
     '<path d="' + pathD + '" fill="rgba(232,96,10,0.15)" stroke="#E8600A" stroke-width="2.5" stroke-linejoin="round"/>' +
-    markersSvg + legendSvg +
+    dimSvg + markersSvg + legendSvg +
     '<g transform="translate(16,' + (svgH - 18) + ')">' +
       '<line x1="0" y1="0" x2="' + scaleBarPx + '" y2="0" stroke="#263238" stroke-width="2"/>' +
       '<line x1="0" y1="-4" x2="0" y2="4" stroke="#263238" stroke-width="2"/>' +
@@ -7100,103 +7162,85 @@ async function rmExportSVG(){
   var built = rmBuildOutlineSvg(rmState.outline, overlay);
   rmDownloadBlob(rmExportFilenameBase() + ".svg", new Blob([built.svg], { type: "image/svg+xml" }));
 }
+/* Shared by PNG and PDF export -- rasterizes rmBuildOutlineSvg()'s SVG onto
+   a canvas at ITS OWN declared pixel size (already capped by
+   RM_EXPORT_MAX_CANVAS_DIM), so both formats -- and the PDF page it gets
+   embedded into -- show the exact same pixels Export Preview already
+   showed. Resolves with the canvas itself so callers can pull either a
+   Blob (PNG download) or a data URL (jsPDF's addImage). */
+function rmRasterizeSvgToCanvas(svgStr, w, h){
+  return new Promise(function(resolve, reject){
+    var img = new Image();
+    var url = URL.createObjectURL(new Blob([svgStr], { type: "image/svg+xml;charset=utf-8" }));
+    img.onload = function(){
+      var c = document.createElement("canvas");
+      c.width = w; c.height = h;
+      var ctx = c.getContext("2d");
+      ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, w, h);
+      ctx.drawImage(img, 0, 0, w, h);
+      URL.revokeObjectURL(url);
+      resolve(c);
+    };
+    img.onerror = function(){ URL.revokeObjectURL(url); reject(new Error("Couldn't render the export image")); };
+    img.src = url;
+  });
+}
 async function rmExportPNG(){
   if (!rmState.outline){ toast("Generate a roof outline first."); return; }
   var overlay = await rmFetchExportOverlayData();
   var built = rmBuildOutlineSvg(rmState.outline, overlay);
-  var img = new Image();
-  var url = URL.createObjectURL(new Blob([built.svg], { type: "image/svg+xml;charset=utf-8" }));
-  img.onload = function(){
-    var c = document.createElement("canvas");
-    c.width = built.width; c.height = built.height;
-    var ctx = c.getContext("2d");
-    ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height);
-    ctx.drawImage(img, 0, 0);
-    URL.revokeObjectURL(url);
-    c.toBlob(function(blob){ rmDownloadBlob(rmExportFilenameBase() + ".png", blob); }, "image/png");
-  };
-  img.onerror = function(){ URL.revokeObjectURL(url); toast("Couldn't render PNG export."); };
-  img.src = url;
+  try{
+    var canvas = await rmRasterizeSvgToCanvas(built.svg, built.width, built.height);
+    var blob = await new Promise(function(res){ canvas.toBlob(res, "image/png"); });
+    rmDownloadBlob(rmExportFilenameBase() + ".png", blob);
+  }catch(e){ toast("Couldn't render PNG export."); }
 }
+/* PDF export used to be a completely separate, hand-rolled drawing built
+   straight from jsPDF's vector primitives (lines/circles/text) -- a second
+   implementation of the exact same drawing that could (and did) silently
+   drift out of sync with what SVG/PNG/Preview actually showed: no fill on
+   the outline, no edge dimensions, features as bare unlabeled dots, no
+   building name/address. Bug report from Mark (2026-07-11): the outline
+   didn't render at all, features were unlabeled floating dots, layout was
+   crammed in a corner of an otherwise-empty page, dark background. Fixed
+   by rasterizing the SAME rmBuildOutlineSvg() output every other format
+   uses and embedding that single image on the PDF page -- there is no
+   longer a second drawing implementation to drift out of sync, so Export
+   Preview is guaranteed to be exactly what the PDF (and SVG/PNG) produce.
+   See "RoofMapper export: single shared render path" in DEV_NOTES.md. */
 async function rmExportPDF(){
   if (!rmState.outline){ toast("Generate a roof outline first."); return; }
   if (!(window.jspdf && window.jspdf.jsPDF)){ toast("PDF export isn't available right now."); return; }
-  var outline = rmState.outline;
   var overlay = await rmFetchExportOverlayData();
-  var JsPdf = window.jspdf.jsPDF;
-  var doc = new JsPdf({ unit: "pt", format: "letter" });
-  var origin = rmGeomRingCentroid(outline.ring);
-  var pts = outline.ring.map(function(p){ return rmExportProjectPoint(p, origin); });
-  var assetPts = ((overlay && overlay.assets) || []).map(function(a){
-    return Object.assign({}, rmExportProjectPoint(a, origin), { type: a.type });
-  });
-  var pinPts = ((overlay && overlay.pins) || []).map(function(p){
-    return Object.assign({}, rmExportProjectPoint(p, origin), { warranty: p.warranty });
-  });
-  var allXs = pts.concat(assetPts, pinPts).map(function(p){ return p.x; });
-  var allYs = pts.concat(assetPts, pinPts).map(function(p){ return p.y; });
-  var minX = Math.min.apply(null, allXs), maxX = Math.max.apply(null, allXs);
-  var minY = Math.min.apply(null, allYs), maxY = Math.max.apply(null, allYs);
-  var pageW = doc.internal.pageSize.getWidth(), pageH = doc.internal.pageSize.getHeight();
-  var margin = 54, top = 90;
-  var availW = pageW - margin * 2, availH = pageH - top - margin;
-  var wFt = Math.max(1, maxX - minX), hFt = Math.max(1, maxY - minY);
-  var scale = Math.min(availW / wFt, availH / hFt);
-  var offX = margin + (availW - wFt * scale) / 2;
-  var offY = top + (availH - hFt * scale) / 2;
-  function toPdf(p){ return { x: offX + (p.x - minX) * scale, y: offY + (hFt - (p.y - minY)) * scale }; }
-  doc.setFont("helvetica", "bold"); doc.setFontSize(16);
-  doc.text(rmOutlineTitle(outline), margin, 40);
-  doc.setFont("helvetica", "normal"); doc.setFontSize(10);
-  doc.text("Area: " + outline.areaSqFt.toFixed(0) + " sq ft   Perimeter: " + outline.perimeterFt.toFixed(0) + " ft   Generated " +
-    new Date(outline.createdAt || Date.now()).toLocaleDateString(), margin, 58);
-  doc.text("Source: OpenStreetMap building footprint (RoofOps RoofMapper)", margin, 72);
-  var pdfPts = pts.map(toPdf);
-  doc.setDrawColor(232, 96, 10); doc.setLineWidth(1.5);
-  var lines = pdfPts.slice(1).map(function(p, i){ return [p.x - pdfPts[i].x, p.y - pdfPts[i].y]; });
-  doc.lines(lines, pdfPts[0].x, pdfPts[0].y, [1, 1], "S", true);
-  assetPts.forEach(function(a){
-    var p = toPdf(a);
-    var t = ROOF_ASSET_TYPES[a.type] || ROOF_ASSET_TYPES.other;
-    var rgb = rmHexToRgb(t.color);
-    doc.setFillColor(rgb.r, rgb.g, rgb.b);
-    doc.circle(p.x, p.y, 5, "F");
-  });
-  pinPts.forEach(function(pn){
-    var p = toPdf(pn);
-    var rgb = rmHexToRgb(warrantyColor(pn.warranty));
-    doc.setFillColor(rgb.r, rgb.g, rgb.b);
-    doc.circle(p.x, p.y, 4, "F");
-  });
-  var barFt = 20, barPx = barFt * scale, barX = margin, barY = pageH - margin + 10;
-  doc.setDrawColor(38, 42, 48); doc.setLineWidth(1);
-  doc.line(barX, barY, barX + barPx, barY);
-  doc.line(barX, barY - 4, barX, barY + 4);
-  doc.line(barX + barPx, barY - 4, barX + barPx, barY + 4);
-  doc.setFontSize(9);
-  doc.text(barFt + " ft", barX + barPx / 2, barY + 14, { align: "center" });
-  if (overlay){
-    var typesPresent2 = {};
-    assetPts.forEach(function(a){ typesPresent2[a.type] = true; });
-    var legendParts2 = Object.keys(typesPresent2).map(function(k){ return (ROOF_ASSET_TYPES[k] || ROOF_ASSET_TYPES.other).label; });
-    if (pinPts.length) legendParts2.push("Finding pin (color = warranty status)");
-    if (legendParts2.length){
-      doc.setFontSize(8);
-      doc.text("Legend: " + legendParts2.join("  ·  "), margin, pageH - margin - 4);
-    }
-  }
-  doc.save(rmExportFilenameBase() + ".pdf");
+  var built = rmBuildOutlineSvg(rmState.outline, overlay);
+  try{
+    var canvas = await rmRasterizeSvgToCanvas(built.svg, built.width, built.height);
+    var pngDataUrl = canvas.toDataURL("image/png");
+    var JsPdf = window.jspdf.jsPDF;
+    /* compress:true is essential now that a raster image is embedded --
+       jsPDF stores image XObject streams RAW (no deflate) unless this is
+       set, which turned a ~110KB PNG into a ~22MB PDF in testing (a mostly-
+       white 2200x1865 image stored byte-for-byte uncompressed). With it,
+       the same export comes out under 100KB. */
+    var doc = new JsPdf({ unit: "pt", format: "letter", compress: true });
+    var pageW = doc.internal.pageSize.getWidth(), pageH = doc.internal.pageSize.getHeight();
+    var margin = 40;
+    var availW = pageW - margin * 2, availH = pageH - margin * 2;
+    var aspect = built.width / built.height;
+    var drawW = availW, drawH = drawW / aspect;
+    if (drawH > availH){ drawH = availH; drawW = drawH * aspect; }
+    var offX = margin + (availW - drawW) / 2, offY = margin + (availH - drawH) / 2;
+    doc.addImage(pngDataUrl, "PNG", offX, offY, drawW, drawH);
+    doc.save(rmExportFilenameBase() + ".pdf");
+  }catch(e){ toast("Couldn't render PDF export: " + e.message); }
 }
 /* Preview before export -- Mark: a way to see the map/drawing (outline +
    labels + features) as it will look exported, before actually exporting.
-   Reuses rmBuildOutlineSvg() directly -- the SAME function SVG and PNG
-   exports already call -- so the preview is guaranteed byte-identical to
-   what those two exports actually produce, not a separate approximation
-   that could drift out of sync. PDF has its own from-scratch layout (jsPDF
-   draws directly, doesn't rasterize the SVG), so the preview is explicitly
-   labeled as covering SVG/PNG's shared look, with a note that PDF carries
-   the same information in its own page layout. See "Export preview" in
-   DEV_NOTES.md. */
+   Reuses rmBuildOutlineSvg() directly -- the SAME function SVG, PNG, AND
+   (as of 2026-07-11) PDF export all call -- so the preview is guaranteed to
+   be exactly what every export format produces, not a separate
+   approximation that could drift out of sync. See "Export preview" and
+   "RoofMapper export: single shared render path" in DEV_NOTES.md. */
 async function rmPreviewExport(){
   if (!rmState.outline){ toast("Generate a roof outline first."); return; }
   toast("Building preview…");

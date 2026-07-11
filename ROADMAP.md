@@ -539,6 +539,23 @@ Goal: turn each building into a long-term roof record.
   FROM an already-linked CompanyCam project instead of local upload
   (lower-priority secondary path per Mark). See "Trace directly on an
   uploaded drone orthomosaic" in `DEV_NOTES.md`.
+- 🐛 **Fixed (dev only, 2026-07-11), HIGH PRIORITY**: RoofMapper export was
+  badly broken — Mark's actual exported file showed the outline missing
+  entirely, features as unlabeled floating dots, layout crammed into one
+  corner of an empty canvas, dark background, no edge dimensions. Root
+  cause: PDF export was a totally separate, hand-drawn jsPDF implementation
+  that had silently diverged from SVG/PNG/Preview (no fill, no dimensions,
+  no feature labels, fixed-size markers). Fix: PDF now rasterizes the exact
+  same `rmBuildOutlineSvg()` every other format uses and embeds it as one
+  image — no more second render path to drift out of sync, so Preview is
+  finally a true guarantee across all three formats. Also added: edge
+  dimension labels (using real calibrated lengths) and feature name labels
+  to the shared drawing itself, so every format gets them; building name/
+  address/roof label in the header; a canvas-size cap so large roofs don't
+  produce absurdly oversized exports; `compress:true` on the PDF (an
+  embedded image was coming out ~22MB uncompressed, ~<100KB with it). See
+  "RoofMapper export: fix broken PDF / single shared render path" in
+  `DEV_NOTES.md`.
 - ✅ **Shipped (dev only, 2026-07-10)**: easier map navigation — Mark found
   the map "a little hard to navigate." `touch-action:none` on the map
   container (the likely actual cause — without it the page's own scroll
