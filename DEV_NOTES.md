@@ -6582,6 +6582,128 @@ calls (not assumptions) — confirmed a building gets created, linked, and
 a roof outline saved with zero blockers. All test state cleared, console
 clean throughout.
 
+## GPS auto-assign photos to roofs (shipped 2026-07-11, dev only)
+
+Mark's design change, and he's right: don't make him manually pick a roof
+per photo (the earlier "manual sticky selector" plan) -- a photo already
+carries GPS (`captureDeviceGps()`), and roofs are traced polygons with
+real coordinates, so the assignment is derivable. Confirmed the
+prerequisite first rather than assuming: camera-captured photos already
+call `navigator.geolocation`, store `{lat,lng,accuracy}` on `photo.gps`,
+auto-drop a pin from it, and persist that pin (`finding.pin`/checklist
+item `.pin`) all the way through to `reports`/`building_history_events.pins[]`
+-- fully re-readable later, which is what makes today's Tri-Delta
+inspection recoverable at all.
+
+**Geometry**: `rmPointInRing()` (standard ray-casting, lat/lng treated as
+planar -- valid at roof scale) and `rmDistanceToRingMeters()` (point-to-
+nearest-edge distance in real meters, via the existing `rmGeomToLocalXY()`
+tangent-plane projection) feed `rmAssignPointToRoof(lat, lng, roofs)`:
+picks the polygon a point falls inside, or the nearest one within
+`RM_GPS_AMBIGUITY_METERS` (6m -- phone GPS is ~3-5m, his RTK drone is
+cm-accurate but that's not what's in his pocket) if it's outside every
+polygon. Returns `{roofId, label, ambiguous, outsideAll}` -- `ambiguous`
+means "assigned, but a human should confirm this" (near ANOTHER roof's
+boundary too, even though technically inside one, or overlapping polygons
+—- shouldn't happen once vertex/edge snapping ships, handled gracefully
+meanwhile); `outsideAll` means it wasn't near anything at all and returns
+`roofId: null` rather than guessing.
+
+**Live, at capture time**: `rmMaybeAutoAssignRoofForPin()` (a single-roof
+or no-roofs-traced-yet building short-circuits to null -- nothing to
+compute, the existing `"roof_default"` convention already handles that
+case everywhere downstream) is now called from both
+`maybeAutoPinFinding()`/`maybeAutoPinInspectionItem()` (now async) the
+moment a GPS-tagged photo auto-drops a pin, setting `finding.roofId`/
+`.roofIdAmbiguous` directly. `addPhotosFromCamera()`'s `done()` is now
+async too, awaiting these in sequence before its renders, so a whole
+batch of captured photos finishes its roof lookups before the UI updates
+-- existing photo capture itself (resize/compress/push to `photos[]`) is
+completely untouched, this only adds the roof-assignment step alongside it.
+
+**Shown clearly, one-tap correctable** -- Mark's explicit requirements.
+`renderFindings()` gained a roof badge right on each finding row (not
+buried in the pin modal): blue "🏠 {label}" for a confident assignment,
+red "⚠️ {label}" for an ambiguous one, both tappable straight into the pin
+modal. `rmRoofLabelFromCache()` resolves the label synchronously off
+`lastLookupRoofInfo` (already populated by any roof lookup this session)
+since `renderFindings()` itself can't be async -- a graceful "badge just
+doesn't show" degradation if that cache is empty, never a wrong answer.
+`renderPinRoofPicker()` — previously scoped to whatever a multi-select
+Inspection's checkboxes happened to include — now always offers the FULL
+building roof list (since GPS auto-assign can put a finding on ANY roof,
+not just a pre-selected subset), pre-selects whatever's currently on the
+finding, and surfaces the same "⚠️ GPS was near a boundary" warning
+inline. `pinSelectFindingRoof()` clears `roofIdAmbiguous` the moment a
+tech picks anything — a human confirmation, even of the same guess, is no
+longer a guess. (`pinSelectRoof()`, the old single-roof-only variant, is
+gone — this one function now covers both cases.)
+
+**Retroactive pass — the actual Tri-Delta recovery mechanism.**
+`rmAutoAssignExistingPinsToRoofs(buildingId)` (a new "🎯 Auto-Assign
+Photos to Roofs" button in Building History's Roof Map card, shown once
+a building has more than one roof) runs the identical `rmAssignPointToRoof()`
+logic over every already-saved GPS-tagged pin for that building (capped
+at the same 50-event fetch window every other building-wide query here
+already uses), across both `reports` and `building_history_events` (same
+payload, same doc id, updated together in one batch — matches every
+other writer of this pair). A pin outside every polygon is left
+completely alone, never silently reassigned to a wrong guess. Confirm
+dialog states exactly how many reports/pins will move and how many are
+flagged before committing anything. Plain client write (not admin-gated)
+— same tier as an individual pin correction, just applied in bulk, not a
+cross-building operation.
+
+**Report grouping generalized** — the Inspection-only, `o.roofIds`-gated
+grouping from the earlier multi-roof-Inspection pass now fires for ANY
+work order type whenever findings actually ended up on more than one
+distinct roof (`reportDistinctRoofIds()`, a new shared helper — `o.roofIds`
+first if a multi-select Inspection set it, then any further roofIds
+first-seen among the findings themselves), since GPS auto-assign can
+produce that mix regardless of type. `collect()`'s `o.roofLabels`
+denormalization is no longer gated behind `o.roofIds` either, for the
+same reason. A single-roof report of any type is completely unchanged.
+
+**Bulk manual re-assign — scoped for this pass.** Per-pin correction
+(`pinSelectFindingRoof()`, reachable both from the live work order and
+from Building History's map via the existing `jumpToAdjustPin()`) is
+real and shipped; a dedicated multi-select-then-batch-reassign UI (as
+opposed to the retroactive point-in-polygon pass, which already handles
+the bulk of a misassigned building in one action) was not built this
+pass — flagging explicitly rather than letting it read as done. The
+retroactive pass plus per-pin correction together cover the actual
+Tri-Delta scenario: auto-assign gets the great majority right in one
+click, and the minority it flags or misses are each one tap to fix.
+
+Tested in the browser (no `fdb` needed for the pure geometry; a mocked
+`fdb` for everything downstream, no real writes): unit-tested
+`rmPointInRing()`/`rmDistanceToRingMeters()` against a synthetic square
+roof (center inside, far point outside, distance from an exact vertex is
+0); tested `rmAssignPointToRoof()` against two adjacent roofs — deep in
+each assigns confidently and unambiguously, a point on their shared
+boundary assigns but flags ambiguous, a point far from both returns
+`outsideAll` rather than guessing; captured a live photo deep inside a
+roof on a real (mocked) 2-roof building — confirmed the finding's roofId
+was set correctly with no ambiguous flag and the toast named the roof;
+captured a second photo near the shared boundary — confirmed it assigned
+AND flagged ambiguous, the finding row's badge turned red/⚠️, the pin
+picker showed the confirm warning, and correcting it via
+`pinSelectFindingRoof()` cleared the flag; ran the retroactive pass
+against pre-seeded historical events simulating exactly the Tri-Delta
+case (pins with real GPS but a default roofId) — confirmed pins deep
+inside a polygon were correctly reassigned in BOTH `reports` and
+`building_history_events`, a pin far outside every polygon was correctly
+left untouched rather than guessed, and the toast reported the right
+count; confirmed the button/pass both correctly no-op with an explanatory
+toast on a single-roof building; regression-checked a genuinely fresh,
+never-seen building with `startNewWorkOrder()` (a real reset, unlike
+`newOrder()` which only navigates home without clearing state — caught my
+own test mistake here, not a product bug) — confirmed the pin still
+drops exactly as before with no roofId touched and the original toast
+message unchanged, proving existing photo capture is untouched for the
+common single-roof case. All test state cleared, real `fdb` restored,
+console clean throughout.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |

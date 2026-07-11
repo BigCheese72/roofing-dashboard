@@ -2411,14 +2411,34 @@ function inspectionItemPhotoGalleryHtml(item){
     (item.pin ? '<p class="hint" style="margin:6px 0 0">📍 Pinned on the roof map from this photo\'s location.</p>' : '') +
     '</div>';
 }
+/* Synchronous, best-effort roofId->label lookup off the last roof info
+   this session already fetched (lastLookupRoofInfo, populated by
+   lookupProspectiveBuildingRoofInfo() -- called every time the pin modal
+   or inspection roof picker render). renderFindings() itself can't be
+   async, and a GPS auto-assigned roofId needs to be VISIBLE right on the
+   finding row per Mark's "SHOW which roof was auto-assigned... clearly"
+   ask, not buried inside the pin modal -- this is the cheapest way to
+   show a real name instead of a raw id without a second fetch. Returns
+   null (badge just doesn't render) if the cache is empty/stale -- a
+   graceful degradation, not a wrong answer. See "GPS auto-assign photos
+   to roofs" in DEV_NOTES.md. */
+function rmRoofLabelFromCache(roofId){
+  if (!roofId || !lastLookupRoofInfo || !lastLookupRoofInfo.roofs) return null;
+  var r = lastLookupRoofInfo.roofs.find(function(x){ return x.id === roofId; });
+  return r ? (r.label || "Roof") : null;
+}
 function renderFindings(){
   var host = document.getElementById("findings-list");
   host.innerHTML = "";
   findings.forEach(function(f,i){
     var d = document.createElement("div");
     d.className = "rowcard" + (f.warranty === "Non-warrantable" ? " nonwar" : "");
+    var roofLabel = f.pin ? rmRoofLabelFromCache(f.roofId) : null;
+    var roofBadgeHtml = roofLabel ?
+      ('<span class="evt-tag" style="' + (f.roofIdAmbiguous ? 'background:#FBE2E2;color:#D64545' : 'background:#EAF2FB;color:#1976D2') +
+        '" onclick="openPinModal(\'' + f.id + '\')">' + (f.roofIdAmbiguous ? '⚠️ ' : '🏠 ') + esc(roofLabel) + '</span>') : '';
     d.innerHTML =
-      '<div class="rowhead"><b>Finding #' + (i+1) + '</b><span class="sp"></span>' +
+      '<div class="rowhead"><b>Finding #' + (i+1) + '</b>' + roofBadgeHtml + '<span class="sp"></span>' +
       '<button class="btn danger" onclick="removeFinding(' + i + ')">Remove</button></div>' +
       '<div class="fld"><label>Roof Condition Observed</label>' +
       '<textarea rows="1" data-i="' + i + '" data-f="condition">' + esc(f.condition) + '</textarea></div>' +
@@ -2664,49 +2684,43 @@ function jumpToAdjustPin(workOrderId, findingId){
   pendingPinFindingId = findingId;
   loadOrder(workOrderId);
 }
-/* This work order's pins all belong to ONE roof (currentRoofId) — a tech
-   visits one roof per work order, not several at once — so the picker
-   lives here, at the point placing a pin first matters, rather than as
-   an always-visible field on the main form. Only renders (and only ever
-   shows up) once the resolved building actually has more than one roof;
-   a single-roof building never sees this at all.
-   EXCEPTION: a multi-roof Inspection (currentRoofIds.length > 1, see
-   renderInspectionRoofPicker()) breaks the "one roof per work order"
-   assumption on purpose -- different findings can legitimately be on
-   different SELECTED roofs, so this branches into a per-finding picker
-   (pinSelectFindingRoof(), writes finding.roofId) scoped to only the
-   roofs actually chosen for this inspection, instead of the shared
-   work-order-wide currentRoofId every other type still uses unchanged. */
+/* Mark's GPS-auto-assign design change: a finding's roof is now normally
+   DERIVED (rmMaybeAutoAssignRoofForPin(), point-in-polygon against the
+   photo's own GPS), not manually picked up front -- so this picker's job
+   shifted from "the primary way to choose" to "the one-tap correction
+   when the auto-assign got it wrong or was ambiguous." Always offers the
+   FULL building roof list now (not narrowed to whatever a multi-roof
+   Inspection's checkboxes happened to select) so ANY finding on ANY roof
+   is correctable here, regardless of how it got its current roofId --
+   scoping to currentRoofIds only applies as the DEFAULT pre-selection
+   when nothing more specific (the finding's own roofId) is already known.
+   Still only renders once the resolved building actually has more than
+   one roof; a single-roof building never sees this at all. See "GPS
+   auto-assign photos to roofs" in DEV_NOTES.md. */
 async function renderPinRoofPicker(){
   var host = document.getElementById("pin-roof-picker");
   if (!host) return;
   var info = await lookupProspectiveBuildingRoofInfo();
   if (!info || info.roofs.length <= 1){ host.innerHTML = ""; return; }
-  if (currentRoofIds && currentRoofIds.length > 1){
-    var f = findingById(pinModalFindingId);
-    var selectedRoofs = info.roofs.filter(function(r){ return currentRoofIds.indexOf(r.id) !== -1; });
-    var activeId = (f && f.roofId && currentRoofIds.indexOf(f.roofId) !== -1) ? f.roofId : currentRoofIds[0];
-    host.innerHTML = '<div class="fld" style="max-width:260px">' +
-      '<label>Which of the selected roofs is this finding on?</label>' +
-      '<select onchange="pinSelectFindingRoof(this.value, \'' + pinModalFindingId + '\')">' +
-      selectedRoofs.map(function(r){ return '<option value="' + esc(r.id) + '"' + (r.id === activeId ? ' selected' : '') + '>' + esc(r.label || "Roof") + '</option>'; }).join('') +
-      '</select></div>';
-    return;
-  }
-  if (!currentRoofId || !info.roofs.some(function(r){ return r.id === currentRoofId; })){
-    currentRoofId = info.roofs[0].id;
-  }
-  host.innerHTML = '<div class="fld" style="max-width:260px">' +
-    '<label>Roof</label><select onchange="pinSelectRoof(this.value, \'' + pinModalFindingId + '\')">' +
-    info.roofs.map(function(r){ return '<option value="' + esc(r.id) + '"' + (r.id === currentRoofId ? ' selected' : '') + '>' + esc(r.label || "Roof") + '</option>'; }).join('') +
+  var f = findingById(pinModalFindingId);
+  var activeId = (f && f.roofId && info.roofs.some(function(r){ return r.id === f.roofId; })) ? f.roofId :
+    (currentRoofIds && currentRoofIds.length ? currentRoofIds[0] :
+      ((currentRoofId && info.roofs.some(function(r){ return r.id === currentRoofId; })) ? currentRoofId : info.roofs[0].id));
+  var ambiguous = f && f.roofIdAmbiguous;
+  host.innerHTML = '<div class="fld" style="max-width:280px">' +
+    '<label>Roof' + (ambiguous ?
+      ' <span style="color:#D64545;font-weight:700">⚠️ GPS was near a boundary — please confirm</span>' : '') + '</label>' +
+    '<select onchange="pinSelectFindingRoof(this.value, \'' + pinModalFindingId + '\')"' +
+    (ambiguous ? ' style="border-color:#D64545"' : '') + '>' +
+    info.roofs.map(function(r){ return '<option value="' + esc(r.id) + '"' + (r.id === activeId ? ' selected' : '') + '>' + esc(r.label || "Roof") + '</option>'; }).join('') +
     '</select></div>';
 }
+/* Clears the ambiguous flag the moment a tech confirms/corrects it --
+   whatever they picked (even if it happens to match the auto-assigned
+   guess) is now a real human confirmation, not a low-confidence guess. */
 function pinSelectFindingRoof(roofId, findingId){
   var f = findingById(findingId);
-  if (f) f.roofId = roofId;
-  openPinModal(findingId);
-}
-function pinSelectRoof(roofId, findingId){
+  if (f){ f.roofId = roofId; f.roofIdAmbiguous = false; }
   currentRoofId = roofId;
   openPinModal(findingId);
 }
@@ -2717,9 +2731,9 @@ async function openPinModal(findingId){
   pinInteracted = false;
   pinDeviceGpsUsed = false;
   var pinModalEl = document.getElementById("pin-modal");
-  /* pinSelectRoof() reopens this same modal (to redraw for a different
-     roof's base map) without closing it first — guard so that doesn't
-     double-lock scrolling with no matching unlock. */
+  /* pinSelectFindingRoof() reopens this same modal (to redraw for a
+     different roof's base map) without closing it first — guard so that
+     doesn't double-lock scrolling with no matching unlock. */
   if (pinModalEl.style.display !== "") lockBodyScroll();
   pinModalEl.style.display = "";
   document.getElementById("pin-clear-btn").style.display = f.pin ? "" : "none";
@@ -3495,18 +3509,25 @@ function addPhotosFromCamera(files, findingId){
     if (!gps) toast("Photo added — location wasn't available, place the pin manually if needed.");
     var results = new Array(list.length);
     var pending = list.length;
-    function done(){
+    async function done(){
       pending--;
       if (pending === 0){
-        results.forEach(function(r){
-          if (!r) return;
+        /* Sequential, not Promise.all -- maybeAutoPinFinding()/
+           maybeAutoPinInspectionItem() are now async (GPS roof
+           auto-assign, see rmMaybeAutoAssignRoofForPin()); awaiting each
+           in order keeps this whole batch's photos processed before the
+           renders below run, same net effect the old synchronous forEach
+           had, just correctly waiting on the now-async roof lookup too. */
+        for (var i = 0; i < results.length; i++){
+          var r = results[i];
+          if (!r) continue;
           photos.push(r);
           if (findingId){
             /* Exactly one of these actually does anything -- each checks
                its own array (findings[] vs inspectionChecklist[]) and
                no-ops if findingId doesn't match anything there. */
-            maybeAutoPinFinding(r);
-            maybeAutoPinInspectionItem(r);
+            await maybeAutoPinFinding(r);
+            await maybeAutoPinInspectionItem(r);
           }
           /* Change Order has no findings to hang a pin off of, so a
              photo captured while editing a Change Order gets its own
@@ -3515,7 +3536,7 @@ function addPhotosFromCamera(files, findingId){
              global section (findingId not yet set) doesn't pick up a
              pin it has no use for. */
           else if (val("woType") === "Change Order") maybeAutoPinPhoto(r);
-        });
+        }
         renderPhotos();
         if (findingId){
           if (findingById(findingId)) renderFindings();
@@ -3548,6 +3569,21 @@ function addPhotosFromCamera(files, findingId){
     });
   });
 }
+/* Shared by maybeAutoPinFinding()/maybeAutoPinInspectionItem() below --
+   Mark's design change: don't make him manually pick a roof per photo,
+   derive it from the photo's own GPS via point-in-polygon
+   (rmAssignPointToRoof()) against the resolved building's traced roofs.
+   Single-roof building (or no roofs traced at all yet): nothing to
+   compute, returns null -- the existing "roof_default" convention already
+   handles that case everywhere downstream, no assignment needed. See
+   "GPS auto-assign photos to roofs" in DEV_NOTES.md. */
+async function rmMaybeAutoAssignRoofForPin(lat, lng){
+  try{
+    var info = await lookupProspectiveBuildingRoofInfo();
+    if (!info || info.roofs.length <= 1) return null;
+    return rmAssignPointToRoof(lat, lng, info.roofs);
+  }catch(e){ return null; }
+}
 /* Auto-drops a finding's pin from a photo's captured GPS the moment a
    GPS-tagged photo becomes associated with that finding -- reuses the
    exact same finding.pin shape/field the manual pin modal already writes
@@ -3555,14 +3591,28 @@ function addPhotosFromCamera(files, findingId){
    nothing downstream (roof map rendering, PDF pin refs, warrantyColor)
    needs to know this pin came from a photo instead of a manual tap.
    Never overwrites an existing pin -- a tech's manual placement or an
-   earlier auto-pin always wins. */
-function maybeAutoPinFinding(photo){
+   earlier auto-pin always wins. Also auto-assigns f.roofId from the same
+   GPS on a multi-roof building -- f.roofIdAmbiguous flags a low-confidence
+   guess for review (renderFindings()'s roof badge, renderPinRoofPicker())
+   rather than trusting it silently; pinSelectFindingRoof() clears the flag
+   once a tech confirms/corrects it. */
+async function maybeAutoPinFinding(photo){
   if (!photo || !photo.gps || !photo.finding_id) return;
   var f = findingById(photo.finding_id);
   if (!f || f.pin) return;
   f.pin = { lat: photo.gps.lat, lng: photo.gps.lng, x: null, y: null, source: "device_gps" };
+  var assignment = await rmMaybeAutoAssignRoofForPin(photo.gps.lat, photo.gps.lng);
+  var roofMsg = "";
+  if (assignment && assignment.roofId){
+    f.roofId = assignment.roofId;
+    f.roofIdAmbiguous = !!assignment.ambiguous;
+    roofMsg = " — assigned to " + assignment.label + (assignment.ambiguous ? " (please confirm)" : "");
+  } else if (assignment && assignment.outsideAll){
+    f.roofIdAmbiguous = true;
+    roofMsg = " — couldn't tell which roof, please pick one";
+  }
   renderFindings();
-  toast("📍 Pin auto-placed on the roof map from the photo's location — drag to fine-tune if needed.");
+  toast("📍 Pin auto-placed on the roof map from the photo's location" + roofMsg + ".");
 }
 /* Inspection-checklist equivalent of maybeAutoPinFinding() above -- a
    checklist item's own `pin` field (independent of linkedFindingId/
@@ -3572,14 +3622,23 @@ function maybeAutoPinFinding(photo){
    pin, a later repair photo at the same spot is the "after" -- see
    "Inspection checklist photo pinning" in DEV_NOTES.md/ROADMAP.md. No
    manual drag-to-adjust UI for a checklist item's pin (unlike findings) --
-   scoped to "captures, auto-pins" per spec, not full pin-modal parity. */
-function maybeAutoPinInspectionItem(photo){
+   scoped to "captures, auto-pins" per spec, not full pin-modal parity.
+   Same GPS roof auto-assign as maybeAutoPinFinding() above. */
+async function maybeAutoPinInspectionItem(photo){
   if (!photo || !photo.gps || !photo.finding_id) return;
   var item = inspectionChecklistItemById(photo.finding_id);
   if (!item || item.pin) return;
   item.pin = { lat: photo.gps.lat, lng: photo.gps.lng, x: null, y: null, source: "device_gps" };
+  var assignment = await rmMaybeAutoAssignRoofForPin(photo.gps.lat, photo.gps.lng);
+  if (assignment && assignment.roofId){
+    item.roofId = assignment.roofId;
+    item.roofIdAmbiguous = !!assignment.ambiguous;
+  } else if (assignment && assignment.outsideAll){
+    item.roofIdAmbiguous = true;
+  }
   renderInspectionChecklist();
-  toast("📍 Pin auto-placed on the roof map from the photo's location.");
+  toast("📍 Pin auto-placed on the roof map from the photo's location" +
+    (assignment && assignment.roofId ? " — assigned to " + assignment.label + (assignment.ambiguous ? " (please confirm)" : "") : "") + ".");
 }
 /* Change Order equivalent of maybeAutoPinFinding() above -- a Change
    Order has no findings, so each photo carries its own pin instead of
@@ -4149,11 +4208,17 @@ function collect(){
   /* Multi-roof Inspection only -- null for every other case (a single roof
      selected, or a work order type that doesn't support this at all yet),
      so nothing about the existing single-roofId shape changes unless this
-     is genuinely in play. roofLabels denormalizes id->label from the last
-     roof lookup so renderLeakReportDoc() (synchronous, no Firestore access)
-     can show real roof names in the report instead of raw ids. */
+     is genuinely in play. */
   o.roofIds = (currentRoofIds && currentRoofIds.length > 1) ? currentRoofIds.slice() : null;
-  o.roofLabels = (o.roofIds && lastLookupRoofInfo && lastLookupRoofInfo.roofs) ?
+  /* roofLabels denormalizes id->label from the last roof lookup so
+     renderLeakReportDoc() (synchronous, no Firestore access) can show real
+     roof names instead of raw ids -- populated whenever a roof lookup has
+     happened at all this session (not just for a multi-select Inspection),
+     since GPS auto-assign (rmMaybeAutoAssignRoofForPin()) can now give
+     individual findings different roofIds on ANY work order type, and the
+     report needs real names for those too. See "GPS auto-assign photos to
+     roofs" in DEV_NOTES.md. */
+  o.roofLabels = (lastLookupRoofInfo && lastLookupRoofInfo.roofs) ?
     lastLookupRoofInfo.roofs.reduce(function(m, r){ m[r.id] = r.label || "Roof"; return m; }, {}) : null;
   o.changeOrderSignature = changeOrderSignature || null;
   return o;
@@ -5530,11 +5595,22 @@ async function openBuildingHistory(buildingId){
     var addRoofBtnHtml = '<button class="btn" onclick="promptAddRoof(\'' + buildingId + '\')">+ Add Roof</button>';
     var addFeatureBtnHtml = '<button class="btn" onclick="openAssetModal(\'' + buildingId + '\', null, \'' + historySelectedRoofId + '\')">+ Add Roof Feature</button>';
     var addActivityBtnHtml = '<button class="btn" onclick="openActivityModal(\'' + buildingId + '\')">+ Log Activity</button>';
+    /* Mark's Tri-Delta recovery ask: run the SAME point-in-polygon logic
+       that assigns a roof to a photo live at capture time
+       (rmMaybeAutoAssignRoofForPin()) retroactively over every already-
+       saved pin on this building that has real GPS -- recovers an
+       inspection shot before roofs were traced/before this feature
+       existed. Only offered once the building actually has more than one
+       roof (a single-roof building has nothing to disambiguate). See
+       rmAutoAssignExistingPinsToRoofs() and "GPS auto-assign photos to
+       roofs" in DEV_NOTES.md. */
+    var autoAssignBtnHtml = roofs.length > 1 ?
+      '<button class="btn" onclick="rmAutoAssignExistingPinsToRoofs(\'' + buildingId + '\')">🎯 Auto-Assign Photos to Roofs</button>' : '';
     var emptyMapCardHtml = '<div class="card"><h2 class="cond">Roof Map</h2>' + roofPickerHtml +
       '<p class="hint">No pins placed yet — they’ll show up here as findings get pinned on future reports. ' +
       'Permanent features (drains, HVAC units, hatches, etc.) can be added any time.</p>' +
       '<div id="building-map" style="height:min(50vh,420px);border-radius:6px;overflow:hidden;margin-bottom:10px"></div>' +
-      addFeatureBtnHtml + ' ' + addRoofBtnHtml + '</div>';
+      addFeatureBtnHtml + ' ' + addRoofBtnHtml + ' ' + autoAssignBtnHtml + '</div>';
     var qs = await fdb.collection("building_history_events")
       .where("buildingId", "==", buildingId).orderBy("createdAt", "desc").limit(50).get();
     var events = [];
@@ -5593,7 +5669,7 @@ async function openBuildingHistory(buildingId){
         'Every pinned finding across every report for this building, plus any permanent roof features below. Tap a pin for details.' :
         'No pins placed yet — they’ll show up here as findings get pinned on future reports.') + '</p>' +
       '<div id="building-map" style="height:min(50vh,420px);border-radius:6px;overflow:hidden;margin-bottom:10px"></div>' +
-      addFeatureBtnHtml + ' ' + addRoofBtnHtml + '</div>';
+      addFeatureBtnHtml + ' ' + addRoofBtnHtml + ' ' + autoAssignBtnHtml + '</div>';
     detail.innerHTML = baseMapCardHtml + profileCardHtml + mapCardHtml +
       '<div class="card"><h2 class="cond">Timeline (' + events.length + ')</h2>' +
       '<div class="btnrow" style="margin:0 0 10px">' + addActivityBtnHtml + '</div>' +
@@ -5630,6 +5706,73 @@ function historySelectRoof(buildingId, roofId){
    with an empty, outline-less roof record from this button at all. */
 function promptAddRoof(buildingId){
   rmEnterMultiRoofCapture(buildingId);
+}
+/* Retroactive recovery pass -- Mark's Tri-Delta case exactly: an
+   inspection shot before this feature existed (or before roofs were even
+   traced), so every pin/photo landed with its real GPS but no roofId
+   (or the building's single default one). Runs the SAME point-in-polygon
+   logic live capture uses (rmAssignPointToRoof()) over every already-
+   saved GPS-tagged pin for this building, across both `reports` and
+   `building_history_events` (same payload, same doc id, updated
+   together -- matches every other writer of this pair). Plain client
+   write, same tier as an individual pin correction (pinSelectFindingRoof())
+   just applied in bulk -- not admin-gated, since it's not moving data
+   between buildings, only correcting which roof WITHIN this one building
+   each pin belongs to. Capped at the same 50-event fetch window every
+   other building-wide query in this app already uses (rmFetchAllRoofsPinsGrouped()
+   etc.) -- a real, documented limit, not silently unbounded. See "GPS
+   auto-assign photos to roofs" in DEV_NOTES.md. */
+async function rmAutoAssignExistingPinsToRoofs(buildingId){
+  if (!fdb){ toast("Needs cloud sync (internet connection)."); return; }
+  toast("Checking roofs and existing pins…");
+  try{
+    var bldSnap = await fdb.collection("buildings").doc(buildingId).get();
+    var bld = bldSnap.exists ? bldSnap.data() : {};
+    var roofs = getBuildingRoofs(bld);
+    if (roofs.length <= 1){ toast("This building only has one roof — nothing to reassign."); return; }
+    var hasTracedRoof = roofs.some(function(r){ return (r.roof_outlines || []).length > 0; });
+    if (!hasTracedRoof){ toast("None of this building's roofs have a traced outline yet — trace them in RoofMapper first."); return; }
+
+    var evtQs = await fdb.collection("building_history_events").where("buildingId", "==", buildingId).limit(50).get();
+    var updates = []; /* { id, pins } -- one per event doc that actually changed */
+    var reassignedCount = 0, ambiguousCount = 0, uncheckedCount = 0;
+    evtQs.forEach(function(d){
+      var e = d.data();
+      var pins = e.pins || [];
+      var changed = false;
+      var newPins = pins.map(function(p){
+        if (typeof p.lat !== "number" || typeof p.lng !== "number") { uncheckedCount++; return p; }
+        var result = rmAssignPointToRoof(p.lat, p.lng, roofs);
+        if (!result || !result.roofId) return p;
+        if (result.roofId !== p.roofId) { changed = true; reassignedCount++; }
+        if (result.ambiguous) ambiguousCount++;
+        return Object.assign({}, p, { roofId: result.roofId, roofIdAmbiguous: !!result.ambiguous });
+      });
+      if (changed) updates.push({ id: d.id, pins: newPins });
+    });
+
+    if (!updates.length){
+      toast(reassignedCount === 0 && uncheckedCount === 0 ?
+        "No GPS-tagged pins found for this building — nothing to check." :
+        "Checked every pin — they’re already on the right roof, nothing to change.");
+      return;
+    }
+    if (!confirm(updates.length + " report" + (updates.length === 1 ? "" : "s") + " have pins that will move to a " +
+      "different roof (" + reassignedCount + " pin" + (reassignedCount === 1 ? "" : "s") + " total" +
+      (ambiguousCount ? ", " + ambiguousCount + " flagged for you to double-check — GPS was near a boundary" : "") +
+      "). Apply this now? Building History will refresh with the corrected roofs.")) return;
+
+    toast("Reassigning " + reassignedCount + " pins…");
+    var batch = fdb.batch();
+    updates.forEach(function(u){
+      batch.set(fdb.collection("building_history_events").doc(u.id), { pins: u.pins }, { merge: true });
+      batch.set(fdb.collection("reports").doc(u.id), { pins: u.pins }, { merge: true });
+    });
+    await batch.commit();
+    toast(reassignedCount + " pin" + (reassignedCount === 1 ? "" : "s") + " reassigned" +
+      (ambiguousCount ? " (" + ambiguousCount + " flagged — check the ⚠️ badge on those findings)" : "") + " ✓");
+    openBuildingHistory(buildingId);
+  }catch(e){ toast("Couldn't auto-assign pins: " + e.message); }
 }
 /* A roof's label was previously only ever set once, at promptAddRoof()
    creation time -- no way to fix a typo or rename it later. Same
@@ -5941,6 +6084,23 @@ function renderDoc(){
     toBox.value = (o.woType === WORK_ORDER_TYPES[0] ? EMAIL_DEFAULT_TO_LEAK : EMAIL_DEFAULT_TO).join(", ");
   }
 }
+/* Every DISTINCT roofId actually present among this report's findings
+   (falling back to the work order's own single roofId for a finding with
+   none of its own), in a stable, sensible order: o.roofIds' own selection
+   order first (a multi-select Inspection), then any further roofIds
+   first-seen among the findings themselves (GPS auto-assign can produce a
+   roofId that was never part of a manual multi-select at all, on ANY
+   work order type). Length <= 1 means "nothing to group/state" -- the
+   report renders exactly as it always did for a single-roof case. See
+   "GPS auto-assign photos to roofs" in DEV_NOTES.md. */
+function reportDistinctRoofIds(o){
+  var ids = (o.roofIds || []).slice();
+  filledFindings().forEach(function(f){
+    var rid = f.roofId || o.roofId;
+    if (rid && ids.indexOf(rid) === -1) ids.push(rid);
+  });
+  return ids;
+}
 function renderLeakReportDoc(o){
   var isRepair = o.woType === "Repair";
   var isInspection = o.woType === "Inspection";
@@ -5956,12 +6116,18 @@ function renderLeakReportDoc(o){
     ["Job No.",o.jobNo],["Bill To",o.billTo],["Billing Contact",o.billContact],
     ["Contact Phone",o.billPhone],["Site Contact",o.siteContact],["Technician",o.technician]]
     .concat(isInspection ? [] : [["Reported Leak Area",o.reportedArea]])
-    /* Multi-roof Inspection only -- states plainly which roofs this report
-       actually covers, by label (not raw ids). Mark: "must clearly STATE
-       which roof(s) were inspected." Absent entirely for every other
-       report, single-roof or not. */
-    .concat(isInspection && o.roofIds && o.roofIds.length > 1 ?
-      [["Roof(s) Inspected", o.roofIds.map(function(id){ return (o.roofLabels && o.roofLabels[id]) || id; }).join(", ")]] : [])
+    /* States plainly which roofs this report actually covers, by label
+       (not raw ids), whenever more than one is genuinely in play --
+       generalized beyond just a multi-select Inspection (o.roofIds) to
+       ANY work order type, since GPS auto-assign (rmMaybeAutoAssignRoofForPin())
+       can now give individual findings different roofIds regardless of
+       type. Mark: "must clearly STATE which roof(s) were inspected."
+       Absent entirely for a single-roof report, same as before. See "GPS
+       auto-assign photos to roofs" in DEV_NOTES.md. */
+    .concat((function(){
+      var ids = reportDistinctRoofIds(o);
+      return ids.length > 1 ? [["Roof(s) Covered", ids.map(function(id){ return (o.roofLabels && o.roofLabels[id]) || id; }).join(", ")]] : [];
+    })())
     .concat([["Roof System",o.roofSystem]]));
 
   if (isRepair){
@@ -5999,22 +6165,24 @@ function renderLeakReportDoc(o){
               esc(f.location) + "</td><td>" + esc(f.warranty) + "</td></tr>";
           }).join("") + "</tbody></table>";
       };
-      if (isInspection && o.roofIds && o.roofIds.length > 1){
-        /* Multi-roof Inspection: "show findings grouped/attributed by roof
-           when more than one is covered" -- one sub-table per roof, in the
-           same order the roofs were selected, each finding renumbered
-           within its own group (not one continuous count across roofs).
-           A finding with no roofId of its own (placed before this feature
-           existed, or on a single-roof work order re-typed to Inspection)
-           falls back to the work order's primary roof, same convention as
-           buildPinsForHistoryEvent(). */
+      var reportRoofIds = reportDistinctRoofIds(o);
+      if (reportRoofIds.length > 1){
+        /* "Show findings grouped/attributed by roof when more than one is
+           covered" -- generalized beyond just a multi-select Inspection to
+           ANY work order type whose findings actually ended up on
+           different roofs (GPS auto-assign can do this regardless of
+           type -- see reportDistinctRoofIds()). One sub-table per roof, in
+           the same order reportDistinctRoofIds() returns them (roofIds
+           selection order when set, else first-seen-among-findings order),
+           each finding renumbered within its own group (not one continuous
+           count across roofs). */
         var byRoof = {};
         ff.forEach(function(f){
-          var rid = f.roofId || o.roofId || o.roofIds[0];
+          var rid = f.roofId || o.roofId || reportRoofIds[0];
           (byRoof[rid] = byRoof[rid] || []).push(f);
         });
         h += "<h3 class='cond'>" + findingsTitle + "</h3>";
-        o.roofIds.forEach(function(rid){
+        reportRoofIds.forEach(function(rid){
           var group = byRoof[rid];
           if (!group || !group.length) return;
           h += "<p style='font-weight:700;margin:10px 0 4px'>" + esc((o.roofLabels && o.roofLabels[rid]) || rid) + "</p>" +
@@ -6731,15 +6899,22 @@ async function logReportAndHistoryEvent(o, kind, emailInfo, ccUploadResult){
       workOrderId: o.id, workOrderNo: o.jobNo || "",
       date: o.serviceDate || "", technician: o.technician || "",
       roofId: o.roofId || "roof_default",
-      /* Multi-roof Inspection only -- null for every other case, so this
-         doesn't change the shape of any existing event doc. roofId above
-         stays the PRIMARY roof (roofIds[0]) for backward compat with every
-         reader that only knows the singular field; roofLabels lets
-         Building History's timeline show real names instead of raw ids
-         without a lookup (see timelineEventHtml()). See "Inspection
-         multi-roof selector" in DEV_NOTES.md. */
-      roofIds: o.roofIds || null,
-      roofLabels: (o.roofIds && o.roofLabels) ? o.roofIds.map(function(id){ return o.roofLabels[id] || id; }) : null,
+      /* Every distinct roof this report's findings actually touch -- null
+         for a single-roof case, so this doesn't change the shape of any
+         existing event doc. Generalized beyond a multi-select Inspection
+         to ANY work order type (reportDistinctRoofIds(), same helper
+         renderLeakReportDoc() uses) since GPS auto-assign can give
+         findings different roofIds regardless of type. roofId above stays
+         the PRIMARY roof for backward compat with every reader that only
+         knows the singular field; roofLabels lets Building History's
+         timeline show real names instead of raw ids without a lookup (see
+         timelineEventHtml()). See "GPS auto-assign photos to roofs" in
+         DEV_NOTES.md. */
+      roofIds: (function(){ var ids = reportDistinctRoofIds(o); return ids.length > 1 ? ids : null; })(),
+      roofLabels: (function(){
+        var ids = reportDistinctRoofIds(o);
+        return (ids.length > 1 && o.roofLabels) ? ids.map(function(id){ return o.roofLabels[id] || id; }) : null;
+      })(),
       workOrderType: o.woType || WORK_ORDER_TYPES[0],
       roofType: o.roofSystem || "", reportType: kind,
       conditionsSummary: summarizeRows(o.findings || [], "condition", "location"),
@@ -7480,6 +7655,99 @@ function rmGeomRingCentroid(ring){
   var lat = 0, lng = 0, n = ring.length;
   ring.forEach(function(p){ lat += p.lat; lng += p.lng; });
   return { lat: lat / n, lng: lng / n };
+}
+/* ---- GPS auto-assign: point-in-polygon against traced roof outlines ----
+   Mark's design change: don't make him manually pick a roof per photo --
+   a photo already carries GPS (captureDeviceGps()), and roofs are traced
+   polygons with real coordinates, so the assignment is derivable. Used
+   both live (maybeAutoPinFinding()/maybeAutoPinInspectionItem() below, at
+   photo-capture time) and retroactively (rmAutoAssignExistingPinsToRoofs(),
+   over already-saved historical pins). See "GPS auto-assign photos to
+   roofs" in DEV_NOTES.md.
+
+   Standard ray-casting test, lat/lng treated as planar -- valid at roof
+   scale (a few hundred feet), same flat-earth approximation every other
+   rmGeom* helper here already makes. */
+function rmPointInRing(lat, lng, ring){
+  var inside = false;
+  for (var i = 0, j = ring.length - 1; i < ring.length; j = i++){
+    var xi = ring[i].lng, yi = ring[i].lat, xj = ring[j].lng, yj = ring[j].lat;
+    var intersect = ((yi > lat) !== (yj > lat)) &&
+      (lng < (xj - xi) * (lat - yi) / (yj - yi + 1e-12) + xi);
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+/* Shortest distance in METERS from a point to a ring's own boundary
+   (nearest edge, clamped to each segment's actual extent) -- used to
+   decide whether an assignment is confidently inside one roof or close
+   enough to another that phone GPS (~3-5m accuracy) could plausibly have
+   it wrong. Projects into a local meters-from-point tangent plane
+   (rmGeomToLocalXY, same approximation the rest of this app already
+   uses at this scale) rather than doing trig in lat/lng degrees directly. */
+function rmDistanceToRingMeters(lat, lng, ring){
+  var origin = { lat: lat, lng: lng };
+  var minDistSq = Infinity;
+  for (var i = 0; i < ring.length - 1; i++){
+    var a = rmGeomToLocalXY(ring[i], origin), b = rmGeomToLocalXY(ring[i + 1], origin);
+    var abx = b.x - a.x, aby = b.y - a.y;
+    var lenSq = abx * abx + aby * aby;
+    var t = lenSq === 0 ? 0 : Math.max(0, Math.min(1, (-a.x * abx + -a.y * aby) / lenSq));
+    var px = a.x + t * abx, py = a.y + t * aby;
+    var distSq = px * px + py * py;
+    if (distSq < minDistSq) minDistSq = distSq;
+  }
+  return Math.sqrt(minDistSq);
+}
+/* Phone GPS accuracy floor -- his RTK drone is cm-accurate, his phone is
+   not (~3-5m typical). A point within this distance of a DIFFERENT roof's
+   boundary than the one it's assigned to gets flagged for review rather
+   than silently trusted, even when it's technically inside exactly one
+   polygon. */
+var RM_GPS_AMBIGUITY_METERS = 6;
+/* Best-effort roof assignment for one lat/lng against a building's roofs
+   (each with roof_outlines[] -- uses the latest one, same "newest is
+   current" convention as everywhere else). Returns null if no roof has a
+   usable outline at all. Otherwise { roofId, label, ambiguous, outsideAll }:
+   ambiguous means "assigned, but confirm this" (near a boundary, or fell
+   outside every polygon but one roof was close); outsideAll means the
+   point wasn't near anything and the returned roofId is just the
+   nearest-by-distance fallback, weakest confidence. */
+function rmAssignPointToRoof(lat, lng, roofs){
+  var candidates = [];
+  (roofs || []).forEach(function(roof){
+    var outlines = roof.roof_outlines || [];
+    var outline = outlines[outlines.length - 1];
+    if (!outline || !outline.ring || outline.ring.length < 3) return;
+    candidates.push({
+      roofId: roof.id, label: roof.label || "Roof",
+      inside: rmPointInRing(lat, lng, outline.ring),
+      dist: rmDistanceToRingMeters(lat, lng, outline.ring)
+    });
+  });
+  if (!candidates.length) return null;
+  var insideOnes = candidates.filter(function(c){ return c.inside; });
+  if (insideOnes.length >= 1){
+    /* Exactly one match is the normal, confident case. More than one
+       (overlapping polygons -- shouldn't happen once vertex/edge snapping
+       ships, but handled gracefully in the meantime) picks the closest-
+       to-center and flags it, rather than picking arbitrarily. */
+    insideOnes.sort(function(a, b){ return a.dist - b.dist; });
+    var best = insideOnes[0];
+    var nearAnotherBoundary = candidates.some(function(c){
+      return c.roofId !== best.roofId && c.dist < RM_GPS_AMBIGUITY_METERS;
+    });
+    return { roofId: best.roofId, label: best.label, ambiguous: insideOnes.length > 1 || nearAnotherBoundary, outsideAll: false };
+  }
+  /* Outside every polygon -- fall back to nearest by distance, but only
+     trust it (even as a flagged guess) within the GPS ambiguity floor;
+     beyond that, don't guess at all. */
+  candidates.sort(function(a, b){ return a.dist - b.dist; });
+  var nearest = candidates[0];
+  if (nearest.dist < RM_GPS_AMBIGUITY_METERS){
+    return { roofId: nearest.roofId, label: nearest.label, ambiguous: true, outsideAll: false };
+  }
+  return { roofId: null, label: null, ambiguous: true, outsideAll: true };
 }
 /* Persistent roof-name label -- distinct styling from the per-edge
    dimension labels (blue instead of dark slate, larger/bolder) so the two
