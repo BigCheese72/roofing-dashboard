@@ -320,14 +320,26 @@ helps a tech capture a clean roof outline for a building on the spot:
 4. Tap **"✏️ Generate Roof Outline"** — the app cleans up that footprint into a roof
    outline and shows its area and perimeter, plus a length label (in feet) on every
    individual edge of the outline, right on the map.
-5. Save it — **"💾 Save Outline to Building"** links it to an existing building (search
+5. **Clean up the shape and dimensions, if you want.** Roofs are usually rectilinear,
+   so tap **"🟦 Square Up"** to snap near-90° corners and near-straight edges clean —
+   a genuine diagonal cut or a curved section is left exactly as traced, never forced
+   square. Not happy with the result? **"↩️ Undo Square Up"** puts it back. Then, if
+   you have a real tape measurement, tap any edge's length label and enter the actual
+   measured length — the whole outline rescales proportionally off that one edge, so
+   every other edge, the area, and the perimeter all become accurate from a single
+   field measurement. Do these in that order (Square Up, then calibrate a measurement)
+   for the cleanest, most accurate result — calibrating last means the edge you
+   measure ends up exactly right no matter what Square Up did to it.
+6. Save it — **"💾 Save Outline to Building"** links it to an existing building (search
    by name) or creates a new one on the spot, or **"📱 Save on This Device Only"** if
    there's no signal or the building isn't in RoofOps yet (link it later from the
-   "Saved On This Device" list). Not happy with it? **"🗑️ Delete Outline"** clears it
-   and lets you start over — if it wasn't saved yet, it's just gone; if it was already
-   saved to a building, this only resets what you're looking at here, it doesn't
-   remove the saved copy from that building's record.
-6. **Mark it up right there** — once saved, the screen streamlines: the earlier
+   "Saved On This Device" list). If the building already has other roofs, pick which
+   one this outline is for, or tap **"+ Add a new roof…"** to name a brand-new one
+   right there — see "Buildings with more than one roof" below. Not happy with it?
+   **"🗑️ Delete Outline"** clears it and lets you start over — if it wasn't saved yet,
+   it's just gone; if it was already saved to a building, this only resets what you're
+   looking at here, it doesn't remove the saved copy from that building's record.
+7. **Mark it up right there** — once saved, the screen streamlines: the earlier
    search/trace/satellite-toggle controls disappear (nothing left to do with them),
    and a "Roof Features" card pops up right below the map with a **"🔧 Add Feature"**
    button. Tapping it drops a draggable marker directly on the RoofMapper map itself —
@@ -335,7 +347,7 @@ helps a tech capture a clean roof outline for a building on the spot:
    drag the marker or tap the map to position it, then Save. Existing features for
    that roof are already drawn on the map — tap one to edit or delete it the same
    inline way.
-7. Export **SVG**, **PNG**, or **PDF** any time — all generated on the device, no
+8. Export **SVG**, **PNG**, or **PDF** any time — all generated on the device, no
    internet required once the outline exists. Once linked to a building, exports
    include everything marked up on the roof (features + any leak/repair pins from past
    reports), not just the bare outline — a hint line under the export buttons always

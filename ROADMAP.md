@@ -629,6 +629,18 @@ Goal: turn each building into a long-term roof record.
      folded into a best-fit scale across both known edges rather than
      trusting the single edge alone — a refinement on top of the core
      single-edge-edit interaction, not required for it to work.
+  4. ✅ **Shipped (dev only, 2026-07-10)**: Square Up (orthogonal snapping —
+     Mark: roofs are mostly rectilinear, a trace should "look square").
+     "🟦 Square Up" (manual button, with Undo — never automatic on every
+     trace) snaps near-90° corners and near-axis edges clean, within
+     ~10–15° of the outline's own dominant rotation. A real diagonal cut
+     (e.g. a 45° angle) or an arc/curve run stays exactly as traced —
+     never snapped. Preserves each edge's original length exactly (corners
+     move, real measured lengths don't). Recommended flow: trace → Square
+     Up → Calibrate (#3 above), run last, so whichever edge gets
+     calibrated reflects its final post-square length. Works together with
+     calibration cleanly — verified corners stay exactly 90° after
+     calibrating a squared outline. See "Square Up" in `DEV_NOTES.md`.
 - **Sections**: divide one roof outline into multiple labeled sections (e.g.
   by roof system or area), each with its own computed area, tying into the
   existing multi-roof/roof-section data model rather than a parallel one.

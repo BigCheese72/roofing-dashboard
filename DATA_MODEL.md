@@ -304,6 +304,18 @@ leak was" and "where the roof drain has always been."
                   // ring/areaSqFt/perimeterFt/center by one uniform factor about
                   // the ring's centroid — see "Self-scaling dimension
                   // calibration" in DEV_NOTES.md.
+  squared         // optional — set once "🟦 Square Up" has been applied (shipped
+                  // 2026-07-10). Shape: { at, tolerance, snappedEdges }. Snaps
+                  // near-90°/axis-aligned edges clean (within `tolerance` degrees
+                  // of the polygon's own dominant rotation), preserving each
+                  // edge's original length exactly (corners move, measured
+                  // lengths don't) — a real diagonal cut or an arc/curve run
+                  // outside tolerance is left as traced. Absent/undefined for an
+                  // outline never squared. Recommended order is trace -> Square
+                  // Up -> Calibrate (calibrating last means whichever edge is
+                  // chosen reflects its final post-square length regardless of
+                  // what squaring did upstream) — see "Square Up" in
+                  // DEV_NOTES.md.
 }
 ```
 

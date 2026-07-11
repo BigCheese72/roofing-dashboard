@@ -607,6 +607,11 @@
       <h2 class="cond">Roof Outline</h2>
       <div id="rm-outline-warning"></div>
       <div class="rm-outline-stats" id="rm-outline-stats"></div>
+      <div class="btnrow" style="margin:0 0 6px">
+        <button class="btn" id="rm-square-up-btn" onclick="rmSquareUpOutline()">🟦 Square Up</button>
+        <button class="btn" id="rm-undo-square-btn" style="display:none" onclick="rmUndoSquareUp()">↩️ Undo Square Up</button>
+      </div>
+      <p class="hint" id="rm-square-status" style="margin:0 0 10px"></p>
       <div class="rm-actions">
         <button class="btn primary rm-bigbtn" onclick="openRmSaveModal()">💾 Save Outline to Building</button>
         <button class="btn rm-bigbtn" onclick="rmSaveLocally()">📱 Save on This Device Only</button>
@@ -6507,6 +6512,134 @@ function rmGeomPolygonPerimeterMeters(ring){
   for (var i = 0; i < ring.length - 1; i++) total += rmGeomHaversineMeters(ring[i], ring[i + 1]);
   return total;
 }
+/* ---- Square Up (orthogonal snapping) ----
+   Mark: roofs are mostly rectilinear, so a traced outline should "look
+   square" -- snap near-90° corners and near-axis edges clean, UNLESS a
+   segment is an obvious intentional angle (e.g. a 45° cut) or an arc/curve.
+   Manual button, not automatic -- see rmSquareUpOutline() below. Pure
+   geometry function here (no rmState/map access) so it's independently
+   testable. See "Square Up" in DEV_NOTES.md. */
+var RM_SQUARE_TOLERANCE_DEG = 12; /* requirement: ~10-15° */
+var RM_SQUARE_CURVE_SINGLE_TURN_MAX = 35; /* a per-vertex turn under this reads as "not a sharp corner" */
+var RM_SQUARE_CURVE_CUMULATIVE_MIN = 40; /* but a RUN of small turns summing past this reads as an arc, not GPS/trace noise */
+function rmGeomComputeSquaredRing(ring){
+  if (!ring || ring.length < 4) return null; /* need at least 3 real edges */
+  var origin = rmGeomRingCentroid(ring);
+  var n = ring.length - 1; /* ring[n] === ring[0] (closed) */
+  var pts = ring.map(function(p){ return rmGeomToLocalXY(p, origin); });
+
+  var edges = [];
+  for (var i = 0; i < n; i++){
+    var a = pts[i], b = pts[i + 1];
+    var dx = b.x - a.x, dy = b.y - a.y;
+    edges.push({ dx: dx, dy: dy, len: Math.sqrt(dx * dx + dy * dy), angle: Math.atan2(dy, dx) * 180 / Math.PI });
+  }
+
+  /* Dominant axis: length-weighted circular mean of every edge's angle,
+     reduced mod 90° (a rectilinear shape's edges alternate between two
+     perpendicular directions, which collapse to ONE value under mod-90 --
+     e.g. 0° and 90° both reduce to 0°). Scaling angle*4 before the
+     standard sin/cos circular mean turns a 90°-period wraparound into a
+     360°-period one so opposite-but-equivalent angles (like 89° and 1°)
+     don't cancel each other out the way a naive arithmetic mean would. */
+  var sumSin = 0, sumCos = 0;
+  edges.forEach(function(e){
+    var scaled = (e.angle * 4) * Math.PI / 180;
+    sumSin += e.len * Math.sin(scaled);
+    sumCos += e.len * Math.cos(scaled);
+  });
+  var dominantAxis = (sumCos === 0 && sumSin === 0) ? 0 : (Math.atan2(sumSin, sumCos) * 180 / Math.PI) / 4;
+
+  /* Exterior turn angle at each vertex, between the incoming and outgoing
+     edge -- used for curve/arc detection below. */
+  var turns = [];
+  for (var i = 0; i < n; i++){
+    var prev = edges[(i - 1 + n) % n], cur = edges[i];
+    var d = cur.angle - prev.angle;
+    while (d > 180) d -= 360;
+    while (d < -180) d += 360;
+    turns.push(d);
+  }
+
+  /* Curve/arc detection: a single sharp corner is ONE big turn at one
+     vertex with straight edges on either side. An arc/curve, as traced,
+     instead shows up as a RUN of several consecutive small turns that
+     cumulatively sweep a real angle. Flag every edge inside such a run as
+     "never snap," regardless of its own mod-90 alignment. Simplification
+     (documented, not a bug): a run that happens to straddle the ring's
+     start/end index isn't merged across that boundary -- an edge case of
+     an edge case; the per-edge tolerance + short-edge fallback below still
+     catch most of what this misses. */
+  var inCurveRun = new Array(n).fill(false);
+  var runStart = null, runSum = 0;
+  for (var i = 0; i < n; i++){
+    var isSmallTurn = Math.abs(turns[i]) > 2 && Math.abs(turns[i]) < RM_SQUARE_CURVE_SINGLE_TURN_MAX;
+    if (isSmallTurn){
+      if (runStart === null) runStart = i;
+      runSum += Math.abs(turns[i]);
+    } else {
+      if (runStart !== null && runSum >= RM_SQUARE_CURVE_CUMULATIVE_MIN){
+        for (var k = runStart; k < i; k++) inCurveRun[k] = true;
+      }
+      runStart = null; runSum = 0;
+    }
+  }
+  if (runStart !== null && runSum >= RM_SQUARE_CURVE_CUMULATIVE_MIN){
+    for (var k2 = runStart; k2 < n; k2++) inCurveRun[k2] = true;
+  }
+
+  function nearestAxis(angle){
+    var rel = angle - dominantAxis;
+    while (rel > 180) rel -= 360;
+    while (rel < -180) rel += 360;
+    var nearest90 = Math.round(rel / 90) * 90;
+    return { delta: rel - nearest90, target: dominantAxis + nearest90 };
+  }
+  var avgLen = edges.reduce(function(s, e){ return s + e.len; }, 0) / n;
+  var snapDecision = edges.map(function(e, i){
+    if (inCurveRun[i]) return false; /* arc/curve -- preserved, never snapped */
+    var na = nearestAxis(e.angle);
+    if (Math.abs(na.delta) > RM_SQUARE_TOLERANCE_DEG) return false; /* real diagonal, e.g. a 45° cut -- kept as drawn */
+    /* Simple fallback safety net: a very short edge flanked by other short
+       edges reads more like curve/trace noise than an intentional straight
+       segment, even if it happens to land within tolerance -- skip it. */
+    if (e.len < avgLen * 0.3){
+      var prevLen = edges[(i - 1 + n) % n].len, nextLen = edges[(i + 1) % n].len;
+      if (prevLen < avgLen * 0.3 && nextLen < avgLen * 0.3) return false;
+    }
+    return true;
+  });
+  var snappedCount = snapDecision.filter(Boolean).length;
+  if (!snappedCount) return null; /* nothing in tolerance -- e.g. a genuinely round/irregular trace */
+
+  /* Sequential walk-and-snap: for each edge, in ring order, either rotate
+     it to the nearest axis direction (keeping its ORIGINAL LENGTH exactly
+     -- corners move, real measured lengths don't) or carry its original
+     vector through unchanged. The final closing edge (back to the start
+     point) is forced to close exactly rather than independently
+     recomputed -- it absorbs whatever small drift accumulated around the
+     loop, a deliberate, documented simplification rather than solving a
+     full line-intersection system for every corner. */
+  var newPts = new Array(n + 1);
+  newPts[0] = pts[0];
+  for (var i = 0; i < n - 1; i++){
+    var e = edges[i];
+    if (snapDecision[i]){
+      var na2 = nearestAxis(e.angle);
+      var rad = na2.target * Math.PI / 180;
+      newPts[i + 1] = { x: newPts[i].x + Math.cos(rad) * e.len, y: newPts[i].y + Math.sin(rad) * e.len };
+    } else {
+      newPts[i + 1] = { x: newPts[i].x + e.dx, y: newPts[i].y + e.dy };
+    }
+  }
+  newPts[n] = newPts[0];
+
+  return {
+    ring: newPts.map(function(p){ return rmGeomFromLocalXY(p, origin); }),
+    snappedCount: snappedCount,
+    curveEdgeCount: inCurveRun.filter(Boolean).length
+  };
+}
 function rmGeomCleanRing(ring){
   /* Overpass geometry sometimes repeats/near-duplicates nodes; drop points
      under ~15cm apart and make sure the ring is explicitly closed. */
@@ -6897,7 +7030,11 @@ var rmState = {
   /* Per-edge dimension labels drawn on the current outline (rmDrawEdgeDimensions()). */
   dimensionLayerGroup: null,
   /* This roof's persistent name label, once saved (roofLabelMarker()). */
-  roofLabelLayer: null
+  roofLabelLayer: null,
+  /* Pre-Square-Up ring, kept only for Undo (rmSquareUpOutline()/
+     rmUndoSquareUp()) -- null whenever the current outline hasn't been
+     squared, or after an undo. */
+  preSquareRing: null
 };
 var RM_LOCAL_KEY = "roofmapper-local-outlines-v1";
 /* A commercial building — especially a hospital/medical campus — can easily
@@ -7146,6 +7283,11 @@ function rmClearGeneratedOutline(){
   rmState.outline = null;
   if (rmState.map && rmState.dimensionLayerGroup) rmState.map.removeLayer(rmState.dimensionLayerGroup);
   rmState.dimensionLayerGroup = null;
+  rmState.preSquareRing = null;
+  var undoBtn = document.getElementById("rm-undo-square-btn");
+  if (undoBtn) undoBtn.style.display = "none";
+  var squareStatus = document.getElementById("rm-square-status");
+  if (squareStatus) squareStatus.textContent = "";
   rmClearLinkedFeatures();
   document.getElementById("rm-outline-panel").style.display = "none";
   rmUpdateExportHint();
@@ -7343,6 +7485,11 @@ function rmDrawEdgeDimensions(outline){
 function rmDrawFinalOutline(outline){
   rmState.outline = outline;
   rmClearLinkedFeatures(); /* a freshly captured outline is never linked yet */
+  rmState.preSquareRing = null; /* a fresh outline was never squared -- no stale Undo button */
+  var undoBtn = document.getElementById("rm-undo-square-btn");
+  if (undoBtn) undoBtn.style.display = "none";
+  var squareStatus = document.getElementById("rm-square-status");
+  if (squareStatus) squareStatus.textContent = "";
   var map = rmEnsureMap();
   if (rmState.outlineLayer) map.removeLayer(rmState.outlineLayer);
   rmState.outlineLayer = L.polygon(outline.ring.map(function(p){ return [p.lat, p.lng]; }), {
@@ -7441,6 +7588,87 @@ async function rmPersistCalibration(rescaledAssets){
     await saveBuildingRoofs(rmState.linkedBuildingId, roofs);
     toast("Recalibrated and saved ✓");
   }catch(e){ toast("Recalibrated on screen, but couldn't save: " + e.message); }
+}
+/* ---- Square Up (Mark's ask) -- manual button, with undo. Recommended
+   flow: trace -> Square Up (fixes shape/angles) -> Calibrate (fixes true
+   scale off one now-clean edge, run LAST so whatever edge gets calibrated
+   reflects its final post-square length regardless of what squaring did
+   upstream). Not automatic on every trace -- an intentionally irregular
+   roof should never get altered without Mark asking for it. See "Square
+   Up" in DEV_NOTES.md. */
+function rmSquareUpOutline(){
+  var outline = rmState.outline;
+  if (!outline) return;
+  var result = rmGeomComputeSquaredRing(outline.ring);
+  if (!result){
+    toast("Nothing to square up — no edges are close enough to 90°/axis-aligned.");
+    return;
+  }
+  rmState.preSquareRing = outline.ring; /* for Undo -- one level, matches Calibrate's own no-history-stack simplicity */
+  outline.ring = result.ring;
+  outline.areaSqFt = rmGeomPolygonAreaSqMeters(result.ring) * 10.7639;
+  outline.perimeterFt = rmGeomPolygonPerimeterMeters(result.ring) * 3.28084;
+  outline.center = rmGeomRingCentroid(result.ring);
+  outline.squared = { at: Date.now(), tolerance: RM_SQUARE_TOLERANCE_DEG, snappedEdges: result.snappedCount };
+  if (rmState.outlineLayer) rmState.outlineLayer.setLatLngs(result.ring.map(function(p){ return [p.lat, p.lng]; }));
+  rmDrawEdgeDimensions(outline);
+  rmRenderOutlineStats(outline);
+  rmUpdateExportHint();
+  document.getElementById("rm-undo-square-btn").style.display = "";
+  var msg = "Squared " + result.snappedCount + " edge" + (result.snappedCount === 1 ? "" : "s") +
+    (result.curveEdgeCount ? " — " + result.curveEdgeCount + " curved/arc edge" + (result.curveEdgeCount === 1 ? "" : "s") + " left as traced" : "") + ".";
+  document.getElementById("rm-square-status").textContent = msg;
+  toast("Square Up applied ✓");
+  rmPersistSquareUp();
+}
+function rmUndoSquareUp(){
+  var outline = rmState.outline;
+  if (!outline || !rmState.preSquareRing) return;
+  outline.ring = rmState.preSquareRing;
+  outline.areaSqFt = rmGeomPolygonAreaSqMeters(outline.ring) * 10.7639;
+  outline.perimeterFt = rmGeomPolygonPerimeterMeters(outline.ring) * 3.28084;
+  outline.center = rmGeomRingCentroid(outline.ring);
+  delete outline.squared;
+  rmState.preSquareRing = null;
+  if (rmState.outlineLayer) rmState.outlineLayer.setLatLngs(outline.ring.map(function(p){ return [p.lat, p.lng]; }));
+  rmDrawEdgeDimensions(outline);
+  rmRenderOutlineStats(outline);
+  rmUpdateExportHint();
+  document.getElementById("rm-undo-square-btn").style.display = "none";
+  document.getElementById("rm-square-status").textContent = "";
+  toast("Square Up undone ✓");
+  rmPersistSquareUp();
+}
+/* Same "only writes if already saved" pattern as rmPersistCalibration() --
+   squaring an unsaved outline just updates rmState.outline in memory, the
+   next Save Outline tap picks it up like any other edit. Deliberately does
+   NOT touch roof_assets -- unlike calibration's uniform scale-about-
+   centroid (a well-defined transform to also apply to placed features),
+   squaring moves vertices non-uniformly, so there's no unambiguous way to
+   carry that onto point features without real risk of misplacing them. */
+async function rmPersistSquareUp(){
+  var outline = rmState.outline;
+  if (!rmState.linkedBuildingId || !rmState.linkedRoofId || !outline.id){
+    toast("Will save with the outline.");
+    return;
+  }
+  if (!fdb){ toast("Will save with the outline."); return; }
+  try{
+    var snap = await fdb.collection("buildings").doc(rmState.linkedBuildingId).get();
+    var bld = snap.exists ? snap.data() : {};
+    var roofs = getBuildingRoofs(bld);
+    var roof = roofs.find(function(r){ return r.id === rmState.linkedRoofId; });
+    if (!roof){ toast("Couldn't find the linked roof to save."); return; }
+    roof.roof_outlines = (roof.roof_outlines || []).map(function(o){
+      return o.id === outline.id ? Object.assign({}, o, {
+        ring: outline.ring, areaSqFt: outline.areaSqFt, perimeterFt: outline.perimeterFt,
+        center: outline.center, squared: outline.squared || null
+      }) : o;
+    });
+    var roofIdx = roofs.findIndex(function(r){ return r.id === roof.id; });
+    roofs[roofIdx] = roof;
+    await saveBuildingRoofs(rmState.linkedBuildingId, roofs);
+  }catch(e){ toast("Updated on screen, but couldn't save: " + e.message); }
 }
 function rmGenerateOutline(){
   var fp = rmState.footprints.find(function(f){ return f.id === rmState.selectedId; });

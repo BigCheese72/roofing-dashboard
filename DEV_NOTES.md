@@ -4520,6 +4520,108 @@ outline yet, and tags each with the right `_roofLabel`; confirmed
 untouched) and that Cancel/empty-input both leave the label unchanged.
 All test state cleared, page reloaded, console clean.
 
+## Square Up (orthogonal snapping, shipped 2026-07-10, dev only)
+
+Mark, building on the self-scaling calibration: roofs are mostly
+rectilinear, so a traced outline should "look square" — snap near-90°
+corners and near-axis edges clean, UNLESS a segment is an obvious
+intentional angle (e.g. a 45° cut) or an arc/curve, which stay exactly as
+traced. Manual button ("🟦 Square Up"), not automatic on every trace —
+an intentionally irregular roof should never get altered without Mark
+asking for it — with a one-level Undo.
+
+**Core algorithm — `rmGeomComputeSquaredRing(ring)`** (pure function, no
+`rmState`/map access, independently testable), next to
+`rmGeomPolygonPerimeterMeters()`:
+1. **Dominant axis detection**: a rectilinear polygon's edges alternate
+   between two perpendicular directions, which collapse to ONE value under
+   mod-90° reduction (0° and 90° both reduce to 0°). Computes a
+   length-weighted circular mean of every edge's angle mod 90° — scaling
+   each angle ×4 before the standard sin/cos circular-mean turns the
+   90°-period wraparound into a full 360°-period one, so edges near the
+   wrap boundary (e.g. 89° and 1°, actually close together under mod-90)
+   don't cancel out the way a naive arithmetic mean would.
+2. **Curve/arc detection**: a single sharp corner is ONE big turn at one
+   vertex with straight edges either side. An arc, as discretely traced,
+   instead shows up as a RUN of several consecutive SMALL per-vertex turns
+   (each under `RM_SQUARE_CURVE_SINGLE_TURN_MAX`, 35°) that cumulatively
+   sweep a real angle (past `RM_SQUARE_CURVE_CUMULATIVE_MIN`, 40°). Every
+   edge inside such a run is flagged "never snap," regardless of its own
+   mod-90 alignment. Simplification, documented not hidden: a run
+   straddling the ring's start/end index isn't merged across that
+   boundary — an edge case of an edge case.
+3. **Per-edge snap decision**: within `RM_SQUARE_TOLERANCE_DEG` (12°, the
+   requirement's "~10-15°") of the dominant axis's nearest 0/90/180/270 →
+   snap. Outside tolerance (a real diagonal cut) → left alone. A simple
+   fallback safety net on top: a very short edge flanked by other short
+   edges is skipped even if in-tolerance, since short choppy segments read
+   more like curve/trace noise than an intentional straight edge.
+4. **Sequential walk-and-snap**, in local meters (`rmGeomToLocalXY`/
+   `rmGeomFromLocalXY`, the same flat-earth-at-building-scale helpers
+   calibration uses): walks the ring in order; a snappable edge gets its
+   DIRECTION rotated to the nearest exact axis angle while its ORIGINAL
+   LENGTH is preserved exactly (corners move, measured lengths don't — the
+   explicit requirement); a non-snappable edge is carried through as its
+   original vector, unchanged. Deliberately NOT a full line-intersection
+   solve at every corner (which would need to handle near-parallel edges
+   and would NOT preserve edge lengths) — simpler, length-preserving, and
+   numerically always well-defined. The final closing edge (back to the
+   start point) is forced to close exactly rather than independently
+   recomputed, absorbing whatever small drift accumulated walking around
+   the loop — a documented simplification, not a bug.
+
+**UI**: "🟦 Square Up" + "↩️ Undo Square Up" (hidden until applied) in the
+outline panel, plus a status line reporting how many edges were snapped
+and how many curved/arc edges were left as traced. `rmState.preSquareRing`
+holds the one-level undo snapshot; both it and the button/status get reset
+by `rmClearGeneratedOutline()` (clearing/re-searching) and
+`rmDrawFinalOutline()` (a fresh capture), so nothing stale carries over
+from a previous outline.
+
+**Persistence**: mirrors calibration's own pattern exactly — squaring an
+unsaved outline just updates `rmState.outline` in memory (next Save
+Outline picks it up); squaring an already-saved outline (has `.id` +
+`linkedBuildingId`/`linkedRoofId`) writes immediately via
+`rmPersistSquareUp()`, replacing `ring`/`areaSqFt`/`perimeterFt`/`center`/
+`squared` on the matching `roof_outlines[]` entry. **Deliberately does NOT
+touch `roof_assets`**, unlike calibration — calibration's uniform
+scale-about-centroid is a well-defined transform to also apply to placed
+features; squaring moves vertices non-uniformly (some corners move,
+others don't), so there's no unambiguous way to carry that onto point
+features without real risk of misplacing them. Noted as a known scope
+boundary, not silently glossed over.
+
+**Order with calibration (b64fe10), verified**: recommended flow is trace
+→ Square Up → Calibrate, run last, so whichever edge gets calibrated
+reflects its FINAL post-square length no matter what squaring did
+upstream. Tested the composition directly: squared a 6°-rotated 100×60ft
+rectangle (all 4 corners came out exactly 90° apart), then calibrated edge
+0 to a real 110ft — edge 0 became exactly 110ft, the adjacent edge scaled
+proportionally to 66ft (60 × 1.1), and the corners stayed EXACTLY 90°
+apart afterward (calibration's uniform scale preserves angles by
+construction, so it can never undo what squaring just fixed).
+
+Tested purely on the geometry function (no map/network/writes needed for
+this part): a rectangle rotated 6° off true axis snapped all 4 edges to
+exactly 6°/96°/186°/276° (the correctly-detected dominant axis) with every
+edge's length unchanged to the sub-foot; a rectangle with one corner cut
+at 45° squared the 4 rectilinear edges while leaving the diagonal cut's
+exact length untouched (4 of 5 edges snapped); a rectangle with one corner
+replaced by a 6-segment rounded arc correctly excluded the curved region
+from snapping (the exact edge count at the straight/curve boundary is
+inherently fuzzy for a discretized curve — the algorithm conservatively
+erred toward preserving one extra boundary edge rather than risk mangling
+the arc, the safer of the two failure modes); a near-circular 24-point
+shape returned `null` (nothing to square) as expected. Then tested the
+UI-level functions with a real Leaflet map instance and mocked `fdb`/
+`prompt`/`toast`: `rmSquareUpOutline()` correctly updates the outline,
+shows the right snapped-edge count, reveals the Undo button, and persists
+when linked; `rmUndoSquareUp()` restores the byte-for-byte original ring,
+clears the `squared` metadata, and hides the Undo button again; confirmed
+both `rmClearGeneratedOutline()` and `rmDrawFinalOutline()` reset any
+stale Square-Up UI state left over from a previous outline. All test
+state cleared, page reloaded, console clean.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |
