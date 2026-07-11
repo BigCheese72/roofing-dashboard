@@ -5932,6 +5932,107 @@ function call) — confirmed it switches views and loads the roof
 end-to-end. All test state cleared, real `fdb` restored, console clean
 throughout.
 
+## Building archive + move/reassign a roof (shipped 2026-07-11, dev only)
+
+Mark's live question: "how do I erase a building tied to another?" —
+investigated the actual current code before building anything, rather than
+assuming. The honest answer at the time: the ONLY removal path was
+`deleteBuildingAdmin()` (admin-PIN-gated) and it was a **hard, irreversible
+delete** — the building, its `building_history_events`, and its `reports`
+all gone, "can't be undone." There was **no way at all**, user or admin, to
+move a roof that got traced onto the wrong building over to the right one
+— exactly Mark's real underlying problem, since a roof saved to the wrong
+building is what "tied to another" almost always turns out to mean in
+practice.
+
+**Building archive — replaces the hard-delete path.** New `admin.js`
+actions `archive_building`/`unarchive_building`: set/clear a plain
+`archived`/`archivedAt` flag on the building doc, nothing else — no roofs/
+features/history/`companyCamProjectId` touched at all, so it's fully
+reversible by construction, not just "reversible if nobody purges it
+later." Same PIN-gated + audited treatment (`writeAuditLog()`) as every
+other cross-cutting building write in this file. Client:
+`archiveBuildingAdmin()`/`unarchiveBuildingAdmin()` in `renderHistoryList()`
+replace the old "Delete (admin)" button with "🗄️ Archive (admin)" —
+`deleteBuildingAdmin()` and its `delete_building` admin.js action are left
+defined but call-site-free (a real audited last resort still reachable
+directly against the API if a building genuinely needs purging, just never
+one tap away in the app — per Mark's "hard delete stays out of the
+client"). Archived buildings are filtered out of EVERY default building
+list/search in the app, not just Building History — the same one-line
+`if (!b.archived)` guard added to `openBuildingPicker()` (Change Order's
+"Select Existing Building"), `openRmSaveModal()` (RoofMapper's own save
+picker), Buildings Near Me's proximity search, and `openMoveRoofModal()`'s
+destination list, so an archived building can't quietly resurface as a
+selectable option anywhere it wasn't explicitly asked for. Building
+History specifically doesn't exclude it from the QUERY though — a "Show
+archived (N)" checkbox reveals it there with a muted row style + "Archived"
+badge, `unarchiveBuildingAdmin()`
+one tap away from there).
+
+**Move/reassign a roof — the actual fix for the stuck-roof problem.** A
+roof isn't just a `roofs[]` array entry: `building_history_events`/
+`reports` docs reference it by `(buildingId, roofId)` pair too (see
+DATA_MODEL.md), so a real move has to re-point every one of those, not
+just relocate the array entry, or the roof's history would silently
+disappear from both buildings' timelines. New `admin.js` action
+`move_roof` (`sourceBuildingId`, `destBuildingId`, `roofId`) does the whole
+thing as one atomic batch: removes the roof from the source's `roofs[]`,
+appends it to the destination's (auto-suffixing the label on a collision —
+same "{label} (2)" convention as `rmResolveUniqueRoofLabel()` client-side,
+just re-implemented server-side since there's no user to prompt/confirm
+mid-request), queries and reassigns every matching
+`building_history_events`/`reports` doc's `buildingId`/`buildingName`/
+`customerId`/`customerName` to the destination, and — if that was the
+source's ONLY roof — clears its legacy mirror fields (`roof_outlines`/
+`roof_assets`/`roof_base_map_*`) so `getBuildingRoofs()` doesn't
+resurrect stale data for a roof that no longer lives there; mirrors the
+destination's fields the normal way if it ends up with exactly one roof.
+Same PIN-gated + audited treatment as everything else here — a
+high-blast-radius, multi-collection write, not a plain client write even
+though `firestore.rules` would technically allow one.
+
+Client: a new `#mr-modal` (deliberately separate from the existing
+`#bp-modal` "Select Existing Building" picker — that one's `bpSelectBuilding()`
+is hardwired to the work-order edit form's fields, and its CompanyCam-merge
+search doesn't apply here since a move destination has to already be a real
+building). `openMoveRoofModal(buildingId, roofId, roofLabel)` loads every
+OTHER non-archived building (excludes the source itself and anything
+archived — moving a roof onto something deliberately archived would be
+confusing); `mrSelectDestination()` confirms, calls `move_roof`, and — if
+RoofMapper currently has the just-moved roof open — clears that now-stale
+link (`rmClearFootprintLayers()`) so further edits can't silently save
+against the wrong building. Reachable from Building History's roof picker,
+a new "↔️ Move to Different Building" button next to Rename/Open in
+RoofMapper — admin-gated (same as Archive, since this touches every
+timeline entry tied to the roof, not just a label) and deliberately NOT
+gated behind "more than one roof on this building," since the stuck roof
+is very often the building's ONLY roof, exactly Mark's case.
+
+Tested against a mocked Firestore (no real writes) two ways: the
+`move_roof`/`archive_building` algorithm itself, run standalone against a
+richer mock supporting `where().where().get()` and batch semantics (since
+`admin.js` runs under the Admin SDK server-side and can't execute inside
+this static preview at all) — confirmed a moved roof's matching event
+correctly reassigns while an unrelated event for a different `roofId` on
+the same source building stays put; confirmed the source building's legacy
+fields clear when it's left with zero roofs, and mirror correctly when
+left with exactly one; confirmed a label collision on the destination
+auto-suffixes to "(2)". Then the full CLIENT path end-to-end (real DOM
+clicks, `callAdminApi` mocked to run that same validated logic against a
+shared mock store): archived a building via its real button — confirmed it
+disappears from the default list, the "Show archived" toggle appears and
+reveals it with the muted/badge styling, and Unarchive restores it;
+clicked "↔️ Move to Different Building" on a real roof, picked a
+destination from the real modal, confirmed — verified the roof left the
+source's `roofs[]`, landed on the destination's with its outline/features
+intact, and its `building_history_events` entry followed it; repeated with
+`rmState` pointed at the moved roof (as if RoofMapper had it open) —
+confirmed the stale link was cleared with an explanatory status message
+instead of silently continuing to point at the wrong building. All test
+state cleared, real `fdb`/`callAdminApi`/`isAdmin` restored, console clean
+throughout.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |

@@ -233,6 +233,15 @@ Physical buildings/sites associated with a customer.
             // already known from a roof outline's centroid instead (checked
             // first, since it's already-fetched and usually more accurate than a
             // street-address geocode).
+  archived, // optional bool — soft delete (shipped 2026-07-11, see "Building archive
+            // + move/reassign a roof" in DEV_NOTES.md). Replaces the old hard-delete-
+            // only admin path; absent/false for every normal building. Set/cleared only
+            // via admin.js's archive_building/unarchive_building actions (Admin SDK,
+            // PIN-gated + audited), never a plain client write. Hides the building from
+            // default list/search UI (Building History, RoofMapper's building picker/
+            // save modal, the Change Order picker) without touching roofs/features/
+            // history/companyCamProjectId at all — a visibility flag, not a data change.
+  archivedAt, // number (Date.now()) or null — set alongside archived:true, cleared on unarchive.
   createdAt,
   updatedAt,
 

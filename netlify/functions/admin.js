@@ -301,6 +301,163 @@ exports.handler = async function (event) {
       return resp(200, { ok: true, items });
     }
 
+    if (body.action === "archive_building") {
+      // Replaces the old hard-delete-only path (delete_building above,
+      // "can't be undone") with a recoverable soft delete -- Mark's actual
+      // need was "get a wrong/junk building out of my way," not "destroy
+      // its history forever," and the old path was the ONLY option, which
+      // meant real history sometimes got destroyed just to clear clutter.
+      // Purely an additive flag -- never touches roofs[]/companyCamProjectId/
+      // building_history_events/reports at all, so nothing about the
+      // building's data changes, only its visibility in default lists (see
+      // renderHistoryList()/rmBpRender()/etc. in index.html, all of which
+      // now filter archived out by default). See "Building archive" in
+      // DEV_NOTES.md.
+      const buildingId = String(body.buildingId || "");
+      if (!buildingId) return resp(400, { error: "Missing buildingId" });
+      const bldRef = db.collection("buildings").doc(buildingId);
+      const bldSnap = await bldRef.get();
+      if (!bldSnap.exists) return resp(404, { error: "Building not found" });
+      const bldBefore = bldSnap.data();
+      await bldRef.set({ archived: true, archivedAt: Date.now() }, { merge: true });
+      await writeAuditLog(db, event, "archive_building", { collection: "buildings", id: buildingId },
+        { archived: !!bldBefore.archived, name: bldBefore.name || null }, { archived: true });
+      return resp(200, { ok: true });
+    }
+
+    if (body.action === "unarchive_building") {
+      const buildingId = String(body.buildingId || "");
+      if (!buildingId) return resp(400, { error: "Missing buildingId" });
+      const bldRef = db.collection("buildings").doc(buildingId);
+      const bldSnap = await bldRef.get();
+      if (!bldSnap.exists) return resp(404, { error: "Building not found" });
+      await bldRef.set({ archived: false, archivedAt: null }, { merge: true });
+      await writeAuditLog(db, event, "unarchive_building", { collection: "buildings", id: buildingId },
+        { archived: true }, { archived: false });
+      return resp(200, { ok: true });
+    }
+
+    if (body.action === "move_roof") {
+      // Mark: traced a roof onto the wrong building with no way to fix it
+      // short of admin-deleting the whole wrong building (destroying
+      // everything else on it too). A roof isn't just a roofs[] array
+      // entry -- building_history_events/reports docs reference it by
+      // (buildingId, roofId) pair too (see DATA_MODEL.md), so a real move
+      // has to re-point every one of those, not just relocate the roofs[]
+      // entry itself, or the moved roof's history would silently vanish
+      // from both buildings' timelines. High-blast-radius, multi-collection
+      // write -- same admin-PIN-gated + audited treatment as every other
+      // cross-cutting building/roof action in this file, not a plain
+      // client write even though firestore.rules would technically allow
+      // one. See "Move/reassign a roof to a different building" in
+      // DEV_NOTES.md.
+      const sourceBuildingId = String(body.sourceBuildingId || "");
+      const destBuildingId = String(body.destBuildingId || "");
+      const roofId = String(body.roofId || "");
+      if (!sourceBuildingId || !destBuildingId || !roofId) {
+        return resp(400, { error: "Missing sourceBuildingId, destBuildingId, or roofId" });
+      }
+      if (sourceBuildingId === destBuildingId) return resp(400, { error: "Source and destination are the same building" });
+
+      const [sourceSnap, destSnap] = await Promise.all([
+        db.collection("buildings").doc(sourceBuildingId).get(),
+        db.collection("buildings").doc(destBuildingId).get()
+      ]);
+      if (!sourceSnap.exists) return resp(404, { error: "Source building not found" });
+      if (!destSnap.exists) return resp(404, { error: "Destination building not found" });
+      const sourceBld = sourceSnap.data();
+      const destBld = destSnap.data();
+
+      const sourceRoofs = getBuildingRoofsServer(sourceBld);
+      const roofIdx = sourceRoofs.findIndex(r => r.id === roofId);
+      if (roofIdx === -1) return resp(404, { error: "Roof not found on the source building" });
+      const movingRoof = sourceRoofs[roofIdx];
+
+      // Same duplicate-name handling as the client's rmResolveUniqueRoofLabel()
+      // (see index.html) -- a moved roof landing on a building that already
+      // has a roof with the same label gets auto-suffixed rather than
+      // silently colliding, no server-side prompt/confirm loop possible
+      // here so this always just picks the suggestion.
+      const destRoofs = getBuildingRoofsServer(destBld);
+      const takenLabels = destRoofs.map(r => String((r.label || "")).trim().toLowerCase());
+      let newLabel = movingRoof.label || "Roof";
+      if (takenLabels.indexOf(newLabel.trim().toLowerCase()) !== -1) {
+        let n = 2, candidate;
+        do { candidate = newLabel + " (" + n + ")"; n++; }
+        while (takenLabels.indexOf(candidate.trim().toLowerCase()) !== -1);
+        newLabel = candidate;
+      }
+      const movedRoof = Object.assign({}, movingRoof, { label: newLabel, updatedAt: Date.now() });
+
+      const newSourceRoofs = sourceRoofs.slice(0, roofIdx).concat(sourceRoofs.slice(roofIdx + 1));
+      const newDestRoofs = destRoofs.concat([movedRoof]);
+
+      const sourcePatch = { roofs: newSourceRoofs, updatedAt: Date.now() };
+      // If that was the source building's ONLY roof, its legacy mirror
+      // fields (roof_outlines/roof_assets/roof_base_map_*) still point at
+      // the roof that just left -- clear them so getBuildingRoofs() falls
+      // back to synthesizing a genuinely empty default roof instead of
+      // resurrecting stale data for a roof that now lives elsewhere. Same
+      // dual-write convention saveBuildingRoofs()/set_building_roof_map
+      // already use, just in reverse (un-mirroring instead of mirroring).
+      if (newSourceRoofs.length === 0) {
+        sourcePatch.roofSystem = "";
+        sourcePatch.roof_base_map_type = null;
+        sourcePatch.roof_base_map_url = null;
+        sourcePatch.roof_base_map_bounds = null;
+        sourcePatch.roof_base_map_synthetic = false;
+        sourcePatch.roof_assets = [];
+        sourcePatch.roof_outlines = [];
+      } else if (newSourceRoofs.length === 1) {
+        const only = newSourceRoofs[0];
+        sourcePatch.roofSystem = only.roofSystem || "";
+        sourcePatch.roof_base_map_type = only.roof_base_map_type || null;
+        sourcePatch.roof_base_map_url = only.roof_base_map_url || null;
+        sourcePatch.roof_base_map_bounds = only.roof_base_map_bounds || null;
+        sourcePatch.roof_base_map_synthetic = only.roof_base_map_synthetic || false;
+        sourcePatch.roof_assets = only.roof_assets || [];
+        sourcePatch.roof_outlines = only.roof_outlines || [];
+      }
+      const destPatch = { roofs: newDestRoofs, updatedAt: Date.now() };
+      if (newDestRoofs.length === 1) {
+        const only = newDestRoofs[0];
+        destPatch.roofSystem = only.roofSystem || "";
+        destPatch.roof_base_map_type = only.roof_base_map_type || null;
+        destPatch.roof_base_map_url = only.roof_base_map_url || null;
+        destPatch.roof_base_map_bounds = only.roof_base_map_bounds || null;
+        destPatch.roof_base_map_synthetic = only.roof_base_map_synthetic || false;
+        destPatch.roof_assets = only.roof_assets || [];
+        destPatch.roof_outlines = only.roof_outlines || [];
+      }
+
+      // Re-point every building_history_events/reports doc for this
+      // specific roof so BOTH buildings' timelines/roof maps stay accurate
+      // -- the source building's history for this roof would otherwise
+      // still claim it (a roof that no longer exists there), and the
+      // destination's history would be missing it entirely.
+      const [evtSnap, repSnap] = await Promise.all([
+        db.collection("building_history_events").where("buildingId", "==", sourceBuildingId).where("roofId", "==", roofId).get(),
+        db.collection("reports").where("buildingId", "==", sourceBuildingId).where("roofId", "==", roofId).get()
+      ]);
+      const batch = db.batch();
+      batch.set(db.collection("buildings").doc(sourceBuildingId), sourcePatch, { merge: true });
+      batch.set(db.collection("buildings").doc(destBuildingId), destPatch, { merge: true });
+      const reassign = {
+        buildingId: destBuildingId, buildingName: destBld.name || "",
+        customerId: destBld.customerId || null, customerName: destBld.customerName || ""
+      };
+      evtSnap.forEach(d => batch.set(d.ref, reassign, { merge: true }));
+      repSnap.forEach(d => batch.set(d.ref, reassign, { merge: true }));
+      await batch.commit();
+
+      await writeAuditLog(db, event, "move_roof",
+        { collection: "buildings", id: sourceBuildingId, roofId: roofId },
+        { sourceBuildingId, sourceBuildingName: sourceBld.name || null, roofLabel: movingRoof.label || null },
+        { destBuildingId, destBuildingName: destBld.name || null, newLabel: newLabel,
+          movedEvents: evtSnap.size, movedReports: repSnap.size });
+      return resp(200, { ok: true, movedEvents: evtSnap.size, movedReports: repSnap.size, newLabel: newLabel });
+    }
+
     if (body.action === "set_photo_size_pref") {
       // Global (not per-user, not per-work-order) photo size — used to be
       // a client-only localStorage preference; now a single admin-set

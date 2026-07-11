@@ -901,6 +901,29 @@
   </div>
 </div>
 
+<!-- Move/reassign a roof to a different building (Mark: traced a roof onto
+     the wrong building, no way out). Deliberately a SEPARATE, smaller modal
+     from #bp-modal above rather than a reuse -- bpSelectBuilding() is
+     hardwired to the work-order edit form's own fields, and the CompanyCam-
+     merge search there doesn't make sense here (the destination has to
+     already be a real building, not a CompanyCam-only project). Admin-gated
+     -- see archiveBuildingAdmin()/moveRoofToBuilding() and "Move/reassign a
+     roof to a different building" in DEV_NOTES.md. -->
+<div id="mr-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)closeMoveRoofModal()">
+  <div style="background:#fff;max-width:640px;margin:4vh auto;border-radius:8px;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;width:94%">
+    <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
+      <b class="cond" style="font-size:17px" id="mr-modal-title">Move Roof to a Different Building</b>
+      <span style="flex:1"></span>
+      <button class="btn" onclick="closeMoveRoofModal()">Close</button>
+    </div>
+    <div style="padding:14px 16px;overflow:auto">
+      <p class="hint" id="mr-hint" style="margin:0 0 10px"></p>
+      <input type="text" id="mr-search" placeholder="Search by building, customer, or address…" style="width:100%;margin-bottom:10px;box-sizing:border-box" oninput="mrFilter()">
+      <div id="mr-list" class="hint">Loading…</div>
+    </div>
+  </div>
+</div>
+
 <div id="rm-save-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)closeRmSaveModal()">
   <div style="background:#fff;max-width:640px;margin:4vh auto;border-radius:8px;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;width:94%">
     <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
@@ -1545,7 +1568,10 @@ async function openBuildingPicker(){
     try{
       var qs = await fdb.collection("buildings").orderBy("updatedAt", "desc").limit(200).get();
       bpCache = [];
-      qs.forEach(function(d){ bpCache.push(Object.assign({ id: d.id }, d.data())); });
+      qs.forEach(function(d){
+        var b = Object.assign({ id: d.id }, d.data());
+        if (!b.archived) bpCache.push(b); /* archived buildings stay out of every default picker -- see "Building archive" in DEV_NOTES.md */
+      });
       bpRender(bpCache);
     }catch(e){
       list.className = "hint";
@@ -1692,6 +1718,101 @@ function bpSelectBuilding(buildingId){
   }
   closeBuildingPicker();
   toast("Loaded “" + b.name + "” — review the fields below before saving");
+}
+
+/* ---- Move/reassign a roof to a different building ----
+   Mark: traced a roof onto the wrong building, no way out short of
+   admin-deleting the whole wrong building (destroying everything else on
+   it too). A roof isn't just a roofs[] array entry -- building_history_
+   events/reports docs reference it by (buildingId, roofId) pair too (see
+   DATA_MODEL.md) -- so the actual move happens server-side, in one atomic
+   batch, via admin.js's move_roof action (Admin SDK, PIN-gated + audited,
+   same treatment as every other cross-cutting building/roof write in this
+   app). This modal is just the destination picker. See "Move/reassign a
+   roof to a different building" in DEV_NOTES.md. */
+var mrCache = null, mrSourceBuildingId = null, mrRoofId = null, mrRoofLabel = "";
+async function openMoveRoofModal(sourceBuildingId, roofId, roofLabel){
+  if (!isAdmin){ toast("Admin mode required to move a roof."); return; }
+  mrSourceBuildingId = sourceBuildingId;
+  mrRoofId = roofId;
+  mrRoofLabel = roofLabel || "this roof";
+  document.getElementById("mr-modal").style.display = "";
+  lockBodyScroll();
+  document.getElementById("mr-hint").textContent = "Pick the building “" + mrRoofLabel + "” actually belongs on.";
+  document.getElementById("mr-search").value = "";
+  var list = document.getElementById("mr-list");
+  list.className = "hint";
+  list.textContent = "Loading buildings…";
+  if (!fdb){
+    list.textContent = "Moving a roof needs cloud sync (internet connection) to load buildings.";
+    return;
+  }
+  try{
+    var qs = await fdb.collection("buildings").orderBy("updatedAt", "desc").limit(200).get();
+    mrCache = [];
+    qs.forEach(function(d){
+      /* Excludes the source building itself (can't move a roof "to" the
+         building it's already on) and archived buildings (moving a roof
+         onto something Mark deliberately archived would be confusing --
+         unarchive it first if that's really the intent). */
+      if (d.id === sourceBuildingId) return;
+      var b = Object.assign({ id: d.id }, d.data());
+      if (b.archived) return;
+      mrCache.push(b);
+    });
+    mrRender(mrCache);
+  }catch(e){
+    list.className = "hint";
+    list.textContent = "Couldn't load buildings: " + e.message;
+  }
+}
+function closeMoveRoofModal(){
+  document.getElementById("mr-modal").style.display = "none";
+  unlockBodyScroll();
+}
+function mrFilter(){
+  if (!mrCache) return;
+  var q = document.getElementById("mr-search").value.trim().toLowerCase();
+  if (!q){ mrRender(mrCache); return; }
+  mrRender(mrCache.filter(function(b){
+    return (b.name || "").toLowerCase().indexOf(q) > -1 ||
+      (b.customerName || "").toLowerCase().indexOf(q) > -1 ||
+      (b.location || "").toLowerCase().indexOf(q) > -1;
+  }));
+}
+function mrRender(list){
+  var host = document.getElementById("mr-list");
+  if (!list.length){ host.className = "hint"; host.textContent = "No other buildings found."; return; }
+  host.className = "";
+  host.innerHTML = list.map(function(b){
+    return '<div class="bld-item" onclick="mrSelectDestination(\'' + b.id + '\')"><div class="info">' +
+      '<div class="name">' + esc(b.name) + '</div>' +
+      '<div class="meta">' + esc(b.customerName || "") + (b.location ? ' · ' + esc(b.location) : "") + '</div></div>' +
+      '<button class="btn primary">Move Here</button></div>';
+  }).join("");
+}
+async function mrSelectDestination(destBuildingId){
+  var b = (mrCache || []).find(function(x){ return x.id === destBuildingId; });
+  if (!b) return;
+  if (!confirm('Move “' + mrRoofLabel + '” to “' + (b.name || "this building") + '”? ' +
+    "Its outline, features, and every timeline entry/report for it move with it. This can be done again to undo it " +
+    "(move it right back), but isn't instant to reverse -- double check this is the right building.")) return;
+  toast("Moving roof…");
+  try{
+    var out = await callAdminApi({ action: "move_roof", sourceBuildingId: mrSourceBuildingId,
+      destBuildingId: destBuildingId, roofId: mrRoofId });
+    closeMoveRoofModal();
+    toast('Moved to “' + b.name + '” ✓ (' + out.movedEvents + ' history entries, ' + out.movedReports + ' reports carried over)');
+    /* The source building no longer has this roof -- if RoofMapper currently
+       has it open, that link is now stale (pointing at a roof that's gone
+       from this building), so drop it rather than leaving a phantom "linked"
+       state that would silently save any further edits to the WRONG place. */
+    if (rmState.linkedBuildingId === mrSourceBuildingId && rmState.linkedRoofId === mrRoofId){
+      rmClearFootprintLayers();
+      rmSetStatus('This roof moved to “' + b.name + '” — open it there from Building History.');
+    }
+    if (currentViewName === "history") openBuildingHistory(mrSourceBuildingId);
+  }catch(e){ toast("Couldn't move roof: " + e.message); }
 }
 
 function computeWarrantyStatus(o){
@@ -4279,6 +4400,12 @@ function flagPossibleDuplicateBuildings(list){
   }
 }
 var lastBuildingList = [];
+/* Building archive (replaces the old hard-delete-only path -- see
+   archiveBuildingAdmin()/unarchiveBuildingAdmin() below). Off by default so
+   an archived building doesn't clutter the everyday list; toggled on to
+   review/restore one. Session-only, not persisted -- resets to hidden every
+   fresh visit to Building History, same as any other view-local filter. */
+var historyShowArchived = false;
 /* ================= Buildings Near Me (proximity / GPS building detection) =================
    Realizes the "tech pulls up on site and the app already knows where they
    are" vision pillar — see ROADMAP.md. Resolves each building's best-known
@@ -4342,7 +4469,10 @@ async function findBuildingsNearMe(){
   try{
     var qs = await fdb.collection("buildings").orderBy("updatedAt", "desc").limit(300).get();
     var list = [];
-    qs.forEach(function(d){ list.push(Object.assign({ id: d.id }, d.data())); });
+    qs.forEach(function(d){
+      var b = Object.assign({ id: d.id }, d.data());
+      if (!b.archived) list.push(b); /* archived buildings stay out of every default picker/search -- see "Building archive" in DEV_NOTES.md */
+    });
     var geocodeBudget = BUILDINGS_NEAR_ME_GEOCODE_CAP;
     var withCoords = [];
     for (var i = 0; i < list.length; i++){
@@ -4404,23 +4534,37 @@ async function renderHistoryList(){
   host.innerHTML = '<p class="hint">Loading buildings\u2026</p>';
   try{
     var qs = await fdb.collection("buildings").orderBy("updatedAt", "desc").limit(100).get();
-    var list = [];
-    qs.forEach(function(d){ list.push(Object.assign({ id: d.id }, d.data())); });
-    if (!list.length){
+    var fullList = [];
+    qs.forEach(function(d){ fullList.push(Object.assign({ id: d.id }, d.data())); });
+    if (!fullList.length){
       host.innerHTML = '<div class="empty">No building history yet. Save a work order or send a report to start one.</div>';
       lastBuildingList = [];
       return;
     }
+    /* Archived buildings (see archiveBuildingAdmin() below) are hidden from
+       the default list -- Mark's whole point in archiving one is to get it
+       out of the way -- but never excluded from the query itself, so the
+       toggle can reveal them again without a second fetch. */
+    var archivedCount = fullList.filter(function(b){ return b.archived; }).length;
+    var list = historyShowArchived ? fullList : fullList.filter(function(b){ return !b.archived; });
     flagPossibleDuplicateBuildings(list);
-    lastBuildingList = list;
+    lastBuildingList = fullList;
     var dupBuildingCount = list.filter(function(b){ return b._dupWith.length; }).length;
-    host.innerHTML =
+    var archivedToggleHtml = archivedCount ?
+      '<label class="hint" style="display:flex;align-items:center;gap:6px;margin:0 0 10px">' +
+        '<input type="checkbox" ' + (historyShowArchived ? "checked" : "") +
+        ' onchange="historyShowArchived=this.checked;renderHistoryList()">Show archived (' + archivedCount + ')</label>' : '';
+    host.innerHTML = archivedToggleHtml +
       (dupBuildingCount ? '<p class="hint">\u26a0 ' + dupBuildingCount + ' building(s) below look like possible duplicates ' +
         '(same customer, very similar name) \u2014 review manually for now; merging isn\u2019t automated yet.</p>' : '') +
+      (list.length ? "" : '<div class="empty">No buildings match.</div>') +
       list.map(function(b){
-        return '<div class="bld-item"' + (b._dupWith.length ? ' style="border-left-color:#D64545"' : '') +
+        return '<div class="bld-item"' + (b._dupWith.length ? ' style="border-left-color:#D64545"' : (b.archived ? ' style="opacity:.6"' : '')) +
           ' onclick="openBuildingHistory(\'' + b.id + '\')"><div class="info">' +
           '<div class="name">' + esc(b.name) +
+          (b.archived ? ' <span style="font-size:11px;font-weight:700;text-transform:uppercase;' +
+            'letter-spacing:.04em;background:#E0E0E0;color:#555;border-radius:3px;padding:2px 6px;' +
+            'margin-left:6px">Archived</span>' : '') +
           (b._dupWith.length ? ' <span style="font-size:11px;font-weight:700;text-transform:uppercase;' +
             'letter-spacing:.04em;background:#FBE2E2;color:#D64545;border-radius:3px;padding:2px 6px;' +
             'margin-left:6px">Possible duplicate</span>' : '') + '</div>' +
@@ -4428,13 +4572,56 @@ async function renderHistoryList(){
         (b.roofSystem ? ' \u00b7 ' + esc(b.roofSystem) : "") +
         (b.companyCamProjectId ? ' \u00b7 \ud83d\udd17 CompanyCam linked' : "") + '</div></div>' +
         '<button class="btn">View Timeline</button>' +
-        (isAdmin ? '<button class="btn danger" onclick="event.stopPropagation(); deleteBuildingAdmin(\'' + b.id + '\')">Delete (admin)</button>' : '') +
+        (isAdmin ? (b.archived ?
+          '<button class="btn" onclick="event.stopPropagation(); unarchiveBuildingAdmin(\'' + b.id + '\')">\u21a9\ufe0f Unarchive (admin)</button>' :
+          '<button class="btn danger" onclick="event.stopPropagation(); archiveBuildingAdmin(\'' + b.id + '\')">\ud83d\uddc4\ufe0f Archive (admin)</button>') : '') +
         '</div>';
     }).join("");
   }catch(e){
     host.innerHTML = '<div class="empty">Couldn\u2019t load building history: ' + esc(e.message) + '</div>';
   }
 }
+/* Replaces the old hard-delete-only admin path (below, now unused/kept only
+   as a documented server-capability reference) -- Mark's actual need was a
+   way to get a wrong/junk building out of his way, not to permanently
+   destroy its history; the old path was the ONLY option, which meant real
+   history sometimes got destroyed just to declutter. Soft delete: sets an
+   `archived` flag via admin.js's archive_building action (Admin SDK,
+   PIN-gated + audited, same defense-in-depth pattern as every other
+   cross-cutting building write in this file) and changes nothing else --
+   roofs/features/history/CompanyCam link are all untouched, fully
+   recoverable via unarchiveBuildingAdmin() below. See "Building archive"
+   in DEV_NOTES.md. */
+async function archiveBuildingAdmin(buildingId){
+  if (!isAdmin){ toast("Admin mode required to archive."); return; }
+  var b = (lastBuildingList || []).find(function(x){ return x.id === buildingId; });
+  var buildingName = b ? b.name : "this building";
+  if (!confirm('Archive "' + buildingName + '"? It\u2019ll be hidden from the building list (reversible any time via ' +
+    '"Show archived" \u2192 Unarchive). Nothing about it is deleted \u2014 roofs, features, history, and its CompanyCam ' +
+    "link (if any) all stay exactly as they are.")) return;
+  toast("Archiving\u2026");
+  try{
+    await callAdminApi({ action: "archive_building", buildingId: buildingId });
+    toast("Archived \u2713");
+    renderHistoryList();
+  }catch(e){ toast("Archive failed: " + e.message); }
+}
+async function unarchiveBuildingAdmin(buildingId){
+  if (!isAdmin){ toast("Admin mode required."); return; }
+  toast("Restoring\u2026");
+  try{
+    await callAdminApi({ action: "unarchive_building", buildingId: buildingId });
+    toast("Restored \u2713");
+    renderHistoryList();
+  }catch(e){ toast("Restore failed: " + e.message); }
+}
+/* Kept as a defined-but-unreachable server capability (no UI path calls this
+   anymore, per Mark: "hard delete stays out of the client") rather than
+   deleted outright -- admin.js's delete_building action it calls is still a
+   real, audited last resort reachable directly against the API if a
+   building genuinely needs to be purged, just never one tap away in the
+   app. archiveBuildingAdmin() above is the actual client-facing removal
+   path now. */
 async function deleteBuildingAdmin(buildingId){
   if (!isAdmin){ toast("Admin mode required to delete."); return; }
   /* Looked up from the cached list rather than passed in as a raw string —
@@ -5058,6 +5245,16 @@ async function openBuildingHistory(buildingId){
        RoofMapper" in DEV_NOTES.md. */
     var openInMapperBtnHtml = '<button class="btn primary" style="margin-left:6px" onclick="rmOpenRoofInMapper(\'' +
       buildingId + '\', \'' + historySelectedRoofId + '\')">🗺️ Open in RoofMapper</button>';
+    /* Mark: traced a roof onto the wrong building, no way to fix it. Not
+       gated behind "more than one roof" -- the stuck roof is very often the
+       ONLY roof on the wrong building, which is exactly Mark's case.
+       Admin-gated (same as Archive) since a cross-building move touches
+       every timeline entry/report tied to this roof, not just a label. See
+       openMoveRoofModal() and "Move/reassign a roof to a different
+       building" in DEV_NOTES.md. */
+    var moveBtnHtml = isAdmin ? ('<button class="btn" style="margin-left:6px" onclick="openMoveRoofModal(\'' +
+      buildingId + '\', \'' + historySelectedRoofId + '\', \'' + esc(roof.label || "Roof") +
+      '\')">↔️ Move to Different Building</button>') : '';
     var roofPickerHtml = roofs.length > 1 ?
       '<div class="fld" style="max-width:320px;margin-bottom:8px">' +
         '<label>Roof</label><div class="btnrow" style="margin:0;align-items:center">' +
@@ -5067,8 +5264,8 @@ async function openBuildingHistory(buildingId){
           return '<option value="' + esc(r.id) + '"' + (r.id === historySelectedRoofId ? ' selected' : '') + '>' +
             esc(r.label || "Roof") + (cond ? " — " + esc(cond) : "") + '</option>';
         }).join('') +
-        '</select>' + renameBtnHtml + openInMapperBtnHtml + '</div></div>' :
-      '<p class="hint" style="margin:0 0 8px">Roof: <b>' + esc(roof.label || "Roof") + '</b>' + renameBtnHtml + openInMapperBtnHtml + '</p>';
+        '</select>' + renameBtnHtml + openInMapperBtnHtml + moveBtnHtml + '</div></div>' :
+      '<p class="hint" style="margin:0 0 8px">Roof: <b>' + esc(roof.label || "Roof") + '</b>' + renameBtnHtml + openInMapperBtnHtml + moveBtnHtml + '</p>';
     var addRoofBtnHtml = '<button class="btn" onclick="promptAddRoof(\'' + buildingId + '\')">+ Add Roof</button>';
     var addFeatureBtnHtml = '<button class="btn" onclick="openAssetModal(\'' + buildingId + '\', null, \'' + historySelectedRoofId + '\')">+ Add Roof Feature</button>';
     var addActivityBtnHtml = '<button class="btn" onclick="openActivityModal(\'' + buildingId + '\')">+ Log Activity</button>';
@@ -9223,7 +9420,10 @@ function openRmSaveModal(){
   }
   fdb.collection("buildings").orderBy("updatedAt", "desc").limit(200).get().then(function(qs){
     rmBpCache = [];
-    qs.forEach(function(d){ rmBpCache.push(Object.assign({ id: d.id }, d.data())); });
+    qs.forEach(function(d){
+      var b = Object.assign({ id: d.id }, d.data());
+      if (!b.archived) rmBpCache.push(b); /* archived buildings stay out of every default picker -- see "Building archive" in DEV_NOTES.md */
+    });
     rmBpRender(rmBpCache);
   }).catch(function(e){
     list.className = "hint";
