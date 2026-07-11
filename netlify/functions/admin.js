@@ -30,6 +30,7 @@ function getBuildingRoofsServer(bld) {
     roof_base_map_type: bld.roof_base_map_type || null,
     roof_base_map_url: bld.roof_base_map_url || null,
     roof_base_map_bounds: bld.roof_base_map_bounds || null,
+    roof_base_map_synthetic: bld.roof_base_map_synthetic || false,
     roof_assets: bld.roof_assets || [],
     roof_outlines: bld.roof_outlines || []
   }];
@@ -113,6 +114,14 @@ exports.handler = async function (event) {
       if (type && ["drone_ortho", "satellite", "roof_plan", "sketch"].indexOf(type) === -1) {
         return resp(400, { error: "Invalid roof_base_map_type" });
       }
+      // Purely cosmetic label, not read by any type-dispatch logic —
+      // RoofMapper's ortho-upload flow (see rmPersistOrthoBaseMap() in
+      // index.html) saves an uploaded drone image as type "sketch" (x/y
+      // pixel space, since its bounds are synthetic/Null Island, not real
+      // GPS) but still wants to say "drone photo" instead of "hand
+      // sketch" wherever this shows up. Only meaningful alongside a
+      // truthy type; explicitly false/absent otherwise.
+      const synthetic = type ? !!body.roof_base_map_synthetic : false;
       let bounds = null;
       if (type === "drone_ortho") {
         const b = body.roof_base_map_bounds || {};
@@ -135,6 +144,7 @@ exports.handler = async function (event) {
         roof_base_map_type: type,
         roof_base_map_url: url,
         roof_base_map_bounds: bounds,
+        roof_base_map_synthetic: synthetic,
         updatedAt: Date.now()
       });
 
@@ -147,6 +157,7 @@ exports.handler = async function (event) {
         patch.roof_base_map_type = type;
         patch.roof_base_map_url = url;
         patch.roof_base_map_bounds = bounds;
+        patch.roof_base_map_synthetic = synthetic;
         patch.roof_base_map_updated_at = Date.now();
       }
       await bldRef.set(patch, { merge: true });

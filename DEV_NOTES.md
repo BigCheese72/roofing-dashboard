@@ -5291,6 +5291,83 @@ had just built. Fixed by moving the clear to the front of the function,
 before the overlay is constructed. All test state cleared, page reloaded,
 console clean.
 
+## Ortho upload: persist with the roof + pick from an existing CompanyCam photo (shipped 2026-07-11, dev only, part 2 of 2)
+
+Completes the ortho feature from part 1 above: the image itself is now
+retained with the roof for reopening, and a CompanyCam-linked project's
+photos can be used directly instead of a fresh local upload (Mark's
+"secondary path").
+
+**Persist for reopening — a real design deviation, reasoned through and
+documented rather than following the original spec literally.** The
+original ask was to save the ortho as `roof_base_map_type: "drone_ortho"`
+with the synthetic bounds. Building that revealed a genuine correctness
+risk: `"drone_ortho"` is treated as GEOREFERENCED everywhere else in the
+app —  `lookupProspectiveBuildingBaseMap()` and the pin/asset placement it
+feeds both assume a drone_ortho's bounds are real GPS coordinates and save
+future pins/features against it as real lat/lng. This ortho's bounds are
+synthetic (Null Island — see part 1). Saving it as `"drone_ortho"` would
+have silently saved any pin placed on it during a LATER work order as a
+real-world lat/lng near 0,0, completely disconnected from the actual
+building — not a display quirk, a real data-correctness bug. Fixed by
+saving it as `roof_base_map_type: "sketch"` instead (x/y pixel space,
+already the correct model for "a base map with no real coordinate
+system," already fully wired everywhere — pin placement, asset placement,
+Building History's own roof map, all via the existing `customBld`/
+`CRS.Simple` path) plus a new, purely cosmetic `roof_base_map_synthetic:
+true` flag (allow-listed and stored by `admin.js`, not read by any type-
+dispatch logic — just there so a future label can say "drone photo, not
+geo-referenced" instead of implying a hand sketch). This reuses fully
+tested, already-wired machinery instead of adding a new type value and
+auditing every `drone_ortho` call site in the app for this synthetic-
+bounds edge case.
+
+New `rmPersistOrthoBaseMap(buildingId, roofId)`, called automatically
+right after `rmSaveOutlineToBuilding()` succeeds when
+`rmState.orthoActive` — deliberately AFTER the outline itself is
+confirmed saved, so the outline never depends on this next step
+succeeding. Reuses the EXACT SAME upload-to-CompanyCam-then-
+`set_building_roof_map` path `uploadRoofBaseMap()` already uses for a
+hand-drawn base map: same `companyCamProjectId` requirement (the outline
+still saves fine without one — this specific piece just can't, with a
+clear toast explaining why), same admin-PIN-gated server call (non-admin:
+outline saves, clear toast explaining sign-in unlocks retaining the
+image too).
+
+**Secondary path: pick an existing CompanyCam photo instead of a local
+upload.** New "☁️ Trace From CompanyCam Photo" button — in RoofMapper's
+initial capture card (only useful once a building's CompanyCam project is
+already known, e.g. via Trace Another Roof) and in the post-save features
+panel. Reuses the existing `photos`/`image` companycam.js proxy actions
+(already built for the multi-select import-photos picker — `image`
+already solves the CORS/auth problem of fetching a CompanyCam-hosted
+image from the browser, base64-encoding it server-side) rather than
+building new server infrastructure. A picked photo is fetched, resized via
+the same `rmResizeDataUrlToOrtho()` (extracted from `rmLoadAndResizeOrtho()`
+so both the local-file and CompanyCam-photo paths share one resize
+implementation instead of two), and handed to the same
+`rmStartOrthoTrace()` pipeline local upload already uses — Square Up/
+vertex-edit/Calibrate all work on it identically either way, same as part
+1 already proved for local uploads.
+
+Tested with mocked `fdb`/`ccApi`/`callAdminApi` (no real network calls,
+no real writes): confirmed `rmPersistOrthoBaseMap()` correctly no-ops
+(zero network calls) when not in admin mode, and separately when the
+building has no `companyCamProjectId` — outline-save is never blocked by
+either case; confirmed a real ortho trace (upload → 4-corner trace →
+finish → save) triggers `ccApiPost({action:"upload_document",...})` then
+`callAdminApi({action:"set_building_roof_map", roof_base_map_type:
+"sketch", roof_base_map_synthetic:true, ...})` with the correct
+buildingId/roofId/url; confirmed the CompanyCam-photo picker's "no known
+building yet" gate makes zero `ccApi` calls; confirmed opening it with a
+known building fetches and renders the right project's photos; confirmed
+tapping a photo tile fetches the full image via the `image` proxy action,
+closes the modal, and correctly lands in an active ortho trace
+(`orthoActive`, image overlay, trace session all active) — same
+end-state as a local file upload; confirmed "Load More" pagination
+correctly hides when a page returns fewer than 30 photos. All test state
+cleared, page reloaded, console clean.
+
 ## Netlify environment variables
 
 | Variable | Used by | Required |

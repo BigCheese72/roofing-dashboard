@@ -579,9 +579,12 @@
       <div class="btnrow" style="margin:0 0 6px">
         <button class="btn" id="rm-ortho-upload-btn" onclick="document.getElementById('rm-ortho-file-input').click()">📷 Trace on My Own Drone Image</button>
         <input type="file" id="rm-ortho-file-input" accept="image/*" style="display:none" onchange="rmUploadOrthoFile(this)">
+        <button class="btn" onclick="rmOpenCcOrthoPicker()">☁️ Trace From CompanyCam Photo</button>
       </div>
       <p class="hint" id="rm-ortho-hint" style="margin:-6px 0 12px">Have a sharper drone orthomosaic than satellite
-        imagery? Upload it from this device and trace directly on it — no CompanyCam project needed first.</p>
+        imagery? Upload it from this device and trace directly on it — no CompanyCam project needed first. Already
+        added it as a photo to this building's CompanyCam project instead? Pick it from there — needs a building
+        already linked (e.g. via Trace Another Roof), since that's where the CompanyCam project comes from.</p>
       <p class="rm-status" id="rm-status"></p>
       <div id="rm-map-wrap" style="display:none;margin-bottom:12px">
         <div id="rm-map" style="height:min(70vh,640px);border-radius:6px;overflow:hidden"></div>
@@ -635,6 +638,7 @@
       <div class="rm-actions" id="rm-features-actions">
         <button class="btn primary rm-bigbtn" onclick="rmAddFeature()">🔧 Add Feature</button>
         <button class="btn rm-bigbtn" onclick="rmTraceAnotherRoof()">➕ Trace Another Roof</button>
+        <button class="btn rm-bigbtn" onclick="rmOpenCcOrthoPicker()">☁️ Trace From CompanyCam Photo</button>
       </div>
       <div id="rm-feature-form" style="display:none">
         <p class="hint">Drag the marker on the map above to position it, or tap the map to move it there.</p>
@@ -864,6 +868,27 @@
         <button class="btn primary" onclick="rmExportSVG()">Export SVG</button>
         <button class="btn primary" onclick="rmExportPNG()">Export PNG</button>
         <button class="btn primary" onclick="rmExportPDF()">Export PDF</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Ortho, secondary path: pick an existing CompanyCam photo to trace on
+     (local upload is primary -- see the "Trace on My Own Drone Image"
+     button in RoofMapper's initial capture card). -->
+<div id="rm-cc-ortho-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)closeRmCcOrthoModal()">
+  <div style="background:#fff;max-width:640px;margin:4vh auto;border-radius:8px;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;width:94%">
+    <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
+      <b class="cond" style="font-size:17px">Trace From a CompanyCam Photo</b>
+      <span style="flex:1"></span>
+      <button class="btn" onclick="closeRmCcOrthoModal()">Close</button>
+    </div>
+    <div style="padding:14px 16px;overflow:auto">
+      <p class="hint" style="margin:0 0 10px">Tap a photo to use it as the tracing base — same flat-canvas + Calibrate
+        flow as uploading your own image.</p>
+      <div class="cc-grid" id="rm-cc-ortho-grid"></div>
+      <div class="btnrow" style="margin-top:10px">
+        <button class="btn" id="rm-cc-ortho-more" style="display:none" onclick="rmLoadMoreCcOrthoPhotos()">Load More</button>
       </div>
     </div>
   </div>
@@ -1324,6 +1349,7 @@ function getBuildingRoofs(bld){
     roof_base_map_type: bld.roof_base_map_type || null,
     roof_base_map_url: bld.roof_base_map_url || null,
     roof_base_map_bounds: bld.roof_base_map_bounds || null,
+    roof_base_map_synthetic: bld.roof_base_map_synthetic || false,
     roof_assets: bld.roof_assets || [],
     roof_outlines: bld.roof_outlines || []
   }];
@@ -8242,25 +8268,32 @@ var RM_ORTHO_ORIGIN = { lat: 0, lng: 0 };
 var RM_ORTHO_METERS_PER_PIXEL_GUESS = 0.05; /* arbitrary -- only affects the
   shape's initial on-screen size before Calibrate corrects it to a real
   measurement; never affects final accuracy. */
+/* Shared by both ortho paths -- local file upload (rmLoadAndResizeOrtho,
+   below) and picking an existing CompanyCam photo (rmSelectCcOrthoPhoto)
+   both end up with a data URL one way or another and just need it resized
+   the same way before rmStartOrthoTrace(). */
+function rmResizeDataUrlToOrtho(dataUrl, maxDim, quality){
+  return new Promise(function(res, rej){
+    var img = new Image();
+    img.onload = function(){
+      var w = img.width, h = img.height;
+      if (w > maxDim || h > maxDim){
+        if (w >= h){ h = Math.round(h * maxDim / w); w = maxDim; }
+        else { w = Math.round(w * maxDim / h); h = maxDim; }
+      }
+      var c = document.createElement("canvas");
+      c.width = w; c.height = h;
+      c.getContext("2d").drawImage(img, 0, 0, w, h);
+      res({ dataUrl: c.toDataURL("image/jpeg", quality), w: w, h: h });
+    };
+    img.onerror = function(){ rej(new Error("Couldn't read the image")); };
+    img.src = dataUrl;
+  });
+}
 function rmLoadAndResizeOrtho(file, maxDim, quality){
   return new Promise(function(res, rej){
     var reader = new FileReader();
-    reader.onload = function(){
-      var img = new Image();
-      img.onload = function(){
-        var w = img.width, h = img.height;
-        if (w > maxDim || h > maxDim){
-          if (w >= h){ h = Math.round(h * maxDim / w); w = maxDim; }
-          else { w = Math.round(w * maxDim / h); h = maxDim; }
-        }
-        var c = document.createElement("canvas");
-        c.width = w; c.height = h;
-        c.getContext("2d").drawImage(img, 0, 0, w, h);
-        res({ dataUrl: c.toDataURL("image/jpeg", quality), w: w, h: h });
-      };
-      img.onerror = function(){ rej(new Error("Couldn't read the image")); };
-      img.src = reader.result;
-    };
+    reader.onload = function(){ rmResizeDataUrlToOrtho(reader.result, maxDim, quality).then(res, rej); };
     reader.onerror = function(){ rej(new Error("Couldn't read the file")); };
     reader.readAsDataURL(file);
   });
@@ -8274,6 +8307,85 @@ async function rmUploadOrthoFile(input){
     var result = await rmLoadAndResizeOrtho(file, RM_ORTHO_MAX_DIM, RM_ORTHO_QUALITY);
     rmStartOrthoTrace(result.dataUrl, result.w, result.h);
   }catch(e){ toast("Couldn't load that image: " + e.message); }
+}
+/* Ortho, secondary path -- Mark: "pulling from a linked CompanyCam
+   project is the secondary path" (local upload above is primary). Only
+   makes sense once a building (and therefore its CompanyCam project) is
+   already known, so this is offered from the features panel after the
+   first roof is linked, and from the multi-roof re-entry flow -- not on
+   RoofMapper's very first, cold-start capture card where no building is
+   known yet. Reuses the exact same photos/image proxy actions the
+   existing (multi-select, different purpose) CompanyCam photo picker
+   uses, and feeds the result into the SAME rmStartOrthoTrace() pipeline
+   local upload uses -- Square Up/vertex-edit/Calibrate all work on it
+   identically either way. See "Ortho, secondary path: pick from an
+   existing CompanyCam photo" in DEV_NOTES.md. */
+var rmCcOrthoProjectId = null, rmCcOrthoPage = 1, rmCcOrthoLoading = false;
+async function rmOpenCcOrthoPicker(){
+  var buildingId = rmState.linkedBuildingId || rmState.pendingBuildingId;
+  if (!buildingId){ toast("Save this roof to a building first, or use Trace Another Roof — this needs a known building's CompanyCam project."); return; }
+  document.getElementById("rm-cc-ortho-modal").style.display = "";
+  lockBodyScroll();
+  var grid = document.getElementById("rm-cc-ortho-grid");
+  grid.innerHTML = '<p class="hint">Loading…</p>';
+  document.getElementById("rm-cc-ortho-more").style.display = "none";
+  try{
+    var snap = await fdb.collection("buildings").doc(buildingId).get();
+    var bld = snap.exists ? snap.data() : {};
+    if (!bld.companyCamProjectId){
+      grid.innerHTML = '<p class="hint">This building has no CompanyCam project linked, so there’s nothing here to pick from.</p>';
+      return;
+    }
+    rmCcOrthoProjectId = bld.companyCamProjectId;
+    rmCcOrthoPage = 1;
+    grid.innerHTML = "";
+    await rmLoadMoreCcOrthoPhotos();
+  }catch(e){
+    grid.innerHTML = '<p class="hint">Couldn’t load this building: ' + esc(e.message) + '</p>';
+  }
+}
+function closeRmCcOrthoModal(){
+  document.getElementById("rm-cc-ortho-modal").style.display = "none";
+  document.getElementById("rm-cc-ortho-grid").innerHTML = "";
+  unlockBodyScroll();
+}
+async function rmLoadMoreCcOrthoPhotos(){
+  if (rmCcOrthoLoading || !rmCcOrthoProjectId) return;
+  rmCcOrthoLoading = true;
+  var more = document.getElementById("rm-cc-ortho-more");
+  more.disabled = true; more.textContent = "Loading…";
+  try{
+    var out = await ccApi({ action: "photos", project_id: rmCcOrthoProjectId, page: rmCcOrthoPage });
+    var photos = out.photos || [];
+    var grid = document.getElementById("rm-cc-ortho-grid");
+    if (!photos.length && rmCcOrthoPage === 1){
+      grid.innerHTML = '<p class="hint">No photos in this CompanyCam project yet.</p>';
+    }
+    photos.forEach(function(p){
+      var d = document.createElement("div");
+      d.className = "cc-ph";
+      d.innerHTML = '<img src="' + esc(p.thumb || p.full) + '" loading="lazy">';
+      d.onclick = function(){ rmSelectCcOrthoPhoto(p); };
+      grid.appendChild(d);
+    });
+    rmCcOrthoPage++;
+    more.style.display = photos.length >= 30 ? "" : "none";
+  }catch(e){
+    toast("Couldn't load more photos: " + e.message);
+  }finally{
+    rmCcOrthoLoading = false;
+    more.disabled = false; more.textContent = "Load More";
+  }
+}
+async function rmSelectCcOrthoPhoto(photo){
+  closeRmCcOrthoModal();
+  toast("Loading photo…");
+  try{
+    var out = await ccApi({ action: "image", url: photo.full });
+    if (!out.dataUrl) throw new Error("CompanyCam didn't return the image");
+    var result = await rmResizeDataUrlToOrtho(out.dataUrl, RM_ORTHO_MAX_DIM, RM_ORTHO_QUALITY);
+    rmStartOrthoTrace(result.dataUrl, result.w, result.h);
+  }catch(e){ toast("Couldn't load that photo: " + e.message); }
 }
 function rmClearOrthoOverlay(){
   if (rmState.map && rmState.orthoOverlayLayer) rmState.map.removeLayer(rmState.orthoOverlayLayer);
@@ -8314,6 +8426,62 @@ function rmStartOrthoTrace(dataUrl, pixelW, pixelH){
     "edge (tap its length label, enter the real measurement) to set the true scale — this image has no GPS data, " +
     "so the shape starts at an arbitrary size until you do.";
   rmUpdateControlVisibility();
+}
+/* Finding A, part 2 -- retain the uploaded ortho WITH the roof so it can
+   be reopened later. Reuses the exact upload-to-CompanyCam-then-
+   set_building_roof_map path uploadRoofBaseMap() already uses for a
+   hand-drawn base map (same companyCamProjectId requirement -- the
+   building needs a linked CompanyCam project to have somewhere durable
+   to put the image -- same admin-PIN-gated server call).
+
+   Deliberately saved as roof_base_map_type "sketch" (x/y pixel space),
+   NOT "drone_ortho" (real lat/lng bounds), even though it visually IS a
+   drone photo. "drone_ortho" is treated as GEOREFERENCED everywhere else
+   in the app -- lookupProspectiveBuildingBaseMap() and the pin/asset
+   placement it feeds both assume a drone_ortho's bounds are real GPS
+   coordinates and save future pins/features against it as real lat/lng.
+   This ortho's bounds are SYNTHETIC (Null Island -- see
+   RM_ORTHO_ORIGIN/rmStartOrthoTrace() above): treating it as
+   georeferenced would silently save any future pin placed on it during a
+   LATER work order as a real-world lat/lng near 0,0, completely
+   disconnected from the actual building -- a real correctness bug, not
+   just a display quirk. The existing x/y "sketch" path already handles
+   "base map with no real coordinate system" correctly and is fully
+   wired everywhere (pin placement, asset placement, Building History's
+   own roof map), so this reuses it as-is rather than adding a new type
+   value and auditing every drone_ortho call site for this edge case.
+   roof_base_map_synthetic:true is a purely cosmetic flag (admin.js
+   allow-lists and stores it, unused by any type-dispatch logic) so a
+   future status/label can say "drone photo, not geo-referenced" instead
+   of implying a hand sketch. See "Ortho upload: persist with the roof
+   for reopening" in DEV_NOTES.md. */
+async function rmPersistOrthoBaseMap(buildingId, roofId){
+  if (!isAdmin){
+    toast("Roof outline saved. Sign in as admin to also keep this drone image with the roof for reopening later.");
+    return;
+  }
+  if (!rmState.orthoDataUrl) return;
+  try{
+    var bldSnap = await fdb.collection("buildings").doc(buildingId).get();
+    var bld = bldSnap.exists ? bldSnap.data() : {};
+    if (!bld.companyCamProjectId){
+      toast("Roof outline saved. This building has no CompanyCam project linked, so the drone image itself " +
+        "can't be retained (the traced outline is saved either way).");
+      return;
+    }
+    toast("Saving the drone image with this roof…");
+    var base64 = rmState.orthoDataUrl.split("base64,")[1];
+    if (!base64) throw new Error("couldn't encode the image");
+    var out = await ccApiPost({ action: "upload_document", project_id: bld.companyCamProjectId,
+      name: "roof-ortho-" + roofId + ".jpg", attachment: base64 });
+    var url = out.document && out.document.url;
+    if (!url) throw new Error("CompanyCam didn't return a URL for the uploaded file");
+    await callAdminApi({ action: "set_building_roof_map", buildingId: buildingId, roofId: roofId,
+      roof_base_map_type: "sketch", roof_base_map_url: url, roof_base_map_synthetic: true });
+    toast("Drone image saved with the roof — reopen it any time from Building History ✓");
+  }catch(e){
+    toast("Roof outline saved, but couldn't keep the drone image with it: " + e.message);
+  }
 }
 /* Walk-the-corners: no map-click handler -- points come from a GPS fix each
    time the tech taps Record, not from tapping the map (satellite imagery
@@ -8728,6 +8896,13 @@ async function rmSaveOutlineToBuilding(buildingId, roofId){
        panel (already shown by rmShowFeaturePanel() above) sits right after
        the map in the DOM, so it's the very next thing visible. */
     rmUpdateControlVisibility();
+    /* Finding A, part 2: if this outline was traced on an uploaded drone
+       image, retain that image with the roof so it can be reopened later
+       -- deliberately AFTER the outline itself is confirmed saved (the
+       outline always saves regardless of whether this next step
+       succeeds). See rmPersistOrthoBaseMap() and "Ortho upload: persist
+       with the roof for reopening" in DEV_NOTES.md. */
+    if (rmState.orthoActive) rmPersistOrthoBaseMap(buildingId, roof.id);
   }catch(e){ toast("Couldn't save: " + e.message); }
 }
 async function rmCreateBuildingAndSave(){

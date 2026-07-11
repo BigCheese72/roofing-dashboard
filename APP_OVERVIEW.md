@@ -362,6 +362,13 @@ helps a tech capture a clean roof outline for a building on the spot:
    fence, etc.)? Double-tap an existing marker, or tap **"📋 Duplicate"** in its edit
    form — it copies with the same type/label/notes, dropped just next to the original
    so you can drag it straight into position instead of re-entering it from scratch.
+   Got more than one roof on this building (a warehouse with a main roof and an annex,
+   several distinct buildings on one property)? Tap **"➕ Trace Another Roof"** right
+   there in the same card — no need to back out and start over. It shows the roof(s)
+   you already traced dimmed on the map, with their labels and everything already
+   placed on them, so you can see what's already mapped while tracing the next one
+   right next to it, then label, trace, and save it the same way, as many times as
+   there are roofs.
 8. Tap **"👁️ Preview Export"** to see exactly what the outline + labels + placed
    features will look like before exporting — no guessing, then export **SVG**,
    **PNG**, or **PDF** right from the preview, or from the buttons below it any time.
@@ -423,9 +430,15 @@ corner coordinates for a whole building's base map): this is a quick, no-prep wa
 trace a roof outline on your own image right now. Since a plain exported image has no
 GPS data built in, the shape starts at an arbitrary size — use Calibrate (tap any edge,
 enter its real measured length) right after tracing to fix the true scale, same as any
-other outline. Square Up and Edit Shape work on it exactly the same way too. (Not yet
-built: the image itself isn't retained with the saved roof for reopening later — that's
-a planned follow-up. Save the outline once you're happy with it.)
+other outline. Square Up and Edit Shape work on it exactly the same way too. Once you
+save the outline, the image itself is kept with the roof too (needs admin mode and a
+CompanyCam project linked to the building — the outline still saves fine either way,
+just the image-retention part needs those). Already added the drone photo to this
+building's CompanyCam project instead of having it on your device? Tap
+**"☁️ Trace From CompanyCam Photo"** next to it — pick the photo from a grid, same
+trace/Square Up/Calibrate flow either way. That button needs a building already linked
+(save your first roof, or tap "Trace Another Roof" first) since that's where the
+CompanyCam project comes from.
 
 However it's captured — OSM search, hand-traced, walked, or traced on your own drone
 image — an outline works exactly the same from there: same save, export, and

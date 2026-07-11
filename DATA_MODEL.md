@@ -217,6 +217,7 @@ Physical buildings/sites associated with a customer.
   roof_base_map_type: null,
   roof_base_map_url: null,
   roof_base_map_bounds: null,
+  roof_base_map_synthetic: false,
   roof_assets: [],
   roof_outlines: []
 }
@@ -242,6 +243,18 @@ Physical buildings/sites associated with a customer.
   roof_base_map_type: null, // "roof_plan" | "sketch" | "drone_ortho"
   roof_base_map_url: null,
   roof_base_map_bounds: null,
+  roof_base_map_synthetic: false, // true only when roof_base_map_type is "sketch"
+    // AND the image is actually an uploaded drone ortho traced via
+    // RoofMapper's ortho-upload flow (rmPersistOrthoBaseMap()), not a real
+    // hand-drawn sketch — purely cosmetic (e.g. so a future label can say
+    // "drone photo" instead of "sketch"), never read by any type-dispatch
+    // logic. Deliberately saved as "sketch" (x/y pixel space), NOT
+    // "drone_ortho" (real lat/lng bounds), even though it's visually a
+    // drone photo — its bounds are synthetic (Null Island), and
+    // "drone_ortho" is treated as georeferenced everywhere else in the
+    // app (pin/asset placement would save real lat/lng against a fake
+    // origin otherwise). See "Ortho upload: persist with the roof + pick
+    // from an existing CompanyCam photo" in DEV_NOTES.md.
   roof_assets: [],   // same shape as before, now per-roof — see below
   roof_outlines: [], // same shape as before, now per-roof — see below
   profile: {}, // admin-editable roof facts — see "roof.profile shape" below.
