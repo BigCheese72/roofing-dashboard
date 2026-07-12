@@ -482,7 +482,10 @@ as a roof's custom base map); the third — an uploaded drawing/PDF — is block
                   // tapped points on an uploaded, TRUE georeferenced
                   // GeoTIFF, real lat/lng straight from the map, no
                   // synthetic origin and no calibration needed — see
-                  // "GeoTIFF georeferenced ortho support" in DEV_NOTES.md)
+                  // "GeoTIFF georeferenced ortho support" in DEV_NOTES.md) |
+                  // "kml_groundoverlay_trace" (shipped 2026-07-12 -
+                  // tapped points on a KMZ/KML GroundOverlay image placed
+                  // from its KML north/south/east/west bounds)
   osmId,          // e.g. "way/12345" — only set when source is "osm"
   osmType,        // "way" | "relation" — only set when source is "osm"
   tags,           // raw OSM tags at capture time — only set when source is "osm"
@@ -493,16 +496,26 @@ as a roof's custom base map); the third — an uploaded drawing/PDF — is block
                   // not a real-world position, until manual alignment (not
                   // built) happens — shape/area/perimeter are exact once
                   // calibrated, only WHERE on Earth it sits is a placeholder.
-  georeferencedSource, // optional — true only when source is "geotiff_trace".
+  georeferencedSource, // optional - true when source is "geotiff_trace" or
+                  // "kml_groundoverlay_trace".
                   // The OPPOSITE meaning of tracedOnOrtho above: the ring is
                   // already a real, accurate, RTK-grade position straight
                   // from the uploaded GeoTIFF's own embedded geodata, not a
                   // placeholder — no manual alignment or calibration needed.
+  groundOverlay,  // optional - only when source is "kml_groundoverlay_trace":
+                  // Single-image shape: { sourceType:"kml_groundoverlay" |
+                  // "kmz_groundoverlay", sourceFileName, kmlFileName,
+                  // imageHref, imageFileName, bounds:{north,south,east,west},
+                  // rotation }. Google Earth super-overlay shape:
+                  // { sourceType:"kmz_superoverlay", sourceFileName,
+                  // imageFileName, tileCount, kmlLevel, bounds, tiles:[...] }.
+                  // Rotation/quads are preserved as metadata; current Leaflet
+                  // display warns but does not warp or rotate rasters.
   createdAt,
   calibration     // optional — TWO possible shapes. Manual: set once a tech taps
                   // an edge dimension label and enters a real tape-measured
                   // length (calibrate-by-known-edge) — { edgeIndex, measuredFt,
-                  // calibratedAt }. edgeIndex identifies which edge (ring[i] to
+                  // calibratedAt, verified?, description? }. edgeIndex identifies which edge (ring[i] to
                   // ring[i+1]) was the calibration reference — also drives the
                   // checkmark highlight on that edge's label on the map.
                   // Inherited (shipped 2026-07-11): auto-applied by
