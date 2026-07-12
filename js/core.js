@@ -58,42 +58,48 @@ var FIREBASE_CONFIG_PROD = {
   messagingSenderId: "806263881954",
   appId: "1:806263881954:web:16fb8f9cfac591dce25ebb"
 };
-// TODO(Mark): replace every REPLACE_ME below with the real watkins-service-orders-dev
-// Web app config (Firebase Console -> that project -> Project settings -> General ->
-// Your apps -> Web app -> SDK setup and configuration -> Config), once that project
-// actually exists.
+// watkins-service-orders-dev -- real project, created 2026-07-11 (Firestore
+// Native/us-central1/production rules mirroring prod exactly, Email/Password
+// enabled, dev--leak-work-orders.netlify.app authorized). Web config is
+// public client config, same as production's below -- safe to commit.
+// Cloud Storage on this project is NOT yet enabled (requires Blaze; the
+// project is currently on Spark) -- see "Dev Storage requires Blaze" in
+// DEV_NOTES.md for how photo upload fails on dev until that's attached.
 var FIREBASE_CONFIG_DEV = {
-  apiKey: "REPLACE_ME",
+  apiKey: "AIzaSyCuL04xUkChHjtQe4ros6SG_AOIXLyspTw",
   authDomain: "watkins-service-orders-dev.firebaseapp.com",
   projectId: "watkins-service-orders-dev",
   storageBucket: "watkins-service-orders-dev.firebasestorage.app",
-  messagingSenderId: "REPLACE_ME",
-  appId: "REPLACE_ME"
+  messagingSenderId: "815497932675",
+  appId: "1:815497932675:web:54165e8a0f0f3dde8110b6"
 };
-/* CRITICAL SAFETY GUARD, added after a real incident: the dev project
-   doesn't exist yet, so shipping the switch above ALONE broke dev sign-in
-   outright (auth/api-key-not-valid) the moment it deployed -- FIREBASE_CONFIG_DEV's
-   placeholder values are not a valid Firebase config, and there is no
-   partial-credit state for "almost a real API key." This guard checks for
-   the literal placeholder and falls back to production whenever the dev
-   config isn't real yet -- dev behaves EXACTLY as it did before this whole
-   split (same shared watkins-service-orders project) until Mark supplies
-   real dev values, instead of presenting a broken login screen. A clear
-   console warning marks the fallback so it's never mistaken for the real
-   split being live. Once Mark replaces every REPLACE_ME, this guard
-   evaluates false and dev automatically switches to the real separate
-   project with no further code change needed. */
+/* CRITICAL SAFETY GUARD, added after a real incident: shipping the dev/prod
+   switch below ONCE ALREADY broke dev sign-in outright (auth/api-key-not-valid)
+   because FIREBASE_CONFIG_DEV was still a placeholder when it deployed --
+   there is no partial-credit state for "almost a real API key." This guard
+   now checks actual SHAPE, not just "did someone edit the placeholder
+   string" -- a real Firebase Web apiKey always starts "AIza", a real
+   messagingSenderId is all digits, a real appId always contains ":" -- so a
+   truncated paste, a swapped field, or any other malformed value fails
+   closed exactly like an untouched placeholder does, falling back to
+   production rather than presenting a broken login screen. A clear console
+   warning marks the fallback so it's never mistaken for the real split
+   being live. */
 function devFirebaseConfigIsReal(){
-  return FIREBASE_CONFIG_DEV.apiKey !== "REPLACE_ME" &&
-    FIREBASE_CONFIG_DEV.messagingSenderId !== "REPLACE_ME" &&
-    FIREBASE_CONFIG_DEV.appId !== "REPLACE_ME";
+  var c = FIREBASE_CONFIG_DEV;
+  return !!c.projectId && c.projectId !== "REPLACE_ME" &&
+    !!c.authDomain && c.authDomain !== "REPLACE_ME" &&
+    !!c.storageBucket && c.storageBucket !== "REPLACE_ME" &&
+    !!c.apiKey && /^AIza[A-Za-z0-9_-]{10,}$/.test(c.apiKey) &&
+    !!c.messagingSenderId && /^\d+$/.test(c.messagingSenderId) &&
+    !!c.appId && c.appId.indexOf(":") !== -1 && c.appId !== "REPLACE_ME";
 }
 var FIREBASE_CONFIG;
 if (isDevEnvironment() && devFirebaseConfigIsReal()){
   FIREBASE_CONFIG = FIREBASE_CONFIG_DEV;
 } else {
   FIREBASE_CONFIG = FIREBASE_CONFIG_PROD;
-  if (isDevEnvironment()) console.warn("watkins-service-orders-dev config not set yet (still placeholder) -- falling back to the production Firebase config until Mark supplies the real dev project values.");
+  if (isDevEnvironment()) console.warn("watkins-service-orders-dev config missing or malformed -- falling back to the production Firebase config. This should not happen once the real dev config is set; check FIREBASE_CONFIG_DEV in js/core.js.");
 }
 var fdb = null;
 /* fauth (Firebase Authentication, Phase 1 of the auth build -- see

@@ -13,8 +13,11 @@
   # into index.html is intentionally public (Firebase's own design —
   # access is controlled by Firestore rules, not by hiding this value),
   # but its "AIza..." shape trips the scanner's pattern heuristic anyway.
+  # Same reasoning applies to the second key below: watkins-service-orders-dev's
+  # public Web apiKey, added to js/core.js for the dev/prod Firebase split
+  # (2026-07-11/12) — also public-by-design, also trips the same heuristic.
   SECRETS_SCAN_OMIT_PATHS = "node_modules/**"
-  SECRETS_SCAN_SMART_DETECTION_OMIT_VALUES = "AIzaSyBZRMpIWde-6DPpg7yAvNOqJAQF5ZBxlAg"
+  SECRETS_SCAN_SMART_DETECTION_OMIT_VALUES = "AIzaSyBZRMpIWde-6DPpg7yAvNOqJAQF5ZBxlAg,AIzaSyCuL04xUkChHjtQe4ros6SG_AOIXLyspTw"
 
 [functions]
   # firebase-admin pulls in Google Cloud SDK packages with dynamic requires
