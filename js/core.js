@@ -816,9 +816,28 @@ async function cloudFetchOrder(id){
          get silently dropped again right after being restored. Caught by
          testing: this happened for real immediately after restoring St
          Joe Hospital's photos. */
+      /* Real production incident, 2026-07-12: every photo migrated to
+         Storage by the one-time migrate_photo backfill (see "Photo storage
+         migration" in DEV_NOTES.md) has storageRef but no thumb -- thumb
+         generation only ever happened client-side at fresh-capture time
+         (makeThumbDataUrl()), never during that server-side migration. So
+         every migrated photo hit BOTH halves of this hydration at once:
+         img forced null (storageRef present) AND thumb genuinely empty --
+         nothing left to render, even though the real base64 bytes are
+         sitting right here in v.img, completely intact (confirmed live
+         against production: all 37 photos had img present, 0 had thumb).
+         "Captions but no photos" was this, not data loss.
+         imgFallback is a SEPARATE field, display-only -- deliberately NOT
+         named img, so cloudSaveOrder()'s "does this photo carry .img
+         client-side" fresh-capture-upload trigger is completely unaffected
+         by it (see the CRITICAL DATA-LOSS GUARD comment on cloudSaveOrder()
+         for why that signal has to stay exactly what it is). Only
+         populated when thumb is missing -- once a photo has a real thumb
+         (freshly captured, or backfilled), this is never touched. */
       photosArr[v.i] = { caption: v.caption || "", img: v.storageRef ? null : (v.img || null), w: v.w || 0, h: v.h || 0,
         finding_id: v.finding_id || null, ccPhotoId: v.ccPhotoId || null, gps: v.gps || null,
-        storageRef: v.storageRef || null, thumb: v.thumb || null };
+        storageRef: v.storageRef || null, thumb: v.thumb || null,
+        imgFallback: (!v.thumb && v.storageRef) ? (v.img || null) : null };
     });
   }catch(e){}
   o.photos = photosArr.filter(Boolean);
@@ -1656,7 +1675,7 @@ function renderPhotos(){
     d.ondrop = function(e){ photoDrop(e, i); };
     d.innerHTML =
       '<div class="photo-row"><b>Photo ' + (i+1) + '</b>' +
-      ((p.thumb || p.img) ? '<img class="thumb" src="' + (p.thumb || p.img) + '" onclick="openPhotoLightbox(' + i + ')" title="Tap to enlarge">' : '') +
+      ((p.thumb || p.imgFallback || p.img) ? '<img class="thumb" src="' + (p.thumb || p.imgFallback || p.img) + '" onclick="openPhotoLightbox(' + i + ')" title="Tap to enlarge">' : '') +
       '<input type="text" style="flex:1" placeholder="Caption" data-i="' + i + '" value="' + esc(p.caption) + '" list="dl-photoCaption" onblur="rememberFieldValue(\'photoCaption\', this.value)">' +
       '<div class="photo-move-btns">' +
         '<button class="btn" onclick="movePhoto(' + i + ', -1)"' + (i === 0 ? " disabled" : "") + ' title="Move up">▲</button>' +
@@ -1704,7 +1723,7 @@ function renderChangeOrderPhotos(){
       var locNote = p.pin ? '<span class="hint" style="display:block;margin:2px 0 0;color:#2E7D32">📍 Located</span>' :
         '<span class="hint" style="display:block;margin:2px 0 0">No location</span>';
       return '<div class="finding-photo-item">' +
-        ((p.thumb || p.img) ? '<img class="thumb" src="' + (p.thumb || p.img) + '" onclick="openPhotoLightbox(' + gi + ')" title="Tap to enlarge">' : '') +
+        ((p.thumb || p.imgFallback || p.img) ? '<img class="thumb" src="' + (p.thumb || p.imgFallback || p.img) + '" onclick="openPhotoLightbox(' + gi + ')" title="Tap to enlarge">' : '') +
         '<input type="text" placeholder="Caption" data-cophoto="' + gi + '" value="' + esc(p.caption) + '" list="dl-photoCaption" onblur="rememberFieldValue(\'photoCaption\', this.value)">' +
         locNote +
         '<button class="btn danger" onclick="removePhoto(' + gi + ')">✕ Remove</button>' +
