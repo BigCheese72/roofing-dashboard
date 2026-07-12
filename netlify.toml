@@ -39,13 +39,10 @@
   # fix for this exact class of build failure.
   external_node_modules = ["firebase-admin"]
 
-[functions."inspection-reports"]
-  # Netlify Scheduled Functions -- invokes inspection-reports.js's handler
-  # automatically on this cadence with a body of {"next_run": "<ISO date>"}
-  # and no way to attach custom headers, which is exactly the signal
-  # inspection-reports.js uses to recognize this as Netlify's own scheduler
-  # (vs. the manual "Check for New Inspection Reports" button, which always
-  # carries a real, permission-checked owner/admin token). Every 30 minutes
-  # is a starting point, not a hard requirement -- Mark can tighten or
-  # loosen this without any code change.
-  schedule = "*/30 * * * *"
+# Scheduled-function config ([functions."inspection-reports"] schedule =
+# "*/30 * * * *") temporarily removed 2026-07-12 -- pushing it made the dev
+# build stop deploying entirely (no error visible from here, no Netlify
+# dashboard/API access to confirm the real build log) for 6+ minutes,
+# versus every other deploy tonight landing in under 90s. Isolating it as
+# the likely cause before re-adding; the manual "Check for New Inspection
+# Reports" button works either way since it doesn't depend on this config.
