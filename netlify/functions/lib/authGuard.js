@@ -14,24 +14,6 @@
 const admin = require("firebase-admin");
 const { PERMISSION_KEYS } = require("./permissions");
 
-// Environment-aware project selection (Firebase split, 2026-07-11) --
-// FIREBASE_SERVICE_ACCOUNT is the SAME env var name on every Netlify
-// deploy context (Production / branch deploys), just a DIFFERENT value per
-// context (Netlify's per-context env var scoping) -- production resolves
-// to the real watkins-service-orders service account, dev branch deploys
-// resolve to watkins-service-orders-dev's. No project id/name is ever
-// hardcoded here; every Admin SDK call anywhere in this app (Firestore,
-// Auth, Storage) goes through this one admin.initializeApp() and picks up
-// whichever project the credentials JSON actually belongs to.
-//
-// storageBucket is derived from the SAME credentials JSON's project_id
-// (Firebase's current default bucket-naming convention is
-// "{project_id}.firebasestorage.app", confirmed against production's real
-// bucket) rather than a second hardcoded constant living in photos.js --
-// one source of truth, correct automatically for whichever project the
-// service account belongs to. FIREBASE_STORAGE_BUCKET is an optional
-// override for the rare case the derived name doesn't match (e.g. a
-// project still on the legacy ".appspot.com" bucket naming).
 function getAdmin() {
   if (!admin.apps.length) {
     const raw = process.env.FIREBASE_SERVICE_ACCOUNT;
@@ -39,8 +21,7 @@ function getAdmin() {
     let creds;
     try { creds = JSON.parse(raw); }
     catch (e) { throw new Error("FIREBASE_SERVICE_ACCOUNT is not valid JSON."); }
-    const bucket = process.env.FIREBASE_STORAGE_BUCKET || (creds.project_id + ".firebasestorage.app");
-    admin.initializeApp({ credential: admin.credential.cert(creds), storageBucket: bucket });
+    admin.initializeApp({ credential: admin.credential.cert(creds) });
   }
   return admin;
 }

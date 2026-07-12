@@ -23,6 +23,7 @@
 // guards against abuse regardless.
 const { getAdmin, verifyCaller } = require("./lib/authGuard");
 
+const BUCKET_NAME = "watkins-service-orders.firebasestorage.app";
 // workOrderId shapes seen in real data: "wo_1783782867489" (Date.now()-based,
 // see genId()/collect() in index.html) and legacy/manual ids -- alphanumeric
 // plus underscore/hyphen covers every real id this app generates, and
@@ -34,13 +35,8 @@ function resp(code, obj) {
   return { statusCode: code, headers: { "Content-Type": "application/json" }, body: JSON.stringify(obj) };
 }
 
-// No bucket name passed here -- getAdmin() (authGuard.js) configures the
-// correct default bucket for whichever project FIREBASE_SERVICE_ACCOUNT
-// belongs to at admin.initializeApp() time (Firebase split, 2026-07-11:
-// production/dev now resolve to genuinely separate projects, not just
-// separate credentials against one shared project).
 function getBucket() {
-  return getAdmin().storage().bucket();
+  return getAdmin().storage().bucket(BUCKET_NAME);
 }
 function getDb() {
   return getAdmin().firestore();
