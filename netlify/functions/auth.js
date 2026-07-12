@@ -9,7 +9,7 @@
 // path at all, and Admin-SDK-only is what actually guarantees that,
 // exactly like admin.js already does for deletes/roof-map/profile writes.
 const crypto = require("crypto");
-const { getDb, getAuth, getAdmin, verifyCaller, getPermissionValue, hostnameFromEvent } = require("./lib/authGuard");
+const { getDb, getAuth, verifyCaller, getPermissionValue } = require("./lib/authGuard");
 const { SEED_ROLES } = require("./lib/permissions");
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -63,43 +63,15 @@ async function sendInviteEmail(opts) {
   const from = process.env.FROM_EMAIL || "Watkins Roofing Work Orders <workorders@watkinsroofing.net>";
   const subject = "You've been added to RoofOps — set your password";
   const roleLabel = opts.roleLabel || opts.roleId;
-  // ?openHelp=1 is read by js/help.js on load and auto-opens the in-app Help
-  // Center once the login gate clears -- a brand-new crew member's first
-  // stop after setting their password is straight into "how do I..." rather
-  // than a blank Home screen. Added 2026-07-12 alongside the Help Center.
-  const helpLink = opts.appUrl + "/?openHelp=1";
-  // Add-to-home-screen instructions are platform-specific and, critically,
-  // BROWSER-specific on iOS: "Add to Home Screen" only exists in Safari's
-  // share sheet -- it does not exist in Chrome-on-iOS at all (Apple's own
-  // restriction, not a bug in this app), so a crew member on an iPhone who
-  // opens the invite link in Chrome will never find the option and will
-  // reasonably conclude the app is broken. Called out explicitly for that
-  // reason rather than assumed obvious.
   const text = "Hi" + (opts.displayName ? " " + opts.displayName : "") + ",\n\n" +
     opts.inviterEmail + " has added you to RoofOps (Watkins Roofing's field work order app) as a " + roleLabel + ".\n\n" +
-    "1. SET YOUR PASSWORD\n" + opts.resetLink + "\n\n" +
-    "2. ADD ROOFOPS TO YOUR HOME SCREEN (do this once, in the field it's much faster than a browser tab)\n" +
-    "   iPhone/iPad: open " + opts.appUrl + " in SAFARI (must be Safari, not Chrome -- the option doesn't exist there) -> tap the Share button -> scroll down -> \"Add to Home Screen\" -> Add.\n" +
-    "   Android: open " + opts.appUrl + " in Chrome -> tap the three-dot menu -> \"Install app\" or \"Add to Home screen.\"\n" +
-    "   Computer (Chrome/Edge): click the install icon in the address bar, or the three-dot menu -> \"Install RoofOps.\"\n" +
-    "   This makes it open full-screen like a real app, one tap from your home screen.\n\n" +
-    "3. NEED HELP?\n" + helpLink + " -- searchable how-tos, right in the app, or tap the ❓ button on any screen once you're signed in.\n\n" +
-    "Sign in any time at " + opts.appUrl + "\n\n" +
+    "Set your password to sign in:\n" + opts.resetLink + "\n\n" +
+    "Once your password is set, sign in at " + opts.appUrl + "\n\n" +
     "If you weren't expecting this, you can ignore this email.";
   const html = "<p>Hi" + (opts.displayName ? " " + escapeHtml(opts.displayName) : "") + ",</p>" +
     "<p><b>" + escapeHtml(opts.inviterEmail) + "</b> has added you to <b>RoofOps</b> (Watkins Roofing's field work order app) as a <b>" + escapeHtml(roleLabel) + "</b>.</p>" +
-    "<p style=\"margin:20px 0 8px\"><b>1. Set your password</b></p>" +
     "<p><a href=\"" + opts.resetLink + "\" style=\"display:inline-block;background:#E8600A;color:#fff;padding:10px 18px;border-radius:6px;text-decoration:none;font-weight:bold\">Set Your Password and Sign In</a></p>" +
-    "<p style=\"margin:22px 0 8px\"><b>2. Add RoofOps to your home screen</b> (do this once — in the field it's much faster than a browser tab)</p>" +
-    "<ul style=\"margin:0 0 16px;padding-left:20px;line-height:1.6\">" +
-    "<li><b>iPhone/iPad:</b> open the app in <b>Safari</b> (must be Safari — the option doesn't exist in Chrome on iOS) → tap the Share button → scroll down → <b>Add to Home Screen</b> → Add.</li>" +
-    "<li><b>Android:</b> open the app in Chrome → three-dot menu → <b>Install app</b> or <b>Add to Home screen</b>.</li>" +
-    "<li><b>Computer (Chrome/Edge):</b> the install icon in the address bar, or three-dot menu → <b>Install RoofOps</b>.</li>" +
-    "</ul>" +
-    "<p style=\"color:#666;font-size:13px;margin:0 0 16px\">It'll open full-screen like a real app, one tap from your home screen — no digging through browser tabs on a roof.</p>" +
-    "<p style=\"margin:22px 0 8px\"><b>3. Need help?</b></p>" +
-    "<p style=\"margin:0 0 16px\"><a href=\"" + helpLink + "\">Open the Help Center</a> — searchable how-tos, or tap ❓ on any screen once you're signed in.</p>" +
-    "<p>Sign in any time at <a href=\"" + opts.appUrl + "\">" + opts.appUrl + "</a>.</p>" +
+    "<p>Once your password is set, sign in at <a href=\"" + opts.appUrl + "\">" + opts.appUrl + "</a>.</p>" +
     "<p style=\"color:#666;font-size:13px\">If you weren't expecting this, you can ignore this email.</p>";
   const resp2 = await fetch("https://api.resend.com/emails", {
     method: "POST",
@@ -143,98 +115,9 @@ exports.handler = async function (event) {
   try { body = JSON.parse(event.body || "{}"); }
   catch (e) { return resp(400, { error: "Bad request" }); }
 
-  // ---- whoami_project: read-only diagnostic, added 2026-07-12 to
-  // investigate a suspected half-split (dev's CLIENT correctly isolated,
-  // but dev's SERVER FUNCTIONS possibly still holding production
-  // credentials). Deliberately does NOT call getDb()/getAuth() for the raw
-  // env-var report below -- reads FIREBASE_SERVICE_ACCOUNT itself and
-  // parses only project_id out of it, no Firestore/Auth call, no write,
-  // nothing sensitive returned (project_id is already public in the
-  // client's own FIREBASE_CONFIG). Separately calls getAdmin() so the
-  // safety guard in authGuard.js actually runs and its verdict (pass, or
-  // the specific mismatch error) is visible too -- if the guard trips,
-  // that error message IS the diagnosis. No auth required: this reveals
-  // no secret, and requiring a caller identity would be circular during
-  // exactly the "is anything working at all" investigation this exists
-  // for. ----
-  if (body.action === "whoami_project") {
-    const hostname = hostnameFromEvent(event);
-    const out = {
-      requestHostname: hostname,
-      context: process.env.CONTEXT || null, branch: process.env.BRANCH || null, deployUrl: process.env.URL || null,
-      deployPrimeUrl: process.env.DEPLOY_PRIME_URL || null, deployUrl2: process.env.DEPLOY_URL || null,
-      siteName: process.env.SITE_NAME || null, deployId: process.env.DEPLOY_ID || null
-    };
-    try {
-      const raw = process.env.FIREBASE_SERVICE_ACCOUNT;
-      out.serviceAccountSet = !!raw;
-      if (raw) { try { out.rawProjectId = JSON.parse(raw).project_id || null; } catch (e) { out.rawParseError = String(e.message || e); } }
-    } catch (e) { out.envReadError = String(e.message || e); }
-    try {
-      getAdmin(hostname);
-      out.guardResult = "pass";
-      out.initializedProjectId = out.rawProjectId;
-    } catch (e) {
-      out.guardResult = "BLOCKED";
-      out.guardError = e.message;
-    }
-    return resp(200, out);
-  }
-
   try {
-    const db = getDb(hostnameFromEvent(event));
+    const db = getDb();
     const auth = getAuth();
-
-    // ---- mint_disposable_test_session: added 2026-07-12 to run REAL,
-    // live negative-permission tests on dev (field_tech can't self-promote,
-    // can't approve pricing, etc.) without ever touching a human's
-    // password. Anonymous auth isn't enabled on this project, so this
-    // mints a Firebase custom token (a signed, ~1hr-lived JWT tied to one
-    // specific uid) the same way a backend would provision a service
-    // session -- NOT a password, never entered anywhere, exchanged
-    // client-side via signInWithCustomToken() for a real ID token with
-    // real custom claims that requirePermission()/firestore.rules check
-    // exactly like any other session. Locked down three ways: owner-only,
-    // dev-hostname-only (defense in depth on top of the project-level
-    // safety guard in authGuard.js), and every minted account is tagged
-    // isDisposableTestAccount:true so it's obviously not a real user if
-    // anyone ever finds it lingering. Delete the account when done testing
-    // -- this does not expire or clean up on its own. ----
-    if (body.action === "mint_disposable_test_session") {
-      let caller;
-      try { caller = await verifyCaller(event); }
-      catch (e) { return resp(e.statusCode || 401, { error: e.message }); }
-      if (!caller.owner) return resp(403, { error: "Owner only" });
-
-      const hostname = hostnameFromEvent(event) || "";
-      const looksDev = hostname.indexOf("dev--") !== -1 || hostname === "localhost" ||
-        hostname.indexOf("localhost:") === 0 || hostname === "127.0.0.1" || hostname.indexOf("127.0.0.1:") === 0;
-      if (!looksDev) return resp(403, { error: "mint_disposable_test_session is dev-only (request hostname: " + hostname + ")" });
-
-      const roleId = String(body.roleId || "");
-      if (!roleId || roleId === "owner") return resp(400, { error: "Invalid roleId" });
-      const roleDoc = await db.collection("roles").doc(roleId).get();
-      if (!roleDoc.exists) return resp(400, { error: "Unknown role: " + roleId });
-
-      let uid = String(body.uid || "");
-      if (!uid) {
-        const rec = await auth.createUser({ displayName: "DISPOSABLE_TEST_ACCOUNT (safe to delete)" });
-        uid = rec.uid;
-      }
-      await auth.setCustomUserClaims(uid, { owner: false, role: roleId, mfaOk: false });
-      await db.collection("users").doc(uid).set({
-        uid: uid, email: null, displayName: "DISPOSABLE_TEST_ACCOUNT", role: roleId,
-        permissions: {}, projectRoles: {}, status: "active", mfaEnrolled: false, owner: false,
-        isDisposableTestAccount: true, createdAt: Date.now(), updatedAt: Date.now(),
-        createdBy: "mint_disposable_test_session:" + caller.uid, lastLoginAt: null
-      }, { merge: true });
-      const customToken = await auth.createCustomToken(uid, { disposableTest: true });
-      await writeAudit(db, {
-        actorUid: caller.uid, actorRole: "owner", action: "mint_disposable_test_session",
-        target: { collection: "users", id: uid }, before: null, after: { role: roleId }
-      });
-      return resp(200, { ok: true, uid: uid, customToken: customToken });
-    }
 
     // ---- seed_roles: writes/re-syncs the 9 approved roles from code-defined
     // SEED_ROLES. Idempotent (overwrites only the SEED_ROLES ids, never

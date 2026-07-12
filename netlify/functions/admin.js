@@ -12,7 +12,7 @@
 // there is no PIN check left to bypass, not even as a fallback. A missing
 // or insufficient token is rejected the same way regardless of anything
 // else in the request body.
-const { getDb, requirePermission, hostnameFromEvent } = require("./lib/authGuard");
+const { getDb, requirePermission } = require("./lib/authGuard");
 
 function resp(code, obj) {
   return { statusCode: code, headers: { "Content-Type": "application/json" }, body: JSON.stringify(obj) };
@@ -78,7 +78,7 @@ exports.handler = async function (event) {
   catch (e) { return resp(400, { error: "Bad request" }); }
 
   try {
-    const db = getDb(hostnameFromEvent(event));
+    const db = getDb();
 
     if (body.action === "delete_building") {
       // Hard delete -- the "purge" tier per docs/AUTH_DESIGN.md ("No

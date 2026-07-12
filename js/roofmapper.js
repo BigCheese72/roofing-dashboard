@@ -3394,7 +3394,7 @@ function rmStartOrthoTrace(dataUrl, pixelW, pixelH){
    set_building_roof_map path uploadRoofBaseMap() already uses for a
    hand-drawn base map (same companyCamProjectId requirement -- the
    building needs a linked CompanyCam project to have somewhere durable
-   to put the image -- same claims/permission-gated server call).
+   to put the image -- same admin-PIN-gated server call).
 
    Deliberately saved as roof_base_map_type "sketch" (x/y pixel space),
    NOT "drone_ortho" (real lat/lng bounds), even though it visually IS a

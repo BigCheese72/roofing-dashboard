@@ -72,20 +72,6 @@ service cloud.firestore {
     match /buildings/{buildingId} {
       allow read, create, update: if true;
       allow delete: if false;
-
-      // Warranty inspection reports (see netlify/functions/inspection-
-      // reports.js) -- read stays open, matching every other field-facing
-      // collection's "no login yet" tier (a tech needs to open a PDF on
-      // the roof same as viewing any other building data). Write is
-      // server-only, unconditionally -- filing a report involves matching,
-      // Storage upload, best-effort CompanyCam upload, and supersede
-      // bookkeeping that must never be split across a client write plus a
-      // function call; the ONLY way onto this subcollection is
-      // inspection-reports.js's Admin SDK writes.
-      match /warranty_reports/{reportId} {
-        allow read: if true;
-        allow write: if false;
-      }
     }
 
     match /reports/{reportId} {
@@ -189,23 +175,6 @@ service cloud.firestore {
     // collection with no matching rule — a client SDK must never be able
     // to read or write anything under here, no exceptions, ever.
     match /secrets/{secretId} {
-      allow read, write: if false;
-    }
-
-    // Warranty-report ingestion internals (see netlify/functions/
-    // inspection-reports.js) -- fully closed to every client, same tier as
-    // secrets/ above. The review queue holds extracted-but-unconfirmed
-    // matching signals and a Storage ref to a not-yet-filed PDF; only
-    // whoever holds warranty.manage_reports should ever see it, and that's
-    // enforced by inspection-reports.js's list_review_queue/assign_review_item/
-    // dismiss_review_item actions, not by a client Firestore read.
-    // ingested_email_attachments is a pure idempotency ledger (Graph
-    // message+attachment id -> already processed), no reason for a client
-    // to ever touch it.
-    match /warranty_review_queue/{itemId} {
-      allow read, write: if false;
-    }
-    match /ingested_email_attachments/{idemId} {
       allow read, write: if false;
     }
   }
