@@ -5628,7 +5628,9 @@ Implementation:
   all highest-detail tiles as a Leaflet layer group. A separately selected
   paired JPG with the same base name is used only for optional image retention
   through the existing CompanyCam/base-map path; tracing uses the georeferenced
-  KMZ tiles.
+  KMZ tiles. Because normal Leaflet image overlays cannot warp `gx:LatLonQuad`
+  rasters, the importer records `quadBBoxErrorFt`/`maxQuadBBoxErrorFt` and shows
+  a warning when tile quads are being approximated to rectangular bounds.
 - KML+image upload matches the local paired image the same way.
 - The image is resized through the same bounded `rmResizeDataUrlToOrtho()` path
   used by flat orthos, then drawn as a Leaflet `imageOverlay` at the KML bounds.

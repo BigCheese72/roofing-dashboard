@@ -508,7 +508,8 @@ as a roof's custom base map); the third — an uploaded drawing/PDF — is block
                   // imageHref, imageFileName, bounds:{north,south,east,west},
                   // rotation }. Google Earth super-overlay shape:
                   // { sourceType:"kmz_superoverlay", sourceFileName,
-                  // imageFileName, tileCount, kmlLevel, bounds, tiles:[...] }.
+                  // imageFileName, tileCount, kmlLevel, bounds,
+                  // maxQuadBBoxErrorFt, tiles:[...] }.
                   // Rotation/quads are preserved as metadata; current Leaflet
                   // display warns but does not warp or rotate rasters.
   createdAt,

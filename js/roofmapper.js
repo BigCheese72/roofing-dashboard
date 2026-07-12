@@ -3296,6 +3296,28 @@ function rmKmlParseLatLonQuad(overlay){
     }
   };
 }
+function rmKmlQuadBBoxErrorFt(quad){
+  if (!quad || quad.length < 4) return 0;
+  var lats = quad.map(function(p){ return p.lat; });
+  var lngs = quad.map(function(p){ return p.lng; });
+  var remaining = [
+    { lat: Math.max.apply(null, lats), lng: Math.min.apply(null, lngs) },
+    { lat: Math.max.apply(null, lats), lng: Math.max.apply(null, lngs) },
+    { lat: Math.min.apply(null, lats), lng: Math.max.apply(null, lngs) },
+    { lat: Math.min.apply(null, lats), lng: Math.min.apply(null, lngs) }
+  ];
+  var maxErrFt = 0;
+  quad.forEach(function(point){
+    var bestIdx = 0, bestFt = Infinity;
+    remaining.forEach(function(corner, idx){
+      var ft = rmGeomHaversineMeters(point, corner) * 3.28084;
+      if (ft < bestFt){ bestFt = ft; bestIdx = idx; }
+    });
+    if (isFinite(bestFt)) maxErrFt = Math.max(maxErrFt, bestFt);
+    remaining.splice(bestIdx, 1);
+  });
+  return maxErrFt;
+}
 function rmKmlBoundsUnion(boundsList){
   var valid = (boundsList || []).filter(Boolean);
   if (!valid.length) return null;
@@ -3343,6 +3365,7 @@ function rmParseKmlGroundOverlays(kmlText, sourceName, kmlPath){
       name: rmKmlChildText(overlay, "name"),
       bounds: bounds,
       latLonQuad: quadInfo ? quadInfo.quad : null,
+      quadBBoxErrorFt: quadInfo ? rmKmlQuadBBoxErrorFt(quadInfo.quad) : 0,
       rotation: isFinite(rotation) ? rotation : 0
     };
   }).filter(Boolean);
@@ -3406,10 +3429,18 @@ function rmStartKmlGroundOverlayTrace(dataUrl, meta){
   var msg = "KML GroundOverlay loaded";
   if (meta.imageFileName) msg += " (" + meta.imageFileName + ")";
   msg += " -- trace the roof on the orthomosaic.";
+  var warns = [];
   if (Math.abs(meta.rotation || 0) > 0.001){
-    msg += " Note: KML rotation " + meta.rotation + " degrees was detected; Leaflet's image overlay does not rotate it, so verify alignment before saving.";
+    warns.push("KML rotation " + meta.rotation + " degrees was detected");
   }
-  rmSetStatus(msg, Math.abs(meta.rotation || 0) > 0.001 ? "warn" : null);
+  if ((meta.quadBBoxErrorFt || 0) > 0.25){
+    warns.push("KML LatLonQuad is being approximated to a rectangular image overlay (max corner difference ~" +
+      Math.round(meta.quadBBoxErrorFt * 10) / 10 + " ft)");
+  }
+  if (warns.length){
+    msg += " Note: " + warns.join("; ") + ". Verify alignment before saving.";
+  }
+  rmSetStatus(msg, warns.length ? "warn" : null);
   rmUpdateControlVisibility();
 }
 function rmStartKmlSuperOverlayTrace(tiles, meta){
@@ -3440,7 +3471,12 @@ function rmStartKmlSuperOverlayTrace(tiles, meta){
   document.getElementById("rm-trace-mode-hint").textContent =
     "Tap the roof's corners in order, right on the KMZ orthomosaic above. This KMZ is a tiled Google Earth " +
     "overlay, so RoofMapper loaded the highest-detail tile set for tracing.";
-  rmSetStatus("KMZ super-overlay loaded (" + tiles.length + " tiles) -- trace the roof on the orthomosaic.");
+  var msg = "KMZ super-overlay loaded (" + tiles.length + " tiles) -- trace the roof on the orthomosaic.";
+  if ((meta.maxQuadBBoxErrorFt || 0) > 0.25){
+    msg += " Note: KML tile quads are approximated to rectangular overlays (max corner difference ~" +
+      Math.round(meta.maxQuadBBoxErrorFt * 10) / 10 + " ft). Verify alignment before saving.";
+  }
+  rmSetStatus(msg, (meta.maxQuadBBoxErrorFt || 0) > 0.25 ? "warn" : null);
   rmUpdateControlVisibility();
 }
 function rmKmzKmlLevel(path){
@@ -3499,6 +3535,7 @@ async function rmUploadKmzFile(file, allFiles){
     persistDataUrl = pairedResult.dataUrl;
     persistImageName = paired.name;
   }
+  var maxQuadBBoxErrorFt = Math.max.apply(null, tiles.map(function(t){ return t.meta.quadBBoxErrorFt || 0; }));
   rmStartKmlSuperOverlayTrace(tiles, {
     sourceType: "kmz_superoverlay",
     sourceFileName: file.name,
@@ -3506,7 +3543,9 @@ async function rmUploadKmzFile(file, allFiles){
     tileCount: tiles.length,
     kmlLevel: maxLevel,
     bounds: docBounds || rmKmlBoundsUnion(tiles.map(function(t){ return t.meta.bounds; })),
-    tiles: tiles.map(function(t){ return { kmlFileName: t.meta.kmlFileName, imageFileName: t.meta.imageFileName, bounds: t.meta.bounds }; }),
+    maxQuadBBoxErrorFt: isFinite(maxQuadBBoxErrorFt) ? maxQuadBBoxErrorFt : 0,
+    tiles: tiles.map(function(t){ return { kmlFileName: t.meta.kmlFileName, imageFileName: t.meta.imageFileName,
+      bounds: t.meta.bounds, quadBBoxErrorFt: t.meta.quadBBoxErrorFt || 0 }; }),
     persistDataUrl: persistDataUrl
   });
 }
