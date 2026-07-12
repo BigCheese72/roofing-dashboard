@@ -4,49 +4,45 @@
 // path to destroy data is through here, using the Firebase Admin SDK
 // (which is not subject to Firestore security rules).
 //
-// The PIN a tech types into the app's "Admin" toggle is NOT checked
-// client-side anymore — it's sent here and compared against the ADMIN_PIN
-// environment variable, which is never shipped to the browser. This is
-// what actually closes the gap where anyone could open devtools and call
-// the Firestore SDK directly to delete data regardless of the UI.
-const admin = require("firebase-admin");
-const { tryVerifyCaller } = require("./lib/authGuard");
+// Auth Phase 5 (accelerated -- see docs/AUTH_DESIGN.md): every mutating
+// action below is gated by a VERIFIED caller's Firebase custom claims,
+// resolved against the live roles/{roleId} permission grid
+// (requirePermission() in lib/authGuard.js) -- not the shared ADMIN_PIN.
+// The PIN is gone as an authorization mechanism entirely (only the
+// harmless, non-mutating check_pin action still reads it, kept for any
+// caller still probing it, e.g. a smoke test). A claims-authoritative gate
+// means: correct PIN no longer unlocks anything here, and a signed-in
+// caller whose role lacks the specific permission is rejected regardless
+// of anything else in the request body. See "Why the PIN was dropped, not
+// just supplemented" in docs/AUTH_DESIGN.md for the reasoning (a live PIN
+// fallback would let anyone who knows the office PIN bypass claims
+// entirely, defeating the point of this phase).
+const { getDb, requirePermission } = require("./lib/authGuard");
 
 function resp(code, obj) {
   return { statusCode: code, headers: { "Content-Type": "application/json" }, body: JSON.stringify(obj) };
 }
 
-// Auth Phase 2 -- immutable audit log for admin.js's mutating actions (see
-// "Audit log" in docs/AUTH_DESIGN.md: append-only, rules deny update/delete
-// to EVERYONE including owner, written only via the Admin SDK here, never
-// subject to rules at all).
+// Auth Phase 2/5 -- immutable audit log for admin.js's mutating actions
+// (see "Audit log" in docs/AUTH_DESIGN.md: append-only, rules deny
+// update/delete to EVERYONE including owner, written only via the Admin
+// SDK here, never subject to rules at all).
 //
-// Deliberately does NOT require login -- the shared ADMIN_PIN (checked
-// above, unchanged) remains the only thing actually gating this file,
-// because it's the only thing PRODUCTION'S code sends at all (zero
-// Firebase Auth tokens there). tryVerifyCaller() opportunistically
-// captures a real actor identity when a dev caller happens to be signed
-// in (richer log: who, not just "PIN was correct"), and degrades cleanly
-// to actorMethod:"pin_only" otherwise. A logging failure NEVER blocks the
-// underlying admin action -- the write already happened; losing the
+// caller is always a real verified identity now (requirePermission()
+// throws before any action body runs otherwise) -- no more optional
+// tryVerifyCaller()/"pin_only" degradation, since there's no PIN-only path
+// left for any of these actions to take. A logging failure NEVER blocks
+// the underlying admin action -- the write already happened; losing the
 // audit trail for one action is a lesser failure than silently reporting
 // the action itself failed when it didn't.
-async function writeAuditLog(db, event, action, target, before, after) {
+async function writeAuditLog(db, caller, action, target, before, after) {
   try {
-    const caller = await tryVerifyCaller(event);
-    // ts:Date.now() (not a Firestore serverTimestamp) matches the exact
-    // shape auth.js's writeAudit() already established in Phase 1 for
-    // bootstrap_owner/assign_role/transfer_owner -- one consistent shape
-    // across every audit_logs writer, not a second timestamp field.
-    // actorEmail/actorMethod are additive fields Phase 1's writer doesn't
-    // set (a plain `undefined` field is simply absent on read, same as
-    // every other optional field elsewhere in this app).
     await db.collection("audit_logs").doc().set({
       ts: Date.now(),
-      actorUid: caller ? caller.uid : null,
-      actorEmail: caller ? caller.email : null,
-      actorRole: caller ? (caller.owner ? "owner" : caller.role) : null,
-      actorMethod: caller ? "claims" : "pin_only",
+      actorUid: caller.uid,
+      actorEmail: caller.email,
+      actorRole: caller.owner ? "owner" : caller.role,
+      actorMethod: "claims",
       action: action,
       target: target,
       before: before === undefined ? null : before,
@@ -78,36 +74,20 @@ function getBuildingRoofsServer(bld) {
   }];
 }
 
-function getDb() {
-  if (!admin.apps.length) {
-    const raw = process.env.FIREBASE_SERVICE_ACCOUNT;
-    if (!raw) throw new Error("FIREBASE_SERVICE_ACCOUNT is not set. Add it in Netlify > Environment variables, then redeploy.");
-    let creds;
-    try { creds = JSON.parse(raw); }
-    catch (e) { throw new Error("FIREBASE_SERVICE_ACCOUNT is not valid JSON."); }
-    admin.initializeApp({ credential: admin.credential.cert(creds) });
-  }
-  return admin.firestore();
-}
-
 exports.handler = async function (event) {
   if (event.httpMethod !== "POST") {
     return resp(405, { error: "Method not allowed" });
   }
-  const configuredPin = process.env.ADMIN_PIN;
-  if (!configuredPin) {
-    return resp(500, { error: "ADMIN_PIN is not set. Add it in Netlify > Environment variables, then redeploy." });
-  }
-
   let body;
   try { body = JSON.parse(event.body || "{}"); }
   catch (e) { return resp(400, { error: "Bad request" }); }
 
-  if (String(body.pin || "") !== configuredPin) {
-    return resp(403, { error: "Wrong admin PIN" });
-  }
-
+  // check_pin: kept working exactly as before -- non-mutating, doesn't
+  // gate anything else in this file anymore, harmless to leave available.
   if (body.action === "check_pin") {
+    const configuredPin = process.env.ADMIN_PIN;
+    if (!configuredPin) return resp(500, { error: "ADMIN_PIN is not set. Add it in Netlify > Environment variables, then redeploy." });
+    if (String(body.pin || "") !== configuredPin) return resp(403, { error: "Wrong admin PIN" });
     return resp(200, { ok: true });
   }
 
@@ -115,6 +95,17 @@ exports.handler = async function (event) {
     const db = getDb();
 
     if (body.action === "delete_building") {
+      // Hard delete -- the "purge" tier per docs/AUTH_DESIGN.md ("No
+      // client deletes anywhere... purge has no client path at all --
+      // server function, callable only when the caller's claims have
+      // owner === true"). buildings.purge resolves to owner-only via the
+      // seed grid (admin is explicitly excluded), so this IS an
+      // owner-only check, just expressed as a data-driven permission
+      // rather than a hardcoded caller.owner test.
+      let caller;
+      try { caller = await requirePermission(event, "buildings.purge"); }
+      catch (e) { return resp(e.statusCode || 401, { error: e.message }); }
+
       const buildingId = String(body.buildingId || "");
       if (!buildingId) return resp(400, { error: "Missing buildingId" });
       const [bldSnapBefore, evtSnap, repSnap] = await Promise.all([
@@ -132,7 +123,7 @@ exports.handler = async function (event) {
       repSnap.forEach(d => batch.delete(d.ref));
       batch.delete(db.collection("buildings").doc(buildingId));
       await batch.commit();
-      await writeAuditLog(db, event, "delete_building", { collection: "buildings", id: buildingId },
+      await writeAuditLog(db, caller, "delete_building", { collection: "buildings", id: buildingId },
         bldBefore ? { name: bldBefore.name || null, address: bldBefore.address || null,
           customerId: bldBefore.customerId || null, deletedEvents: evtSnap.size, deletedReports: repSnap.size } : null,
         null);
@@ -140,6 +131,14 @@ exports.handler = async function (event) {
     }
 
     if (body.action === "delete_history_event") {
+      // Same purge tier as delete_building above -- a history event is
+      // just as irreversible once gone, and there's no separate
+      // permission key for "delete one event" vs "delete a building";
+      // both are the same hard-delete danger class.
+      let caller;
+      try { caller = await requirePermission(event, "buildings.purge"); }
+      catch (e) { return resp(e.statusCode || 401, { error: e.message }); }
+
       const eventId = String(body.eventId || "");
       if (!eventId) return resp(400, { error: "Missing eventId" });
       const evtSnapBefore = await db.collection("building_history_events").doc(eventId).get();
@@ -148,12 +147,19 @@ exports.handler = async function (event) {
       batch.delete(db.collection("building_history_events").doc(eventId));
       batch.delete(db.collection("reports").doc(eventId)); // same id — see logReportAndHistoryEvent in index.html
       await batch.commit();
-      await writeAuditLog(db, event, "delete_history_event", { collection: "building_history_events", id: eventId },
+      await writeAuditLog(db, caller, "delete_history_event", { collection: "building_history_events", id: eventId },
         evtBefore ? { buildingId: evtBefore.buildingId || null, workOrderType: evtBefore.workOrderType || null } : null, null);
       return resp(200, { ok: true });
     }
 
     if (body.action === "set_building_roof_map") {
+      // Building-wide admin setting -- settings.company tier (Admin +
+      // Owner, per docs/AUTH_DESIGN.md's settings split), not the owner-
+      // only purge tier above.
+      let caller;
+      try { caller = await requirePermission(event, "settings.company"); }
+      catch (e) { return resp(e.statusCode || 401, { error: e.message }); }
+
       // Setting AND clearing a building's base map both go through here —
       // it's a shared, building-wide setting (affects every future report's
       // history map), not per-work-order draft data, so it gets the same
@@ -219,24 +225,25 @@ exports.handler = async function (event) {
         patch.roof_base_map_updated_at = Date.now();
       }
       await bldRef.set(patch, { merge: true });
-      await writeAuditLog(db, event, "set_building_roof_map", { collection: "buildings", id: buildingId, roofId: roofs[idx].id },
+      await writeAuditLog(db, caller, "set_building_roof_map", { collection: "buildings", id: buildingId, roofId: roofs[idx].id },
         roofBefore, { roof_base_map_type: type, roof_base_map_url: url });
       return resp(200, { ok: true });
     }
 
     if (body.action === "set_roof_profile") {
       // Admin-editable facts ABOUT a roof (age, warranty, condition, etc.)
-      // — a shared, building-wide fact worth the same server-enforced gate
-      // as the custom base map above, not a per-work-order thing any tech
-      // should casually overwrite. See "Admin roof-profile fields" in
-      // DEV_NOTES.md / DATA_MODEL.md.
+      // — same settings.company tier as the base-map action above.
+      let caller;
+      try { caller = await requirePermission(event, "settings.company"); }
+      catch (e) { return resp(e.statusCode || 401, { error: e.message }); }
+
       const buildingId = String(body.buildingId || "");
       if (!buildingId) return resp(400, { error: "Missing buildingId" });
       const roofId = body.roofId ? String(body.roofId) : null;
       const rawProfile = (body.profile && typeof body.profile === "object") ? body.profile : {};
       // Allow-list of fields — never let an arbitrary client payload write
       // unexpected keys onto a roof, even though this whole action is
-      // already admin-PIN-gated.
+      // already claims-gated.
       const ALLOWED_PROFILE_FIELDS = ["installDate", "estimatedAgeYears", "healthScore",
         "condition", "manufacturer", "deckType", "insulationType", "warrantyProvider",
         "warrantyExpiration", "warrantyStatus", "drainageNotes", "customerContacts",
@@ -266,7 +273,7 @@ exports.handler = async function (event) {
         patch.roofSystem = roofSystem;
       }
       await bldRef.set(patch, { merge: true });
-      await writeAuditLog(db, event, "set_roof_profile", { collection: "buildings", id: buildingId, roofId: roofs[idx].id },
+      await writeAuditLog(db, caller, "set_roof_profile", { collection: "buildings", id: buildingId, roofId: roofs[idx].id },
         profileBefore, profile);
       return resp(200, { ok: true });
     }
@@ -274,34 +281,39 @@ exports.handler = async function (event) {
     if (body.action === "list_feedback") {
       // In-app Send Feedback backlog (💬 button, every screen — see
       // "Send Feedback" in DEV_NOTES.md). firestore.rules blocks client
-      // reads on `feedback` entirely (create-only, like the delete-blocked
-      // collections above use write-blocked) — this Admin-SDK read is the
-      // only way to list them, so the backlog view is inherently
-      // admin-PIN-gated with no separate check needed.
+      // reads on `feedback` entirely (create-only) -- this Admin-SDK read
+      // is the only way to list them. Gated on audit.view: the closest
+      // existing permission key for "sees internal operational backlog
+      // data," same tier as the audit log itself just below.
+      let caller;
+      try { caller = await requirePermission(event, "audit.view"); }
+      catch (e) { return resp(e.statusCode || 401, { error: e.message }); }
+
       const snap = await db.collection("feedback").orderBy("createdAt", "desc").limit(200).get();
       const items = snap.docs.map(d => Object.assign({ id: d.id }, d.data()));
       return resp(200, { ok: true, items });
     }
 
     if (body.action === "list_audit_log") {
-      // Auth Phase 2 -- surfaces what writeAuditLog() above records.
-      // firestore.rules already lets a signed-in caller with audit.view
-      // (or owner) read audit_logs directly, but this PIN-gated path
-      // works for the CURRENT PIN-only admin mode too, same precedent as
-      // list_feedback just above (a client-side Firestore read would need
-      // a real signed-in claims-bearing user, which Phase 2 doesn't yet
-      // require of admin mode -- see "Shared Firestore, dev/prod risk
-      // boundary" in docs/AUTH_DESIGN.md for why that's still true).
-      // ts is a plain Date.now() number (see writeAuditLog()'s comment on
-      // why -- matches auth.js's Phase 1 audit writer exactly), not a
-      // Firestore Timestamp, so no server->client conversion is needed
-      // here the way there would be for a serverTimestamp() field.
+      // audit.view -- matches the permission key exactly.
+      let caller;
+      try { caller = await requirePermission(event, "audit.view"); }
+      catch (e) { return resp(e.statusCode || 401, { error: e.message }); }
+
+      // ts is a plain Date.now() number (matches every audit_logs writer
+      // in this app), not a Firestore Timestamp, so no server->client
+      // conversion is needed here the way there would be for a
+      // serverTimestamp() field.
       const snap = await db.collection("audit_logs").orderBy("ts", "desc").limit(200).get();
       const items = snap.docs.map(d => Object.assign({ id: d.id }, d.data()));
       return resp(200, { ok: true, items });
     }
 
     if (body.action === "archive_building") {
+      let caller;
+      try { caller = await requirePermission(event, "buildings.archive"); }
+      catch (e) { return resp(e.statusCode || 401, { error: e.message }); }
+
       // Replaces the old hard-delete-only path (delete_building above,
       // "can't be undone") with a recoverable soft delete -- Mark's actual
       // need was "get a wrong/junk building out of my way," not "destroy
@@ -320,24 +332,34 @@ exports.handler = async function (event) {
       if (!bldSnap.exists) return resp(404, { error: "Building not found" });
       const bldBefore = bldSnap.data();
       await bldRef.set({ archived: true, archivedAt: Date.now() }, { merge: true });
-      await writeAuditLog(db, event, "archive_building", { collection: "buildings", id: buildingId },
+      await writeAuditLog(db, caller, "archive_building", { collection: "buildings", id: buildingId },
         { archived: !!bldBefore.archived, name: bldBefore.name || null }, { archived: true });
       return resp(200, { ok: true });
     }
 
     if (body.action === "unarchive_building") {
+      let caller;
+      try { caller = await requirePermission(event, "buildings.restore"); }
+      catch (e) { return resp(e.statusCode || 401, { error: e.message }); }
+
       const buildingId = String(body.buildingId || "");
       if (!buildingId) return resp(400, { error: "Missing buildingId" });
       const bldRef = db.collection("buildings").doc(buildingId);
       const bldSnap = await bldRef.get();
       if (!bldSnap.exists) return resp(404, { error: "Building not found" });
       await bldRef.set({ archived: false, archivedAt: null }, { merge: true });
-      await writeAuditLog(db, event, "unarchive_building", { collection: "buildings", id: buildingId },
+      await writeAuditLog(db, caller, "unarchive_building", { collection: "buildings", id: buildingId },
         { archived: true }, { archived: false });
       return resp(200, { ok: true });
     }
 
     if (body.action === "move_roof") {
+      // Cross-cutting, multi-collection structural change -- same
+      // settings.company tier as the other building-admin actions above.
+      let caller;
+      try { caller = await requirePermission(event, "settings.company"); }
+      catch (e) { return resp(e.statusCode || 401, { error: e.message }); }
+
       // Mark: traced a roof onto the wrong building with no way to fix it
       // short of admin-deleting the whole wrong building (destroying
       // everything else on it too). A roof isn't just a roofs[] array
@@ -346,7 +368,7 @@ exports.handler = async function (event) {
       // has to re-point every one of those, not just relocate the roofs[]
       // entry itself, or the moved roof's history would silently vanish
       // from both buildings' timelines. High-blast-radius, multi-collection
-      // write -- same admin-PIN-gated + audited treatment as every other
+      // write -- same admin-gated + audited treatment as every other
       // cross-cutting building/roof action in this file, not a plain
       // client write even though firestore.rules would technically allow
       // one. See "Move/reassign a roof to a different building" in
@@ -450,7 +472,7 @@ exports.handler = async function (event) {
       repSnap.forEach(d => batch.set(d.ref, reassign, { merge: true }));
       await batch.commit();
 
-      await writeAuditLog(db, event, "move_roof",
+      await writeAuditLog(db, caller, "move_roof",
         { collection: "buildings", id: sourceBuildingId, roofId: roofId },
         { sourceBuildingId, sourceBuildingName: sourceBld.name || null, roofLabel: movingRoof.label || null },
         { destBuildingId, destBuildingName: destBld.name || null, newLabel: newLabel,
@@ -459,13 +481,14 @@ exports.handler = async function (event) {
     }
 
     if (body.action === "set_photo_size_pref") {
-      // Global (not per-user, not per-work-order) photo size — used to be
-      // a client-only localStorage preference; now a single admin-set
-      // value everyone picks up on load (see loadGlobalPhotoSizePref() in
-      // index.html). Same admin-PIN-gated pattern as the settings above,
-      // even though this one isn't destructive — it affects every photo
-      // every user takes from here on, so it shouldn't be a client-side-
-      // only check either.
+      // Global (not per-user, not per-work-order) photo size — settings.company
+      // tier, same as the other admin-settings actions, even though this
+      // one isn't destructive — it affects every photo every user takes
+      // from here on, so it shouldn't be a client-side-only check either.
+      let caller;
+      try { caller = await requirePermission(event, "settings.company"); }
+      catch (e) { return resp(e.statusCode || 401, { error: e.message }); }
+
       const ALLOWED_SIZES = ["small", "medium", "large"];
       const value = String(body.value || "");
       if (ALLOWED_SIZES.indexOf(value) === -1) return resp(400, { error: "Invalid photo size value" });
@@ -476,6 +499,6 @@ exports.handler = async function (event) {
 
     return resp(400, { error: "Unknown action" });
   } catch (e) {
-    return resp(500, { error: "Server error: " + (e && e.message ? e.message : "unknown") });
+    return resp(e.statusCode || 500, { error: "Server error: " + (e && e.message ? e.message : "unknown") });
   }
 };

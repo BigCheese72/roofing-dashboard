@@ -21,7 +21,7 @@
 // same "no auth yet" security tier every other collection already has, not
 // a privileged action. Basic input validation (safe id/index shapes) below
 // guards against abuse regardless.
-const { getAdmin } = require("./lib/authGuard");
+const { getAdmin, verifyCaller } = require("./lib/authGuard");
 
 const BUCKET_NAME = "watkins-service-orders.firebasestorage.app";
 // workOrderId shapes seen in real data: "wo_1783782867489" (Date.now()-based,
@@ -150,17 +150,21 @@ exports.handler = async function (event) {
     }
 
     // ---- Existing-photo migration (Stage c, see "Photo storage migration"
-    // in DEV_NOTES.md) -- ADMIN_PIN-gated, unlike every action above. Those
-    // are normal field-use operations (any tech uploads/views photos
-    // constantly); this is a one-time bulk rewrite of already-saved data,
-    // explicitly gated on Mark's own go-ahead per his own instruction, not
-    // just something this session chose not to call yet -- the PIN check
-    // makes that a real constraint the deployed function enforces, not
-    // just self-restraint. Same ADMIN_PIN env var admin.js already uses.
+    // in DEV_NOTES.md) -- claims-gated (Auth Phase 5, see docs/AUTH_DESIGN.md),
+    // unlike every action above. Those are normal field-use operations (any
+    // tech uploads/views photos constantly); this is a one-time bulk
+    // rewrite of already-saved data, explicitly gated on Mark's own
+    // go-ahead per his own instruction, not just something this session
+    // chose not to call yet. Owner-only, not a permissions.js key lookup --
+    // there's no dedicated "migrate photos" permission (it's an
+    // exceptional, one-time bulk operation, not a day-to-day admin task),
+    // so this checks caller.owner directly, matching the same "exceptional,
+    // heavily audited" tier as buildings.purge.
     if (body.action === "migrate_scan" || body.action === "migrate_photo") {
-      const configuredPin = process.env.ADMIN_PIN;
-      if (!configuredPin) return resp(500, { error: "ADMIN_PIN is not set. Add it in Netlify > Environment variables, then redeploy." });
-      if (String(body.pin || "") !== configuredPin) return resp(403, { error: "Wrong admin PIN" });
+      let caller;
+      try { caller = await verifyCaller(event); }
+      catch (e) { return resp(e.statusCode || 401, { error: e.message }); }
+      if (!caller.owner) return resp(403, { error: "Owner only" });
     }
 
     // Dry run -- reports exactly what migrate_photo WOULD do, writes
