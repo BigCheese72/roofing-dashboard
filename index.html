@@ -100,6 +100,19 @@
       <p class="hint" style="margin:4px 0 0">One-time cleanup — moves already-saved photos out of Firestore
         into Firebase Storage. Non-destructive: nothing is deleted, safe to run more than once.</p>
     </div>
+    <!-- Inspection-report ingestion (CCM Inspect emails -> Warranty
+         section, see netlify/functions/inspection-reports.js). A scheduled
+         function already polls automatically every 30 min; this button is
+         the on-demand "don't make me wait" path, same idempotency either
+         way (safe to tap even right after an automatic run). -->
+    <div class="fld" style="max-width:400px;margin:10px 0 0">
+      <label style="font-size:12px">Admin: Inspection Reports (from CCM Inspect email)</label>
+      <div class="btnrow" style="margin:0">
+        <button class="btn" onclick="checkForNewInspectionReports()">🔄 Check for New Inspection Reports</button>
+        <button class="btn" onclick="openWarrantyReviewModal()" id="warranty-review-btn">📋 Review Queue</button>
+      </div>
+      <p class="hint" style="margin:4px 0 0" id="warranty-check-status">Auto-checks every 30 minutes. Unmatched reports land in the Review Queue for manual assignment — never silently guessed.</p>
+    </div>
   </div>
 
   <!-- ================= HOME / LAUNCHER VIEW ================= -->
@@ -982,6 +995,40 @@
       <button class="btn" onclick="closeBulkReassignModal()">Close</button>
     </div>
     <div style="padding:14px 16px;overflow:auto" id="bulk-reassign-body"></div>
+  </div>
+</div>
+
+<div id="warranty-upload-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)closeWarrantyUploadModal()">
+  <div style="background:#fff;max-width:520px;margin:8vh auto;border-radius:8px;max-height:88vh;display:flex;flex-direction:column;overflow:hidden;width:94%">
+    <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
+      <b class="cond" style="font-size:17px">Upload Inspection Report</b>
+      <span style="flex:1"></span>
+      <button class="btn" onclick="closeWarrantyUploadModal()">Close</button>
+    </div>
+    <div style="padding:14px 16px;overflow:auto">
+      <p class="hint" style="margin:0 0 10px">Uploads a warranty/inspection PDF directly onto this building — files the same way an emailed report does (Warranty section + the linked CompanyCam project, if one exists).</p>
+      <div class="fld"><label>PDF file</label><input type="file" id="warranty-upload-file" accept="application/pdf,.pdf"></div>
+      <div class="fld" id="warranty-upload-supersede-fld" style="display:none">
+        <label>This replaces an existing report (optional)</label>
+        <select id="warranty-upload-supersede"><option value="">— New report, don't replace anything —</option></select>
+      </div>
+      <p class="hint" id="warranty-upload-status" style="margin:8px 0"></p>
+      <div class="btnrow" style="margin:10px 0 0"><button class="btn primary" onclick="submitWarrantyUpload()">Upload</button></div>
+    </div>
+  </div>
+</div>
+
+<div id="warranty-review-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)closeWarrantyReviewModal()">
+  <div style="background:#fff;max-width:720px;margin:4vh auto;border-radius:8px;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;width:94%">
+    <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
+      <b class="cond" style="font-size:17px">Inspection Report Review Queue</b>
+      <span style="flex:1"></span>
+      <button class="btn" onclick="closeWarrantyReviewModal()">Close</button>
+    </div>
+    <div style="padding:14px 16px;overflow:auto">
+      <p class="hint" style="margin:0 0 10px">Reports that couldn't be confidently matched to a building — assign each to the correct one, or dismiss it if it's not a real inspection report.</p>
+      <div id="warranty-review-list" class="hint">Loading…</div>
+    </div>
   </div>
 </div>
 

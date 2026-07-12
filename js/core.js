@@ -1089,6 +1089,17 @@ async function callPhotosApi(body){
   if (!r.ok || !out) throw new Error((out && out.error) || ("server error " + r.status));
   return out;
 }
+async function callInspectionApi(body){
+  var r = await fetch("/.netlify/functions/inspection-reports", {
+    method: "POST",
+    headers: await authHeaders(),
+    body: JSON.stringify(body)
+  });
+  var out = null;
+  try{ out = await r.json(); }catch(e){}
+  if (!r.ok || !out) throw new Error((out && out.error) || ("server error " + r.status));
+  return out;
+}
 /* Stage c of the photo storage migration (see "Photo storage migration"
    in DEV_NOTES.md) -- migrates already-saved base64-in-Firestore photos
    into Firebase Storage. Owner-only server-side (photos.js's
@@ -1169,6 +1180,7 @@ function updateAdminUI(){
     settingsBar.style.display = isAdmin ? "" : "none";
     var sel = document.getElementById("adminPhotoSize");
     if (isAdmin && sel) sel.value = globalPhotoSizePref;
+    if (isAdmin && typeof updateWarrantyReviewBadge === "function") updateWarrantyReviewBadge();
   }
   /* Saved view access control (Mark) -- Import Work Order File and, per
      saved work order, Delete, are admin-only (Export was removed
