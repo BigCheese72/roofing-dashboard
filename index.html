@@ -881,9 +881,10 @@
   </div>
 </div>
 
-<!-- ================= Account (Phase 1 of the auth build -- see
-     docs/AUTH_DESIGN.md). Layered alongside the existing PIN-based Admin
-     toggle above -- neither replaces the other yet. ================= -->
+<!-- ================= Account (Auth Phase 1/5 -- see docs/AUTH_DESIGN.md).
+     Real Firebase Auth + custom claims are the ONLY gate on privileged
+     actions app-wide now -- there is no PIN left anywhere in this
+     app. ================= -->
 <div id="account-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)closeAccountModal()">
   <div style="background:#fff;max-width:420px;margin:10vh auto;border-radius:8px;overflow:hidden;width:94%">
     <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
@@ -892,6 +893,22 @@
       <button class="btn" onclick="closeAccountModal()">Close</button>
     </div>
     <div style="padding:14px 16px" id="account-modal-body"></div>
+  </div>
+</div>
+
+<!-- ================= User Management (Auth Phase 5 -- see
+     docs/AUTH_DESIGN.md). Reachable via Account > Manage Users, shown only
+     when signed in as owner/admin (client-side convenience only -- every
+     action here is independently re-checked server-side/rules-side
+     regardless of what this UI shows). ================= -->
+<div id="usermgmt-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)closeUserManagementModal()">
+  <div style="background:#fff;max-width:640px;margin:6vh auto;border-radius:8px;max-height:88vh;display:flex;flex-direction:column;overflow:hidden;width:94%">
+    <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
+      <b class="cond" style="font-size:17px">Manage Users</b>
+      <span style="flex:1"></span>
+      <button class="btn" onclick="closeUserManagementModal()">Close</button>
+    </div>
+    <div style="padding:14px 16px;overflow:auto" id="usermgmt-modal-body"></div>
   </div>
 </div>
 

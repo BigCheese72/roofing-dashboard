@@ -121,19 +121,17 @@ function renderAccountModal(){
     var roleLine = currentAuthClaims && currentAuthClaims.role ?
       ' — role: <b>' + esc(currentAuthClaims.role) + '</b>' + (currentAuthClaims.owner ? ' (owner)' : '') :
       ' — no role assigned yet';
+    var manageUsersBtn = (currentAuthClaims && (currentAuthClaims.owner === true || currentAuthClaims.role === "admin")) ?
+      '<button class="btn" onclick="openUserManagementModal()">Manage Users</button>' : '';
     host.innerHTML =
       '<p class="hint" style="margin:0 0 10px">Signed in as <b>' + esc(currentAuthUser.email || "") + '</b>' + roleLine + '</p>' +
-      '<p class="hint" style="margin:0 0 10px">This account doesn\'t control anything in the app yet — Admin mode\'s ' +
-      'PIN still works exactly as before.</p>' +
-      '<div class="btnrow"><button class="btn danger" onclick="signOutUser()">Sign Out</button></div>';
+      '<div class="btnrow">' + manageUsersBtn + '<button class="btn danger" onclick="signOutUser()">Sign Out</button></div>';
   } else {
     host.innerHTML =
       '<div class="fld"><label>Email</label><input type="email" id="login-email" autocomplete="username"></div>' +
       '<div class="fld"><label>Password</label><input type="password" id="login-password" autocomplete="current-password"></div>' +
       '<div class="btnrow"><button class="btn primary" onclick="signInWithEmail()">Sign In</button>' +
-      '<button class="btn" onclick="sendPasswordReset()">Forgot Password?</button></div>' +
-      '<p class="hint" style="margin-top:10px">Separate from Admin mode\'s PIN, which still works exactly as before — ' +
-      'this doesn\'t control anything in the app yet.</p>';
+      '<button class="btn" onclick="sendPasswordReset()">Forgot Password?</button></div>';
   }
 }
 async function signInWithEmail(){
@@ -162,6 +160,131 @@ async function sendPasswordReset(){
     await fauth.sendPasswordResetEmail(email);
     toast("Password reset email sent (if that account exists) ✓");
   }catch(e){ toast("Couldn't send reset email: " + e.message); }
+}
+
+/* ================= User Management (Auth Phase 5) =================
+   See docs/AUTH_DESIGN.md. Lets an owner/admin invite crew accounts and
+   assign roles without touching Firebase Console directly. Client-side
+   visibility (the "Manage Users" button, this modal) is convenience only --
+   every real check happens server-side (create_user/assign_role in
+   netlify/functions/auth.js) and at the rules layer (users/{uid} is
+   write:false for every client, no exceptions), so a field_tech who
+   somehow opened this modal anyway still can't do anything through it. */
+async function openUserManagementModal(){
+  document.getElementById("usermgmt-modal").style.display = "";
+  lockBodyScroll();
+  await renderUserManagementModal();
+}
+function closeUserManagementModal(){
+  document.getElementById("usermgmt-modal").style.display = "none";
+  unlockBodyScroll();
+}
+async function renderUserManagementModal(){
+  var host = document.getElementById("usermgmt-modal-body");
+  if (!host || !fdb) return;
+  host.innerHTML = '<p class="hint">Loading…</p>';
+  var roles = [], users = [];
+  try{
+    var rolesSnap = await fdb.collection("roles").get();
+    rolesSnap.forEach(function(d){ roles.push(d.data()); });
+    roles.sort(function(a,b){ return (b.rank||0) - (a.rank||0); });
+    var usersSnap = await fdb.collection("users").get();
+    usersSnap.forEach(function(d){ users.push(d.data()); });
+    users.sort(function(a,b){ return (a.email||"").localeCompare(b.email||""); });
+  }catch(e){
+    host.innerHTML = '<p class="hint">Couldn\'t load users/roles: ' + esc(e.message) + '</p>';
+    return;
+  }
+  var isOwner = !!(currentAuthClaims && currentAuthClaims.owner === true);
+  // Owner can invite into any role except "owner" itself (unique, set only
+  // via bootstrap/transfer). A non-owner admin can only invite non-admin
+  // roles -- matches create_user's own server-side hierarchy check exactly,
+  // so the dropdown never offers an option the server would reject anyway.
+  var inviteRoleOptions = roles.filter(function(r){
+    if (r.id === "owner") return false;
+    if (r.id === "admin" && !isOwner) return false;
+    return true;
+  }).map(function(r){ return '<option value="' + esc(r.id) + '">' + esc(r.label || r.id) + '</option>'; }).join("");
+
+  var rows = users.map(function(u){
+    var isSelf = currentAuthUser && u.uid === currentAuthUser.uid;
+    var isOwnerRow = u.role === "owner";
+    var roleOptions = roles.filter(function(r){
+      if (r.id === "owner") return false; // owner role changes go through transfer_owner, not this control
+      if (r.id === "admin" && !isOwner) return false; // matches assign_role's involvesAdmin -> owner-only rule
+      return true;
+    }).map(function(r){
+      return '<option value="' + esc(r.id) + '"' + (r.id === u.role ? " selected" : "") + '>' + esc(r.label || r.id) + '</option>';
+    }).join("");
+    var disabledReason = isSelf ? "You can't change your own role" : (isOwnerRow ? "Transfer ownership to change the owner" : "");
+    return '<tr>' +
+      '<td style="padding:6px 8px">' + esc(u.email || "") + (isSelf ? ' <span class="hint">(you)</span>' : '') + '</td>' +
+      '<td style="padding:6px 8px">' +
+        (isSelf || isOwnerRow ?
+          '<span class="hint" title="' + esc(disabledReason) + '">' + esc(u.role || "") + '</span>' :
+          '<select id="role-select-' + esc(u.uid) + '">' + roleOptions + '</select>') +
+      '</td>' +
+      '<td style="padding:6px 8px">' + esc(u.status || "active") + '</td>' +
+      '<td style="padding:6px 8px">' +
+        (isSelf || isOwnerRow ? '' :
+          '<button class="btn" onclick="saveUserRole(\'' + esc(u.uid) + '\')">Save</button>') +
+      '</td>' +
+    '</tr>';
+  }).join("");
+
+  host.innerHTML =
+    '<p class="hint" style="margin:0 0 10px">Invite a new user — they get an email to set their own password. ' +
+    'No one ever types or sees another person\'s password here.</p>' +
+    '<div class="fld"><label>Email</label><input type="email" id="invite-email"></div>' +
+    '<div class="fld"><label>Display Name (optional)</label><input type="text" id="invite-name"></div>' +
+    '<div class="fld"><label>Role</label><select id="invite-role">' + inviteRoleOptions + '</select></div>' +
+    '<div class="btnrow"><button class="btn primary" onclick="inviteUser()">Invite User</button></div>' +
+    '<h3 style="margin:18px 0 8px">Existing Users</h3>' +
+    '<table style="width:100%;border-collapse:collapse;font-size:13px">' +
+      '<thead><tr style="text-align:left;border-bottom:1px solid #ddd">' +
+        '<th style="padding:6px 8px">Email</th><th style="padding:6px 8px">Role</th>' +
+        '<th style="padding:6px 8px">Status</th><th style="padding:6px 8px"></th>' +
+      '</tr></thead>' +
+      '<tbody>' + (rows || '<tr><td colspan="4" style="padding:8px" class="hint">No users yet.</td></tr>') + '</tbody>' +
+    '</table>';
+}
+async function inviteUser(){
+  var email = val("invite-email").trim();
+  var displayName = val("invite-name").trim();
+  var roleId = document.getElementById("invite-role") ? document.getElementById("invite-role").value : "";
+  if (!email || !roleId){ toast("Enter an email and pick a role."); return; }
+  toast("Creating account…");
+  try{
+    var r = await fetch("/.netlify/functions/auth", {
+      method: "POST", headers: await authHeaders(),
+      body: JSON.stringify({ action: "create_user", email: email, roleId: roleId, displayName: displayName })
+    });
+    var out = await r.json().catch(function(){ return null; });
+    if (!r.ok || !out || !out.ok) throw new Error((out && out.error) || ("server error " + r.status));
+    // Public client SDK call -- triggers Firebase's own built-in reset-email
+    // flow so the new user sets their own password. No password is ever
+    // handled by this browser session or by the account that just created
+    // the user.
+    try{ await fauth.sendPasswordResetEmail(email); }catch(e){}
+    toast("Account created ✓ — a password-setup email was sent to " + email);
+    await renderUserManagementModal();
+  }catch(e){ toast("Couldn't create account: " + e.message); }
+}
+async function saveUserRole(uid){
+  var sel = document.getElementById("role-select-" + uid);
+  if (!sel) return;
+  var roleId = sel.value;
+  toast("Updating role…");
+  try{
+    var r = await fetch("/.netlify/functions/auth", {
+      method: "POST", headers: await authHeaders(),
+      body: JSON.stringify({ action: "assign_role", targetUid: uid, roleId: roleId })
+    });
+    var out = await r.json().catch(function(){ return null; });
+    if (!r.ok || !out || !out.ok) throw new Error((out && out.error) || ("server error " + r.status));
+    toast("Role updated ✓");
+    await renderUserManagementModal();
+  }catch(e){ toast("Couldn't update role: " + e.message); }
 }
 
 /* ================= Require-login gate (Auth Phase 5, dev only) =================

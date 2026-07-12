@@ -1,14 +1,18 @@
-// RoofOps auth: identity + roles (Phase 1 -- see docs/AUTH_DESIGN.md).
-// Layered ALONGSIDE the existing PIN-based admin.js -- nothing here
-// changes how admin.js/the PIN toggle work today.
+// RoofOps auth: identity + roles (see docs/AUTH_DESIGN.md). admin.js and
+// every other privileged server function are claims-only as of Auth Phase
+// 5 -- there is no PIN left anywhere in this app for this file to be
+// "layered alongside."
 //
 // Every privileged write in this file goes through the Firebase Admin
 // SDK (not subject to Firestore rules) -- this is deliberate: custom
 // claims and the users/{uid} privilege fields must have NO client write
 // path at all, and Admin-SDK-only is what actually guarantees that,
 // exactly like admin.js already does for deletes/roof-map/profile writes.
+const crypto = require("crypto");
 const { getDb, getAuth, verifyCaller, getPermissionValue } = require("./lib/authGuard");
 const { SEED_ROLES } = require("./lib/permissions");
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function resp(code, obj) {
   return { statusCode: code, headers: { "Content-Type": "application/json" }, body: JSON.stringify(obj) };
@@ -104,6 +108,70 @@ exports.handler = async function (event) {
         target: { collection: "users", id: userRecord.uid }, before: null, after: { role: "owner" }
       });
       return resp(200, { ok: true, uid: userRecord.uid });
+    }
+
+    // ---- create_user: the user-management screen's "invite/create" action
+    // (see docs/AUTH_DESIGN.md's Phase 5). Same hierarchy invariant as
+    // assign_role below, applied to the NEW user's initial role rather than
+    // a change to an existing one: "owner" can never be created here (the
+    // owner role is unique and only ever set by bootstrap_owner or moved by
+    // transfer_owner, never duplicated); creating an "admin" requires the
+    // caller to BE owner; anything else requires owner OR
+    // users.manage_nonadmin, matching "admins manage non-admin users only."
+    //
+    // The new account's password is a throwaway, cryptographically random
+    // value generated here and NEVER returned to the caller or stored
+    // anywhere -- this endpoint hands back only {ok, uid, email}. The
+    // caller's browser is expected to immediately call the public
+    // fauth.sendPasswordResetEmail(email) client SDK method so the new user
+    // sets their own password via Firebase's own built-in reset flow. This
+    // means no human (not Mark, not an admin, not this assistant) ever
+    // types, sees, or transmits another person's password at any point in
+    // this flow. ----
+    if (body.action === "create_user") {
+      let caller;
+      try { caller = await verifyCaller(event); }
+      catch (e) { return resp(e.statusCode || 401, { error: e.message }); }
+
+      const email = String(body.email || "").trim().toLowerCase();
+      const roleId = String(body.roleId || "");
+      const displayName = String(body.displayName || "").trim();
+      if (!email || !EMAIL_RE.test(email)) return resp(400, { error: "Invalid email" });
+      if (!roleId) return resp(400, { error: "Missing roleId" });
+      if (roleId === "owner") return resp(400, { error: "The owner role can't be assigned here -- it's unique, set only via bootstrap or transfer_owner" });
+
+      const roleDoc = await db.collection("roles").doc(roleId).get();
+      if (!roleDoc.exists) return resp(400, { error: "Unknown role: " + roleId });
+
+      if (roleId === "admin") {
+        if (!caller.owner) return resp(403, { error: "Only the owner may create an admin" });
+      } else {
+        if (!caller.owner) {
+          const canManage = await getPermissionValue(caller.role, "users.manage_nonadmin");
+          if (canManage !== true) return resp(403, { error: "Forbidden: missing permission users.manage_nonadmin" });
+        }
+      }
+
+      const tempPassword = crypto.randomBytes(24).toString("base64");
+      let userRecord;
+      try {
+        userRecord = await getAuth().createUser({ email: email, password: tempPassword, displayName: displayName || undefined });
+      } catch (e) {
+        if (e && e.code === "auth/email-already-exists") return resp(409, { error: "A user with that email already exists" });
+        throw e;
+      }
+      await getAuth().setCustomUserClaims(userRecord.uid, { owner: false, role: roleId, mfaOk: false });
+      await db.collection("users").doc(userRecord.uid).set({
+        uid: userRecord.uid, email: email, displayName: displayName || "",
+        role: roleId, permissions: {}, projectRoles: {},
+        status: "active", mfaEnrolled: false, owner: false,
+        createdAt: Date.now(), updatedAt: Date.now(), createdBy: caller.uid, lastLoginAt: null
+      });
+      await writeAudit(db, {
+        actorUid: caller.uid, actorRole: caller.owner ? "owner" : caller.role, action: "create_user",
+        target: { collection: "users", id: userRecord.uid }, before: null, after: { email: email, role: roleId }
+      });
+      return resp(200, { ok: true, uid: userRecord.uid, email: email });
     }
 
     // ---- assign_role: the ONLY way a user's role/claims change. Hard
