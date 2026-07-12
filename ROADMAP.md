@@ -970,20 +970,35 @@ Goal: support office/admin workflows and controlled access.
   from Phase 1's 3 highest-risk actions to every mutating `admin.js` action
   (`delete_building`, `delete_history_event`, `set_building_roof_map`,
   `set_roof_profile`), with a new "🔒 Audit Log (admin)" view in Reports.
-  **Second real, documented scope decision**: full "migrate admin.js off the
-  PIN system onto claims-based checks" isn't done — production sends zero
-  Firebase Auth tokens at all, so removing/weakening the shared PIN (the only
-  thing actually gating admin.js today, for both dev and production) would
-  break every admin action in production with no fallback. Audit logging
-  opportunistically captures a real signed-in identity when one's available
-  and degrades cleanly to "PIN only" otherwise — genuine progress without
-  touching the one thing actually protecting production. Full PIN removal
-  stays Phase 5 territory, tied to "app requires login." See "Phase 2" in
-  `docs/AUTH_DESIGN.md` for the full reasoning. Phases 3-5 (archive/void/
-  restore + 5-stage change-order workflow; MFA + session/recovery; hardening
-  + the app actually requiring login) not yet built. **Dev only —
-  production's PIN-based admin mode is completely unaffected**, and the app
-  does not require login anywhere yet.
+- ✅ **Shipped (dev only, 2026-07-11), Phase 5 accelerated ahead of Phases
+  3-4, per Mark's direct order ("kill the PIN and finish the logins")**: the
+  shared `ADMIN_PIN` is now fully removed as an authorization mechanism —
+  not weakened, not kept as a fallback, gone. Every privileged server
+  action (`admin.js`'s 10 actions, `photos.js`'s migration actions, the new
+  `changeorders.js`'s `changeorder.approve_pricing` gate, `send-workorder.js`'s
+  `doc.email_customer` gate, `auth.js`'s `assign_role`/`transfer_owner`/new
+  `create_user`) requires a verified Firebase ID token + the caller's live
+  role permission — 17 privileged actions checked, all reject cleanly with
+  no token, verified against the real deployed dev site, not just mocked.
+  New **user-management screen** (Account → Manage Users, owner/admin only)
+  lets Mark create crew accounts and assign roles without touching Firebase
+  Console — a new account's password is a throwaway random value generated
+  server-side and never seen by anyone; the new user sets their own via
+  Firebase's built-in password-reset email. The app now **requires login**
+  (dev only) behind a one-time owner-bootstrap screen Mark completes
+  himself. **All mandatory negative tests passed, including the new "any
+  privileged action with no auth token at all" case** — see the Phase 5
+  section of `docs/AUTH_DESIGN.md` for the full results table.
+  **MFA deferred as an explicit fast-follow, not silently dropped**: TOTP
+  for owner/admin (needs a GCP Identity Platform upgrade) did not ship
+  tonight — privileged actions are gated on claims + permission only right
+  now, not claims + MFA. Should land before any wider crew rollout beyond
+  Mark himself. Full 5-stage change-order workflow (only the pricing-
+  approval gate is real so far) and blanket dual enforcement across all 34
+  permission keys (buildings/workorders/customers still use the existing
+  open rules for production-compatibility reasons) remain later-phase work.
+  **Dev only — production's `main` branch has none of this code and is
+  completely unaffected.**
 - Add an admin/dashboard experience for searching customers, buildings, work orders, reports, and history events.
 - Add account/company settings for branding, default emails, report templates, and integration settings.
 - Add user assignment, technician tracking, and audit metadata.
