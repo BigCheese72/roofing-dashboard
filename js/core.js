@@ -28,29 +28,8 @@ var SAT_MAX_NATIVE_ZOOM = 20;
    blocking precision corner placement now that all tracing is by hand.
    See rmUpdateMapZoomCap() and "Ortho zoom cap" in DEV_NOTES.md. */
 var RM_ORTHO_MAX_ZOOM = 26;
-/* ================= cloud sync (Firebase Firestore) =================
-   Environment-aware project selection (Firebase split, 2026-07-11): the app
-   is static with no build step, so which Firebase project it talks to is
-   decided entirely at RUNTIME, off window.location.hostname -- there's no
-   other lever available (no env vars reach client-side static files).
-   Production (leak-work-orders.netlify.app, deployed from main) stays on
-   the original `watkins-service-orders` project -- Mark's real data,
-   photos, owner account, published rules, all untouched. Dev (branch
-   deploys, "dev--..." hostnames) and any local/preview environment move to
-   a separate, empty `watkins-service-orders-dev` sandbox project, so dev
-   work can never touch production's real Firestore/Storage/Auth again --
-   the "Shared Firestore, dev/prod risk boundary" constraint that shaped
-   several earlier auth-phase decisions (see docs/AUTH_DESIGN.md) is gone
-   entirely once this is live, not just carefully worked around.
-   Both configs are the public Firebase Web SDK config (apiKey included) --
-   safe to commit, matching Firebase's own documented design: this key
-   identifies the project to Google's servers, it does not grant access on
-   its own (Firestore/Storage rules are what actually gate access). */
-function isDevEnvironment(){
-  var h = window.location.hostname;
-  return h.indexOf("dev--") !== -1 || h === "localhost" || h === "127.0.0.1" || h.indexOf("deploy-preview-") !== -1;
-}
-var FIREBASE_CONFIG_PROD = {
+/* ================= cloud sync (Firebase Firestore) ================= */
+var FIREBASE_CONFIG = {
   apiKey: "AIzaSyBZRMpIWde-6DPpg7yAvNOqJAQF5ZBxlAg",
   authDomain: "watkins-service-orders.firebaseapp.com",
   projectId: "watkins-service-orders",
@@ -58,43 +37,6 @@ var FIREBASE_CONFIG_PROD = {
   messagingSenderId: "806263881954",
   appId: "1:806263881954:web:16fb8f9cfac591dce25ebb"
 };
-// TODO(Mark): replace every REPLACE_ME below with the real watkins-service-orders-dev
-// Web app config (Firebase Console -> that project -> Project settings -> General ->
-// Your apps -> Web app -> SDK setup and configuration -> Config), once that project
-// actually exists.
-var FIREBASE_CONFIG_DEV = {
-  apiKey: "REPLACE_ME",
-  authDomain: "watkins-service-orders-dev.firebaseapp.com",
-  projectId: "watkins-service-orders-dev",
-  storageBucket: "watkins-service-orders-dev.firebasestorage.app",
-  messagingSenderId: "REPLACE_ME",
-  appId: "REPLACE_ME"
-};
-/* CRITICAL SAFETY GUARD, added after a real incident: the dev project
-   doesn't exist yet, so shipping the switch above ALONE broke dev sign-in
-   outright (auth/api-key-not-valid) the moment it deployed -- FIREBASE_CONFIG_DEV's
-   placeholder values are not a valid Firebase config, and there is no
-   partial-credit state for "almost a real API key." This guard checks for
-   the literal placeholder and falls back to production whenever the dev
-   config isn't real yet -- dev behaves EXACTLY as it did before this whole
-   split (same shared watkins-service-orders project) until Mark supplies
-   real dev values, instead of presenting a broken login screen. A clear
-   console warning marks the fallback so it's never mistaken for the real
-   split being live. Once Mark replaces every REPLACE_ME, this guard
-   evaluates false and dev automatically switches to the real separate
-   project with no further code change needed. */
-function devFirebaseConfigIsReal(){
-  return FIREBASE_CONFIG_DEV.apiKey !== "REPLACE_ME" &&
-    FIREBASE_CONFIG_DEV.messagingSenderId !== "REPLACE_ME" &&
-    FIREBASE_CONFIG_DEV.appId !== "REPLACE_ME";
-}
-var FIREBASE_CONFIG;
-if (isDevEnvironment() && devFirebaseConfigIsReal()){
-  FIREBASE_CONFIG = FIREBASE_CONFIG_DEV;
-} else {
-  FIREBASE_CONFIG = FIREBASE_CONFIG_PROD;
-  if (isDevEnvironment()) console.warn("watkins-service-orders-dev config not set yet (still placeholder) -- falling back to the production Firebase config until Mark supplies the real dev project values.");
-}
 var fdb = null;
 /* fauth (Firebase Authentication, Phase 1 of the auth build -- see
    docs/AUTH_DESIGN.md) is layered ALONGSIDE the existing PIN-based admin
@@ -224,23 +166,12 @@ async function signOutUser(){
     toast("Signed out");
   }catch(e){ toast("Sign-out failed: " + e.message); }
 }
-/* Without actionCodeSettings, Firebase's password-reset email lands the
-   user on Firebase's own hosted page with no way back to the app at all --
-   Mark's exact complaint about the crew-invite flow. `url` here is the
-   "Continue" link shown after the reset completes; window.location.origin
-   is already environment-aware for free (resolves to whichever
-   dev/production URL the app is actually running on, no extra config
-   needed) -- same principle as isDevEnvironment() above, just via the
-   browser's own location instead of a hostname string match. */
-function passwordResetActionCodeSettings(){
-  return { url: window.location.origin + "/" };
-}
 async function sendPasswordReset(){
   if (!fauth) return;
   var email = val("login-email").trim();
   if (!email){ toast("Enter your email first."); return; }
   try{
-    await fauth.sendPasswordResetEmail(email, passwordResetActionCodeSettings());
+    await fauth.sendPasswordResetEmail(email);
     toast("Password reset email sent (if that account exists) ✓");
   }catch(e){ toast("Couldn't send reset email: " + e.message); }
 }
@@ -550,7 +481,7 @@ async function gateForgotPassword(){
   var email = val("gate-email").trim();
   if (!email){ setLoginGateStatus("Enter your email first.", true); return; }
   try{
-    await fauth.sendPasswordResetEmail(email, passwordResetActionCodeSettings());
+    await fauth.sendPasswordResetEmail(email);
     setLoginGateStatus("Password reset email sent (if that account exists) ✓", false);
   }catch(e){ setLoginGateStatus("Couldn't send reset email: " + e.message, true); }
 }
