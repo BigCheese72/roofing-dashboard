@@ -1062,6 +1062,17 @@ function rmLegacyCalibrationMeasurement(outline){
     legacyCalibration: true
   };
 }
+function rmMigrateLegacyCalibration(outline){
+  var legacy = rmLegacyCalibrationMeasurement(outline);
+  if (!outline || !legacy) return false;
+  var list = outline.edgeMeasurements || [];
+  var exists = list.some(function(m){
+    return m && m.edgeIndex === legacy.edgeIndex;
+  });
+  if (exists) return false;
+  outline.edgeMeasurements = list.concat([legacy]);
+  return true;
+}
 function rmActiveMeasuredEdges(outline){
   var active = rmActiveEdgeMeasurements(outline).filter(function(m){
     return m.source === "measured";
@@ -1098,7 +1109,7 @@ function rmUpsertEdgeMeasurement(outline, entry){
 }
 function rmInvalidateEdgeMeasurements(outline, reason){
   if (!outline) return false;
-  var changed = false;
+  var changed = rmMigrateLegacyCalibration(outline);
   var now = Date.now();
   if (outline.edgeMeasurements && outline.edgeMeasurements.length){
     outline.edgeMeasurements = outline.edgeMeasurements.map(function(m){
@@ -1108,6 +1119,8 @@ function rmInvalidateEdgeMeasurements(outline, reason){
     });
   }
   if (outline.calibration){
+    /* Safe to clear this legacy mirror after migration; the tape record now
+       lives in edgeMeasurements[] and carries the invalidation audit trail. */
     changed = true;
     delete outline.calibration;
   }
@@ -1172,9 +1185,6 @@ function rmEdgeDimensionMeta(outline, edgeIndex, distFt){
       labelFt: measured.measuredFt,
       measuredFt: measured.measuredFt
     };
-  }
-  if (outline && outline.calibration && outline.calibration.edgeIndex === edgeIndex){
-    return { measured: false, bg: "#2E7D32", prefix: "\u2713 ", border: true, labelFt: distFt };
   }
   return { measured: false, bg: "#263238", prefix: "", border: false, labelFt: distFt };
 }
@@ -2756,6 +2766,7 @@ function rmChooseMeasurementConflict(pct){
 
     var actions = document.createElement("div");
     actions.className = "rm-measure-choice-actions";
+    var buttons = [];
 
     function addButton(label, value, note, primary){
       var btn = document.createElement("button");
@@ -2769,6 +2780,7 @@ function rmChooseMeasurementConflict(pct){
         resolve(value);
       });
       actions.appendChild(btn);
+      buttons.push(btn);
       return btn;
     }
 
@@ -2781,13 +2793,24 @@ function rmChooseMeasurementConflict(pct){
     function onKeyDown(e){
       if (e.key === "Escape"){
         e.preventDefault();
-        firstBtn.focus();
+        discardBtn.focus();
+      } else if (e.key === "Tab"){
+        var first = buttons[0], last = buttons[buttons.length - 1];
+        if (e.shiftKey && document.activeElement === first){
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last){
+          e.preventDefault();
+          first.focus();
+        }
       }
     }
 
     var firstBtn = addButton("Use my measurement", "use", "Rescale this roof from the taped edge.", true);
     addButton("Keep existing", "keep_existing", "Save the taped edge without changing scale.", false);
     addButton("Average them", "average", "Blend the existing scale with this tape reading.", false);
+    var discardBtn = addButton("Discard this measurement", "discard", "Close this sheet without saving this tape entry.", false);
+    discardBtn.classList.add("danger");
 
     sheet.appendChild(title);
     sheet.appendChild(body);
@@ -2813,6 +2836,7 @@ async function rmCalibrateEdge(edgeIndex){
   if (!parsed || !isFinite(parsed.feet) || parsed.feet <= 0){ toast("Enter a length greater than 0."); return; }
   var measuredFt = parsed.feet;
   var factor = measuredFt / currentFt;
+  rmMigrateLegacyCalibration(outline);
   var existingMeasured = rmActiveMeasuredEdges(outline).filter(function(m){ return m.edgeIndex !== edgeIndex; });
   var appliedFactor = factor;
   var conflictResolution = "use";
@@ -2827,6 +2851,9 @@ async function rmCalibrateEdge(edgeIndex){
     } else if (choice === "average"){
       appliedFactor = Math.sqrt(factor);
       conflictResolution = "average";
+    } else if (choice === "discard"){
+      toast("Measurement discarded.");
+      return;
     } else {
       conflictResolution = "use";
     }
