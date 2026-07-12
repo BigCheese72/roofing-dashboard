@@ -600,6 +600,7 @@ function rmMakeSplitSection(ring, label){
    testable. See "Square Up" in DEV_NOTES.md. */
 var RM_SQUARE_TOLERANCE_DEG = 12; /* requirement: ~10-15° */
 var RM_EDGE_MEASURE_SCALE_TOLERANCE = 0.01; /* +/-1% agreement for later measured edges */
+var RM_EDGE_MEASURE_LABEL_TOLERANCE_FT = 0.5; /* labels round to feet, so sub-foot drift can still render honestly */
 var RM_SQUARE_CURVE_SINGLE_TURN_MAX = 35; /* a per-vertex turn under this reads as "not a sharp corner" */
 var RM_SQUARE_CURVE_CUMULATIVE_MIN = 40; /* but a RUN of small turns summing past this reads as an arc, not GPS/trace noise */
 function rmGeomComputeSquaredRing(ring){
@@ -1048,10 +1049,28 @@ function rmActiveEdgeMeasurements(outline){
     return m && !m.invalidatedAt;
   });
 }
+function rmLegacyCalibrationMeasurement(outline){
+  if (!outline || !outline.calibration || outline.calibration.inherited) return null;
+  var c = outline.calibration;
+  if (!isFinite(c.edgeIndex) || !isFinite(c.measuredFt) || c.measuredFt <= 0) return null;
+  return {
+    edgeIndex: c.edgeIndex,
+    measuredFt: c.measuredFt,
+    source: "measured",
+    measuredAt: c.calibratedAt || null,
+    rawInput: c.rawInput || String(c.measuredFt),
+    legacyCalibration: true
+  };
+}
 function rmActiveMeasuredEdges(outline){
-  return rmActiveEdgeMeasurements(outline).filter(function(m){
+  var active = rmActiveEdgeMeasurements(outline).filter(function(m){
     return m.source === "measured";
   });
+  var legacy = rmLegacyCalibrationMeasurement(outline);
+  if (legacy && !active.some(function(m){ return m.edgeIndex === legacy.edgeIndex; })){
+    active.push(legacy);
+  }
+  return active;
 }
 function rmGetMeasuredEdge(outline, edgeIndex){
   var list = rmActiveMeasuredEdges(outline);
@@ -1095,14 +1114,69 @@ function rmInvalidateEdgeMeasurements(outline, reason){
   outline.measurementMethod = rmOutlineMeasurementMethod(outline);
   return changed;
 }
-function rmEdgeDimensionMeta(outline, edgeIndex){
-  if (rmGetMeasuredEdge(outline, edgeIndex)){
-    return { measured: true, bg: "#2E7D32", prefix: "\u2713 ", border: true };
+function rmSnapshotMeasurementState(outline){
+  if (!outline) return null;
+  return {
+    calibration: outline.calibration ? Object.assign({}, outline.calibration) : null,
+    inheritedScale: outline.inheritedScale ? Object.assign({}, outline.inheritedScale) : null,
+    edgeMeasurements: outline.edgeMeasurements ? outline.edgeMeasurements.map(function(m){ return Object.assign({}, m); }) : []
+  };
+}
+function rmRestoreMeasurementState(outline, snap){
+  if (!outline || !snap) return;
+  outline.calibration = snap.calibration ? Object.assign({}, snap.calibration) : null;
+  outline.inheritedScale = snap.inheritedScale ? Object.assign({}, snap.inheritedScale) : null;
+  outline.edgeMeasurements = snap.edgeMeasurements ? snap.edgeMeasurements.map(function(m){ return Object.assign({}, m); }) : [];
+  outline.measurementMethod = rmOutlineMeasurementMethod(outline);
+}
+function rmFormatEdgeFeet(ft){
+  if (!isFinite(ft)) return "";
+  var rounded = Math.round(ft);
+  if (Math.abs(ft - rounded) < 0.05) return String(rounded);
+  return String(Math.round(ft * 10) / 10);
+}
+function rmHasInheritedScale(outline){
+  return !!(outline && (outline.inheritedScale || (outline.calibration && outline.calibration.inherited)));
+}
+function rmBuildInheritedScaleRecord(src, factor){
+  if (!src) return null;
+  var inherited = src.inheritedScale || null;
+  if (!inherited && src.calibration && src.calibration.inherited){
+    inherited = {
+      fromOutlineId: null,
+      factor: src.calibration.factor,
+      scaleSource: "measured",
+      derivedAt: src.calibration.calibratedAt || null
+    };
+  }
+  var direct = rmLegacyCalibrationMeasurement(src) || rmActiveMeasuredEdges(src)[0];
+  if (!inherited && !direct) return null;
+  return {
+    fromOutlineId: inherited ? (inherited.fromOutlineId || null) : (src.id || null),
+    factor: isFinite(factor) ? factor : (inherited && isFinite(inherited.factor) ? inherited.factor :
+      (src.calibration && isFinite(src.calibration.factor) ? src.calibration.factor : 1)),
+    scaleSource: "measured",
+    derivedAt: Date.now()
+  };
+}
+function rmEdgeDimensionMeta(outline, edgeIndex, distFt){
+  var measured = rmGetMeasuredEdge(outline, edgeIndex);
+  if (measured){
+    var matches = !isFinite(distFt) || Math.abs((measured.measuredFt || 0) - distFt) <= RM_EDGE_MEASURE_LABEL_TOLERANCE_FT;
+    return {
+      measured: true,
+      conflict: !matches,
+      bg: matches ? "#2E7D32" : "#F57C00",
+      prefix: matches ? "\u2713 " : "! ",
+      border: true,
+      labelFt: measured.measuredFt,
+      measuredFt: measured.measuredFt
+    };
   }
   if (outline && outline.calibration && outline.calibration.edgeIndex === edgeIndex){
-    return { measured: false, bg: "#2E7D32", prefix: "\u2713 ", border: true };
+    return { measured: false, bg: "#2E7D32", prefix: "\u2713 ", border: true, labelFt: distFt };
   }
-  return { measured: false, bg: "#263238", prefix: "", border: false };
+  return { measured: false, bg: "#263238", prefix: "", border: false, labelFt: distFt };
 }
 function rmOutlineMeasurementMethod(outline){
   if (!outline) return { kind: "unknown", label: "Method: Unknown capture source" };
@@ -1124,9 +1198,17 @@ function rmOutlineMeasurementMethod(outline){
       label: "Method: " + name + " (approx. overlay; not RTK survey-grade" + errText + detailText + ")" };
   }
   if (outline.source === "ortho_trace"){
-    var hasFieldMeasure = outline.calibration || rmHasMeasuredEdges(outline);
-    return { kind: "flat_ortho", accuracyClass: hasFieldMeasure ? "field_calibrated" : "uncalibrated_image",
-      label: hasFieldMeasure ? "Method: Flat image trace (field-calibrated)" : "Method: Flat image trace (requires field calibration)" };
+    var hasFieldMeasure = rmHasMeasuredEdges(outline);
+    if (hasFieldMeasure){
+      return { kind: "flat_ortho", accuracyClass: "field_calibrated",
+        label: "Method: Flat image trace (field-calibrated)" };
+    }
+    if (rmHasInheritedScale(outline)){
+      return { kind: "flat_ortho", accuracyClass: "inherited_scale_image",
+        label: "Method: Flat image trace (scale carried over from a field-measured section; this roof's outline was not itself measured)" };
+    }
+    return { kind: "flat_ortho", accuracyClass: "uncalibrated_image",
+      label: "Method: Flat image trace (requires field calibration)" };
   }
   if (outline.source === "walk_corners"){
     return { kind: "walked_phone_gps", accuracyClass: "field_gps_approx",
@@ -1156,10 +1238,13 @@ function rmCopyOutlineSourceMetadata(src, dest){
   else dest.measurementMethod = rmOutlineMeasurementMethod(dest);
   return dest;
 }
-function rmDropSplitMeasurementMetadata(outlineEntry){
+function rmDropSplitMeasurementMetadata(outlineEntry, baseOutline){
   if (!outlineEntry) return outlineEntry;
   outlineEntry.calibration = null;
   outlineEntry.edgeMeasurements = [];
+  var inherited = rmBuildInheritedScaleRecord(baseOutline, baseOutline && baseOutline.inheritedScale ? baseOutline.inheritedScale.factor : null);
+  if (inherited) outlineEntry.inheritedScale = inherited;
+  else delete outlineEntry.inheritedScale;
   outlineEntry.measurementMethod = rmOutlineMeasurementMethod(outlineEntry);
   return outlineEntry;
 }
@@ -1233,8 +1318,8 @@ function rmBuildOutlineSvg(outline, overlay){
     var midFeet = { x: (rmExportProjectPoint(ea, origin).x + rmExportProjectPoint(eb, origin).x) / 2,
                      y: (rmExportProjectPoint(ea, origin).y + rmExportProjectPoint(eb, origin).y) / 2 };
     var svgMid = toSvg(midFeet);
-    var dimMeta = rmEdgeDimensionMeta(outline, i);
-    var dimLabel = dimMeta.prefix + Math.round(distFt) + " ft";
+    var dimMeta = rmEdgeDimensionMeta(outline, i, distFt);
+    var dimLabel = dimMeta.prefix + rmFormatEdgeFeet(dimMeta.labelFt) + " ft";
     var dimW = Math.max(38, dimLabel.length * 8 + 12);
     dimSvg += '<rect x="' + (svgMid.x - dimW / 2).toFixed(1) + '" y="' + (svgMid.y - 12).toFixed(1) + '" width="' +
       dimW.toFixed(1) + '" height="24" rx="5" fill="' + dimMeta.bg + '"/>' +
@@ -1453,8 +1538,8 @@ function rmBuildMultiRoofOutlineSvg(data){
       var midFeet = { x: (rmExportProjectPoint(ea, origin).x + rmExportProjectPoint(eb, origin).x) / 2,
                        y: (rmExportProjectPoint(ea, origin).y + rmExportProjectPoint(eb, origin).y) / 2 };
       var svgMid = toSvg(midFeet);
-      var dimMeta = rmEdgeDimensionMeta(r.outline, e);
-      var dimLabel = dimMeta.prefix + Math.round(distFt) + " ft";
+      var dimMeta = rmEdgeDimensionMeta(r.outline, e, distFt);
+      var dimLabel = dimMeta.prefix + rmFormatEdgeFeet(dimMeta.labelFt) + " ft";
       var dimW = Math.max(36, dimLabel.length * 8 + 12);
       shapeSvg += '<rect x="' + (svgMid.x - dimW / 2).toFixed(1) + '" y="' + (svgMid.y - 11).toFixed(1) + '" width="' +
         dimW.toFixed(1) + '" height="22" rx="5" fill="' + dimMeta.bg + '"/>' +
@@ -1747,6 +1832,9 @@ var rmState = {
      rmUndoSquareUp()) -- null whenever the current outline hasn't been
      squared, or after an undo. */
   preSquareRing: null,
+  preSquareMeasurementState: null,
+  preResnapMeasurementState: null,
+  preAlignMeasurementState: null,
   /* Vertex (per-corner) edit mode -- rmToggleVertexEdit(). vertexHandleLayerGroup
      holds the draggable per-vertex markers, only populated while active. */
   vertexEditActive: false,
@@ -1791,6 +1879,7 @@ var rmState = {
      a factor learned for one building to a different one. */
   inheritedScaleFactor: 1,
   inheritedScaleFactorBuildingId: null,
+  inheritedScaleFromOutlineId: null,
   /* Set momentarily by rmEnterMultiRoofCapture() around its
      rmClearFootprintLayers() call when continuing to trace on the SAME
      already-uploaded ortho for the SAME building -- see
@@ -2201,16 +2290,19 @@ function rmClearGeneratedOutline(){
   if (rmState.map && rmState.dimensionLayerGroup) rmState.map.removeLayer(rmState.dimensionLayerGroup);
   rmState.dimensionLayerGroup = null;
   rmState.preSquareRing = null;
+  rmState.preSquareMeasurementState = null;
   var undoBtn = document.getElementById("rm-undo-square-btn");
   if (undoBtn) undoBtn.style.display = "none";
   var squareStatus = document.getElementById("rm-square-status");
   if (squareStatus) squareStatus.textContent = "";
   rmState.preResnapRing = null;
+  rmState.preResnapMeasurementState = null;
   var undoResnapBtn = document.getElementById("rm-undo-resnap-btn");
   if (undoResnapBtn) undoResnapBtn.style.display = "none";
   var resnapStatus = document.getElementById("rm-resnap-status");
   if (resnapStatus) resnapStatus.textContent = "";
   rmState.preAlignRing = null;
+  rmState.preAlignMeasurementState = null;
   var undoAlignBtn = document.getElementById("rm-undo-align-btn");
   if (undoAlignBtn) undoAlignBtn.style.display = "none";
   if (rmAlignState.active) rmExitAlignMode(false); /* discard, nothing left to save it to */
@@ -2411,8 +2503,8 @@ function rmDrawEdgeDimensions(outline){
     var distFt = rmGeomHaversineMeters(a, b) * 3.28084;
     if (distFt < 1) continue; /* skip degenerate/near-zero edges from ring cleanup */
     var midLat = (a.lat + b.lat) / 2, midLng = (a.lng + b.lng) / 2;
-    var dimMeta = rmEdgeDimensionMeta(outline, i);
-    var label = dimMeta.prefix + Math.round(distFt) + " ft";
+    var dimMeta = rmEdgeDimensionMeta(outline, i, distFt);
+    var label = dimMeta.prefix + rmFormatEdgeFeet(dimMeta.labelFt) + " ft";
     var marker = L.marker([midLat, midLng], {
       icon: L.divIcon({
         className: "", iconSize: null,
@@ -2579,7 +2671,8 @@ async function rmPersistVertexEdit(){
       return o.id === outline.id ? Object.assign({}, o, {
         ring: outline.ring, areaSqFt: outline.areaSqFt, perimeterFt: outline.perimeterFt,
         center: outline.center, calibration: outline.calibration || null, squared: null,
-        edgeMeasurements: outline.edgeMeasurements || [], measurementMethod: outline.measurementMethod
+        edgeMeasurements: outline.edgeMeasurements || [], inheritedScale: outline.inheritedScale || null,
+        measurementMethod: outline.measurementMethod
       }) : o;
     });
     var roofIdx = roofs.findIndex(function(r){ return r.id === roof.id; });
@@ -2593,16 +2686,19 @@ function rmDrawFinalOutline(outline){
   rmClearLinkedFeatures(); /* a freshly captured outline is never linked yet */
   rmClearSplitState(); /* and never has a pending split from whatever outline was showing before */
   rmState.preSquareRing = null; /* a fresh outline was never squared -- no stale Undo button */
+  rmState.preSquareMeasurementState = null;
   var undoBtn = document.getElementById("rm-undo-square-btn");
   if (undoBtn) undoBtn.style.display = "none";
   var squareStatus = document.getElementById("rm-square-status");
   if (squareStatus) squareStatus.textContent = "";
   rmState.preResnapRing = null; /* a fresh outline was never re-snapped -- no stale Undo button */
+  rmState.preResnapMeasurementState = null;
   var undoResnapBtn = document.getElementById("rm-undo-resnap-btn");
   if (undoResnapBtn) undoResnapBtn.style.display = "none";
   var resnapStatus = document.getElementById("rm-resnap-status");
   if (resnapStatus) resnapStatus.textContent = "";
   rmState.preAlignRing = null; /* a fresh outline was never aligned -- no stale Undo button */
+  rmState.preAlignMeasurementState = null;
   var undoAlignBtn = document.getElementById("rm-undo-align-btn");
   if (undoAlignBtn) undoAlignBtn.style.display = "none";
   if (rmAlignState.active) rmExitAlignMode(false); /* a fresh outline replaces whatever was being aligned */
@@ -2671,7 +2767,7 @@ function rmCalibrateEdge(edgeIndex){
       appliedFactor = 1;
       conflictResolution = "keep_existing";
     } else if (choice === "A" || choice === "AVG" || choice === "AVERAGE"){
-      appliedFactor = (1 + factor) / 2;
+      appliedFactor = Math.sqrt(factor);
       conflictResolution = "average";
     } else if (choice === "U" || choice === "USE"){
       conflictResolution = "use";
@@ -2713,8 +2809,10 @@ function rmCalibrateEdge(edgeIndex){
     measuredFt: measuredFt,
     source: "measured",
     rawInput: String(input),
+    factor: appliedFactor,
     calibratedAt: Date.now()
   };
+  delete outline.inheritedScale;
   if (conflictResolution !== "use") outline.calibration.conflictResolution = conflictResolution;
   outline.measurementMethod = rmOutlineMeasurementMethod(outline);
   /* Scale inheritance -- learn from this calibration so the NEXT roof
@@ -2729,6 +2827,7 @@ function rmCalibrateEdge(edgeIndex){
     var carryOver = rmState.inheritedScaleFactorBuildingId === rmState.linkedBuildingId ? rmState.inheritedScaleFactor : 1;
     rmState.inheritedScaleFactor = carryOver * appliedFactor;
     rmState.inheritedScaleFactorBuildingId = rmState.linkedBuildingId;
+    rmState.inheritedScaleFromOutlineId = outline.id || null;
   }
   /* If features are already placed on a saved roof, keep them visually
      anchored to the roof by applying the identical transform -- otherwise
@@ -2771,7 +2870,8 @@ async function rmPersistCalibration(rescaledAssets){
       return o.id === outline.id ? Object.assign({}, o, {
         ring: outline.ring, areaSqFt: outline.areaSqFt, perimeterFt: outline.perimeterFt,
         center: outline.center, calibration: outline.calibration || null,
-        edgeMeasurements: outline.edgeMeasurements || [], measurementMethod: outline.measurementMethod
+        edgeMeasurements: outline.edgeMeasurements || [], inheritedScale: outline.inheritedScale || null,
+        measurementMethod: outline.measurementMethod
       }) : o;
     });
     if (rescaledAssets) roof.roof_assets = rescaledAssets;
@@ -2797,6 +2897,7 @@ function rmSquareUpOutline(){
     return;
   }
   rmState.preSquareRing = outline.ring; /* for Undo -- one level, matches Calibrate's own no-history-stack simplicity */
+  rmState.preSquareMeasurementState = rmSnapshotMeasurementState(outline);
   outline.ring = result.ring;
   outline.areaSqFt = rmGeomPolygonAreaSqMeters(result.ring) * 10.7639;
   outline.perimeterFt = rmGeomPolygonPerimeterMeters(result.ring) * 3.28084;
@@ -2822,7 +2923,9 @@ function rmUndoSquareUp(){
   outline.perimeterFt = rmGeomPolygonPerimeterMeters(outline.ring) * 3.28084;
   outline.center = rmGeomRingCentroid(outline.ring);
   delete outline.squared;
+  rmRestoreMeasurementState(outline, rmState.preSquareMeasurementState);
   rmState.preSquareRing = null;
+  rmState.preSquareMeasurementState = null;
   if (rmState.outlineLayer) rmState.outlineLayer.setLatLngs(outline.ring.map(function(p){ return [p.lat, p.lng]; }));
   rmDrawEdgeDimensions(outline);
   rmRenderOutlineStats(outline);
@@ -2863,7 +2966,8 @@ async function rmPersistOutlineGeometryEdit(){
       return o.id === outline.id ? Object.assign({}, o, {
         ring: outline.ring, areaSqFt: outline.areaSqFt, perimeterFt: outline.perimeterFt,
         center: outline.center, calibration: outline.calibration || null, squared: outline.squared || null,
-        edgeMeasurements: outline.edgeMeasurements || [], measurementMethod: outline.measurementMethod
+        edgeMeasurements: outline.edgeMeasurements || [], inheritedScale: outline.inheritedScale || null,
+        measurementMethod: outline.measurementMethod
       }) : o;
     });
     var roofIdx = roofs.findIndex(function(r){ return r.id === roof.id; });
@@ -2933,6 +3037,7 @@ function rmSnapExistingOutlineToNeighbors(){
     return;
   }
   rmState.preResnapRing = ring; /* one-level Undo, same simplicity as Square Up/Calibrate */
+  rmState.preResnapMeasurementState = rmSnapshotMeasurementState(outline);
   outline.ring = newRing;
   outline.areaSqFt = rmGeomPolygonAreaSqMeters(newRing) * 10.7639;
   outline.perimeterFt = rmGeomPolygonPerimeterMeters(newRing) * 3.28084;
@@ -2955,7 +3060,9 @@ function rmUndoResnapToNeighbors(){
   outline.areaSqFt = rmGeomPolygonAreaSqMeters(outline.ring) * 10.7639;
   outline.perimeterFt = rmGeomPolygonPerimeterMeters(outline.ring) * 3.28084;
   outline.center = rmGeomRingCentroid(outline.ring);
+  rmRestoreMeasurementState(outline, rmState.preResnapMeasurementState);
   rmState.preResnapRing = null;
+  rmState.preResnapMeasurementState = null;
   if (rmState.outlineLayer) rmState.outlineLayer.setLatLngs(outline.ring.map(function(p){ return [p.lat, p.lng]; }));
   rmDrawEdgeDimensions(outline);
   rmRenderOutlineStats(outline);
@@ -3157,6 +3264,7 @@ function rmExitAlignMode(persist){
   }
   rmAlignState.moveMarker = null; rmAlignState.rotateMarker = null; rmAlignState.scaleMarker = null;
   if (persist && moved && outline){
+    var preAlignMeasurementState = rmSnapshotMeasurementState(outline);
     /* A transform invalidates any prior "square"/"calibrated" guarantee,
        same reasoning already applied to a manual vertex drag -- and drops
        the Square Up/Re-Snap undo snapshots for the same reason ("undo"
@@ -3165,10 +3273,13 @@ function rmExitAlignMode(persist){
     rmInvalidateEdgeMeasurements(outline, "align_outline");
     outline.measurementMethod = rmOutlineMeasurementMethod(outline);
     rmState.preSquareRing = null;
+    rmState.preSquareMeasurementState = null;
     document.getElementById("rm-undo-square-btn").style.display = "none";
     rmState.preResnapRing = null;
+    rmState.preResnapMeasurementState = null;
     document.getElementById("rm-undo-resnap-btn").style.display = "none";
     rmState.preAlignRing = rmAlignState.originalRing;
+    rmState.preAlignMeasurementState = preAlignMeasurementState;
     document.getElementById("rm-undo-align-btn").style.display = "";
     toast("Outline aligned ✓");
     rmPersistOutlineGeometryEdit();
@@ -3194,7 +3305,9 @@ function rmUndoAlign(){
   outline.areaSqFt = rmGeomPolygonAreaSqMeters(outline.ring) * 10.7639;
   outline.perimeterFt = rmGeomPolygonPerimeterMeters(outline.ring) * 3.28084;
   outline.center = rmGeomRingCentroid(outline.ring);
+  rmRestoreMeasurementState(outline, rmState.preAlignMeasurementState);
   rmState.preAlignRing = null;
+  rmState.preAlignMeasurementState = null;
   if (rmState.outlineLayer) rmState.outlineLayer.setLatLngs(outline.ring.map(function(p){ return [p.lat, p.lng]; }));
   rmDrawEdgeDimensions(outline);
   rmRenderOutlineStats(outline);
@@ -4254,6 +4367,12 @@ function rmFinishTrace(){
     outline.center = centroid;
     outline.areaSqFt = rmGeomPolygonAreaSqMeters(scaledRing) * 10.7639;
     outline.perimeterFt = rmGeomPolygonPerimeterMeters(scaledRing) * 3.28084;
+    outline.inheritedScale = {
+      fromOutlineId: rmState.inheritedScaleFromOutlineId || null,
+      factor: rmState.inheritedScaleFactor,
+      scaleSource: "measured",
+      derivedAt: Date.now()
+    };
     outline.calibration = { inherited: true, factor: rmState.inheritedScaleFactor, calibratedAt: Date.now() };
     outline.measurementMethod = rmOutlineMeasurementMethod(outline);
   }
@@ -4887,7 +5006,7 @@ async function rmSaveSplitSectionsToBuilding(buildingId){
         isSiteBoundary: false, calibration: null, edgeMeasurements: [], createdAt: Date.now()
       };
       rmCopyOutlineSourceMetadata(baseOutline, outlineEntry);
-      rmDropSplitMeasurementMetadata(outlineEntry);
+      rmDropSplitMeasurementMetadata(outlineEntry, baseOutline);
       var newRoof = {
         id: genId("roof"), label: label, roofSystem: "",
         roof_base_map_type: null, roof_base_map_url: null, roof_base_map_bounds: null,
@@ -4979,7 +5098,7 @@ async function rmSaveSplitSectionsToExistingRoof(buildingId, roofId){
       isSiteBoundary: false, calibration: null, edgeMeasurements: [], createdAt: Date.now()
     };
     rmCopyOutlineSourceMetadata(baseOutline, primaryOutline);
-    rmDropSplitMeasurementMetadata(primaryOutline);
+    rmDropSplitMeasurementMetadata(primaryOutline, baseOutline);
     origRoof.roof_outlines = (origRoof.roof_outlines || []).concat([primaryOutline]);
     var renamed = [];
     if ((origRoof.label || "Roof").trim() !== sections[0].label.trim()){
@@ -5012,7 +5131,7 @@ async function rmSaveSplitSectionsToExistingRoof(buildingId, roofId){
         isSiteBoundary: false, calibration: null, edgeMeasurements: [], createdAt: Date.now()
       };
       rmCopyOutlineSourceMetadata(baseOutline, outlineEntry);
-      rmDropSplitMeasurementMetadata(outlineEntry);
+      rmDropSplitMeasurementMetadata(outlineEntry, baseOutline);
       var newRoof = {
         id: genId("roof"), label: label, roofSystem: "",
         roof_base_map_type: null, roof_base_map_url: null, roof_base_map_bounds: null,
