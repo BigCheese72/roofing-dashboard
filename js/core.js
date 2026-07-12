@@ -102,16 +102,15 @@ if (isDevEnvironment() && devFirebaseConfigIsReal()){
   if (isDevEnvironment()) console.warn("watkins-service-orders-dev config missing or malformed -- falling back to the production Firebase config. This should not happen once the real dev config is set; check FIREBASE_CONFIG_DEV in js/core.js.");
 }
 var fdb = null;
-/* fauth (Firebase Authentication, Phase 1 of the auth build -- see
-   docs/AUTH_DESIGN.md) is layered ALONGSIDE the existing PIN-based admin
-   mode below, not replacing it yet. Requires the "Email/Password"
-   sign-in provider to be enabled for this project in the Firebase
-   Console (Authentication > Sign-in method) -- a manual one-time step,
-   same pattern as firestore.rules needing a manual publish; nothing here
-   enables it automatically. fauth stays null (same graceful-degrade
-   pattern as fdb) if the SDK didn't load or the project isn't set up
-   for it yet -- login UI simply won't work until then, nothing else in
-   the app is affected. */
+/* fauth (Firebase Authentication) is the ONLY gate on privileged actions
+   app-wide -- there is no PIN left anywhere in this app (see Auth Phase 5
+   in docs/AUTH_DESIGN.md). Requires the "Email/Password" sign-in provider
+   to be enabled for this project in the Firebase Console (Authentication
+   > Sign-in method) -- a manual one-time step, same pattern as
+   firestore.rules needing a manual publish; nothing here enables it
+   automatically. fauth stays null (same graceful-degrade pattern as fdb)
+   if the SDK didn't load or the project isn't set up for it yet -- login
+   UI simply won't work until then, nothing else in the app is affected. */
 var fauth = null;
 try{
   if (window.firebase && firebase.initializeApp){
@@ -136,16 +135,14 @@ var cloudIndexCache = [];
 var ccLinkedProjectId = null;
 var ccLinkedProjectName = "";
 
-/* ================= Account / login (auth Phase 1) =================
-   Reachable via the header's "🔐 Account" button, entirely separate from
-   the PIN-based Admin toggle above -- neither gates the app yet. Role/
-   permission display below reads straight off the signed-in user's ID
-   token (getIdTokenResult().claims), NOT a Firestore read -- the token
-   already carries { owner, role, mfaOk } once signed in (see "Custom
-   claims size" in docs/AUTH_DESIGN.md for why claims stay this small),
-   so this works before any Firestore rule for `users`/`roles` exists at
-   all (that's Phase 2). currentAuthClaims is display-only here in Phase 1
-   -- nothing in the app CHECKS it to gate any action yet. */
+/* ================= Account / login =================
+   Reachable via the header's "🔐 Account" button. Role/permission display
+   below reads straight off the signed-in user's ID token
+   (getIdTokenResult().claims), NOT a Firestore read -- the token already
+   carries { owner, role, mfaOk } once signed in (see "Custom claims size"
+   in docs/AUTH_DESIGN.md for why claims stay this small). currentAuthClaims
+   drives isAdmin (see recomputeIsAdmin() below) and every privileged
+   control's visibility app-wide -- real gating, not just display. */
 var currentAuthUser = null;
 var currentAuthClaims = null;
 if (fauth){
@@ -1148,33 +1145,16 @@ async function runPhotoStorageMigration(){
   if (failures.length) console.warn("Photo migration failures (safe to retry):", failures);
   return { migrated: migrated, alreadyDone: alreadyDone, failed: failed, failures: failures };
 }
-/* No longer a PIN prompt -- Admin mode now follows sign-in state and role
-   automatically (see block comment above). Clicking this while signed out
-   nudges toward the Account modal; while signed in, it just confirms
-   current status -- there's nothing left to client-side "toggle", the
-   server decides what a given signed-in user can actually do. */
-function toggleAdminMode(){
-  if (!fauth || !currentAuthUser){
-    toast("Sign in first — Admin mode now follows your account's role.");
-    openAccountModal();
-    return;
-  }
-  recomputeIsAdmin();
-  toast(isAdmin ?
-    "Admin mode on (" + (currentAuthClaims.owner ? "owner" : "admin") + ")" :
-    "Your account isn't an owner or admin — ask an admin to change your role.");
-}
+/* Admin toggle button removed entirely (2026-07-12) -- there was nothing
+   left for it to toggle. isAdmin has followed sign-in state and role
+   automatically since Auth Phase 5 (recomputeIsAdmin(), called on every
+   auth-state change below); the button had degenerated into a
+   confirm-your-own-status no-op that still LOOKED like a switch
+   ("Admin: ON/OFF"), which is actively misleading -- a field_tech seeing
+   "OFF" would reasonably try to turn it on, and there's nothing to turn
+   on. Every privileged control below now shows or hides purely off
+   isAdmin/claims, with no manual step in between. */
 function updateAdminUI(){
-  var btn = document.getElementById("admin-toggle");
-  if (btn){
-    btn.classList.toggle("active", isAdmin);
-    /* innerHTML (not textContent) -- must preserve the icon + .tab-label
-       span structure the mobile header CSS depends on to show icon-only
-       on narrow screens (see "Mobile header/toolbar pass" in
-       DEV_NOTES.md); textContent would silently wipe that out and make
-       this button always full-text even on mobile. */
-    btn.innerHTML = '🛠️<span class="tab-label">' + (isAdmin ? " Admin: ON" : " Admin") + '</span>';
-  }
   var settingsBar = document.getElementById("admin-settings-bar");
   if (settingsBar){
     settingsBar.style.display = isAdmin ? "" : "none";
@@ -1185,10 +1165,11 @@ function updateAdminUI(){
   /* Saved view access control (Mark) -- Import Work Order File and, per
      saved work order, Delete, are admin-only (Export was removed
      entirely, not gated -- see "Export button removed" in DEV_NOTES.md).
-     Toggling admin mode re-draws the Saved list immediately (drawSaved()
-     itself checks isAdmin for the per-row Delete button) so switching
-     modes doesnt need a tab change to take effect. See "Saved view
-     access control" in DEV_NOTES.md. */
+     updateAdminUI() re-draws the Saved list immediately on every auth-state
+     change (drawSaved() itself checks isAdmin for the per-row Delete
+     button) so signing in/out or a role change takes effect without
+     needing a tab change. See "Saved view access control" in
+     DEV_NOTES.md. */
   var importBtn = document.getElementById("saved-import-btn");
   if (importBtn) importBtn.style.display = isAdmin ? "" : "none";
   var importHint = document.getElementById("saved-import-hint");
@@ -1622,9 +1603,15 @@ function renderAuditLogBacklog(){
   if (!host) return;
   if (!auditLogBacklog.length){ host.innerHTML = '<p class="hint">No audit log entries yet.</p>'; return; }
   host.innerHTML = auditLogBacklog.map(function(a){
+    /* Every entry logged today is actorMethod "claims" -- admin.js has
+       required a verified, signed-in identity for every action since Auth
+       Phase 5 (there is no PIN left to log an action under). This
+       fallback only ever matches an entry from before that -- recorded
+       under the old shared-PIN system, with no individual identity to
+       show. */
     var who = a.actorMethod === "claims" ?
       esc((a.actorEmail || a.actorUid || "signed-in user") + (a.actorRole ? " (" + a.actorRole + ")" : "")) :
-      "PIN only (not signed in)";
+      "Pre-login era (recorded before individual sign-in existed)";
     var targetStr = a.target ? esc((a.target.collection || "") + "/" + (a.target.id || "") +
       (a.target.roofId ? " (roof " + a.target.roofId + ")" : "")) : "";
     return '<div class="card" style="margin:0 0 8px">' +

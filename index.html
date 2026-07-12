@@ -55,7 +55,11 @@
   <button class="tab cond" id="tab-history" onclick="showView('history')" title="Building History">🏢<span class="tab-label"> Building History</span></button>
   <button class="tab cond" id="tab-reports" onclick="showView('reports')" title="Reports">📋<span class="tab-label"> Reports</span></button>
   <button class="tab cond" id="tab-roofmapper" onclick="showView('roofmapper')" title="RoofMapper">🗺️<span class="tab-label"> RoofMapper</span></button>
-  <button class="tab cond" id="admin-toggle" onclick="toggleAdminMode()" style="font-size:11px" title="Admin">🛠️<span class="tab-label"> Admin</span></button>
+  <!-- No admin toggle here on purpose (removed 2026-07-12) -- privileged
+       controls throughout this app are shown or hidden based on the
+       signed-in user's real role/claims (isAdmin, recomputed automatically
+       on every auth-state change in js/core.js), never a mode you switch
+       on. See "admin mode" comment block in js/core.js. -->
   <button class="tab cond" id="account-toggle" onclick="openAccountModal()" style="font-size:11px" title="Account">🔐<span class="tab-label"> Account</span></button>
 </header>
 
@@ -353,9 +357,8 @@
     </div>
     <div class="card" id="audit-log-card" style="display:none">
       <h2 class="cond">🔒 Audit Log (admin)</h2>
-      <p class="hint">Every destructive or privileged admin.js action, newest first — who (when signed in) or
-        "PIN only" (when not), what changed, before/after. Append-only; nothing here can be edited or deleted, not
-        even by the owner.</p>
+      <p class="hint">Every destructive or privileged admin.js action, newest first — who, what changed, before/after.
+        Append-only; nothing here can be edited or deleted, not even by the owner.</p>
       <div class="btnrow" style="margin:0 0 10px">
         <button class="btn" onclick="loadAuditLogBacklog()">Refresh</button>
       </div>
