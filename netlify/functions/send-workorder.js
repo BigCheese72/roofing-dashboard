@@ -1,10 +1,21 @@
 // Sends a work order PDF via Resend. The API key is read from the
 // RESEND_API_KEY environment variable set in Netlify site settings —
 // it is never exposed to the browser.
+//
+// Auth Phase 5 (see docs/AUTH_DESIGN.md) -- gated by doc.email_customer.
+// Before this, ANY caller who could reach this endpoint could send an
+// email as Watkins Roofing to anyone, with no check at all -- not just a
+// gap relative to the mandatory "field_tech emailing a customer document"
+// negative test, a real, live hole regardless of that test existing.
+const { requirePermission } = require("./lib/authGuard");
+
 exports.handler = async function (event) {
   if (event.httpMethod !== "POST") {
     return { statusCode: 405, body: JSON.stringify({ error: "Method not allowed" }) };
   }
+  try { await requirePermission(event, "doc.email_customer"); }
+  catch (e) { return { statusCode: e.statusCode || 401, body: JSON.stringify({ error: e.message }) }; }
+
   const key = process.env.RESEND_API_KEY;
   if (!key) {
     return { statusCode: 500, body: JSON.stringify({

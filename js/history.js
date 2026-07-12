@@ -1258,7 +1258,7 @@ async function sendEmailNow(){
   try{
     var resp = await fetch("/.netlify/functions/send-workorder", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: await authHeaders(),
       body: JSON.stringify({ to: addrs, subject: subject, body: body,
         filename: pdfFileName(), pdfBase64: pdfBase64, jobNo: o.jobNo || "" })
     });
