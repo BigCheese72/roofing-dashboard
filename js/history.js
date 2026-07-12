@@ -159,6 +159,10 @@ async function openBuildingHistory(buildingId){
   try{
     var bldSnap = await fdb.collection("buildings").doc(buildingId).get();
     var bld = bldSnap.exists ? bldSnap.data() : {};
+    var warrantyReportsSnap = await fdb.collection("buildings").doc(buildingId)
+      .collection("warranty_reports").orderBy("uploadedAt", "desc").limit(50).get();
+    var warrantyReports = []; warrantyReportsSnap.forEach(function(d){ warrantyReports.push(d.data()); });
+    var warrantyCardHtmlStr = renderWarrantyCardHtml(buildingId, warrantyReports);
     var roofs = getBuildingRoofs(bld);
     if (!roofs.some(function(r){ return r.id === historySelectedRoofId; })) historySelectedRoofId = roofs[0].id;
     var roof = getRoofById(bld, historySelectedRoofId);
@@ -287,7 +291,7 @@ async function openBuildingHistory(buildingId){
     if (!events.length){
       historyEvents = [];
       historyBuildingId = buildingId;
-      detail.innerHTML = baseMapCardHtml + profileCardHtml + emptyMapCardHtml + '<div class="card"><h2 class="cond">Timeline</h2>' +
+      detail.innerHTML = baseMapCardHtml + profileCardHtml + warrantyCardHtmlStr + emptyMapCardHtml + '<div class="card"><h2 class="cond">Timeline</h2>' +
         '<div class="btnrow" style="margin:0 0 10px">' + addActivityBtnHtml + ' ' + recoverBtnHtml + '</div>' +
         '<div class="empty">No reports logged for this building yet. If a work order was already Saved for this ' +
         'building but never Downloaded/Emailed/Shared, tap 🔄 Recover Unlogged Work Orders above.</div></div>';
@@ -327,7 +331,7 @@ async function openBuildingHistory(buildingId){
         'No pins placed yet — they’ll show up here as findings get pinned on future reports.') + '</p>' +
       '<div id="building-map" style="height:min(50vh,420px);border-radius:6px;overflow:hidden;margin-bottom:10px"></div>' +
       addFeatureBtnHtml + ' ' + addRoofBtnHtml + ' ' + autoAssignBtnHtml + ' ' + bulkReassignBtnHtml + '</div>';
-    detail.innerHTML = baseMapCardHtml + profileCardHtml + mapCardHtml +
+    detail.innerHTML = baseMapCardHtml + profileCardHtml + warrantyCardHtmlStr + mapCardHtml +
       '<div class="card"><h2 class="cond">Timeline (' + events.length + ')</h2>' +
       '<div class="btnrow" style="margin:0 0 10px">' + addActivityBtnHtml + ' ' + recoverBtnHtml + '</div>' +
       (dupCount ? '<p class="hint">\u26a0 ' + dupCount + ' possible duplicate' + (dupCount === 1 ? "" : "s") +
@@ -344,6 +348,227 @@ async function openBuildingHistory(buildingId){
 function historySelectRoof(buildingId, roofId){
   historySelectedRoofId = roofId;
   return openBuildingHistory(buildingId);
+}
+
+/* ================= Warranty / inspection reports =================
+   Ingested from CCM Inspect emails (netlify/functions/inspection-
+   reports.js, scheduled poll + manual "Check for New Inspection Reports")
+   or uploaded directly here. See DEV_NOTES.md "Inspection report
+   ingestion" for the full design. Buildings get re-inspected repeatedly
+   (annually, sometimes twice a year) -- reports are NEVER overwritten,
+   only added, newest first, with older ones tucked under a "Previous
+   Reports" toggle so a tech sees the roof's whole inspection history, not
+   just the latest. A report can be marked superseded (server-side only,
+   never deleted) when a genuinely revised version of the same inspection
+   arrives. */
+var warrantyUploadBuildingId = null;
+function warrantyReportRowHtml(r, buildingId){
+  var dateLabel = r.inspectionDate || fmtTs(r.uploadedAt);
+  var sourceLabel = r.sourceType === "manual" ? "Uploaded by " + esc(r.uploadedBy || "admin") :
+    "Emailed" + (r.sourceEmailSubject ? ' — "' + esc(r.sourceEmailSubject) + '"' : "");
+  var ccBadge = r.companyCamUploadStatus === "uploaded" ? '<span class="evt-tag">CompanyCam ✓</span>' :
+    (r.companyCamUploadStatus === "failed" ? '<span class="evt-tag" style="background:#FBE2E2;color:#D64545">CompanyCam upload failed</span>' : "");
+  return '<div class="evt-item">' +
+    '<div class="evt-head"><span class="evt-date">' + esc(dateLabel) + '</span>' +
+    '<span class="evt-tag">' + esc(r.fileName || "Inspection Report") + '</span>' + ccBadge + '</div>' +
+    '<div class="evt-row">' + sourceLabel + '</div>' +
+    '<div class="btnrow" style="margin:6px 0 0"><button class="btn" onclick="viewWarrantyReportPdf(\'' +
+    esc(buildingId) + '\', \'' + esc(r.storageRef) + '\')">📄 View Report</button></div>' +
+    '</div>';
+}
+function renderWarrantyCardHtml(buildingId, reports){
+  var active = reports.filter(function(r){ return r.status !== "superseded"; });
+  var superseded = reports.filter(function(r){ return r.status === "superseded"; });
+  var uploadBtnHtml = '<button class="btn" onclick="openWarrantyUploadModal(\'' + esc(buildingId) + '\')">⬆️ Upload Report</button>';
+  if (!active.length && !superseded.length){
+    return '<div class="card"><h2 class="cond">Warranty — Inspection Reports</h2>' +
+      '<p class="hint">No inspection reports on file for this building yet. They’ll appear here automatically when CCM Inspect emails one, or upload one directly.</p>' +
+      uploadBtnHtml + '</div>';
+  }
+  var latestHtml = active.length ? warrantyReportRowHtml(active[0], buildingId) :
+    '<p class="hint">No active report — see previous reports below.</p>';
+  var olderActive = active.slice(1);
+  var olderAll = olderActive.concat(superseded);
+  var olderHtml = olderAll.length ?
+    '<details style="margin-top:8px"><summary style="cursor:pointer;color:var(--accent,#1976D2)">Previous Reports (' + olderAll.length + ')</summary>' +
+    olderAll.map(function(r){ return warrantyReportRowHtml(r, buildingId); }).join('') + '</details>' : '';
+  return '<div class="card"><h2 class="cond">Warranty — Inspection Reports</h2>' +
+    latestHtml + olderHtml +
+    '<div class="btnrow" style="margin:10px 0 0">' + uploadBtnHtml + '</div></div>';
+}
+async function viewWarrantyReportPdf(buildingId, storageRef){
+  toast("Loading report…");
+  try{
+    var out = await callInspectionApi({ action: "get_report_pdf", storageRef: storageRef });
+    var res = await fetch(out.dataUrl);
+    var blob = await res.blob();
+    var url = URL.createObjectURL(blob);
+    window.open(url, "_blank");
+  }catch(e){ toast("Couldn't load report: " + e.message); }
+}
+function openWarrantyUploadModal(buildingId){
+  warrantyUploadBuildingId = buildingId;
+  document.getElementById("warranty-upload-file").value = "";
+  document.getElementById("warranty-upload-status").textContent = "";
+  var fld = document.getElementById("warranty-upload-supersede-fld");
+  var sel = document.getElementById("warranty-upload-supersede");
+  sel.innerHTML = '<option value="">— New report, don’t replace anything —</option>';
+  fld.style.display = "none";
+  document.getElementById("warranty-upload-modal").style.display = "";
+  lockBodyScroll();
+  fdb.collection("buildings").doc(buildingId).collection("warranty_reports")
+    .where("status", "==", "active").orderBy("uploadedAt", "desc").limit(20).get().then(function(qs){
+      if (qs.empty) return;
+      qs.forEach(function(d){
+        var r = d.data();
+        var opt = document.createElement("option");
+        opt.value = r.id;
+        opt.textContent = (r.inspectionDate || fmtTs(r.uploadedAt)) + " — " + (r.fileName || "Report");
+        sel.appendChild(opt);
+      });
+      fld.style.display = "";
+    }).catch(function(){});
+}
+function closeWarrantyUploadModal(){
+  document.getElementById("warranty-upload-modal").style.display = "none";
+  unlockBodyScroll();
+  warrantyUploadBuildingId = null;
+}
+function submitWarrantyUpload(){
+  var buildingId = warrantyUploadBuildingId;
+  var fileInput = document.getElementById("warranty-upload-file");
+  var file = fileInput.files && fileInput.files[0];
+  var statusEl = document.getElementById("warranty-upload-status");
+  if (!buildingId || !file){ statusEl.textContent = "Pick a PDF file first."; return; }
+  if (file.type && file.type !== "application/pdf" && !/\.pdf$/i.test(file.name)){
+    statusEl.textContent = "That doesn't look like a PDF."; return;
+  }
+  statusEl.textContent = "Uploading…";
+  var reader = new FileReader();
+  reader.onload = async function(){
+    try{
+      var base64 = String(reader.result).split("base64,")[1] || "";
+      var supersedesReportId = document.getElementById("warranty-upload-supersede").value || null;
+      var out = await callInspectionApi({
+        action: "manual_upload", buildingId: buildingId, fileName: file.name,
+        base64: base64, supersedesReportId: supersedesReportId
+      });
+      var ccNote = out.companyCamUploadStatus === "uploaded" ? " Also saved to CompanyCam ✓" :
+        (out.companyCamUploadStatus === "failed" ? " (CompanyCam upload failed: " + out.companyCamUploadError + ")" : "");
+      toast("Report uploaded ✓" + ccNote);
+      closeWarrantyUploadModal();
+      openBuildingHistory(buildingId);
+    }catch(e){ statusEl.textContent = "Upload failed: " + e.message; }
+  };
+  reader.onerror = function(){ statusEl.textContent = "Couldn't read that file."; };
+  reader.readAsDataURL(file);
+}
+
+var warrantyReviewBuildingCache = null;
+function openWarrantyReviewModal(){
+  document.getElementById("warranty-review-modal").style.display = "";
+  lockBodyScroll();
+  renderWarrantyReviewList();
+}
+function closeWarrantyReviewModal(){
+  document.getElementById("warranty-review-modal").style.display = "none";
+  unlockBodyScroll();
+}
+async function warrantyReviewLoadBuildingCache(){
+  if (warrantyReviewBuildingCache) return warrantyReviewBuildingCache;
+  var qs = await fdb.collection("buildings").orderBy("updatedAt", "desc").limit(300).get();
+  var list = [];
+  qs.forEach(function(d){
+    var v = d.data();
+    if (v.archived) return;
+    list.push({ id: d.id, name: v.name || "", location: v.location || "" });
+  });
+  warrantyReviewBuildingCache = list;
+  return list;
+}
+async function renderWarrantyReviewList(){
+  var host = document.getElementById("warranty-review-list");
+  host.className = "hint"; host.textContent = "Loading…";
+  try{
+    var out = await callInspectionApi({ action: "list_review_queue" });
+    var items = out.items || [];
+    if (!items.length){
+      host.className = "empty"; host.textContent = "Nothing waiting for review right now.";
+      return;
+    }
+    await warrantyReviewLoadBuildingCache();
+    host.className = "";
+    host.innerHTML = items.map(function(it){
+      return '<div class="evt-item" id="wq-item-' + esc(it.id) + '">' +
+        '<div class="evt-head"><span class="evt-tag">' + esc(it.fileName || "Inspection Report") + '</span></div>' +
+        '<div class="evt-row">From email: "' + esc(it.sourceEmailSubject || "") + '"</div>' +
+        (it.extractedAddress ? '<div class="evt-row">Extracted address: ' + esc(it.extractedAddress) + '</div>' : '') +
+        '<div class="evt-row hint">Reason: ' + esc(it.matchReason || "no confident match") + '</div>' +
+        '<div class="fld" style="margin:8px 0 0"><input type="text" placeholder="Search building by name or address…" ' +
+        'oninput="warrantyReviewFilterBuildings(\'' + esc(it.id) + '\', this.value)" style="width:100%;box-sizing:border-box"></div>' +
+        '<div id="wq-results-' + esc(it.id) + '" class="hint" style="margin-top:4px"></div>' +
+        '<div class="btnrow" style="margin:8px 0 0"><button class="btn" onclick="viewWarrantyReportPdf(null, \'' + esc(it.storageRef) + '\')">📄 View PDF</button>' +
+        '<button class="btn danger" onclick="dismissWarrantyReviewItem(\'' + esc(it.id) + '\')">Dismiss (not a real report)</button></div>' +
+        '</div>';
+    }).join('');
+  }catch(e){ host.className = "empty"; host.textContent = "Couldn’t load the review queue: " + esc(e.message); }
+}
+function warrantyReviewFilterBuildings(itemId, q){
+  var resultsHost = document.getElementById("wq-results-" + itemId);
+  if (!resultsHost || !warrantyReviewBuildingCache) return;
+  var norm = String(q || "").toLowerCase().trim();
+  if (norm.length < 2){ resultsHost.innerHTML = ""; return; }
+  var matches = warrantyReviewBuildingCache.filter(function(b){
+    return (b.name + " " + b.location).toLowerCase().indexOf(norm) !== -1;
+  }).slice(0, 8);
+  resultsHost.innerHTML = matches.length ? matches.map(function(b){
+    return '<div style="padding:6px 8px;border:1px solid var(--line);border-radius:4px;margin-top:4px;cursor:pointer" ' +
+      'onclick="assignWarrantyReviewItem(\'' + esc(itemId) + '\', \'' + esc(b.id) + '\')">' +
+      '<b>' + esc(b.name) + '</b><br><span class="hint">' + esc(b.location) + '</span></div>';
+  }).join('') : '<span class="hint">No matching buildings.</span>';
+}
+async function assignWarrantyReviewItem(itemId, buildingId){
+  toast("Filing report…");
+  try{
+    var out = await callInspectionApi({ action: "assign_review_item", itemId: itemId, buildingId: buildingId });
+    var ccNote = out.companyCamUploadStatus === "uploaded" ? " Also saved to CompanyCam ✓" : "";
+    toast("Filed ✓" + ccNote);
+    renderWarrantyReviewList();
+  }catch(e){ toast("Couldn't assign: " + e.message); }
+}
+async function dismissWarrantyReviewItem(itemId){
+  if (!confirm("Dismiss this item? It won't be filed anywhere — use this only for junk/false-positive attachments.")) return;
+  try{
+    await callInspectionApi({ action: "dismiss_review_item", itemId: itemId });
+    toast("Dismissed");
+    renderWarrantyReviewList();
+  }catch(e){ toast("Couldn't dismiss: " + e.message); }
+}
+async function checkForNewInspectionReports(){
+  var statusEl = document.getElementById("warranty-check-status");
+  var prevText = statusEl ? statusEl.textContent : "";
+  if (statusEl) statusEl.textContent = "Checking mailbox for new inspection reports…";
+  try{
+    var out = await callInspectionApi({ action: "poll" });
+    var s = out.summary;
+    var msg = "Checked " + s.checked + " email(s) — filed " + s.filed.length + ", queued " + s.queued.length +
+      " for review" + (s.errors.length ? ", " + s.errors.length + " error(s)" : "") + ".";
+    if (statusEl) statusEl.textContent = msg;
+    toast(msg);
+    if (s.queued.length) updateWarrantyReviewBadge();
+    if (historyBuildingId && s.filed.some(function(f){ return f.buildingId === historyBuildingId; })){
+      openBuildingHistory(historyBuildingId);
+    }
+  }catch(e){
+    if (statusEl) statusEl.textContent = "Check failed: " + e.message;
+    toast("Couldn't check for new inspection reports: " + e.message);
+  }
+}
+function updateWarrantyReviewBadge(){
+  callInspectionApi({ action: "list_review_queue" }).then(function(out){
+    var btn = document.getElementById("warranty-review-btn");
+    if (btn) btn.textContent = "📋 Review Queue" + ((out.items || []).length ? " (" + out.items.length + ")" : "");
+  }).catch(function(){});
 }
 /* Bug fix (2026-07-11) -- Mark: "it lets him ADD another roof, but then he
    CAN'T TRACE IT... a dead end." This used to prompt for a name and create

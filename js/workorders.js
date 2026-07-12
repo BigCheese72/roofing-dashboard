@@ -185,9 +185,10 @@ function bpSelectBuilding(buildingId){
    it too). A roof isn't just a roofs[] array entry -- building_history_
    events/reports docs reference it by (buildingId, roofId) pair too (see
    DATA_MODEL.md) -- so the actual move happens server-side, in one atomic
-   batch, via admin.js's move_roof action (Admin SDK, PIN-gated + audited,
-   same treatment as every other cross-cutting building/roof write in this
-   app). This modal is just the destination picker. See "Move/reassign a
+   batch, via admin.js's move_roof action (Admin SDK, claims/permission-
+   gated + audited, same treatment as every other cross-cutting
+   building/roof write in this app). This modal is just the destination
+   picker. See "Move/reassign a
    roof to a different building" in DEV_NOTES.md. */
 var mrCache = null, mrSourceBuildingId = null, mrRoofId = null, mrRoofLabel = "";
 async function openMoveRoofModal(sourceBuildingId, roofId, roofLabel){
@@ -1144,8 +1145,8 @@ async function renderHistoryList(){
    destroy its history; the old path was the ONLY option, which meant real
    history sometimes got destroyed just to declutter. Soft delete: sets an
    `archived` flag via admin.js's archive_building action (Admin SDK,
-   PIN-gated + audited, same defense-in-depth pattern as every other
-   cross-cutting building write in this file) and changes nothing else --
+   claims/permission-gated + audited, same defense-in-depth pattern as
+   every other cross-cutting building write in this file) and changes nothing else --
    roofs/features/history/CompanyCam link are all untouched, fully
    recoverable via unarchiveBuildingAdmin() below. See "Building archive"
    in DEV_NOTES.md. */
