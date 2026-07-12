@@ -3427,7 +3427,7 @@ function rmParseKmlGroundOverlay(kmlText, sourceName){
 function rmImageFileLooksLike(path){
   return /\.(png|jpe?g|webp|gif)$/i.test(path || "");
 }
-function rmIsLikelyMobileDevice(){
+function rmIsTileConstrainedDevice(){
   /* iPadOS can present a desktop-class Safari UA. Treat touch Macs/iPads as
      mobile here so large KMZ imports use the graceful lower-detail path. */
   var platform = navigator.platform || "";
@@ -3587,7 +3587,7 @@ async function rmUploadKmzFile(file, allFiles){
   });
   var selectedLevel = maxLevel;
   var mobileTileCapApplied = false;
-  if (rmIsLikelyMobileDevice() && (levels[maxLevel] || 0) > RM_KMZ_MOBILE_TILE_CAP){
+  if (rmIsTileConstrainedDevice() && (levels[maxLevel] || 0) > RM_KMZ_MOBILE_TILE_CAP){
     var mobileLevels = Object.keys(levels).map(function(k){ return parseInt(k, 10); })
       .filter(function(lvl){ return levels[lvl] <= RM_KMZ_MOBILE_TILE_CAP; })
       .sort(function(a, b){ return a - b; });
