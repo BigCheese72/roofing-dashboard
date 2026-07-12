@@ -54,10 +54,13 @@ function validateAppUrl(raw) {
 async function sendInviteEmail(opts) {
   const key = process.env.RESEND_API_KEY;
   if (!key) throw new Error("RESEND_API_KEY is not set. Add it in Netlify > Environment variables, then redeploy.");
-  const defaultFrom = process.env.FROM_EMAIL || "Watkins Roofing Work Orders <workorders@watkinsroofing.net>";
-  const domainMatch = defaultFrom.match(/@([^>\s]+)/);
-  const domain = domainMatch ? domainMatch[1] : "watkinsroofing.net";
-  const from = "RoofOps <noreply@" + domain + ">";
+  // Real bug, fixed here: this used to invent its own sender identity
+  // ("RoofOps <noreply@...>"). send-workorder.js's real work-order emails
+  // reach real recipients successfully using a DIFFERENT, already-verified
+  // From value -- reusing that exact value (not just the same domain)
+  // rather than a new local part this account may never have proven out
+  // in Resend. Same default construction as send-workorder.js, verbatim.
+  const from = process.env.FROM_EMAIL || "Watkins Roofing Work Orders <workorders@watkinsroofing.net>";
   const subject = "You've been added to RoofOps — set your password";
   const roleLabel = opts.roleLabel || opts.roleId;
   const text = "Hi" + (opts.displayName ? " " + opts.displayName : "") + ",\n\n" +
@@ -76,7 +79,17 @@ async function sendInviteEmail(opts) {
     body: JSON.stringify({ from: from, to: [opts.email], subject: subject, text: text, html: html })
   });
   const out = await resp2.text();
-  if (!resp2.ok) throw new Error("Email service rejected it: " + out.slice(0, 300));
+  // Real bug, fixed here (same silent-failure pattern flagged before):
+  // Resend's actual response body was discarded on success and never
+  // returned -- a 200-level "accepted" is not proof of actual delivery
+  // (Resend can accept into its queue and bounce afterward), and there was
+  // no way to see the real message id/response to check delivery status
+  // against. Both callers (create_user/resend_invite) now get this back
+  // and can report/log it, not just a blind "it worked."
+  let parsed = null;
+  try { parsed = JSON.parse(out); } catch (e) { /* non-JSON body, keep raw text below */ }
+  if (!resp2.ok) throw new Error("Email service rejected it (status " + resp2.status + "): " + out.slice(0, 300));
+  return { status: resp2.status, resendId: parsed && parsed.id ? parsed.id : null, raw: out.slice(0, 500) };
 }
 function escapeHtml(s) {
   return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -243,15 +256,15 @@ exports.handler = async function (event) {
         target: { collection: "users", id: userRecord.uid }, before: null, after: { email: email, role: roleId }
       });
 
-      let emailSent = false, emailError = null;
+      let emailSent = false, emailError = null, resendResult = null;
       try {
         const resetLink = await getAuth().generatePasswordResetLink(email, { url: appUrl });
-        await sendInviteEmail({ email: email, displayName: displayName, roleId: roleId, roleLabel: roleLabel,
+        resendResult = await sendInviteEmail({ email: email, displayName: displayName, roleId: roleId, roleLabel: roleLabel,
           inviterEmail: caller.email, resetLink: resetLink, appUrl: appUrl });
         emailSent = true;
       } catch (e) { emailError = e && e.message ? e.message : "unknown error"; }
 
-      return resp(200, { ok: true, uid: userRecord.uid, email: email, emailSent: emailSent, emailError: emailError });
+      return resp(200, { ok: true, uid: userRecord.uid, email: email, emailSent: emailSent, emailError: emailError, resend: resendResult });
     }
 
     // ---- resend_invite: rescues an account created before this fix (or
@@ -288,14 +301,14 @@ exports.handler = async function (event) {
       const roleLabel = roleDoc.exists ? (roleDoc.data().label || target.role) : target.role;
 
       const resetLink = await getAuth().generatePasswordResetLink(target.email, { url: appUrl });
-      await sendInviteEmail({ email: target.email, displayName: target.displayName, roleId: target.role, roleLabel: roleLabel,
+      const resendResult = await sendInviteEmail({ email: target.email, displayName: target.displayName, roleId: target.role, roleLabel: roleLabel,
         inviterEmail: caller.email, resetLink: resetLink, appUrl: appUrl });
 
       await writeAudit(db, {
         actorUid: caller.uid, actorRole: caller.owner ? "owner" : caller.role, action: "resend_invite",
         target: { collection: "users", id: targetUid }, before: null, after: { email: target.email }
       });
-      return resp(200, { ok: true });
+      return resp(200, { ok: true, resend: resendResult });
     }
 
     // ---- disable_user / enable_user / delete_user: Mark's explicit design
