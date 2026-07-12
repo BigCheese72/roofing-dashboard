@@ -115,6 +115,20 @@ try{
   }
 }catch(e){ fdb = null; fauth = null; }
 var cloudIndexCache = [];
+/* CompanyCam link state for the work order currently being edited. Moved
+   here from js/workorders.js (2026-07-11, real bug fix): js/companycam.js
+   loads BEFORE js/workorders.js in index.html's script order but also
+   references these vars, which only worked by accident of which script
+   happened to finish loading first -- on a cold/uncached load it's a real
+   race, and it broke for real on production's very first page load (a
+   ReferenceError thrown from inside the auth-state-change handler, since
+   recomputeIsAdmin() now calls updateAdminUI() -> renderCCLinkInfo() much
+   earlier in the page lifecycle than before Auth Phase 5). core.js always
+   loads first, so declaring shared state actually used across modules here
+   (matching every other core.js global) makes this correct regardless of
+   which order the rest of the modules happen to load in. */
+var ccLinkedProjectId = null;
+var ccLinkedProjectName = "";
 
 /* ================= Account / login (auth Phase 1) =================
    Reachable via the header's "🔐 Account" button, entirely separate from
@@ -286,18 +300,32 @@ async function renderUserManagementModal(){
       return '<option value="' + esc(r.id) + '"' + (r.id === u.role ? " selected" : "") + '>' + esc(r.label || r.id) + '</option>';
     }).join("");
     var disabledReason = isSelf ? "You can't change your own role" : (isOwnerRow ? "Transfer ownership to change the owner" : "");
-    return '<tr>' +
+    var status = u.status || "active";
+    var isDeleted = status === "deleted";
+    // Deleted is a permanent, terminal state -- no actions offered at all
+    // once reached, matching audit_logs' own "no further changes, ever"
+    // spirit. The row still renders (email/role/status visible) so
+    // historical attribution stays legible, just with nothing left to do.
+    var actionButtons = "";
+    if (!isSelf && !isOwnerRow && !isDeleted){
+      actionButtons =
+        '<button class="btn" onclick="saveUserRole(\'' + esc(u.uid) + '\')">Save</button> ' +
+        '<button class="btn" onclick="resendInvite(\'' + esc(u.uid) + '\')" title="Re-send the set-password email">Resend invite</button> ' +
+        (status === "disabled" ?
+          '<button class="btn" onclick="enableUser(\'' + esc(u.uid) + '\')">Re-enable</button>' :
+          '<button class="btn danger" onclick="disableUser(\'' + esc(u.uid) + '\', \'' + esc(u.email || "") + '\')">Disable</button>') +
+        (isOwner ?
+          ' <button class="btn danger" onclick="deleteUserPermanently(\'' + esc(u.uid) + '\', \'' + esc(u.email || "") + '\')" title="Permanent -- owner only">Delete…</button>' : '');
+    }
+    return '<tr' + (isDeleted ? ' style="opacity:.55"' : '') + '>' +
       '<td style="padding:6px 8px">' + esc(u.email || "") + (isSelf ? ' <span class="hint">(you)</span>' : '') + '</td>' +
       '<td style="padding:6px 8px">' +
-        (isSelf || isOwnerRow ?
+        (isSelf || isOwnerRow || isDeleted ?
           '<span class="hint" title="' + esc(disabledReason) + '">' + esc(u.role || "") + '</span>' :
           '<select id="role-select-' + esc(u.uid) + '">' + roleOptions + '</select>') +
       '</td>' +
-      '<td style="padding:6px 8px">' + esc(u.status || "active") + '</td>' +
-      '<td style="padding:6px 8px">' +
-        (isSelf || isOwnerRow ? '' :
-          '<button class="btn" onclick="saveUserRole(\'' + esc(u.uid) + '\')">Save</button>') +
-      '</td>' +
+      '<td style="padding:6px 8px">' + esc(status) + '</td>' +
+      '<td style="padding:6px 8px;white-space:nowrap">' + actionButtons + '</td>' +
     '</tr>';
   }).join("");
 
@@ -317,6 +345,19 @@ async function renderUserManagementModal(){
       '<tbody>' + (rows || '<tr><td colspan="4" style="padding:8px" class="hint">No users yet.</td></tr>') + '</tbody>' +
     '</table>';
 }
+/* Real incident, fixed here (see auth.js's create_user/sendInviteEmail for
+   the full story): this used to call the client SDK's
+   fauth.sendPasswordResetEmail() wrapped in a bare try/catch, which
+   silently swallowed the failure and told the inviting admin "email sent"
+   regardless of whether it actually was -- no crew member ever received an
+   invite and nobody knew. The server now sends the real email itself (via
+   Resend, same delivery path work-order emails already use) and reports
+   back honestly whether it worked -- this toast reflects that truthfully,
+   including telling the admin to use Resend Invite if the send failed but
+   the account was still created (a real, recoverable state, not a dead
+   end). appUrl is this browser's own origin -- same environment-aware
+   principle as passwordResetActionCodeSettings(), just sent to the server
+   since the reset link has to be generated server-side now. */
 async function inviteUser(){
   var email = val("invite-email").trim();
   var displayName = val("invite-name").trim();
@@ -326,20 +367,83 @@ async function inviteUser(){
   try{
     var r = await fetch("/.netlify/functions/auth", {
       method: "POST", headers: await authHeaders(),
-      body: JSON.stringify({ action: "create_user", email: email, roleId: roleId, displayName: displayName })
+      body: JSON.stringify({ action: "create_user", email: email, roleId: roleId, displayName: displayName, appUrl: window.location.origin })
     });
     var out = await r.json().catch(function(){ return null; });
     if (!r.ok || !out || !out.ok) throw new Error((out && out.error) || ("server error " + r.status));
-    // Public client SDK call -- triggers Firebase's own built-in reset-email
-    // flow so the new user sets their own password. No password is ever
-    // handled by this browser session or by the account that just created
-    // the user. actionCodeSettings brings them back to the app after they
-    // set their password (Firebase's default hosted page otherwise has no
-    // link back at all) -- this was the exact gap in the crew-invite flow.
-    try{ await fauth.sendPasswordResetEmail(email, passwordResetActionCodeSettings()); }catch(e){}
-    toast("Account created ✓ — a password-setup email was sent to " + email);
+    if (out.emailSent){
+      toast("Account created ✓ — invite email sent to " + email);
+    } else {
+      toast("Account created, but the invite EMAIL FAILED to send (" + (out.emailError || "unknown error") +
+        "). The account exists -- use Resend Invite once the problem's fixed, don't create it again.");
+    }
     await renderUserManagementModal();
   }catch(e){ toast("Couldn't create account: " + e.message); }
+}
+async function resendInvite(uid){
+  toast("Resending invite…");
+  try{
+    var r = await fetch("/.netlify/functions/auth", {
+      method: "POST", headers: await authHeaders(),
+      body: JSON.stringify({ action: "resend_invite", targetUid: uid, appUrl: window.location.origin })
+    });
+    var out = await r.json().catch(function(){ return null; });
+    if (!r.ok || !out || !out.ok) throw new Error((out && out.error) || ("server error " + r.status));
+    toast("Invite email re-sent ✓");
+  }catch(e){ toast("Couldn't resend invite: " + e.message); }
+}
+/* Disable is the primary removal action (see docs/AUTH_DESIGN.md) --
+   revokes access immediately without touching any historical
+   attribution. Confirm text names the actual consequence, not just
+   "are you sure." */
+async function disableUser(uid, email){
+  if (!confirm("Disable " + email + "'s account? They won't be able to sign in until re-enabled. Their name stays on their existing work orders/findings/photos/audit entries.")) return;
+  toast("Disabling…");
+  try{
+    var r = await fetch("/.netlify/functions/auth", {
+      method: "POST", headers: await authHeaders(),
+      body: JSON.stringify({ action: "disable_user", targetUid: uid })
+    });
+    var out = await r.json().catch(function(){ return null; });
+    if (!r.ok || !out || !out.ok) throw new Error((out && out.error) || ("server error " + r.status));
+    toast("Account disabled ✓");
+    await renderUserManagementModal();
+  }catch(e){ toast("Couldn't disable account: " + e.message); }
+}
+async function enableUser(uid){
+  toast("Re-enabling…");
+  try{
+    var r = await fetch("/.netlify/functions/auth", {
+      method: "POST", headers: await authHeaders(),
+      body: JSON.stringify({ action: "enable_user", targetUid: uid })
+    });
+    var out = await r.json().catch(function(){ return null; });
+    if (!r.ok || !out || !out.ok) throw new Error((out && out.error) || ("server error " + r.status));
+    toast("Account re-enabled ✓");
+    await renderUserManagementModal();
+  }catch(e){ toast("Couldn't re-enable account: " + e.message); }
+}
+/* Owner-only, deliberately harder to reach than Disable (a second,
+   separate confirm naming the PERMANENT consequence, not the same one-line
+   confirm as disable). The Firebase Auth account is gone forever; the
+   users/{uid} Firestore record is kept (archived) specifically so past
+   work orders/findings/photos/audit entries still show a real name instead
+   of an orphaned id -- explained in the confirm text so this is never
+   mistaken for "erases their history too." */
+async function deleteUserPermanently(uid, email){
+  if (!confirm("PERMANENTLY delete " + email + "'s account?\n\nThis cannot be undone -- they will never be able to sign in again with this account. Their name will still appear on their existing work orders/findings/photos/audit entries (that history is kept), but the login itself is gone forever.\n\nIf you just want to revoke access and might restore it later, use Disable instead.")) return;
+  if (!confirm("Really permanently delete " + email + "? This is the second and final confirmation.")) return;
+  toast("Deleting…");
+  try{
+    var r = await fetch("/.netlify/functions/auth", {
+      method: "POST", headers: await authHeaders(),
+      body: JSON.stringify({ action: "delete_user", targetUid: uid })
+    });
+    var out = await r.json().catch(function(){ return null; });
+    if (!r.ok || !out || !out.ok) throw new Error((out && out.error) || ("server error " + r.status));
+    toast("Account permanently deleted");
+    await renderUserManagementModal();
+  }catch(e){ toast("Couldn't delete account: " + e.message); }
 }
 async function saveUserRole(uid){
   var sel = document.getElementById("role-select-" + uid);
