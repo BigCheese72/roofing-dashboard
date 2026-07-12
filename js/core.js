@@ -326,11 +326,32 @@ function renderLoginGate(){
   if (!host) return;
   host.innerHTML = authBootstrapStatus ? loginGateSignInHtml() : loginGateBootstrapHtml();
 }
+/* This screen is the one door into the app -- a failure here (wrong
+   secret, weak password, a misconfigured env var) MUST be impossible to
+   miss. The app's normal toast() auto-hides after 3.5s, which is exactly
+   the kind of gap that made a real failure here look like "the button
+   does nothing" (confirmed live: the request WAS failing correctly with a
+   clear server error, but by the time anyone looked back at the screen
+   the toast had already vanished). setLoginGateStatus() writes into a
+   persistent line INSIDE the form that stays up until the next attempt or
+   success -- never auto-dismisses. toast() is still called too, for
+   consistency with the rest of the app, but it is never the only signal
+   on this screen. */
+function setLoginGateStatus(msg, isError){
+  var el = document.getElementById("login-gate-status");
+  if (!el) return;
+  el.textContent = msg;
+  el.style.display = msg ? "block" : "none";
+  el.style.color = isError ? "#b4223f" : "#2e7d32";
+  el.style.fontWeight = "600";
+  el.style.margin = "10px 0 0";
+}
 function loginGateSignInHtml(){
   return '<div class="fld"><label>Email</label><input type="email" id="gate-email" autocomplete="username"></div>' +
     '<div class="fld"><label>Password</label><input type="password" id="gate-password" autocomplete="current-password"></div>' +
     '<div class="btnrow"><button class="btn primary" onclick="gateSignIn()">Sign In</button>' +
-    '<button class="btn" onclick="gateForgotPassword()">Forgot Password?</button></div>';
+    '<button class="btn" onclick="gateForgotPassword()">Forgot Password?</button></div>' +
+    '<p id="login-gate-status" style="display:none"></p>';
 }
 function loginGateBootstrapHtml(){
   return '<p class="hint" style="margin:0 0 10px">No owner account exists yet. Complete this one-time setup ' +
@@ -339,30 +360,31 @@ function loginGateBootstrapHtml(){
     '<div class="fld"><label>Password</label><input type="password" id="bootstrap-password" autocomplete="new-password"></div>' +
     '<div class="fld"><label>Confirm Password</label><input type="password" id="bootstrap-password2" autocomplete="new-password"></div>' +
     '<div class="fld"><label>Bootstrap Secret</label><input type="password" id="bootstrap-secret" autocomplete="off"></div>' +
-    '<div class="btnrow"><button class="btn primary" onclick="runOwnerBootstrap()">Create Owner Account</button></div>';
+    '<div class="btnrow"><button class="btn primary" onclick="runOwnerBootstrap()">Create Owner Account</button></div>' +
+    '<p id="login-gate-status" style="display:none"></p>';
 }
 async function gateSignIn(){
   var email = val("gate-email").trim();
   var password = val("gate-password");
-  if (!email || !password){ toast("Enter email and password."); return; }
-  toast("Signing in…");
-  try{ await fauth.signInWithEmailAndPassword(email, password); toast("Signed in ✓"); }
-  catch(e){ toast("Sign-in failed: " + e.message); }
+  if (!email || !password){ setLoginGateStatus("Enter email and password.", true); return; }
+  setLoginGateStatus("Signing in…", false);
+  try{ await fauth.signInWithEmailAndPassword(email, password); setLoginGateStatus("Signed in ✓", false); }
+  catch(e){ setLoginGateStatus("Sign-in failed: " + e.message, true); }
 }
 async function gateForgotPassword(){
   var email = val("gate-email").trim();
-  if (!email){ toast("Enter your email first."); return; }
+  if (!email){ setLoginGateStatus("Enter your email first.", true); return; }
   try{
     await fauth.sendPasswordResetEmail(email);
-    toast("Password reset email sent (if that account exists) ✓");
-  }catch(e){ toast("Couldn't send reset email: " + e.message); }
+    setLoginGateStatus("Password reset email sent (if that account exists) ✓", false);
+  }catch(e){ setLoginGateStatus("Couldn't send reset email: " + e.message, true); }
 }
 /* One-time owner bootstrap -- creates the owner account, signs into it in
    THIS browser, force-refreshes the ID token (claims were just set by the
    Admin SDK moments ago; a token minted before that could still reflect
    the old, claims-less state), then seeds the 9 approved roles using that
    fresh owner token. All three steps or none -- if role-seeding fails
-   after a successful account creation, the toast says so explicitly
+   after a successful account creation, the status line says so explicitly
    rather than silently leaving roles unseeded. Uses the signed-in
    credential's own token directly for the seed_roles call rather than
    authHeaders()/currentAuthUser, since onAuthStateChanged's listener
@@ -373,10 +395,10 @@ async function runOwnerBootstrap(){
   var password = val("bootstrap-password");
   var password2 = val("bootstrap-password2");
   var secret = val("bootstrap-secret");
-  if (!email || !password || !secret){ toast("Fill in every field."); return; }
-  if (password !== password2){ toast("Passwords don't match."); return; }
-  if (password.length < 8){ toast("Password must be at least 8 characters."); return; }
-  toast("Creating owner account…");
+  if (!email || !password || !secret){ setLoginGateStatus("Fill in every field.", true); return; }
+  if (password !== password2){ setLoginGateStatus("Passwords don't match.", true); return; }
+  if (password.length < 8){ setLoginGateStatus("Password must be at least 8 characters.", true); return; }
+  setLoginGateStatus("Creating owner account…", false);
   try{
     var r = await fetch("/.netlify/functions/auth", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -385,11 +407,11 @@ async function runOwnerBootstrap(){
     var out = await r.json().catch(function(){ return null; });
     if (!r.ok || !out || !out.ok) throw new Error((out && out.error) || ("server error " + r.status));
 
-    toast("Owner account created — signing in…");
+    setLoginGateStatus("Owner account created — signing in…", false);
     var cred = await fauth.signInWithEmailAndPassword(email, password);
     var token = await cred.user.getIdToken(true);
 
-    toast("Seeding roles…");
+    setLoginGateStatus("Seeding roles…", false);
     var r2 = await fetch("/.netlify/functions/auth", {
       method: "POST", headers: { "Content-Type": "application/json", "Authorization": "Bearer " + token },
       body: JSON.stringify({ action: "seed_roles" })
@@ -398,10 +420,10 @@ async function runOwnerBootstrap(){
     if (!r2.ok || !out2 || !out2.ok) {
       throw new Error((out2 && out2.error) || "Role seeding failed — the owner account and sign-in both worked; re-open Account and try again, or ask an admin to re-run seed_roles.");
     }
-    toast("Owner account ready ✓ — " + out2.seeded.length + " roles seeded.");
+    setLoginGateStatus("Owner account ready ✓ — " + out2.seeded.length + " roles seeded.", false);
     authBootstrapStatus = true;
     renderLoginGate();
-  }catch(e){ toast("Setup failed: " + e.message); }
+  }catch(e){ setLoginGateStatus("Setup failed: " + e.message, true); }
 }
 
 /* Client-side wrappers around netlify/functions/photos.js -- the ONLY
