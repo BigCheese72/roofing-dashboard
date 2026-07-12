@@ -157,6 +157,57 @@ exports.handler = async function (event) {
     const db = getDb(hostnameFromEvent(event));
     const auth = getAuth();
 
+    // ---- mint_disposable_test_session: added 2026-07-12 to run REAL,
+    // live negative-permission tests on dev (field_tech can't self-promote,
+    // can't approve pricing, etc.) without ever touching a human's
+    // password. Anonymous auth isn't enabled on this project, so this
+    // mints a Firebase custom token (a signed, ~1hr-lived JWT tied to one
+    // specific uid) the same way a backend would provision a service
+    // session -- NOT a password, never entered anywhere, exchanged
+    // client-side via signInWithCustomToken() for a real ID token with
+    // real custom claims that requirePermission()/firestore.rules check
+    // exactly like any other session. Locked down three ways: owner-only,
+    // dev-hostname-only (defense in depth on top of the project-level
+    // safety guard in authGuard.js), and every minted account is tagged
+    // isDisposableTestAccount:true so it's obviously not a real user if
+    // anyone ever finds it lingering. Delete the account when done testing
+    // -- this does not expire or clean up on its own. ----
+    if (body.action === "mint_disposable_test_session") {
+      let caller;
+      try { caller = await verifyCaller(event); }
+      catch (e) { return resp(e.statusCode || 401, { error: e.message }); }
+      if (!caller.owner) return resp(403, { error: "Owner only" });
+
+      const hostname = hostnameFromEvent(event) || "";
+      const looksDev = hostname.indexOf("dev--") !== -1 || hostname === "localhost" ||
+        hostname.indexOf("localhost:") === 0 || hostname === "127.0.0.1" || hostname.indexOf("127.0.0.1:") === 0;
+      if (!looksDev) return resp(403, { error: "mint_disposable_test_session is dev-only (request hostname: " + hostname + ")" });
+
+      const roleId = String(body.roleId || "");
+      if (!roleId || roleId === "owner") return resp(400, { error: "Invalid roleId" });
+      const roleDoc = await db.collection("roles").doc(roleId).get();
+      if (!roleDoc.exists) return resp(400, { error: "Unknown role: " + roleId });
+
+      let uid = String(body.uid || "");
+      if (!uid) {
+        const rec = await auth.createUser({ displayName: "DISPOSABLE_TEST_ACCOUNT (safe to delete)" });
+        uid = rec.uid;
+      }
+      await auth.setCustomUserClaims(uid, { owner: false, role: roleId, mfaOk: false });
+      await db.collection("users").doc(uid).set({
+        uid: uid, email: null, displayName: "DISPOSABLE_TEST_ACCOUNT", role: roleId,
+        permissions: {}, projectRoles: {}, status: "active", mfaEnrolled: false, owner: false,
+        isDisposableTestAccount: true, createdAt: Date.now(), updatedAt: Date.now(),
+        createdBy: "mint_disposable_test_session:" + caller.uid, lastLoginAt: null
+      }, { merge: true });
+      const customToken = await auth.createCustomToken(uid, { disposableTest: true });
+      await writeAudit(db, {
+        actorUid: caller.uid, actorRole: "owner", action: "mint_disposable_test_session",
+        target: { collection: "users", id: uid }, before: null, after: { role: roleId }
+      });
+      return resp(200, { ok: true, uid: uid, customToken: customToken });
+    }
+
     // ---- seed_roles: writes/re-syncs the 9 approved roles from code-defined
     // SEED_ROLES. Idempotent (overwrites only the SEED_ROLES ids, never
     // touches any other role doc). Usable two ways: before any owner exists
