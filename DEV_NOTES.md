@@ -5631,8 +5631,10 @@ Implementation:
   KMZ tiles. Because normal Leaflet image overlays cannot warp `gx:LatLonQuad`
   rasters, the importer records `quadBBoxErrorFt`/`maxQuadBBoxErrorFt` and shows
   a warning when tile quads are being approximated to rectangular bounds.
-  Large tiled KMZs (>40 overlay images; North College is 59 at level 3) also
-  show a field-performance warning until the exact phone/browser path is tested.
+  Large tiled KMZs (>40 overlay images; North College is 59 at level 3) are
+  intended for desktop/laptop tracing. On likely mobile devices, the importer
+  selects the highest tile level at or under `RM_KMZ_MOBILE_TILE_CAP` (40
+  overlays) rather than mounting the full high-detail level and risking a hang.
 - Exports now print a capture-method line. GeoTIFF traces can say
   `RTK GeoTIFF trace (survey-grade source)`; KMZ/KML traces say they are an
   approximate GroundOverlay/super-overlay source and explicitly not RTK
@@ -5650,16 +5652,13 @@ Implementation:
   `set_building_roof_map` path as `roof_base_map_type:"drone_ortho"` with the
   KML bounds, so reopening from Building History can show the orthomosaic under
   the outline.
-- North College Street calibration uses the existing tap-an-edge dimension flow,
-  but if the KMZ/KML metadata names North College the prompt defaults to `28`.
-  Entering 28 requires confirming "Inside parapet to inside parapet?" and then
-  stores `calibration.verified:true` plus
-  `description:"Northeasternmost west-to-east wall, inside parapet"`; the live
-  edge label shows `VERIFIED`.
+- Calibration is the normal tap-an-edge dimension flow for every building. No
+  building-specific filename/name match changes the prompt default or creates a
+  verified badge; field measurements remain user-entered calibration data.
 
 Known limitation: KML `rotation` is parsed and preserved, and the UI warns when
 it is non-zero, but Leaflet's normal `imageOverlay` does not rotate rasters. If
-Mark's KMZ relies on rotation, alignment must be verified before saving; true
+Mark's KMZ relies on rotation, alignment must be checked before saving; true
 rotated overlay rendering would need a custom overlay transform.
 
 ## Rename a roof, discoverable from RoofMapper (shipped 2026-07-11, dev only)

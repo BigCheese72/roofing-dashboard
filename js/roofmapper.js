@@ -2315,8 +2315,7 @@ function rmDrawEdgeDimensions(outline){
     var midLat = (a.lat + b.lat) / 2, midLng = (a.lng + b.lng) / 2;
     var isCalibrated = i === calibratedIdx;
     var bg = isCalibrated ? "#2E7D32" : "#263238";
-    var label = (isCalibrated ? "✓ " : "") + Math.round(distFt) + " ft" +
-      (isCalibrated && outline.calibration && outline.calibration.verified ? " VERIFIED" : "");
+    var label = (isCalibrated ? "✓ " : "") + Math.round(distFt) + " ft";
     var marker = L.marker([midLat, midLng], {
       icon: L.divIcon({
         className: "", iconSize: null,
@@ -2542,19 +2541,11 @@ function rmCalibrateEdge(edgeIndex){
   var a = ring[edgeIndex], b = ring[edgeIndex + 1];
   if (!a || !b) return;
   var currentFt = rmGeomHaversineMeters(a, b) * 3.28084;
-  var overlayText = outline.groundOverlay ?
-    [outline.groundOverlay.sourceFileName, outline.groundOverlay.imageFileName, outline.groundOverlay.name].filter(Boolean).join(" ") : "";
-  var isNorthCollege = /north[\s_-]*college/i.test(overlayText);
-  var defaultMeasuredFt = isNorthCollege ? 28 : Math.round(currentFt);
   var input = prompt("Real field-measured length of this edge, in feet (currently ~" +
-    Math.round(currentFt) + " ft):", String(defaultMeasuredFt));
+    Math.round(currentFt) + " ft):", String(Math.round(currentFt)));
   if (input === null) return; /* canceled */
   var measuredFt = parseFloat(input);
   if (!isFinite(measuredFt) || measuredFt <= 0){ toast("Enter a length greater than 0."); return; }
-  var verifiedNorthCollegeMeasurement = isNorthCollege && Math.abs(measuredFt - 28) < 0.01;
-  if (verifiedNorthCollegeMeasurement && !confirm("Inside parapet to inside parapet?")){
-    return;
-  }
   var factor = measuredFt / currentFt;
   /* Uniform scale about the ring's own centroid -- preserves shape/angles,
      changes only size, exactly matching "rescales proportionally." Fresh
@@ -2567,10 +2558,6 @@ function rmCalibrateEdge(edgeIndex){
   outline.perimeterFt = rmGeomPolygonPerimeterMeters(newRing) * 3.28084;
   outline.center = centroid;
   outline.calibration = { edgeIndex: edgeIndex, measuredFt: measuredFt, calibratedAt: Date.now() };
-  if (verifiedNorthCollegeMeasurement){
-    outline.calibration.verified = true;
-    outline.calibration.description = "Northeasternmost west-to-east wall, inside parapet";
-  }
   outline.measurementMethod = rmOutlineMeasurementMethod(outline);
   /* Scale inheritance -- learn from this calibration so the NEXT roof
      traced on this same building (manual_trace/ortho_trace only --
@@ -3178,6 +3165,8 @@ var RM_ORTHO_MAX_DIM = 3200; /* sharper than the 2000px cap used for hand-drawn
   DEV_NOTES.md. */
 var RM_ORTHO_QUALITY = 0.82;
 var RM_ORTHO_ORIGIN = { lat: 0, lng: 0 };
+var RM_KMZ_MOBILE_TILE_CAP = 40; /* Graceful mobile fallback: large Google
+   Earth tile pyramids can be valid on desktop but too heavy for a phone. */
 var RM_ORTHO_METERS_PER_PIXEL_GUESS = 0.05; /* arbitrary -- only affects the
   shape's initial on-screen size before Calibrate corrects it to a real
   measurement; never affects final accuracy. */
@@ -3437,6 +3426,11 @@ function rmParseKmlGroundOverlay(kmlText, sourceName){
 function rmImageFileLooksLike(path){
   return /\.(png|jpe?g|webp|gif)$/i.test(path || "");
 }
+function rmIsLikelyMobileDevice(){
+  return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || "") ||
+    (navigator.userAgentData && navigator.userAgentData.mobile) ||
+    (window.matchMedia && window.matchMedia("(max-width: 760px)").matches && navigator.maxTouchPoints > 0);
+}
 function rmMimeForImagePath(path){
   if (/\.png$/i.test(path || "")) return "image/png";
   if (/\.webp$/i.test(path || "")) return "image/webp";
@@ -3536,8 +3530,11 @@ function rmStartKmlSuperOverlayTrace(tiles, meta){
     warns.push("KML tile quads are approximated to rectangular overlays (max corner difference ~" +
       Math.round(meta.maxQuadBBoxErrorFt * 10) / 10 + " ft)");
   }
-  if (tiles.length > 40){
-    warns.push("large tile count may be slow on field phones; load-test this KMZ on the actual device before crew use");
+  if (meta.mobileTileCapApplied){
+    warns.push("mobile tile cap applied: loaded level " + meta.kmlLevel + " (" + tiles.length +
+      " tiles) instead of level " + meta.highestKmlLevel + " (" + meta.highestTileCount + " tiles)");
+  } else if (tiles.length > RM_KMZ_MOBILE_TILE_CAP){
+    warns.push("large desktop tile set; run the real-KMZ browser load check before merging");
   }
   if (warns.length){
     msg += " Note: " + warns.join("; ") + ". Verify alignment before saving.";
@@ -3578,7 +3575,22 @@ async function rmUploadKmzFile(file, allFiles){
     .filter(function(k){ return k !== kmlKey; });
   var maxLevel = Math.max.apply(null, overlayKmlKeys.map(rmKmzKmlLevel));
   if (!isFinite(maxLevel) || maxLevel < 0) throw new Error("KMZ has no GroundOverlay image tiles");
-  var tileKmlKeys = overlayKmlKeys.filter(function(k){ return rmKmzKmlLevel(k) === maxLevel; });
+  var levels = {};
+  overlayKmlKeys.forEach(function(k){
+    var lvl = rmKmzKmlLevel(k);
+    if (lvl >= 0) levels[lvl] = (levels[lvl] || 0) + 1;
+  });
+  var selectedLevel = maxLevel;
+  var mobileTileCapApplied = false;
+  if (rmIsLikelyMobileDevice() && (levels[maxLevel] || 0) > RM_KMZ_MOBILE_TILE_CAP){
+    var mobileLevels = Object.keys(levels).map(function(k){ return parseInt(k, 10); })
+      .filter(function(lvl){ return levels[lvl] <= RM_KMZ_MOBILE_TILE_CAP; })
+      .sort(function(a, b){ return a - b; });
+    selectedLevel = mobileLevels.length ? mobileLevels[mobileLevels.length - 1] :
+      Math.min.apply(null, Object.keys(levels).map(function(k){ return parseInt(k, 10); }));
+    mobileTileCapApplied = selectedLevel !== maxLevel;
+  }
+  var tileKmlKeys = overlayKmlKeys.filter(function(k){ return rmKmzKmlLevel(k) === selectedLevel; });
   var tiles = [];
   for (var i = 0; i < tileKmlKeys.length; i++){
     var tileKmlKey = tileKmlKeys[i];
@@ -3607,7 +3619,11 @@ async function rmUploadKmzFile(file, allFiles){
     sourceFileName: file.name,
     imageFileName: persistImageName || (tiles.length + " KMZ tiles"),
     tileCount: tiles.length,
-    kmlLevel: maxLevel,
+    kmlLevel: selectedLevel,
+    highestKmlLevel: maxLevel,
+    highestTileCount: levels[maxLevel] || tileKmlKeys.length,
+    mobileTileCapApplied: mobileTileCapApplied,
+    mobileTileCap: RM_KMZ_MOBILE_TILE_CAP,
     bounds: docBounds || rmKmlBoundsUnion(tiles.map(function(t){ return t.meta.bounds; })),
     maxQuadBBoxErrorFt: isFinite(maxQuadBBoxErrorFt) ? maxQuadBBoxErrorFt : 0,
     tiles: tiles.map(function(t){ return { kmlFileName: t.meta.kmlFileName, imageFileName: t.meta.imageFileName,
@@ -3874,7 +3890,15 @@ async function rmPersistKmlGroundOverlayBaseMap(buildingId, roofId){
     toast("Roof outline saved. Sign in as admin to also keep this KMZ/KML orthomosaic with the roof for reopening later.");
     return;
   }
-  if (!rmState.kmlOverlayDataUrl || !rmState.kmlOverlayMeta || !rmState.kmlOverlayMeta.bounds) return;
+  if (!rmState.kmlOverlayMeta || !rmState.kmlOverlayMeta.bounds){
+    toast("Roof outline saved. KMZ/KML overlay metadata was incomplete, so the orthomosaic itself was not retained for reopening.");
+    return;
+  }
+  if (!rmState.kmlOverlayDataUrl){
+    toast("Roof outline saved. This KMZ is a tiled overlay and no paired JPG was selected, so the orthomosaic image itself " +
+      "was not retained for reopening (the traced outline and KMZ metadata were saved).");
+    return;
+  }
   try{
     var bldSnap = await fdb.collection("buildings").doc(buildingId).get();
     var bld = bldSnap.exists ? bldSnap.data() : {};

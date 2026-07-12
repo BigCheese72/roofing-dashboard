@@ -600,8 +600,9 @@ Goal: turn each building into a long-term roof record.
   also retained through the existing georeferenced `drone_ortho` base-map path.
   KML rotation/quads are detected and warned about, but not rendered warped or
   rotated yet. Exports label KMZ/KML as an approximate georeferenced overlay
-  source, not as RTK survey-grade; phone load-testing remains a pre-merge gate
-  before this draft PR should be merged into `dev`.
+  source, not as RTK survey-grade. Desktop/laptop load testing on the real
+  North College KMZ remains a pre-merge gate; likely mobile devices degrade to
+  a capped lower tile level instead of trying to mount all 59 high-detail tiles.
 - 🐛 **Fixed (dev only, 2026-07-11)**: roof rename was undiscoverable from
   RoofMapper itself — Mark accidentally saved a second roof also named
   "Roof 1" and had no way to fix it. The rename function existed

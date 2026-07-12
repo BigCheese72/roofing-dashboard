@@ -514,15 +514,16 @@ as a roof's custom base map); the third — an uploaded drawing/PDF — is block
                   // imageHref, imageFileName, bounds:{north,south,east,west},
                   // rotation }. Google Earth super-overlay shape:
                   // { sourceType:"kmz_superoverlay", sourceFileName,
-                  // imageFileName, tileCount, kmlLevel, bounds,
-                  // maxQuadBBoxErrorFt, tiles:[...] }.
+                  // imageFileName, tileCount, kmlLevel, highestKmlLevel,
+                  // highestTileCount, mobileTileCapApplied, mobileTileCap,
+                  // bounds, maxQuadBBoxErrorFt, tiles:[...] }.
                   // Rotation/quads are preserved as metadata; current Leaflet
                   // display warns but does not warp or rotate rasters.
   createdAt,
   calibration     // optional — TWO possible shapes. Manual: set once a tech taps
                   // an edge dimension label and enters a real tape-measured
                   // length (calibrate-by-known-edge) — { edgeIndex, measuredFt,
-                  // calibratedAt, verified?, description? }. edgeIndex identifies which edge (ring[i] to
+                  // calibratedAt }. edgeIndex identifies which edge (ring[i] to
                   // ring[i+1]) was the calibration reference — also drives the
                   // checkmark highlight on that edge's label on the map.
                   // Inherited (shipped 2026-07-11): auto-applied by

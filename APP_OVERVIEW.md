@@ -473,9 +473,9 @@ to verify alignment before saving because the current Leaflet overlay does not r
 the image. KMZ/KML traces are labeled as approximate georeferenced overlays in
 exports; they do not use the same survey-grade method label as RTK GeoTIFF traces.
 
-For the North College Street KMZ, tapping an edge dimension to Calibrate defaults
-the known distance to **28 ft** and asks you to confirm it is the inside-parapet to
-inside-parapet measurement before marking that edge **VERIFIED**.
+For large tiled KMZs, desktop/laptop tracing is the intended workflow. On likely
+mobile devices, the app automatically steps down to a lower-detail tile level rather
+than trying to mount a large overlay set that could hang the browser.
 
 **Uploading a real GeoTIFF** (the actual output of a georeferenced RTK drone survey,
 e.g. WebODM's `odm_orthophoto.tif`)? The app reads its built-in GPS data automatically
