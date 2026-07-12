@@ -9,7 +9,7 @@
 // path at all, and Admin-SDK-only is what actually guarantees that,
 // exactly like admin.js already does for deletes/roof-map/profile writes.
 const crypto = require("crypto");
-const { getDb, getAuth, getAdmin, verifyCaller, getPermissionValue } = require("./lib/authGuard");
+const { getDb, getAuth, getAdmin, verifyCaller, getPermissionValue, hostnameFromEvent } = require("./lib/authGuard");
 const { SEED_ROLES } = require("./lib/permissions");
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -130,7 +130,9 @@ exports.handler = async function (event) {
   // exactly the "is anything working at all" investigation this exists
   // for. ----
   if (body.action === "whoami_project") {
+    const hostname = hostnameFromEvent(event);
     const out = {
+      requestHostname: hostname,
       context: process.env.CONTEXT || null, branch: process.env.BRANCH || null, deployUrl: process.env.URL || null,
       deployPrimeUrl: process.env.DEPLOY_PRIME_URL || null, deployUrl2: process.env.DEPLOY_URL || null,
       siteName: process.env.SITE_NAME || null, deployId: process.env.DEPLOY_ID || null
@@ -141,7 +143,7 @@ exports.handler = async function (event) {
       if (raw) { try { out.rawProjectId = JSON.parse(raw).project_id || null; } catch (e) { out.rawParseError = String(e.message || e); } }
     } catch (e) { out.envReadError = String(e.message || e); }
     try {
-      getAdmin();
+      getAdmin(hostname);
       out.guardResult = "pass";
       out.initializedProjectId = out.rawProjectId;
     } catch (e) {
@@ -152,7 +154,7 @@ exports.handler = async function (event) {
   }
 
   try {
-    const db = getDb();
+    const db = getDb(hostnameFromEvent(event));
     const auth = getAuth();
 
     // ---- seed_roles: writes/re-syncs the 9 approved roles from code-defined

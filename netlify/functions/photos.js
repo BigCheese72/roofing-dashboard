@@ -21,7 +21,7 @@
 // same "no auth yet" security tier every other collection already has, not
 // a privileged action. Basic input validation (safe id/index shapes) below
 // guards against abuse regardless.
-const { getAdmin, verifyCaller } = require("./lib/authGuard");
+const { getAdmin, verifyCaller, hostnameFromEvent } = require("./lib/authGuard");
 
 // workOrderId shapes seen in real data: "wo_1783782867489" (Date.now()-based,
 // see genId()/collect() in index.html) and legacy/manual ids -- alphanumeric
@@ -81,6 +81,13 @@ exports.handler = async function (event) {
   catch (e) { return resp(400, { error: "Bad request" }); }
 
   try {
+    // Prime the Admin SDK singleton with this request's hostname BEFORE
+    // any action branch touches Storage/Firestore -- see the safety-guard
+    // comment in lib/authGuard.js. admin.apps.length caches init for the
+    // process's lifetime, so this only truly matters on a cold container,
+    // but every handler primes it the same way for consistent coverage.
+    getAdmin(hostnameFromEvent(event));
+
     if (body.action === "upload") {
       const workOrderId = body.workOrderId;
       const photoIndex = body.photoIndex;
