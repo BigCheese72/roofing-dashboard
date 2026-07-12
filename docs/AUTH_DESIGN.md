@@ -561,6 +561,65 @@ seven mandatory scenarios and the two he called out explicitly by name
   `doc.email_customer` gate for that one code path while everything else
   correctly enforced it — worth the extra grep.
 
+### Addendum — "Kill the PIN and finish the logins" (same night, direct follow-up order)
+
+The section above shipped claims as *authoritative* while leaving a
+non-mutating `check_pin` action in place. Mark's next message made this
+explicit: the PIN had to be gone entirely, no exceptions, and asked for the
+remaining pieces of "finish the logins" — a user-management screen and a
+verified sequencing story so bootstrapping the owner never creates a lockout
+window. Shipped in response, same night:
+
+- **`check_pin` deleted outright** from `admin.js`, along with every
+  remaining `ADMIN_PIN` read in that file. There is no PIN-checking code
+  path left anywhere in the app for a future change to accidentally
+  reactivate. A stale comment in `authGuard.js` describing `tryVerifyCaller()`
+  in terms of "admin.js's shared ADMIN_PIN, still the only thing actually
+  protecting production" was also fixed — no longer true.
+- **New `create_user` action** (`auth.js`): same hierarchy invariant as
+  `assign_role`, applied to a new user's *initial* role — `owner` can never
+  be created here, `admin` requires the caller to already be owner, anything
+  else requires owner or `users.manage_nonadmin`. The account's password is
+  a `crypto.randomBytes(24)` throwaway value, generated server-side, never
+  returned in the response, never logged, never seen by the caller. The
+  inviting admin's browser immediately calls the public
+  `fauth.sendPasswordResetEmail()` client SDK method so the new user sets
+  their own password via Firebase's own built-in flow — no human in this
+  process (not Mark, not an inviting admin, not this assistant) ever
+  types, sees, or transmits another person's password.
+- **New "Manage Users" screen** (Account modal → owner/admin only): invite-
+  by-email form (role dropdown filtered to exactly what the server would
+  accept) plus a users table with per-row role reassignment via the existing
+  `assign_role`. Client-side visibility only — `users/{uid}` stays
+  `write: if false` at the rules layer regardless of what this screen shows,
+  matching the standing "UI hiding is convenience only" rule.
+- **Sequencing verified, not just asserted**: checked `app_settings/
+  auth_bootstrap` on the real deployed dev site before touching anything
+  further — no owner existed yet, meaning the app was *already* fully
+  locked (a consequence of the earlier commit in this same phase making
+  claims authoritative before anyone had bootstrapped). This was flagged
+  to Mark immediately and explicitly, rather than proceeding as if the
+  sequencing risk he was warning about was still hypothetical. Per this
+  assistant's own operating rules, creating an account or entering a
+  password on someone's behalf is prohibited even with explicit permission
+  — Mark was told directly that he has to complete the one-time owner
+  bootstrap screen himself; nothing else shipped this round changes or
+  worsens that.
+- **Extended negative-test suite, 31 checks total** (the original 21 plus
+  8 new: `create_user`'s hierarchy invariants for field_tech/non-owner-admin
+  attempting to create an admin account, and — the test Mark specifically
+  called out as now critical — "ANY privileged action with NO auth token at
+  all," run for real against the deployed dev site across all 17 privileged
+  action instances in `admin.js`/`photos.js`/`changeorders.js`/
+  `send-workorder.js`/`auth.js`. All 17 rejected cleanly with `401 Missing
+  Authorization bearer token` — none fell through, none 500'd (which would
+  have indicated a broken deploy rather than a working gate). `check_pin`
+  itself now returns `400 Unknown action` regardless of what PIN value is
+  sent, confirmed live.
+- **MFA remains deferred**, per Mark's explicit confirmation ("MFA can
+  wait... do NOT let it block shipping tonight") — noted in `ROADMAP.md` as
+  a fast-follow before wider crew rollout, not silently dropped.
+
 ### Not done this phase (explicitly out of scope, not overlooked)
 
 - **MFA** (Phase 4) — see "Trade surfaced" above.
