@@ -7225,6 +7225,46 @@ in Firestore until the Storage copy is verified readable), idempotent/
 resumable. (d) removing `pruneCachedPhotoDrafts()`/`stripPhotoBytes()`/
 the "storage is full" toast entirely — only after (c) is verified.
 
+## Firebase dev/prod project split (shipped 2026-07-12, dev only)
+
+Production (`leak-work-orders.netlify.app`, deployed from `main`) and dev
+(`dev--leak-work-orders.netlify.app` branch deploys, plus localhost/deploy
+previews) now point at two entirely separate Firebase projects —
+`watkins-service-orders` (prod, untouched) and `watkins-service-orders-dev`
+(new, empty sandbox Mark created himself: Firestore Native/us-central1,
+rules mirroring prod, Email/Password auth enabled, both dev hostnames
+authorized). Selection is pure runtime `window.location.hostname` detection
+in `js/core.js` (`isDevEnvironment()`/`FIREBASE_CONFIG`) — the app is static
+with no build step, so there's no other lever to pick a config client-side.
+`netlify/functions/lib/authGuard.js`'s `getAdmin()` derives the Admin SDK's
+Storage bucket from the service account's own `project_id` instead of a
+hardcoded bucket name, so `photos.js` automatically targets the right
+bucket per deploy context too — no code difference between environments,
+only the `FIREBASE_SERVICE_ACCOUNT` env var's value (Netlify branch-deploy
+vs. production scoping, set by Mark directly, never seen by Claude).
+
+**Fail-closed guard**: `devFirebaseConfigIsReal()` shape-validates every
+field of `FIREBASE_CONFIG_DEV` (apiKey matches `/^AIza.../`, messagingSenderId
+is all-digits, appId contains `:`, nothing is empty or `"REPLACE_ME"`) before
+letting a dev-like hostname use it — any missing/placeholder/malformed value
+falls back to the production config plus a `console.warn()`, rather than
+initializing Firebase with garbage and locking dev sign-in out the way an
+earlier, less-strict version of this guard once did for real (see the
+`auth/api-key-not-valid` incident in docs/AUTH_DESIGN.md).
+
+**Dev Cloud Storage is NOT yet enabled** — `watkins-service-orders-dev` is
+still on Spark, and Storage requires Blaze (pay-as-you-go) billing, which is
+Mark's decision to make, not something built or triggered automatically.
+Until he attaches billing, any dev-environment photo upload will hit a
+missing/unconfigured Storage bucket on that project. `photos.js`'s existing
+error handling already returns a normal `{statusCode: 5xx, error}` response
+rather than crashing, and the client's existing `cloudSaveOrder()` failure
+path (built during the earlier photo-storage migration, see above) already
+surfaces that as a visible error rather than silently losing the photo — so
+no NEW code was needed for graceful failure, only confirmation that the
+existing chain covers this specific cause too. Once Mark attaches Blaze
+billing, dev photo upload starts working with zero code changes.
+
 ## Roadmap (not built yet, foundation only)
 
 - **RoofOps Dashboard**: cross-building reporting, search, filters — reads from

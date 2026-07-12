@@ -10,6 +10,8 @@
 // limited to project metadata + photo/document metadata (ids, URLs,
 // timestamps) — it cannot pull things like who-changed-what or deleted
 // items.
+const { uploadDocumentToCompanyCam } = require("./lib/companyCamDocuments");
+
 function resp(code, obj) {
   return { statusCode: code, headers: { "Content-Type": "application/json" }, body: JSON.stringify(obj) };
 }
@@ -44,7 +46,6 @@ exports.handler = async function (event) {
   // separate. If COMPANYCAM_WRITE_TOKEN isn't set, uploads fall back to
   // COMPANYCAM_TOKEN so a single-token setup keeps working.
   const readToken = process.env.COMPANYCAM_TOKEN;
-  const writeToken = process.env.COMPANYCAM_WRITE_TOKEN || readToken;
 
   if (event.httpMethod === "POST") {
     let body;
@@ -52,29 +53,17 @@ exports.handler = async function (event) {
     catch (e) { return resp(400, { error: "Bad request" }); }
     try {
       if (body.action === "upload_document") {
-        if (!writeToken) {
-          return resp(500, { error: "COMPANYCAM_WRITE_TOKEN (or COMPANYCAM_TOKEN) is not set. Add it in Netlify > Project configuration > Environment variables, then redeploy." });
+        // Shared with inspection-reports.js's warranty-report filing --
+        // see lib/companyCamDocuments.js -- same code path, not a
+        // reimplementation, so a generated leak-report PDF and an emailed
+        // inspection-report PDF hit CompanyCam's Documents endpoint
+        // identically.
+        const result = await uploadDocumentToCompanyCam(body.project_id, body.name || "WorkOrder.pdf", String(body.attachment || ""));
+        if (!result.ok) {
+          const code = /not set/.test(result.error) ? 500 : (/Missing/.test(result.error) ? 400 : 502);
+          return resp(code, { error: result.error });
         }
-        const id = String(body.project_id || "").replace(/[^A-Za-z0-9_-]/g, "");
-        if (!id) return resp(400, { error: "Missing project_id" });
-        const name = String(body.name || "WorkOrder.pdf").slice(0, 150);
-        const attachment = String(body.attachment || "");
-        if (!attachment) return resp(400, { error: "Missing attachment" });
-        if (attachment.length > 42000000) return resp(413, { error: "PDF too large for CompanyCam upload (limit ~30MB)" });
-        const docHeaders = { "Authorization": "Bearer " + writeToken, "Accept": "application/json", "Content-Type": "application/json" };
-        if (process.env.COMPANYCAM_USER_EMAIL) docHeaders["X-CompanyCam-User"] = process.env.COMPANYCAM_USER_EMAIL;
-        const url = "https://api.companycam.com/v2/projects/" + id + "/documents";
-        const r = await fetch(url, {
-          method: "POST",
-          headers: docHeaders,
-          body: JSON.stringify({ document: { name: name, attachment: attachment } })
-        });
-        const t = await r.text();
-        if (!r.ok) {
-          return resp(502, { error: "CompanyCam rejected the document: " + r.status + " " + t.slice(0, 300) });
-        }
-        let out = null; try { out = JSON.parse(t); } catch (e) {}
-        return resp(200, { ok: true, document: out });
+        return resp(200, { ok: true, document: result.document });
       }
       return resp(400, { error: "Unknown action" });
     } catch (e) {

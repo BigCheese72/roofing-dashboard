@@ -899,7 +899,16 @@ function addPhotosFromFiles(files, findingId){
   function done(){
     pending--;
     if (pending === 0){
-      results.forEach(function(r){ if (r) photos.push(r); });
+      results.forEach(function(r){
+        if (!r) return;
+        photos.push(r);
+        /* Offline-first (Mark, 2026-07-12): mirror into IndexedDB the
+           instant a photo exists, before Save is ever tapped -- see the
+           block comment on idbPutPhoto() in js/core.js. Fire-and-forget on
+           purpose: never delay the tech seeing the photo in the gallery
+           waiting on this. */
+        idbPutPhoto(r.localId, r.img);
+      });
       renderPhotos();
       if (findingId){
         if (findingById(findingId)) renderFindings();
@@ -921,7 +930,8 @@ function addPhotosFromFiles(files, findingId){
         var c = document.createElement("canvas");
         c.width = w; c.height = h;
         c.getContext("2d").drawImage(img, 0, 0, w, h);
-        results[idx] = { caption:"", img: c.toDataURL("image/jpeg", preset.q), thumb: makeThumbDataUrl(img), w: w, h: h, finding_id: findingId || null };
+        results[idx] = { caption:"", img: c.toDataURL("image/jpeg", preset.q), thumb: makeThumbDataUrl(img), w: w, h: h,
+          finding_id: findingId || null, localId: makeLocalPhotoId() };
         done();
       };
       img.onerror = function(){ toast("Couldn't read one of the photos"); done(); };
@@ -1027,6 +1037,10 @@ function addPhotosFromCamera(files, findingId){
           var r = results[i];
           if (!r) continue;
           photos.push(r);
+          /* Offline-first (Mark, 2026-07-12) -- see the block comment on
+             idbPutPhoto() in js/core.js. Fire-and-forget, never blocks the
+             gallery/auto-pin flow below on it. */
+          idbPutPhoto(r.localId, r.img);
           if (findingId){
             /* Exactly one of these actually does anything -- each checks
                its own array (findings[] vs inspectionChecklist[]) and
@@ -1063,7 +1077,8 @@ function addPhotosFromCamera(files, findingId){
           var c = document.createElement("canvas");
           c.width = w; c.height = h;
           c.getContext("2d").drawImage(img, 0, 0, w, h);
-          results[idx] = { caption:"", img: c.toDataURL("image/jpeg", preset.q), thumb: makeThumbDataUrl(img), w: w, h: h, finding_id: findingId || null, gps: gps, gpsFailReason: gpsFailReason };
+          results[idx] = { caption:"", img: c.toDataURL("image/jpeg", preset.q), thumb: makeThumbDataUrl(img), w: w, h: h,
+            finding_id: findingId || null, gps: gps, gpsFailReason: gpsFailReason, localId: makeLocalPhotoId() };
           done();
         };
         img.onerror = function(){ toast("Couldn't read the photo"); done(); };
@@ -1169,6 +1184,12 @@ function removePhoto(i){
     if (findingById(removed.finding_id)) renderFindings();
     if (inspectionChecklistItemById(removed.finding_id)) renderInspectionChecklist();
   }
+  /* Housekeeping only -- the photo is already fully gone from the order
+     the moment it's removed from the in-memory array above and (once
+     Saved) from Firestore/Storage; this just clears its now-orphaned
+     IndexedDB backup instead of leaving it forever. Safe to fire-and-
+     forget: nothing downstream depends on this completing. */
+  if (removed && removed.localId) idbDeletePhoto(removed.localId);
 }
 /* Swaps two photos in place — works identically for a device-uploaded photo
    or a CompanyCam import, since both end up in the same photos[] shape
