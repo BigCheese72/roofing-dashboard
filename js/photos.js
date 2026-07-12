@@ -1208,10 +1208,10 @@ function photoDrop(e, i){
 async function openPhotoLightbox(i){
   var p = photos[i];
   if (!p) return;
-  if (p.thumb || p.img) openImageLightbox(p.thumb || p.img);
+  if (p.thumb || p.imgFallback || p.img) openImageLightbox(p.thumb || p.imgFallback || p.img);
   var full = await resolvePhotoImg(p);
   if (full) openImageLightbox(full);
-  else if (!p.thumb && !p.img) toast("Couldn't load this photo — check your internet connection.");
+  else if (!p.thumb && !p.imgFallback && !p.img) toast("Couldn't load this photo — check your internet connection.");
 }
 /* Pulled out of openPhotoLightbox() so anything with a bare image data-URL
    (not necessarily an index into the global photos[] array -- e.g. a

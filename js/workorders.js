@@ -415,7 +415,7 @@ function findingPhotoGalleryHtml(f){
     .filter(function(x){ return x.p.finding_id === f.id; });
   var strip = items.map(function(x){
     return '<div class="finding-photo-item">' +
-      ((x.p.thumb || x.p.img) ? '<img class="thumb" src="' + (x.p.thumb || x.p.img) + '" onclick="openPhotoLightbox(' + x.gi + ')" title="Tap to enlarge">' : '') +
+      ((x.p.thumb || x.p.imgFallback || x.p.img) ? '<img class="thumb" src="' + (x.p.thumb || x.p.imgFallback || x.p.img) + '" onclick="openPhotoLightbox(' + x.gi + ')" title="Tap to enlarge">' : '') +
       '<input type="text" placeholder="Caption" data-findingphoto="' + x.gi + '" value="' + esc(x.p.caption) + '" list="dl-photoCaption" onblur="rememberFieldValue(\'photoCaption\', this.value)">' +
       '<button class="btn danger" onclick="removePhoto(' + x.gi + ')">✕ Remove</button>' +
       photoGpsBadgeHtml(x.p, x.p.finding_id) +
@@ -448,7 +448,7 @@ function inspectionItemPhotoGalleryHtml(item){
     .filter(function(x){ return x.p.finding_id === item.id; });
   var strip = items.map(function(x){
     return '<div class="finding-photo-item">' +
-      ((x.p.thumb || x.p.img) ? '<img class="thumb" src="' + (x.p.thumb || x.p.img) + '" onclick="openPhotoLightbox(' + x.gi + ')" title="Tap to enlarge">' : '') +
+      ((x.p.thumb || x.p.imgFallback || x.p.img) ? '<img class="thumb" src="' + (x.p.thumb || x.p.imgFallback || x.p.img) + '" onclick="openPhotoLightbox(' + x.gi + ')" title="Tap to enlarge">' : '') +
       '<input type="text" placeholder="Caption" data-findingphoto="' + x.gi + '" value="' + esc(x.p.caption) + '" list="dl-photoCaption" onblur="rememberFieldValue(\'photoCaption\', this.value)">' +
       '<button class="btn danger" onclick="removePhoto(' + x.gi + ')">✕ Remove</button>' +
       photoGpsBadgeHtml(x.p, x.p.finding_id) +
