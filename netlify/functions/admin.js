@@ -4,19 +4,14 @@
 // path to destroy data is through here, using the Firebase Admin SDK
 // (which is not subject to Firestore security rules).
 //
-// Auth Phase 5 (accelerated -- see docs/AUTH_DESIGN.md): every mutating
-// action below is gated by a VERIFIED caller's Firebase custom claims,
-// resolved against the live roles/{roleId} permission grid
-// (requirePermission() in lib/authGuard.js) -- not the shared ADMIN_PIN.
-// The PIN is gone as an authorization mechanism entirely (only the
-// harmless, non-mutating check_pin action still reads it, kept for any
-// caller still probing it, e.g. a smoke test). A claims-authoritative gate
-// means: correct PIN no longer unlocks anything here, and a signed-in
-// caller whose role lacks the specific permission is rejected regardless
-// of anything else in the request body. See "Why the PIN was dropped, not
-// just supplemented" in docs/AUTH_DESIGN.md for the reasoning (a live PIN
-// fallback would let anyone who knows the office PIN bypass claims
-// entirely, defeating the point of this phase).
+// Auth Phase 5 (per Mark's direct order: "Kill the PIN and finish the
+// logins" -- see docs/AUTH_DESIGN.md): every action below is gated by a
+// VERIFIED caller's Firebase custom claims, resolved against the live
+// roles/{roleId} permission grid (requirePermission() in lib/authGuard.js).
+// The ADMIN_PIN environment variable is not read anywhere in this file --
+// there is no PIN check left to bypass, not even as a fallback. A missing
+// or insufficient token is rejected the same way regardless of anything
+// else in the request body.
 const { getDb, requirePermission } = require("./lib/authGuard");
 
 function resp(code, obj) {
@@ -81,15 +76,6 @@ exports.handler = async function (event) {
   let body;
   try { body = JSON.parse(event.body || "{}"); }
   catch (e) { return resp(400, { error: "Bad request" }); }
-
-  // check_pin: kept working exactly as before -- non-mutating, doesn't
-  // gate anything else in this file anymore, harmless to leave available.
-  if (body.action === "check_pin") {
-    const configuredPin = process.env.ADMIN_PIN;
-    if (!configuredPin) return resp(500, { error: "ADMIN_PIN is not set. Add it in Netlify > Environment variables, then redeploy." });
-    if (String(body.pin || "") !== configuredPin) return resp(403, { error: "Wrong admin PIN" });
-    return resp(200, { ok: true });
-  }
 
   try {
     const db = getDb();

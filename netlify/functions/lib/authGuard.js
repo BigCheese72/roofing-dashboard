@@ -99,14 +99,15 @@ async function requirePermission(event, permKey) {
   return caller;
 }
 
-// Phase 2: optional-identity variant of verifyCaller() for callers that are
-// gated some OTHER way (admin.js's shared ADMIN_PIN, still the only thing
-// actually protecting production -- production sends zero Firebase Auth
-// tokens) but want to capture a richer actor identity in an audit log WHEN
-// one happens to be available, without requiring login. Never throws --
-// returns null for "no token" or "token invalid/expired," both treated the
-// same by callers (log as PIN-only, don't block the underlying action on
-// an auth problem that isn't actually gating anything here).
+// Optional-identity variant of verifyCaller() -- never throws, returns null
+// for "no token" or "token invalid/expired" instead. Historically used by
+// admin.js's PIN-gated actions to opportunistically capture a richer actor
+// identity in the audit log when one happened to be available; admin.js is
+// claims-only now (the PIN is fully removed as of Auth Phase 5, see
+// docs/AUTH_DESIGN.md) and calls requirePermission()/verifyCaller()
+// directly instead. Kept as general-purpose infrastructure for any future
+// caller that genuinely needs an optional, non-blocking identity check --
+// currently unused.
 async function tryVerifyCaller(event) {
   try { return await verifyCaller(event); }
   catch (e) { return null; }
