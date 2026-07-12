@@ -492,20 +492,21 @@ function helpBackToList() {
 window.helpBackToList = helpBackToList;
 
 /* ====================== Tap-to-reveal tooltips ======================
-   Only on genuinely non-obvious controls that have a stable, static DOM id
-   in index.html (so this never needs to touch roofmapper.js/history.js's
-   own dynamically-rendered HTML strings). Each is a small "ⓘ" badge placed
-   right after the control; tapping it toggles a short explanation bubble.
-   Two of the originally-requested targets don't have a stable DOM anchor to
-   attach to without editing another session's file (the Building History
-   roof selector and its archive/delete buttons, both rendered entirely as
-   HTML strings inside js/history.js) -- those are covered as full Help
-   Center articles instead (see acct-roles / admin-delete-archive / bh
-   articles above). "The change-order stages" tooltip wasn't built because
-   the 5-stage change-order workflow (Draft/Requested/Pricing Approved/
-   Report Approved/Sent) has no client UI at all yet -- only one server-side
-   gate (approve_pricing) exists with nothing on screen to attach a tooltip
-   to; flagged back to Mark rather than tooltipping something invisible. */
+   Only on genuinely non-obvious controls, never hover-triggered (tap-to-
+   reveal only -- half the crew is on phones). Two flavors here:
+   (1) controls with a stable, static DOM id in index.html (Square Up, Edit
+   Shape, the snapping toggle) get a badge injected once, directly; (2) the
+   Building History roof selector and its Archive/Delete controls are built
+   as HTML strings entirely inside js/history.js/js/workorders.js -- rather
+   than editing those files, injectHistoryTooltips() below watches the two
+   static containers they already render into with a MutationObserver and
+   attaches the same badge once their content appears, so this stays
+   isolated to help.js either way. "The change-order stages" tooltip wasn't
+   built because the 5-stage change-order workflow (Draft/Requested/Pricing
+   Approved/Report Approved/Sent) has no client UI at all yet -- only one
+   server-side gate (approve_pricing) exists, with nothing on screen to
+   attach a tooltip to; flagged back to Mark rather than tooltipping
+   something invisible. */
 var HELP_TOOLTIPS = [
   { id: "rm-edit-shape-btn", text: "Edit Shape — drag any corner to move it. Tap \"Done Editing\" when it looks right. Resets Square Up and calibration, since a hand edit can change what those relied on." },
   { id: "rm-square-up-btn", text: "Square Up — snaps near-90° corners and straight edges clean. Use it right after tracing, before you calibrate a measurement. A real diagonal or curve is left as traced." },
@@ -624,12 +625,65 @@ function helpSkipWalkthrough() {
 window.helpWalkthroughNext = helpWalkthroughNext;
 window.helpSkipWalkthrough = helpSkipWalkthrough;
 
+/* ================= Tooltips on dynamically-rendered content =================
+   The Building History roof selector and its Archive/Delete controls are
+   built as HTML strings entirely inside js/history.js and js/workorders.js
+   (not this session's files) -- rather than editing those, watch the two
+   static containers those modules already render into (#history-list,
+   #history-detail, both real elements in index.html) with a MutationObserver
+   and inject the same tap-to-reveal badge style used above once their
+   content appears. Debounced since a single render can touch the DOM many
+   times in one pass (Firestore data arriving in several awaited steps). */
+function injectHistoryTooltips() {
+  var detail = document.getElementById("history-detail");
+  if (detail && !detail.dataset.helpObserved) {
+    detail.dataset.helpObserved = "1";
+    var debounce1;
+    new MutationObserver(function () {
+      clearTimeout(debounce1);
+      debounce1 = setTimeout(function () {
+        var sel = detail.querySelector('select[onchange*="historySelectRoof"]');
+        if (sel && !sel.dataset.helpTipAdded) {
+          sel.dataset.helpTipAdded = "1";
+          var badge = document.createElement("button");
+          badge.type = "button"; badge.className = "help-tip-badge"; badge.textContent = "ⓘ";
+          badge.setAttribute("aria-label", "What is this?");
+          badge.onclick = function (e) { e.preventDefault(); e.stopPropagation();
+            helpToggleTipBubble(badge, "Roof selector — switches which roof on this building the Timeline, Roof Map, and profile below are showing. Only appears once a building has more than one roof."); };
+          sel.parentNode.appendChild(badge);
+        }
+      }, 150);
+    }).observe(detail, { childList: true, subtree: true });
+  }
+  var list = document.getElementById("history-list");
+  if (list && !list.dataset.helpObserved) {
+    list.dataset.helpObserved = "1";
+    var debounce2;
+    new MutationObserver(function () {
+      clearTimeout(debounce2);
+      debounce2 = setTimeout(function () {
+        var archiveBtn = list.querySelector('[onclick*="archiveBuildingAdmin"], [onclick*="unarchiveBuildingAdmin"]');
+        if (archiveBtn && !archiveBtn.dataset.helpTipAdded) {
+          archiveBtn.dataset.helpTipAdded = "1";
+          var badge = document.createElement("button");
+          badge.type = "button"; badge.className = "help-tip-badge"; badge.textContent = "ⓘ";
+          badge.setAttribute("aria-label", "Archive vs. Delete");
+          badge.onclick = function (e) { e.preventDefault(); e.stopPropagation();
+            helpToggleTipBubble(badge, "Archive — hides a building from the normal list; reversible any time with Unarchive. Delete — removes the building and its report/history records for good (the underlying work orders themselves are left alone). Archive first if you're not sure."); };
+          archiveBtn.parentNode.insertBefore(badge, archiveBtn);
+        }
+      }, 150);
+    }).observe(list, { childList: true, subtree: true });
+  }
+}
+
 /* ============================ Init ============================ */
 function helpInit() {
   buildHelpFab();
   buildHelpModal();
-  helpWrap("showView", function () { injectHelpTooltips(); renderHelpQuickLinks(); helpMaybeShowWalkthrough(); });
+  helpWrap("showView", function () { injectHelpTooltips(); injectHistoryTooltips(); renderHelpQuickLinks(); helpMaybeShowWalkthrough(); });
   injectHelpTooltips();
+  injectHistoryTooltips();
 
   // Auto-open Help from the invite email's "Open the Help Center" link
   // (?openHelp=1), so a brand-new user lands straight in it after signing in.
