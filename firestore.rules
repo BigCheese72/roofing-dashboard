@@ -1,19 +1,32 @@
 // Firestore Security Rules for the watkins-service-orders project.
 //
-// This is a REFERENCE FILE — nothing in this repo deploys it automatically.
-// Apply it yourself in Firebase Console -> Firestore Database -> Rules
-// (paste and Publish), or via the Firebase CLI (`firebase deploy --only
-// firestore:rules`) if you set that up locally.
+// LIVE as of 2026-07-11 — published directly in Firebase Console ->
+// Firestore Database -> Rules. This file is still the source of truth for
+// the rule LOGIC (edit here first, then paste + Publish in the Console, or
+// via `firebase deploy --only firestore:rules` if that's ever set up
+// locally) — nothing in this repo auto-syncs a Console edit back here, so
+// after any manual Console change, mirror it back into this file by hand
+// so the two never silently drift apart again.
 //
-// What this does: keeps the app's normal read/create/update behavior wide
-// open (matching how it already works — there's no user login yet, see
-// DEV_NOTES.md and DATA_MODEL.md's proposed `users`/role model for the
-// real long-term fix), but blocks DELETE on customers, buildings, reports,
-// and building_history_events for every client, no exceptions. The only
-// way to delete those is netlify/functions/admin.js, which uses the
-// Firebase Admin SDK — Admin SDK calls are not subject to these rules at
-// all, so that server function still works even though clients can't
-// delete directly.
+// Auth (see docs/AUTH_DESIGN.md) now gates real, checkable state here: the
+// `roles`/`users`/`audit_logs`/`changeorder_approvals` blocks below are not
+// aspirational — they're enforced live, verified end-to-end signed in as
+// the real owner account (roles/users reads succeed; owner write attempts
+// on users/roles/audit_logs, and update/delete on audit_logs, all correctly
+// denied even for the owner; signed-out reads of all four correctly denied
+// too). The app requires login as of the same date (dev only).
+//
+// What the REST of this file does: keeps the app's pre-existing work-order
+// data (customers/buildings/reports/building_history_events/workorders/
+// companycam_projects/app_settings) exactly as open as it already was —
+// see "Shared Firestore, dev/prod risk boundary" in docs/AUTH_DESIGN.md for
+// why: dev and production share this one Firestore project, and production
+// sends zero Firebase Auth tokens, so tightening those existing collections
+// would break production with no fallback. Tightening them is later,
+// separately-scoped work, not silently done here. DELETE is blocked on
+// customers/buildings/reports/building_history_events for every client
+// regardless — the only way to delete those is netlify/functions/admin.js,
+// using the Firebase Admin SDK, which is not subject to these rules at all.
 //
 // workorders (+ its photos subcollection) deliberately keeps its existing
 // open behavior, including delete — that's the pre-existing, tech-facing

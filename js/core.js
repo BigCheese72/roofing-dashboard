@@ -28,8 +28,29 @@ var SAT_MAX_NATIVE_ZOOM = 20;
    blocking precision corner placement now that all tracing is by hand.
    See rmUpdateMapZoomCap() and "Ortho zoom cap" in DEV_NOTES.md. */
 var RM_ORTHO_MAX_ZOOM = 26;
-/* ================= cloud sync (Firebase Firestore) ================= */
-var FIREBASE_CONFIG = {
+/* ================= cloud sync (Firebase Firestore) =================
+   Environment-aware project selection (Firebase split, 2026-07-11): the app
+   is static with no build step, so which Firebase project it talks to is
+   decided entirely at RUNTIME, off window.location.hostname -- there's no
+   other lever available (no env vars reach client-side static files).
+   Production (leak-work-orders.netlify.app, deployed from main) stays on
+   the original `watkins-service-orders` project -- Mark's real data,
+   photos, owner account, published rules, all untouched. Dev (branch
+   deploys, "dev--..." hostnames) and any local/preview environment move to
+   a separate, empty `watkins-service-orders-dev` sandbox project, so dev
+   work can never touch production's real Firestore/Storage/Auth again --
+   the "Shared Firestore, dev/prod risk boundary" constraint that shaped
+   several earlier auth-phase decisions (see docs/AUTH_DESIGN.md) is gone
+   entirely once this is live, not just carefully worked around.
+   Both configs are the public Firebase Web SDK config (apiKey included) --
+   safe to commit, matching Firebase's own documented design: this key
+   identifies the project to Google's servers, it does not grant access on
+   its own (Firestore/Storage rules are what actually gate access). */
+function isDevEnvironment(){
+  var h = window.location.hostname;
+  return h.indexOf("dev--") !== -1 || h === "localhost" || h === "127.0.0.1" || h.indexOf("deploy-preview-") !== -1;
+}
+var FIREBASE_CONFIG_PROD = {
   apiKey: "AIzaSyBZRMpIWde-6DPpg7yAvNOqJAQF5ZBxlAg",
   authDomain: "watkins-service-orders.firebaseapp.com",
   projectId: "watkins-service-orders",
@@ -37,6 +58,43 @@ var FIREBASE_CONFIG = {
   messagingSenderId: "806263881954",
   appId: "1:806263881954:web:16fb8f9cfac591dce25ebb"
 };
+// TODO(Mark): replace every REPLACE_ME below with the real watkins-service-orders-dev
+// Web app config (Firebase Console -> that project -> Project settings -> General ->
+// Your apps -> Web app -> SDK setup and configuration -> Config), once that project
+// actually exists.
+var FIREBASE_CONFIG_DEV = {
+  apiKey: "REPLACE_ME",
+  authDomain: "watkins-service-orders-dev.firebaseapp.com",
+  projectId: "watkins-service-orders-dev",
+  storageBucket: "watkins-service-orders-dev.firebasestorage.app",
+  messagingSenderId: "REPLACE_ME",
+  appId: "REPLACE_ME"
+};
+/* CRITICAL SAFETY GUARD, added after a real incident: the dev project
+   doesn't exist yet, so shipping the switch above ALONE broke dev sign-in
+   outright (auth/api-key-not-valid) the moment it deployed -- FIREBASE_CONFIG_DEV's
+   placeholder values are not a valid Firebase config, and there is no
+   partial-credit state for "almost a real API key." This guard checks for
+   the literal placeholder and falls back to production whenever the dev
+   config isn't real yet -- dev behaves EXACTLY as it did before this whole
+   split (same shared watkins-service-orders project) until Mark supplies
+   real dev values, instead of presenting a broken login screen. A clear
+   console warning marks the fallback so it's never mistaken for the real
+   split being live. Once Mark replaces every REPLACE_ME, this guard
+   evaluates false and dev automatically switches to the real separate
+   project with no further code change needed. */
+function devFirebaseConfigIsReal(){
+  return FIREBASE_CONFIG_DEV.apiKey !== "REPLACE_ME" &&
+    FIREBASE_CONFIG_DEV.messagingSenderId !== "REPLACE_ME" &&
+    FIREBASE_CONFIG_DEV.appId !== "REPLACE_ME";
+}
+var FIREBASE_CONFIG;
+if (isDevEnvironment() && devFirebaseConfigIsReal()){
+  FIREBASE_CONFIG = FIREBASE_CONFIG_DEV;
+} else {
+  FIREBASE_CONFIG = FIREBASE_CONFIG_PROD;
+  if (isDevEnvironment()) console.warn("watkins-service-orders-dev config not set yet (still placeholder) -- falling back to the production Firebase config until Mark supplies the real dev project values.");
+}
 var fdb = null;
 /* fauth (Firebase Authentication, Phase 1 of the auth build -- see
    docs/AUTH_DESIGN.md) is layered ALONGSIDE the existing PIN-based admin
@@ -57,6 +115,20 @@ try{
   }
 }catch(e){ fdb = null; fauth = null; }
 var cloudIndexCache = [];
+/* CompanyCam link state for the work order currently being edited. Moved
+   here from js/workorders.js (2026-07-11, real bug fix): js/companycam.js
+   loads BEFORE js/workorders.js in index.html's script order but also
+   references these vars, which only worked by accident of which script
+   happened to finish loading first -- on a cold/uncached load it's a real
+   race, and it broke for real on production's very first page load (a
+   ReferenceError thrown from inside the auth-state-change handler, since
+   recomputeIsAdmin() now calls updateAdminUI() -> renderCCLinkInfo() much
+   earlier in the page lifecycle than before Auth Phase 5). core.js always
+   loads first, so declaring shared state actually used across modules here
+   (matching every other core.js global) makes this correct regardless of
+   which order the rest of the modules happen to load in. */
+var ccLinkedProjectId = null;
+var ccLinkedProjectName = "";
 
 /* ================= Account / login (auth Phase 1) =================
    Reachable via the header's "🔐 Account" button, entirely separate from
@@ -152,12 +224,23 @@ async function signOutUser(){
     toast("Signed out");
   }catch(e){ toast("Sign-out failed: " + e.message); }
 }
+/* Without actionCodeSettings, Firebase's password-reset email lands the
+   user on Firebase's own hosted page with no way back to the app at all --
+   Mark's exact complaint about the crew-invite flow. `url` here is the
+   "Continue" link shown after the reset completes; window.location.origin
+   is already environment-aware for free (resolves to whichever
+   dev/production URL the app is actually running on, no extra config
+   needed) -- same principle as isDevEnvironment() above, just via the
+   browser's own location instead of a hostname string match. */
+function passwordResetActionCodeSettings(){
+  return { url: window.location.origin + "/" };
+}
 async function sendPasswordReset(){
   if (!fauth) return;
   var email = val("login-email").trim();
   if (!email){ toast("Enter your email first."); return; }
   try{
-    await fauth.sendPasswordResetEmail(email);
+    await fauth.sendPasswordResetEmail(email, passwordResetActionCodeSettings());
     toast("Password reset email sent (if that account exists) ✓");
   }catch(e){ toast("Couldn't send reset email: " + e.message); }
 }
@@ -217,18 +300,32 @@ async function renderUserManagementModal(){
       return '<option value="' + esc(r.id) + '"' + (r.id === u.role ? " selected" : "") + '>' + esc(r.label || r.id) + '</option>';
     }).join("");
     var disabledReason = isSelf ? "You can't change your own role" : (isOwnerRow ? "Transfer ownership to change the owner" : "");
-    return '<tr>' +
+    var status = u.status || "active";
+    var isDeleted = status === "deleted";
+    // Deleted is a permanent, terminal state -- no actions offered at all
+    // once reached, matching audit_logs' own "no further changes, ever"
+    // spirit. The row still renders (email/role/status visible) so
+    // historical attribution stays legible, just with nothing left to do.
+    var actionButtons = "";
+    if (!isSelf && !isOwnerRow && !isDeleted){
+      actionButtons =
+        '<button class="btn" onclick="saveUserRole(\'' + esc(u.uid) + '\')">Save</button> ' +
+        '<button class="btn" onclick="resendInvite(\'' + esc(u.uid) + '\')" title="Re-send the set-password email">Resend invite</button> ' +
+        (status === "disabled" ?
+          '<button class="btn" onclick="enableUser(\'' + esc(u.uid) + '\')">Re-enable</button>' :
+          '<button class="btn danger" onclick="disableUser(\'' + esc(u.uid) + '\', \'' + esc(u.email || "") + '\')">Disable</button>') +
+        (isOwner ?
+          ' <button class="btn danger" onclick="deleteUserPermanently(\'' + esc(u.uid) + '\', \'' + esc(u.email || "") + '\')" title="Permanent -- owner only">Delete…</button>' : '');
+    }
+    return '<tr' + (isDeleted ? ' style="opacity:.55"' : '') + '>' +
       '<td style="padding:6px 8px">' + esc(u.email || "") + (isSelf ? ' <span class="hint">(you)</span>' : '') + '</td>' +
       '<td style="padding:6px 8px">' +
-        (isSelf || isOwnerRow ?
+        (isSelf || isOwnerRow || isDeleted ?
           '<span class="hint" title="' + esc(disabledReason) + '">' + esc(u.role || "") + '</span>' :
           '<select id="role-select-' + esc(u.uid) + '">' + roleOptions + '</select>') +
       '</td>' +
-      '<td style="padding:6px 8px">' + esc(u.status || "active") + '</td>' +
-      '<td style="padding:6px 8px">' +
-        (isSelf || isOwnerRow ? '' :
-          '<button class="btn" onclick="saveUserRole(\'' + esc(u.uid) + '\')">Save</button>') +
-      '</td>' +
+      '<td style="padding:6px 8px">' + esc(status) + '</td>' +
+      '<td style="padding:6px 8px;white-space:nowrap">' + actionButtons + '</td>' +
     '</tr>';
   }).join("");
 
@@ -248,6 +345,19 @@ async function renderUserManagementModal(){
       '<tbody>' + (rows || '<tr><td colspan="4" style="padding:8px" class="hint">No users yet.</td></tr>') + '</tbody>' +
     '</table>';
 }
+/* Real incident, fixed here (see auth.js's create_user/sendInviteEmail for
+   the full story): this used to call the client SDK's
+   fauth.sendPasswordResetEmail() wrapped in a bare try/catch, which
+   silently swallowed the failure and told the inviting admin "email sent"
+   regardless of whether it actually was -- no crew member ever received an
+   invite and nobody knew. The server now sends the real email itself (via
+   Resend, same delivery path work-order emails already use) and reports
+   back honestly whether it worked -- this toast reflects that truthfully,
+   including telling the admin to use Resend Invite if the send failed but
+   the account was still created (a real, recoverable state, not a dead
+   end). appUrl is this browser's own origin -- same environment-aware
+   principle as passwordResetActionCodeSettings(), just sent to the server
+   since the reset link has to be generated server-side now. */
 async function inviteUser(){
   var email = val("invite-email").trim();
   var displayName = val("invite-name").trim();
@@ -257,18 +367,83 @@ async function inviteUser(){
   try{
     var r = await fetch("/.netlify/functions/auth", {
       method: "POST", headers: await authHeaders(),
-      body: JSON.stringify({ action: "create_user", email: email, roleId: roleId, displayName: displayName })
+      body: JSON.stringify({ action: "create_user", email: email, roleId: roleId, displayName: displayName, appUrl: window.location.origin })
     });
     var out = await r.json().catch(function(){ return null; });
     if (!r.ok || !out || !out.ok) throw new Error((out && out.error) || ("server error " + r.status));
-    // Public client SDK call -- triggers Firebase's own built-in reset-email
-    // flow so the new user sets their own password. No password is ever
-    // handled by this browser session or by the account that just created
-    // the user.
-    try{ await fauth.sendPasswordResetEmail(email); }catch(e){}
-    toast("Account created ✓ — a password-setup email was sent to " + email);
+    if (out.emailSent){
+      toast("Account created ✓ — invite email sent to " + email);
+    } else {
+      toast("Account created, but the invite EMAIL FAILED to send (" + (out.emailError || "unknown error") +
+        "). The account exists -- use Resend Invite once the problem's fixed, don't create it again.");
+    }
     await renderUserManagementModal();
   }catch(e){ toast("Couldn't create account: " + e.message); }
+}
+async function resendInvite(uid){
+  toast("Resending invite…");
+  try{
+    var r = await fetch("/.netlify/functions/auth", {
+      method: "POST", headers: await authHeaders(),
+      body: JSON.stringify({ action: "resend_invite", targetUid: uid, appUrl: window.location.origin })
+    });
+    var out = await r.json().catch(function(){ return null; });
+    if (!r.ok || !out || !out.ok) throw new Error((out && out.error) || ("server error " + r.status));
+    toast("Invite email re-sent ✓");
+  }catch(e){ toast("Couldn't resend invite: " + e.message); }
+}
+/* Disable is the primary removal action (see docs/AUTH_DESIGN.md) --
+   revokes access immediately without touching any historical
+   attribution. Confirm text names the actual consequence, not just
+   "are you sure." */
+async function disableUser(uid, email){
+  if (!confirm("Disable " + email + "'s account? They won't be able to sign in until re-enabled. Their name stays on their existing work orders/findings/photos/audit entries.")) return;
+  toast("Disabling…");
+  try{
+    var r = await fetch("/.netlify/functions/auth", {
+      method: "POST", headers: await authHeaders(),
+      body: JSON.stringify({ action: "disable_user", targetUid: uid })
+    });
+    var out = await r.json().catch(function(){ return null; });
+    if (!r.ok || !out || !out.ok) throw new Error((out && out.error) || ("server error " + r.status));
+    toast("Account disabled ✓");
+    await renderUserManagementModal();
+  }catch(e){ toast("Couldn't disable account: " + e.message); }
+}
+async function enableUser(uid){
+  toast("Re-enabling…");
+  try{
+    var r = await fetch("/.netlify/functions/auth", {
+      method: "POST", headers: await authHeaders(),
+      body: JSON.stringify({ action: "enable_user", targetUid: uid })
+    });
+    var out = await r.json().catch(function(){ return null; });
+    if (!r.ok || !out || !out.ok) throw new Error((out && out.error) || ("server error " + r.status));
+    toast("Account re-enabled ✓");
+    await renderUserManagementModal();
+  }catch(e){ toast("Couldn't re-enable account: " + e.message); }
+}
+/* Owner-only, deliberately harder to reach than Disable (a second,
+   separate confirm naming the PERMANENT consequence, not the same one-line
+   confirm as disable). The Firebase Auth account is gone forever; the
+   users/{uid} Firestore record is kept (archived) specifically so past
+   work orders/findings/photos/audit entries still show a real name instead
+   of an orphaned id -- explained in the confirm text so this is never
+   mistaken for "erases their history too." */
+async function deleteUserPermanently(uid, email){
+  if (!confirm("PERMANENTLY delete " + email + "'s account?\n\nThis cannot be undone -- they will never be able to sign in again with this account. Their name will still appear on their existing work orders/findings/photos/audit entries (that history is kept), but the login itself is gone forever.\n\nIf you just want to revoke access and might restore it later, use Disable instead.")) return;
+  if (!confirm("Really permanently delete " + email + "? This is the second and final confirmation.")) return;
+  toast("Deleting…");
+  try{
+    var r = await fetch("/.netlify/functions/auth", {
+      method: "POST", headers: await authHeaders(),
+      body: JSON.stringify({ action: "delete_user", targetUid: uid })
+    });
+    var out = await r.json().catch(function(){ return null; });
+    if (!r.ok || !out || !out.ok) throw new Error((out && out.error) || ("server error " + r.status));
+    toast("Account permanently deleted");
+    await renderUserManagementModal();
+  }catch(e){ toast("Couldn't delete account: " + e.message); }
 }
 async function saveUserRole(uid){
   var sel = document.getElementById("role-select-" + uid);
@@ -375,7 +550,7 @@ async function gateForgotPassword(){
   var email = val("gate-email").trim();
   if (!email){ setLoginGateStatus("Enter your email first.", true); return; }
   try{
-    await fauth.sendPasswordResetEmail(email);
+    await fauth.sendPasswordResetEmail(email, passwordResetActionCodeSettings());
     setLoginGateStatus("Password reset email sent (if that account exists) ✓", false);
   }catch(e){ setLoginGateStatus("Couldn't send reset email: " + e.message, true); }
 }

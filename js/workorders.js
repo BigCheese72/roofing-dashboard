@@ -313,8 +313,14 @@ var INSPECTION_CHECKLIST_COMPONENTS = [
 var INSPECTION_RATINGS = ["Good", "Fair", "Poor", "Critical", "N/A"];
 var inspectionChecklist = [];
 var photos = [];
-var ccLinkedProjectId = null;
-var ccLinkedProjectName = "";
+// ccLinkedProjectId/ccLinkedProjectName moved to js/core.js -- see the note
+// there. Declared in this file originally, but js/companycam.js (loaded
+// BEFORE this file) also references them; that only worked by accident of
+// which script happened to finish loading first, and broke for real on a
+// slow/cold load (production's first-ever page load hit it: a
+// ReferenceError thrown from inside the auth-state-change handler, since
+// Auth Phase 5's recomputeIsAdmin() now calls updateAdminUI() ->
+// renderCCLinkInfo() much earlier in the page lifecycle than before).
 /* Change Order-only for now -- { img (PNG data URL), printName, date } or
    null. Captured via the reusable openSignaturePad() (see its definition
    below) -- the SAME modal/component is meant to be reused for other
