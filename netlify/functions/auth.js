@@ -63,15 +63,43 @@ async function sendInviteEmail(opts) {
   const from = process.env.FROM_EMAIL || "Watkins Roofing Work Orders <workorders@watkinsroofing.net>";
   const subject = "You've been added to RoofOps — set your password";
   const roleLabel = opts.roleLabel || opts.roleId;
+  // ?openHelp=1 is read by js/help.js on load and auto-opens the in-app Help
+  // Center once the login gate clears -- a brand-new crew member's first
+  // stop after setting their password is straight into "how do I..." rather
+  // than a blank Home screen. Added 2026-07-12 alongside the Help Center.
+  const helpLink = opts.appUrl + "/?openHelp=1";
+  // Add-to-home-screen instructions are platform-specific and, critically,
+  // BROWSER-specific on iOS: "Add to Home Screen" only exists in Safari's
+  // share sheet -- it does not exist in Chrome-on-iOS at all (Apple's own
+  // restriction, not a bug in this app), so a crew member on an iPhone who
+  // opens the invite link in Chrome will never find the option and will
+  // reasonably conclude the app is broken. Called out explicitly for that
+  // reason rather than assumed obvious.
   const text = "Hi" + (opts.displayName ? " " + opts.displayName : "") + ",\n\n" +
     opts.inviterEmail + " has added you to RoofOps (Watkins Roofing's field work order app) as a " + roleLabel + ".\n\n" +
-    "Set your password to sign in:\n" + opts.resetLink + "\n\n" +
-    "Once your password is set, sign in at " + opts.appUrl + "\n\n" +
+    "1. SET YOUR PASSWORD\n" + opts.resetLink + "\n\n" +
+    "2. ADD ROOFOPS TO YOUR HOME SCREEN (do this once, in the field it's much faster than a browser tab)\n" +
+    "   iPhone/iPad: open " + opts.appUrl + " in SAFARI (must be Safari, not Chrome -- the option doesn't exist there) -> tap the Share button -> scroll down -> \"Add to Home Screen\" -> Add.\n" +
+    "   Android: open " + opts.appUrl + " in Chrome -> tap the three-dot menu -> \"Install app\" or \"Add to Home screen.\"\n" +
+    "   Computer (Chrome/Edge): click the install icon in the address bar, or the three-dot menu -> \"Install RoofOps.\"\n" +
+    "   This makes it open full-screen like a real app, one tap from your home screen.\n\n" +
+    "3. NEED HELP?\n" + helpLink + " -- searchable how-tos, right in the app, or tap the ❓ button on any screen once you're signed in.\n\n" +
+    "Sign in any time at " + opts.appUrl + "\n\n" +
     "If you weren't expecting this, you can ignore this email.";
   const html = "<p>Hi" + (opts.displayName ? " " + escapeHtml(opts.displayName) : "") + ",</p>" +
     "<p><b>" + escapeHtml(opts.inviterEmail) + "</b> has added you to <b>RoofOps</b> (Watkins Roofing's field work order app) as a <b>" + escapeHtml(roleLabel) + "</b>.</p>" +
+    "<p style=\"margin:20px 0 8px\"><b>1. Set your password</b></p>" +
     "<p><a href=\"" + opts.resetLink + "\" style=\"display:inline-block;background:#E8600A;color:#fff;padding:10px 18px;border-radius:6px;text-decoration:none;font-weight:bold\">Set Your Password and Sign In</a></p>" +
-    "<p>Once your password is set, sign in at <a href=\"" + opts.appUrl + "\">" + opts.appUrl + "</a>.</p>" +
+    "<p style=\"margin:22px 0 8px\"><b>2. Add RoofOps to your home screen</b> (do this once — in the field it's much faster than a browser tab)</p>" +
+    "<ul style=\"margin:0 0 16px;padding-left:20px;line-height:1.6\">" +
+    "<li><b>iPhone/iPad:</b> open the app in <b>Safari</b> (must be Safari — the option doesn't exist in Chrome on iOS) → tap the Share button → scroll down → <b>Add to Home Screen</b> → Add.</li>" +
+    "<li><b>Android:</b> open the app in Chrome → three-dot menu → <b>Install app</b> or <b>Add to Home screen</b>.</li>" +
+    "<li><b>Computer (Chrome/Edge):</b> the install icon in the address bar, or three-dot menu → <b>Install RoofOps</b>.</li>" +
+    "</ul>" +
+    "<p style=\"color:#666;font-size:13px;margin:0 0 16px\">It'll open full-screen like a real app, one tap from your home screen — no digging through browser tabs on a roof.</p>" +
+    "<p style=\"margin:22px 0 8px\"><b>3. Need help?</b></p>" +
+    "<p style=\"margin:0 0 16px\"><a href=\"" + helpLink + "\">Open the Help Center</a> — searchable how-tos, or tap ❓ on any screen once you're signed in.</p>" +
+    "<p>Sign in any time at <a href=\"" + opts.appUrl + "\">" + opts.appUrl + "</a>.</p>" +
     "<p style=\"color:#666;font-size:13px\">If you weren't expecting this, you can ignore this email.</p>";
   const resp2 = await fetch("https://api.resend.com/emails", {
     method: "POST",
