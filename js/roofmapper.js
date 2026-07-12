@@ -1025,10 +1025,11 @@ function rmOutlineMeasurementMethod(outline){
     var go = outline.groundOverlay || {};
     var maxErr = go.maxQuadBBoxErrorFt || go.quadBBoxErrorFt || 0;
     var errText = maxErr ? "; max quad approx. " + (Math.round(maxErr * 10) / 10) + " ft" : "";
+    var detailText = go.mobileTileCapApplied ? "; traced at reduced tile detail" : "";
     var name = go.sourceType === "kmz_superoverlay" ? "KMZ super-overlay tile trace" : "KMZ/KML GroundOverlay trace";
     return { kind: go.sourceType || "kml_groundoverlay", accuracyClass: "georeferenced_overlay_approx",
       maxQuadBBoxErrorFt: maxErr,
-      label: "Method: " + name + " (approx. overlay; not RTK survey-grade" + errText + ")" };
+      label: "Method: " + name + " (approx. overlay; not RTK survey-grade" + errText + detailText + ")" };
   }
   if (outline.source === "ortho_trace"){
     return { kind: "flat_ortho", accuracyClass: outline.calibration ? "field_calibrated" : "uncalibrated_image",
@@ -3427,8 +3428,12 @@ function rmImageFileLooksLike(path){
   return /\.(png|jpe?g|webp|gif)$/i.test(path || "");
 }
 function rmIsLikelyMobileDevice(){
+  /* iPadOS can present a desktop-class Safari UA. Treat touch Macs/iPads as
+     mobile here so large KMZ imports use the graceful lower-detail path. */
+  var platform = navigator.platform || "";
   return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || "") ||
     (navigator.userAgentData && navigator.userAgentData.mobile) ||
+    (/Mac/i.test(platform) && navigator.maxTouchPoints > 1) ||
     (window.matchMedia && window.matchMedia("(max-width: 760px)").matches && navigator.maxTouchPoints > 0);
 }
 function rmMimeForImagePath(path){
@@ -3534,7 +3539,7 @@ function rmStartKmlSuperOverlayTrace(tiles, meta){
     warns.push("mobile tile cap applied: loaded level " + meta.kmlLevel + " (" + tiles.length +
       " tiles) instead of level " + meta.highestKmlLevel + " (" + meta.highestTileCount + " tiles)");
   } else if (tiles.length > RM_KMZ_MOBILE_TILE_CAP){
-    warns.push("large desktop tile set; run the real-KMZ browser load check before merging");
+    warns.push("large tile set; it may load slowly on lower-powered machines");
   }
   if (warns.length){
     msg += " Note: " + warns.join("; ") + ". Verify alignment before saving.";
