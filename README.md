@@ -48,11 +48,18 @@ APP_OVERVIEW.md
 DEV_NOTES.md
 ROADMAP.md
 DATA_MODEL.md
+package.json         # firebase-admin, for admin.js
+firestore.rules       # reference only — apply manually in Firebase Console
 netlify.toml
 netlify/
   functions/
     companycam.js
     send-workorder.js
+    admin.js
+tools/
+  geotiff_to_webmap.py    # standalone — NOT part of the deployed app
+  update_roof_base_map.py # interactive wrapper around --upload, also standalone
+  Update Roof Base Map.bat # double-click launcher for the above
 ```
 
 ## Main Responsibility Map
@@ -60,19 +67,25 @@ netlify/
 | Area | Main file(s) | Notes |
 |---|---|---|
 | Work order form and UI | `index.html` | The edit, preview, saved work orders, building history, photo documentation, and CompanyCam modal UI all live in this file. The main work order form starts in the Edit view markup. |
-| Work order state and save/load | `index.html` | Functions such as `collect()`, `saveOrder()`, `loadOrder()`, `cloudSaveOrder()`, and `cloudFetchOrder()` handle form state, local storage fallback, and Firestore sync. |
+| Work order state and save/load | `index.html` | Functions such as `collect()`, `saveOrder()`, `loadOrder()`, `cloudSaveOrder()`, and `cloudFetchOrder()` handle form state, local storage fallback, and Firestore sync. Each photo's `finding_id`/`ccPhotoId`/`gps` round-trip through the `photos` subcollection along with `caption`/`img`/`w`/`h` — see `DEV_NOTES.md` for a bug fixed here. |
 | Local storage quota safety | `index.html` | `stripPhotoBytes()`/`pruneCachedPhotoDrafts()` keep the `localStorage` offline cache (~5–10MB browser quota) from filling up — only the actively-edited draft and the 10 most-recently-saved drafts keep full photo bytes locally; merely viewing a report never caches its photos. See "Local work order cache" in `DEV_NOTES.md`. |
 | Firebase connection | `index.html` | Firebase compat scripts are loaded from CDN. `FIREBASE_CONFIG` initializes Firestore for project `watkins-service-orders`. |
-| Firebase data writes | `index.html` | Work orders write to `workorders` with a `photos` subcollection. Customer, building, report, and building history records are created by `ensureCustomerAndBuilding()` and `logReportAndHistoryEvent()`. |
+| Firebase data writes | `index.html` | Work orders write to `workorders` with a `photos` subcollection. Customer, building, report, and building history records are created by `ensureCustomerAndBuilding()` and `logReportAndHistoryEvent()`. `logReportAndHistoryEvent()` upserts one `reports`/`building_history_events` doc per work order (id `"evt_" + workOrderId`) — a resend/reshare/resave updates that same entry rather than adding a new one. See "One timeline entry per work order" in `DEV_NOTES.md`. |
+| Building/customer picker | `index.html` | `openBuildingPicker()` — a searchable modal listing existing `buildings` docs; `bpSelectBuilding()` fills Job Name/Bill To/Location/Roof System from the picked building's stored values. Purely additive UX on top of `ensureCustomerAndBuilding()`'s existing derive-from-text-fields id scheme — doesn't change it. See `DEV_NOTES.md`. |
 | CompanyCam connection | `index.html`, `netlify/functions/companycam.js` | Browser code calls `/.netlify/functions/companycam`; the function proxies CompanyCam API requests so API tokens never reach the browser. |
-| CompanyCam photo import | `index.html`, `netlify/functions/companycam.js` | `openCC()`, `ccLoadProjects()`, `ccLoadPhotos()`, and `ccImport()` support project search, photo listing, server-side image fetch, and client-side compression/import. |
+| CompanyCam photo import | `index.html`, `netlify/functions/companycam.js` | `openCC()`, `ccLoadProjects()`, `ccLoadPhotos()`, and `ccImport()` support project search, photo listing, server-side image fetch, and client-side compression/import. `applyCompanyCamProjectDetail()` also fills Job Name/Location from the linked project (fill-if-empty-or-upgrade-partial, never clobbers a different manual entry). |
 | CompanyCam history sync | `index.html`, `netlify/functions/companycam.js` | `syncCompanyCamHistory()` stores project/photo metadata in Firestore collection `companycam_projects`. |
 | PDF generation | `index.html` | `generatePdf()` uses jsPDF and jsPDF-AutoTable from CDN to build the work order PDF in the browser. |
 | PDF download/share | `index.html` | `downloadPdf()` and `sharePdf()` generate, save, share, and log report events. |
-| Email/report sending | `index.html`, `netlify/functions/send-workorder.js` | `sendEmailNow()` generates the PDF, posts it to `send-workorder`, and the Netlify Function sends through Resend. |
+| Email/report sending | `index.html`, `netlify/functions/send-workorder.js` | `sendEmailNow()` generates the PDF, posts it to `send-workorder` (including `jobNo`), and the Netlify Function sends through Resend from a per-job `WO<jobnumber>@<domain>` address (falls back to `FROM_EMAIL` if no job number) with a `reply_to` safeguard pointed at a real monitored inbox. On success, `markWorkOrderEmailed()` merge-patches `lastEmailedAt`/`lastEmailedTo` onto the `workorders` doc, surfaced as "📧 Emailed …" in the Saved tab; `logReportAndHistoryEvent()` separately logs the durable report/timeline entry (now including `emailSubject`). See "Per-job From address" and "Visible email-sent record" in `DEV_NOTES.md`. |
 | PDF save-back to CompanyCam | `index.html`, `netlify/functions/companycam.js` | `uploadLinkedPdfToCompanyCam()` uploads the PDF as a CompanyCam project document whenever a project is linked — after Send Email Now, Share, or Download, not just email. |
-| Admin mode | `index.html`, `netlify/functions/admin.js`, `firestore.rules` | `toggleAdminMode()` verifies the PIN server-side (`ADMIN_PIN` env var, never shipped to the browser). Unlocks `unlinkCC()` on the CompanyCam banner and per-building/per-event delete in Building History; deletes run through `admin.js` using the Firebase Admin SDK. `firestore.rules` blocks client-side deletes on the affected collections entirely — see DEV_NOTES.md for required manual setup. |
+| Admin mode | `index.html`, `netlify/functions/admin.js`, `firestore.rules` | `toggleAdminMode()` verifies the PIN server-side (`ADMIN_PIN` env var, never shipped to the browser). Unlocks `unlinkCC()` on the CompanyCam banner, per-building/per-event delete, and roof base-map upload/clear in Building History; all of those run through `admin.js` using the Firebase Admin SDK. `firestore.rules` blocks client-side deletes on the affected collections entirely — see DEV_NOTES.md for required manual setup. |
+| Roof map / location pins | `index.html`, `netlify/functions/companycam.js`, `netlify/functions/admin.js`, `tools/geotiff_to_webmap.py` | Leaflet (CDN) + free Esri satellite tiles + free Nominatim geocoding. `openPinModal()` places a pin per finding — satellite/lat-lng by default, x/y on a roof-plan/sketch base map, or lat-lng with a georeferenced drone-orthomosaic overlay; also supports device GPS ("Use My Location") and drag-to-correct, with corrections synced onto any existing report(s) via `syncPinCorrectionsToHistory()`. `renderBuildingMap()` shows every pin for a building at once in the Building History tab, always visible even with zero pins, plus every permanent roof asset (drains, HVAC units, hatches, etc. — `openAssetModal()`, `ROOF_ASSET_TYPES`). `tools/geotiff_to_webmap.py` is a standalone script (not deployed) that converts a raw drone GeoTIFF into what the orthomosaic upload needs. See "Roof map" and "Roof assets" in `DEV_NOTES.md` for the full design. |
 | Duplicate report detection | `index.html` | `flagDuplicateEvents()` flags timeline entries with the same work order + report type created within 5 minutes of each other (double-click/retry protection), shown with a badge; admin can delete flagged entries. |
+| Timeline filters | `index.html` | `renderTimelineList()`/`filterTimelineEvents()` filter the Building History timeline by date range, roof area, technician, warranty status, and report type — entirely client-side over the events already fetched by `openBuildingHistory()`, no new query/index. Dropdown options (`populateTimelineFilterOptions()`) are derived from the values actually present on that building's own timeline. See `DEV_NOTES.md`. |
+| Duplicate building detection | `index.html` | `flagPossibleDuplicateBuildings()`/`buildingsLikelyDuplicate()` flag buildings that share the same customer and a very similar name (badge in Building History). Detection only — merging is designed but not built, explicitly shelved pending sign-off since it's a destructive live-data write. See `DEV_NOTES.md`. |
+| RoofMapper (Phase 1) | `index.html` | New tab (`#view-roofmapper`) — GPS-locate the tech, query free OpenStreetMap/Overpass building footprints nearby, tap the correct one, generate a clean roof outline, save it to a building's `roof_outlines[]` (or locally) and/or export SVG/PNG/PDF. `rmGeom*` (geometry), `rmGeoRequest()` (GPS), `rmFetchNearbyBuildings()` (Overpass), `rmExport*()` (export), `rm*` view/state functions. No API keys, no build step. See "RoofMapper" in `DEV_NOTES.md`. |
+| All Reports view | `index.html` | `renderReportsList()`/`rpRenderList()` — a read-only, filterable list of every report across every building (search text, date range, roof area, technician, warranty status, report type), reading the `reports` collection for the first time. `rpJumpToBuilding()` opens the report's building in Building History. See `DEV_NOTES.md`. |
 | Netlify functions | `netlify/functions/companycam.js`, `netlify/functions/send-workorder.js` | Serverless API boundary for CompanyCam and Resend credentials. |
 | Netlify deployment | `netlify.toml` | Publishes the repo root and points Netlify Functions at `netlify/functions`. |
 

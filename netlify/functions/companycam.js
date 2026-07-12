@@ -90,7 +90,13 @@ exports.handler = async function (event) {
   try {
     if (p.action === "projects") {
       const q = String(p.q || "").slice(0, 100);
-      const url = "https://api.companycam.com/v2/projects?per_page=25" +
+      // per_page bumped from CompanyCam's default (25) to 100 -- both the
+      // Import-from-CompanyCam flow and the "Select Existing Building"
+      // picker's CompanyCam merge (see "Change Order building picker" in
+      // DEV_NOTES.md) want a browse-without-searching view that covers as
+      // much of the project list as one page reasonably can, not just the
+      // 25 most recent.
+      const url = "https://api.companycam.com/v2/projects?per_page=100" +
         (q ? "&query=" + encodeURIComponent(q) : "");
       const r = await fetch(url, { headers: H });
       if (!r.ok) {
@@ -121,7 +127,10 @@ exports.handler = async function (event) {
       const page = Math.max(1, parseInt(p.page || "1", 10) || 1);
       const url = "https://api.companycam.com/v2/projects/" + id + "/photos?per_page=30&page=" + page;
       const r = await fetch(url, { headers: H });
-      if (!r.ok) return resp(502, { error: "CompanyCam said: " + r.status });
+      if (!r.ok) {
+        const t = (await r.text()).slice(0, 200);
+        return resp(502, { error: "CompanyCam said: " + r.status + " " + t });
+      }
       const arr = await r.json();
       const photos = (Array.isArray(arr) ? arr : []).map(ph => {
         const uris = Array.isArray(ph.uris) ? ph.uris : [];
@@ -129,11 +138,18 @@ exports.handler = async function (event) {
           const u = uris.find(x => x && x.type === t);
           return u ? (u.uri || u.url || "") : "";
         };
+        // CompanyCam returns { lat, lon } (note: "lon", not "lng") when a
+        // photo has GPS data. Used as an initial guess for roof-map pin
+        // placement — never trusted as final without a tech confirming.
+        const coords = ph.coordinates && typeof ph.coordinates.lat === "number" && typeof ph.coordinates.lon === "number"
+          ? { lat: ph.coordinates.lat, lng: ph.coordinates.lon }
+          : null;
         return {
           id: String(ph.id),
           thumb: find("thumbnail") || find("web") || find("original"),
           full: find("web") || find("original") || find("thumbnail"),
-          captured_at: ph.captured_at || null
+          captured_at: ph.captured_at || null,
+          gps: coords
         };
       }).filter(x => x.full);
       return resp(200, { photos });

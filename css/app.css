@@ -1,0 +1,322 @@
+  :root{
+    --slate:#263238; --orange:#E8600A; --line:#C9CFD4; --muted:#5B6770;
+    --bg:#EEF1F3; --card-line:#DDE2E6; --ink:#1E272E;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:system-ui,-apple-system,'Segoe UI',sans-serif;font-size:15px}
+  .cond{font-family:'Arial Narrow','Barlow Condensed',Arial,sans-serif;
+    text-transform:uppercase;letter-spacing:.07em}
+
+  header{background:var(--slate);padding:12px 16px;display:flex;align-items:center;
+    gap:10px;flex-wrap:wrap;position:sticky;top:0;z-index:10;transition:transform .22s ease}
+  header .title{color:#fff;font-weight:700;font-size:20px}
+  header .title .accent{color:var(--orange)}
+  header .title .sub{color:#B0BEC5;font-size:16px}
+  header .spacer{flex:1}
+  .tab{border:none;background:transparent;color:#CFD8DC;padding:8px 14px;border-radius:4px;
+    font-weight:700;font-size:14px;cursor:pointer;white-space:nowrap}
+  .tab.active{background:var(--orange);color:#fff}
+  /* Mobile header/toolbar pass (2026-07-11) -- Mark: header + buttons eat too
+     much screen on mobile (9 nav buttons wrapping to ~5 rows measured
+     ~264px tall on a 375-wide phone, before any content even starts).
+     Fix: icon-first buttons (text label hidden, icon-only) in ONE
+     non-wrapping horizontally-scrollable row instead of wrap -- the row's
+     own height becomes the header's height regardless of button count,
+     which is the actual fix (icon-only alone still helps, but wrap->scroll
+     is what stops N buttons from ever producing N/3 rows). Logo/title
+     shrink too so the row itself is compact. Tap targets stay >=40px tall
+     (padding, not font-size, does the compacting) per Mark's "compact, not
+     cramped" requirement. See "Mobile header/toolbar pass" in
+     DEV_NOTES.md. */
+  @media (max-width:640px){
+    header{padding:7px 10px;gap:6px;flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch}
+    header::-webkit-scrollbar{display:none}
+    header .title{font-size:14px;white-space:nowrap}
+    header .title .sub{display:none}
+    header .spacer{flex:none;width:0;min-width:0}
+    #hdr-logo{height:28px!important}
+    .tab{padding:12px 11px;font-size:13px}
+    .tab .tab-label{display:none}
+    header.header-collapsed{transform:translateY(-100%)}
+    /* Reclaim the vertical space the slimmer header just freed up --
+       "the map is where he needs every pixel." !important overrides the
+       inline height style on #rm-map (inline styles otherwise beat any
+       external rule regardless of specificity). */
+    #rm-map{height:min(78vh,640px)!important}
+  }
+
+  .wrap{max-width:860px;margin:0 auto;padding:18px 12px 90px}
+  .card{background:#fff;border:1px solid var(--card-line);border-top:3px solid var(--slate);
+    border-radius:6px;padding:16px 16px 6px;margin-bottom:16px}
+  .card h2{margin:0 0 12px;font-size:18px;font-weight:700;color:var(--slate)}
+  label{display:block;font-size:12px;font-weight:600;color:var(--muted);margin-bottom:4px}
+  input[type=text],textarea,select{width:100%;border:1px solid var(--line);border-radius:4px;
+    padding:9px 10px;font-size:15px;font-family:inherit;color:var(--ink);background:#fff;outline:none}
+  input:focus,textarea:focus,select:focus{border-color:var(--orange)}
+  textarea{resize:vertical;line-height:1.45}
+  .fld{margin-bottom:12px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:0 14px}
+
+  .btn{border:1px solid var(--line);background:#fff;color:#37474F;border-radius:4px;
+    padding:8px 14px;font-size:13px;font-weight:700;cursor:pointer}
+  .btn.danger{border-color:#D64545;color:#D64545}
+  .btn.primary{background:var(--orange);border-color:var(--orange);color:#fff}
+  .btnrow{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px}
+  @media (max-width:640px){
+    /* Tighter overall spacing on mobile -- Mark: "audit ALL the top-level
+       buttons for size/padding on mobile." Padding does the compacting,
+       not font-size, so buttons stay comfortably tappable (still well
+       over the ~40px minimum) while taking noticeably less vertical room
+       stacked in a form. */
+    .wrap{padding:10px 8px 90px}
+    .card{padding:12px 12px 4px}
+    .btnrow{gap:8px}
+    .btn{padding:8px 11px}
+  }
+
+  /* ================= Responsive desktop layout (2026-07-11) =================
+     Mark, using the app on his PC: it renders as a narrow mobile column with
+     large dead margins on either side, and asked if there were "two modes" --
+     there weren't. This is purely ADDITIVE at a min-width breakpoint on top
+     of everything above -- nothing in the mobile-first base styles or the
+     max-width:640px block above changes at all, so the mobile/field
+     experience (the whole point of the recent mobile pass) is completely
+     unaffected below 1024px. See "Responsive desktop layout" in
+     DEV_NOTES.md. */
+  @media (min-width:1024px){
+    /* General lists/forms get real breathing room instead of a phone-width
+       column with empty margins either side -- capped well short of full
+       ultra-wide-monitor width ("don't stretch inputs to absurd widths").
+       .grid's existing repeat(auto-fit,minmax(210px,1fr)) already picks up
+       more columns for free at this width -- no separate change needed for
+       ordinary multi-field forms. */
+    .wrap{max-width:1200px}
+
+    /* RoofMapper: the biggest win -- Mark is doing precision tracing work,
+       and needs the map to dominate instead of being squeezed into a small
+       slice above a long scroll of tools. #view-roofmapper's two direct
+       children are the map/search/trace card (unlabeled, first) and
+       #rm-desktop-sidebar (roof switcher, Roof Features, Roof Outline
+       incl. the export checklist, Saved On This Device) -- a plain CSS
+       Grid places them side by side with zero HTML/JS restructuring inside
+       either one; every element keeps its existing id, so no
+       getElementById() call anywhere needed to change. The sidebar is its
+       own independently-scrollable, sticky column so scrolling the (now
+       much taller) map out of view never happens while working the tools
+       next to it. */
+    #view-roofmapper{display:grid;grid-template-columns:1fr 420px;gap:16px;align-items:start}
+    #rm-desktop-sidebar{position:sticky;top:16px;max-height:calc(100vh - 32px);overflow-y:auto;padding-right:2px}
+    /* !important needed to beat #rm-map's own inline height style, same
+       reasoning/precedent as the mobile block's #rm-map override above --
+       inline styles otherwise beat any external rule regardless of
+       selector specificity. Meaningfully taller AND (via the grid column
+       above) wider than the min(70vh,640px) every other width gets. */
+    #rm-map{height:min(82vh,900px)!important}
+
+    /* Building History: list (left) + detail (right) instead of a single
+       stacked column -- picking a building no longer means the list
+       scrolls away above the fold. List pane scrolls independently and
+       stays put while reading a long timeline on the right. */
+    #history-two-pane{display:grid;grid-template-columns:340px 1fr;gap:16px;align-items:start}
+    #history-list{position:sticky;top:16px;max-height:calc(100vh - 32px);overflow-y:auto}
+
+    /* Inspection checklist: 8 fixed components, always one per row
+       regardless of width before this -- two columns halves the scroll
+       for the same information, "multi-column where it genuinely helps"
+       per Mark's own example. */
+    #inspection-checklist-list{display:grid;grid-template-columns:1fr 1fr;gap:0 14px;align-items:start}
+  }
+
+  .rowcard{border:1px solid #E2E7EA;border-left:4px solid #2E7D32;border-radius:4px;
+    padding:12px 12px 2px;margin-bottom:12px;background:#FAFBFC}
+  .rowcard.nonwar{border-left-color:#D64545}
+  .rowcard .rowhead{display:flex;align-items:center;margin-bottom:8px;gap:8px}
+  .rowcard .rowhead b{font-size:15px;color:var(--slate)}
+  .rowcard .rowhead .sp{flex:1}
+  .photo-card{border-bottom:1px solid var(--card-line);margin-bottom:10px;padding-bottom:10px}
+  .photo-row{display:flex;gap:8px;align-items:center;margin-bottom:6px;flex-wrap:wrap}
+  .photo-row b{min-width:60px;font-size:13px;color:var(--slate)}
+  .photo-row img.thumb{height:54px;width:72px;object-fit:cover;border:1px solid var(--line);border-radius:4px;flex:none;cursor:pointer}
+  .photo-row input[type=text]{min-width:120px}
+  .photo-move-btns{display:flex;flex-direction:column;gap:2px;flex:none}
+  .photo-move-btns .btn{padding:2px 10px;font-size:13px;line-height:1.3;min-width:36px}
+  .photo-finding-row{display:flex;gap:8px;align-items:center;padding-left:80px}
+  .photo-finding-row label{font-size:12px;color:var(--muted);white-space:nowrap;margin:0}
+  .photo-finding-row select{flex:1;max-width:320px;padding:6px 8px;font-size:13px}
+  @media (max-width:480px){ .photo-finding-row{padding-left:0} }
+  .photo-lightbox-img{max-width:94vw;max-height:90vh;object-fit:contain;position:absolute;
+    top:50%;left:50%;transform:translate(-50%,-50%);border-radius:4px}
+  .finding-photos{margin:8px 0 12px}
+  .finding-photo-strip{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+  .finding-photo-item{width:104px;flex:none}
+  .finding-photo-item img.thumb{width:104px;height:78px;object-fit:cover;border:1px solid var(--line);
+    border-radius:4px;cursor:pointer;display:block}
+  .finding-photo-item input[type=text]{width:104px;font-size:12px;padding:4px 6px;margin-top:4px}
+  .finding-photo-item .btn.danger{width:104px;margin-top:4px;padding:2px 0;font-size:12px}
+
+  /* CompanyCam picker */
+  .cc-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:8px;margin-top:10px}
+  .cc-ph{position:relative;border:3px solid transparent;border-radius:6px;cursor:pointer;overflow:hidden;background:#ECEFF1}
+  .cc-ph img{width:100%;height:92px;object-fit:cover;display:block}
+  .cc-ph.sel{border-color:var(--orange)}
+  .cc-ph.sel::after{content:"\2713";position:absolute;top:4px;right:4px;background:var(--orange);color:#fff;
+    width:20px;height:20px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700}
+  .cc-proj{display:block;width:100%;text-align:left;background:#fff;border:1px solid var(--card-line);border-radius:6px;
+    padding:10px 12px;margin-bottom:8px;cursor:pointer;font-size:15px;font-family:inherit}
+  .cc-proj:hover{border-color:var(--orange)}
+  .cc-proj .addr{font-size:12px;color:var(--muted)}
+
+  /* document photo grid */
+  .doc .photogrid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:14px}
+  .doc .photocell img{width:100%;border:1px solid #9AA5AC;display:block}
+  .doc .photocell .cap{font-size:12px;font-style:italic;margin-top:4px}
+  @media print{ .doc .photocell{break-inside:avoid;page-break-inside:avoid} }
+
+  .hint{font-size:13px;color:var(--muted);margin:-4px 0 12px}
+  .cc-link{background:#F1F6F0;border:1px solid #C8DDC3;border-radius:6px;padding:8px 12px;
+    font-size:13px;color:var(--slate);margin:2px 0 12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .cc-link b{color:#2E7D32}
+  .cc-link .sp{flex:1}
+  .toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);
+    background:var(--slate);color:#fff;padding:10px 18px;border-radius:6px;font-size:14px;
+    z-index:50;box-shadow:0 4px 14px rgba(0,0,0,.25);display:none;max-width:90vw}
+
+  /* saved list */
+  .saved-item{background:#fff;border:1px solid var(--card-line);border-left:4px solid var(--orange);
+    border-radius:6px;padding:12px 14px;margin-bottom:10px;display:flex;align-items:center;
+    gap:10px;flex-wrap:wrap}
+  .saved-item .info{flex:1;min-width:180px}
+  .saved-item .name{font-weight:700;font-size:16px}
+  .saved-item .name span{color:var(--orange)}
+  .saved-item .meta{font-size:13px;color:var(--muted)}
+  .empty{background:#fff;border:1px dashed var(--line);border-radius:6px;padding:28px;
+    text-align:center;color:var(--muted)}
+
+  /* home / launcher screen — brand red (#B4223F, from the actual Watkins
+     logo, see APP_OVERVIEW.md) used deliberately here since this is a
+     brand-new screen, not a restyle of any existing one; the rest of the
+     app keeps its current palette until the planned aesthetic pass. */
+  .home-hero{text-align:center}
+  .home-tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:14px;margin-top:4px}
+  .home-tile{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;
+    background:#fff;border:2px solid #B4223F;border-radius:10px;padding:22px 10px;cursor:pointer;
+    font-family:inherit;min-height:104px;box-shadow:0 1px 4px rgba(0,0,0,.06)}
+  .home-tile:active{background:#FBEAEE}
+  .home-tile-icon{font-size:32px;line-height:1}
+  .home-tile-label{font-size:13px;font-weight:700;text-align:center;color:#1E272E}
+  .home-tile-secondary{border-color:var(--slate)}
+  .home-tile-secondary .home-tile-label{color:var(--slate)}
+
+  /* building history */
+  .bld-item{background:#fff;border:1px solid var(--card-line);border-left:4px solid #37474F;
+    border-radius:6px;padding:12px 14px;margin-bottom:10px;display:flex;align-items:center;
+    gap:10px;flex-wrap:wrap;cursor:pointer}
+  .bld-item:hover{border-left-color:var(--orange)}
+  .bld-item .info{flex:1;min-width:180px}
+  .bld-item .name{font-weight:700;font-size:16px}
+  .bld-item .meta{font-size:13px;color:var(--muted)}
+  .evt-item{background:#fff;border:1px solid var(--card-line);border-left:4px solid #90A4AE;
+    border-radius:6px;padding:10px 14px;margin-bottom:8px}
+  .evt-item .evt-head{display:flex;gap:8px;flex-wrap:wrap;align-items:baseline;margin-bottom:4px}
+  .evt-item .evt-date{font-weight:700;color:var(--slate)}
+  .evt-item .evt-tag{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;
+    background:#ECEFF1;color:#37474F;border-radius:3px;padding:2px 6px}
+  .evt-item .evt-row{font-size:13px;color:var(--muted);margin-top:2px}
+
+  /* document preview */
+  .doc{background:#fff;border:1px solid var(--line);box-shadow:0 2px 10px rgba(0,0,0,.08);
+    padding:30px 34px;font-size:14px;line-height:1.5}
+  .doc .dochead{border-bottom:4px solid var(--slate);padding-bottom:10px;margin-bottom:16px}
+  .doc .dochead .t1{font-weight:700;font-size:22px}
+  .doc .dochead .t2{font-size:16px;font-weight:600;margin-top:2px}
+  .doc h3{margin:18px 0 8px;font-size:15px;color:var(--slate)}
+  .doc table{border-collapse:collapse;width:100%;margin-bottom:14px}
+  .doc td,.doc th{border:1px solid #9AA5AC;padding:6px 8px;font-size:13px;vertical-align:top;text-align:left}
+  .doc th{background:var(--slate);color:#fff;font-size:12px}
+  .doc td.k{font-weight:700;width:180px}
+  .doc .docfoot{border-top:2px solid var(--slate);margin-top:20px;padding-top:8px;
+    font-size:12px;color:var(--muted)}
+
+  /* Change Order — its own distinct layout, not a section bolted onto the leak report */
+  .doc .co-empty{color:var(--muted);font-style:italic}
+  .doc ul.co-materials{margin:0 0 14px;padding-left:22px}
+  .doc ul.co-materials li{margin-bottom:3px}
+  .doc table.co-cost{max-width:320px}
+  .doc table.co-cost td.k{font-weight:700;width:140px}
+  .doc table.co-cost tr.co-total td{font-weight:700;font-size:16px;background:#F5F5F5;border-top:2px solid var(--slate)}
+  .doc .co-sig{margin-top:34px;display:flex;gap:40px;flex-wrap:wrap}
+  .doc .co-sig-line{font-size:13px;font-weight:600;color:var(--slate)}
+  .doc .co-sig-line span{display:inline-block;min-width:200px;border-bottom:1px solid #37474F;margin-left:6px}
+
+  @media print{
+    header,.no-print,.toast{display:none !important}
+    body{background:#fff}
+    .wrap{padding:0;max-width:none}
+    .doc{box-shadow:none;border:none;padding:0}
+  }
+
+  /* ================= RoofMapper ================= */
+  .rm-actions{display:flex;flex-direction:column;gap:10px;margin-bottom:14px}
+  .rm-bigbtn{min-height:52px;font-size:16px;padding:14px 18px;width:100%;border-radius:8px}
+  .rm-status{font-size:14px;color:var(--muted);margin:0 0 12px;min-height:1.2em}
+  .rm-status.warn{color:#B45309;font-weight:600}
+  .rm-status.error{color:#D64545;font-weight:600}
+  .rm-accuracy{display:inline-block;font-size:12px;font-weight:700;padding:2px 8px;border-radius:10px;margin-left:6px}
+  .rm-accuracy.good{background:#E3F3E1;color:#2E7D32}
+  .rm-accuracy.ok{background:#FFF3D6;color:#B45309}
+  .rm-accuracy.poor{background:#FBE1E1;color:#D64545}
+  .rm-footprint-info{background:#F1F6F0;border:1px solid #C8DDC3;border-radius:6px;padding:10px 12px;margin-bottom:12px;font-size:14px}
+  .rm-outline-stats{display:flex;gap:18px;flex-wrap:wrap;margin-bottom:12px}
+  .rm-outline-stats .stat{background:#FAFBFC;border:1px solid var(--card-line);border-radius:6px;padding:8px 14px;text-align:center}
+  .rm-outline-stats .stat b{display:block;font-size:18px;color:var(--slate)}
+  .rm-outline-stats .stat span{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+  .rm-local-item{background:#fff;border:1px solid var(--card-line);border-left:4px solid #546E7A;border-radius:6px;
+    padding:10px 12px;margin-bottom:8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .rm-local-item .info{flex:1;min-width:160px;font-size:13px}
+  .rm-local-item .info b{display:block;font-size:14px;color:var(--slate)}
+  @media (max-width:480px){
+    .rm-bigbtn{font-size:15px;min-height:46px;padding:11px 14px}
+  }
+  /* Easier map navigation (Mark: "map is a little hard to navigate") --
+     touch-action:none on the map container is the actual fix for the most
+     common real complaint behind that: without it, the page's own native
+     scroll/zoom gesture handling can fight with Leaflet's own touch pan/
+     pinch-zoom on a mobile browser, making panning feel sticky or
+     unresponsive. Bigger zoom +/- buttons (Leaflet's default is a small
+     26px control, not a great thumb target) and a floating recenter
+     button, both scoped to #rm-map specifically so no other map in the
+     app is affected. See "Easier map navigation" in DEV_NOTES.md. */
+  #rm-map-wrap{position:relative}
+  #rm-map{touch-action:none}
+  #rm-map .leaflet-control-zoom a{width:38px;height:38px;line-height:38px;font-size:20px}
+  #rm-recenter-btn{position:absolute;right:8px;bottom:8px;z-index:401;width:40px;height:40px;border-radius:50%;
+    background:#fff;border:2px solid var(--line);box-shadow:0 1px 5px rgba(0,0,0,.35);font-size:18px;
+    display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0}
+  /* Precision cursor (Mark: "big HAND cursor, can't tell where the point
+     will land, as accurate as possible") -- swaps the default Leaflet grab
+     hand for a fine crosshair while placing/tracing/editing a vertex.
+     Real, immediate accuracy win for a mouse/trackpad with zero risk
+     (pure CSS, no interaction change). See "Precision cursor" in
+     DEV_NOTES.md. */
+  #rm-map-wrap.rm-precision-active #rm-map,
+  #rm-map-wrap.rm-precision-active #rm-map .leaflet-interactive,
+  #rm-map-wrap.rm-precision-active #rm-map .leaflet-container{cursor:crosshair}
+  /* Touch precision aid: a finger occludes the exact drop point, so a
+     fixed reticle at the map's own center gives an unambiguous aim point
+     -- pan the map so the crosshair sits over the real corner, then tap
+     "Place at Crosshair" instead of tapping blind under a fingertip.
+     Mark explicitly offered this as a valid alternative to a fingertip-
+     offset preview; chosen over that option here since it needs no
+     changes to Leaflet's own touch/tap handling (lower risk) and works
+     identically for a mouse too. pointer-events:none so it's purely
+     visual -- taps pass straight through to the map underneath it. */
+  .rm-crosshair-reticle{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+    width:34px;height:34px;z-index:402;pointer-events:none;display:none}
+  #rm-map-wrap.rm-precision-active .rm-crosshair-reticle{display:block}
+  .rm-crosshair-reticle::before,.rm-crosshair-reticle::after{content:"";position:absolute;background:#FFD600;
+    box-shadow:0 0 0 1px rgba(0,0,0,.5)}
+  .rm-crosshair-reticle::before{left:50%;top:0;bottom:0;width:2px;transform:translateX(-1px)}
+  .rm-crosshair-reticle::after{top:50%;left:0;right:0;height:2px;transform:translateY(-1px)}
+  .rm-crosshair-reticle .rm-crosshair-ring{position:absolute;inset:6px;border:2px solid #FFD600;border-radius:50%;
+    box-shadow:0 0 0 1px rgba(0,0,0,.5)}

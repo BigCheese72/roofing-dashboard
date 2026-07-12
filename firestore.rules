@@ -32,6 +32,23 @@ service cloud.firestore {
       match /photos/{photoId} {
         allow read, write: if true;
       }
+
+      // Auth Phase 5 (see docs/AUTH_DESIGN.md) -- change-order approval
+      // state. Brand new subcollection, zero production risk (production's
+      // code never writes here), so it goes straight to write:false rather
+      // than inheriting the parent workorders doc's open write rule --
+      // Firestore subcollections do NOT inherit a parent match block's
+      // rules (see the sibling `photos` block above, which needed its own
+      // explicit rule for the same reason), so this locks it down
+      // independently. Only netlify/functions/changeorders.js (Admin SDK,
+      // requires changeorder.approve_pricing) can write here -- a
+      // field_tech attempting to set pricing_approved directly via the
+      // client Firestore SDK is blocked here regardless of whether that
+      // function is ever called correctly.
+      match /changeorder_approvals/{approvalId} {
+        allow read: if true;
+        allow write: if false;
+      }
     }
 
     match /customers/{customerId} {
@@ -57,6 +74,95 @@ service cloud.firestore {
     match /companycam_projects/{projectId} {
       allow read, create, update: if true;
       allow delete: if false;
+    }
+
+    // App-wide settings (currently just the global photo-size preference —
+    // see "Global photo size setting" in DEV_NOTES.md). Every client needs
+    // to READ this on load, but only netlify/functions/admin.js (Admin
+    // PIN-gated, Admin SDK) is allowed to write it — unlike the
+    // read/create/update collections above, there's no client-side write
+    // path here at all, matching the delete-only-via-admin.js pattern for
+    // deletes elsewhere in this file.
+    match /app_settings/{settingId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // In-app Send Feedback submissions (💬 button, every screen — see
+    // "Send Feedback" in DEV_NOTES.md). Any client can create one (no PIN
+    // needed — anyone should be able to submit), but nobody reads/updates/
+    // deletes directly through the client SDK: the admin backlog view goes
+    // through netlify/functions/admin.js's list_feedback action (Admin
+    // SDK, PIN-gated) instead, same pattern as app_settings' write-only
+    // gate above, just mirrored onto read.
+    match /feedback/{feedbackId} {
+      allow create: if true;
+      allow read, update, delete: if false;
+    }
+
+    // ================= Auth Phase 1 (see docs/AUTH_DESIGN.md) =================
+    // All three collections below are brand new -- production's existing
+    // code never touches them, so locking them down now is zero risk to
+    // production even though dev and prod share this one Firestore project
+    // (see "Shared Firestore, dev/prod risk boundary" in AUTH_DESIGN.md).
+
+    // Role definitions (data-driven roles -- see "Data-driven roles" in
+    // AUTH_DESIGN.md). Not secret, just structural -- readable by any
+    // signed-in user (useful for a future role-management UI to browse/
+    // display). Never client-writable: seeding/editing goes through
+    // netlify/functions/auth.js's seed_roles action (Admin SDK) only, so a
+    // role's permission grid can never be tampered with from the client.
+    match /roles/{roleId} {
+      allow read: if request.auth != null;
+      allow write: if false;
+    }
+
+    // Per-user privilege mirror (non-authoritative -- the Firebase custom
+    // claims on the ID token are the enforcement truth, this is
+    // display/query only). A user may read their OWN doc; an owner or
+    // admin may read anyone's, straight off the caller's own verified
+    // token claims (request.auth.token.owner/.role) -- no extra lookup
+    // needed, which is exactly the payoff of keeping claims small (see
+    // "Custom claims size" in AUTH_DESIGN.md). NO client write path at
+    // all, ever, for any field -- role/status/mfaEnrolled/owner/
+    // projectRoles are all set exclusively by netlify/functions/auth.js
+    // via the Admin SDK. A user can never modify their own privilege
+    // record, not even their own displayName (kept simple/absolute for
+    // Phase 1; a narrower "can edit non-privilege fields" rule can be
+    // added later if that turns out to matter).
+    match /users/{uid} {
+      allow read: if request.auth != null &&
+        (request.auth.uid == uid || request.auth.token.owner == true || request.auth.token.role == 'admin');
+      allow write: if false;
+    }
+
+    // Immutable audit log (see "Audit log" in AUTH_DESIGN.md). Read gated
+    // by the audit.view permission, resolved from the CALLER's role doc
+    // (get() here mirrors exactly how server-function permission checks
+    // resolve a role's live grid -- see requirePermission() in
+    // netlify/functions/lib/authGuard.js). Create/update/delete all
+    // blocked for every client, including the owner -- writes go through
+    // Admin SDK only (netlify/functions/*, bypasses rules entirely), and
+    // update/delete are denied to EVERYONE, permanently, by design: an
+    // audit trail that can be edited or deleted isn't one.
+    match /audit_logs/{entryId} {
+      allow read: if request.auth != null && (
+        request.auth.token.owner == true ||
+        (request.auth.token.role != null &&
+          get(/databases/$(database)/documents/roles/$(request.auth.token.role)).data.permissions['audit.view'] == true)
+      );
+      allow create, update, delete: if false;
+    }
+
+    // Server-only secrets — currently just the Microsoft Graph delegated
+    // OAuth refresh token (netlify/functions/lib/graphDelegatedAuth.js),
+    // written and read exclusively via the Firebase Admin SDK, which is
+    // not subject to these rules at all. This block is explicit defense
+    // in depth on top of Firestore's own implicit deny-by-default for any
+    // collection with no matching rule — a client SDK must never be able
+    // to read or write anything under here, no exceptions, ever.
+    match /secrets/{secretId} {
+      allow read, write: if false;
     }
   }
 }

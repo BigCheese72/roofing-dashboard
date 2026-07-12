@@ -1,10 +1,21 @@
 // Sends a work order PDF via Resend. The API key is read from the
 // RESEND_API_KEY environment variable set in Netlify site settings —
 // it is never exposed to the browser.
+//
+// Auth Phase 5 (see docs/AUTH_DESIGN.md) -- gated by doc.email_customer.
+// Before this, ANY caller who could reach this endpoint could send an
+// email as Watkins Roofing to anyone, with no check at all -- not just a
+// gap relative to the mandatory "field_tech emailing a customer document"
+// negative test, a real, live hole regardless of that test existing.
+const { requirePermission } = require("./lib/authGuard");
+
 exports.handler = async function (event) {
   if (event.httpMethod !== "POST") {
     return { statusCode: 405, body: JSON.stringify({ error: "Method not allowed" }) };
   }
+  try { await requirePermission(event, "doc.email_customer"); }
+  catch (e) { return { statusCode: e.statusCode || 401, body: JSON.stringify({ error: e.message }) }; }
+
   const key = process.env.RESEND_API_KEY;
   if (!key) {
     return { statusCode: 500, body: JSON.stringify({
@@ -24,10 +35,36 @@ exports.handler = async function (event) {
     return { statusCode: 400, body: JSON.stringify({ error: "PDF missing or too large (limit ~6MB)" }) };
   }
 
-  const from = process.env.FROM_EMAIL || "Watkins Roofing Work Orders <workorders@watkinsroofing.net>";
+  const defaultFrom = process.env.FROM_EMAIL || "Watkins Roofing Work Orders <workorders@watkinsroofing.net>";
+  // Sending domain lives in FROM_EMAIL (or its default) so a per-job local
+  // part can be built without hardcoding the domain here — SPF/DKIM/DMARC
+  // are verified at the domain level, so any address on it authenticates
+  // the same way, no per-address Resend config needed.
+  const domainMatch = defaultFrom.match(/@([^>\s]+)/);
+  const domain = domainMatch ? domainMatch[1] : "watkinsroofing.net";
+  const jobNo = String(data.jobNo || "").replace(/[^A-Za-z0-9]/g, "").slice(0, 30);
+  // WO{jobnumber}@ isn't a real mailbox — replies would otherwise hit
+  // Microsoft 365 (the root domain's MX) and bounce. REPLY_TO_EMAIL lets
+  // this point at whatever inbox(es) are actually monitored (comma-
+  // separated); defaults to Mark's and Charlotte's real monitored
+  // mailboxes if unset — no env var required for the correct default to
+  // take effect. Resend's reply_to accepts an array, same as `to`.
+  const from = jobNo ? "Watkins Roofing Work Orders <WO" + jobNo + "@" + domain + ">" : defaultFrom;
+  const replyTo = process.env.REPLY_TO_EMAIL
+    ? process.env.REPLY_TO_EMAIL.split(",").map(s => s.trim()).filter(Boolean)
+    : ["marks@" + domain, "charlottew@" + domain];
+  // Mark wants a guaranteed blind copy of every outgoing work-order email,
+  // regardless of who else it's addressed to — enforced here server-side so
+  // it can't be dropped by omitting it from the client payload. But he
+  // doesn't want duplicate emails: if he's manually added as an explicit To
+  // recipient (still selectable on the client's quick-pick list, just no
+  // longer a default), skip the BCC so he gets exactly one copy, not two.
+  const bccAddr = "marks@" + domain;
+  const alreadyInTo = to.some(a => a.toLowerCase() === bccAddr.toLowerCase());
   const payload = {
     from: from,
     to: to,
+    reply_to: replyTo,
     subject: String(data.subject || "Leak Work Order").slice(0, 200),
     text: String(data.body || "Work order attached.").slice(0, 10000),
     attachments: [{
@@ -35,6 +72,7 @@ exports.handler = async function (event) {
       content: data.pdfBase64
     }]
   };
+  if (!alreadyInTo) payload.bcc = [bccAddr];
 
   const resp = await fetch("https://api.resend.com/emails", {
     method: "POST",

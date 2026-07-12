@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+
+# Holds the admin PIN and building IDs entered via update_roof_base_map.py.
+# Never commit this.
+tools/buildings_config.json
+tools/_last_upload_preview.jpg
