@@ -32,6 +32,23 @@ service cloud.firestore {
       match /photos/{photoId} {
         allow read, write: if true;
       }
+
+      // Auth Phase 5 (see docs/AUTH_DESIGN.md) -- change-order approval
+      // state. Brand new subcollection, zero production risk (production's
+      // code never writes here), so it goes straight to write:false rather
+      // than inheriting the parent workorders doc's open write rule --
+      // Firestore subcollections do NOT inherit a parent match block's
+      // rules (see the sibling `photos` block above, which needed its own
+      // explicit rule for the same reason), so this locks it down
+      // independently. Only netlify/functions/changeorders.js (Admin SDK,
+      // requires changeorder.approve_pricing) can write here -- a
+      // field_tech attempting to set pricing_approved directly via the
+      // client Firestore SDK is blocked here regardless of whether that
+      // function is ever called correctly.
+      match /changeorder_approvals/{approvalId} {
+        allow read: if true;
+        allow write: if false;
+      }
     }
 
     match /customers/{customerId} {
