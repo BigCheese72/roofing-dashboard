@@ -32,6 +32,20 @@ const { PERMISSION_KEYS } = require("./permissions");
 // service account belongs to. FIREBASE_STORAGE_BUCKET is an optional
 // override for the rare case the derived name doesn't match (e.g. a
 // project still on the legacy ".appspot.com" bucket naming).
+// Safety net, added after a real incident (2026-07-12): a dev-branch
+// deploy briefly ran with PRODUCTION's FIREBASE_SERVICE_ACCOUNT still in
+// effect (the Netlify branch-deploy env var hadn't actually taken effect
+// yet), which would have made every dev-triggered server action -- admin
+// actions, photo uploads, user creation, audit writes -- silently act on
+// Mark's real production data while the CLIENT correctly believed it was
+// talking to the dev sandbox. Silent cross-project writes are exactly the
+// failure this whole split exists to prevent, so this check is deliberately
+// unforgiving: if Netlify's own CONTEXT doesn't match which project the
+// loaded service account actually belongs to, refuse to initialize at all
+// rather than proceed on a guess. CONTEXT is one of Netlify's standard
+// runtime env vars (production / deploy-preview / branch-deploy), present
+// in Functions the same as in the build image -- not something we set.
+const EXPECTED_PRODUCTION_PROJECT_ID = "watkins-service-orders";
 function getAdmin() {
   if (!admin.apps.length) {
     const raw = process.env.FIREBASE_SERVICE_ACCOUNT;
@@ -39,6 +53,28 @@ function getAdmin() {
     let creds;
     try { creds = JSON.parse(raw); }
     catch (e) { throw new Error("FIREBASE_SERVICE_ACCOUNT is not valid JSON."); }
+
+    const context = process.env.CONTEXT || "unknown";
+    const isProductionContext = context === "production";
+    const isProductionCreds = creds.project_id === EXPECTED_PRODUCTION_PROJECT_ID;
+    if (isProductionContext && !isProductionCreds) {
+      throw new Error(
+        "SAFETY GUARD TRIPPED: Netlify CONTEXT is \"production\" but FIREBASE_SERVICE_ACCOUNT belongs to project \"" +
+        creds.project_id + "\", not \"" + EXPECTED_PRODUCTION_PROJECT_ID + "\". Refusing to initialize -- " +
+        "production would otherwise be running on the wrong Firebase project. Fix the Production-scoped " +
+        "FIREBASE_SERVICE_ACCOUNT env var in Netlify (Site configuration > Environment variables) and redeploy."
+      );
+    }
+    if (!isProductionContext && isProductionCreds) {
+      throw new Error(
+        "SAFETY GUARD TRIPPED: Netlify CONTEXT is \"" + context + "\" (not production) but FIREBASE_SERVICE_ACCOUNT " +
+        "belongs to the PRODUCTION project \"" + EXPECTED_PRODUCTION_PROJECT_ID + "\". Refusing to initialize -- " +
+        "this deploy would otherwise write to Mark's real production data. Fix the Branch deploy-scoped " +
+        "FIREBASE_SERVICE_ACCOUNT env var in Netlify (it should hold watkins-service-orders-dev's service account " +
+        "JSON, not production's) and redeploy."
+      );
+    }
+
     const bucket = process.env.FIREBASE_STORAGE_BUCKET || (creds.project_id + ".firebasestorage.app");
     admin.initializeApp({ credential: admin.credential.cert(creds), storageBucket: bucket });
   }

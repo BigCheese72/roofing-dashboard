@@ -9,7 +9,7 @@
 // path at all, and Admin-SDK-only is what actually guarantees that,
 // exactly like admin.js already does for deletes/roof-map/profile writes.
 const crypto = require("crypto");
-const { getDb, getAuth, verifyCaller, getPermissionValue } = require("./lib/authGuard");
+const { getDb, getAuth, getAdmin, verifyCaller, getPermissionValue } = require("./lib/authGuard");
 const { SEED_ROLES } = require("./lib/permissions");
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -114,6 +114,38 @@ exports.handler = async function (event) {
   let body;
   try { body = JSON.parse(event.body || "{}"); }
   catch (e) { return resp(400, { error: "Bad request" }); }
+
+  // ---- whoami_project: read-only diagnostic, added 2026-07-12 to
+  // investigate a suspected half-split (dev's CLIENT correctly isolated,
+  // but dev's SERVER FUNCTIONS possibly still holding production
+  // credentials). Deliberately does NOT call getDb()/getAuth() for the raw
+  // env-var report below -- reads FIREBASE_SERVICE_ACCOUNT itself and
+  // parses only project_id out of it, no Firestore/Auth call, no write,
+  // nothing sensitive returned (project_id is already public in the
+  // client's own FIREBASE_CONFIG). Separately calls getAdmin() so the
+  // safety guard in authGuard.js actually runs and its verdict (pass, or
+  // the specific mismatch error) is visible too -- if the guard trips,
+  // that error message IS the diagnosis. No auth required: this reveals
+  // no secret, and requiring a caller identity would be circular during
+  // exactly the "is anything working at all" investigation this exists
+  // for. ----
+  if (body.action === "whoami_project") {
+    const out = { context: process.env.CONTEXT || null, branch: process.env.BRANCH || null, deployUrl: process.env.URL || null };
+    try {
+      const raw = process.env.FIREBASE_SERVICE_ACCOUNT;
+      out.serviceAccountSet = !!raw;
+      if (raw) { try { out.rawProjectId = JSON.parse(raw).project_id || null; } catch (e) { out.rawParseError = String(e.message || e); } }
+    } catch (e) { out.envReadError = String(e.message || e); }
+    try {
+      getAdmin();
+      out.guardResult = "pass";
+      out.initializedProjectId = out.rawProjectId;
+    } catch (e) {
+      out.guardResult = "BLOCKED";
+      out.guardError = e.message;
+    }
+    return resp(200, out);
+  }
 
   try {
     const db = getDb();
