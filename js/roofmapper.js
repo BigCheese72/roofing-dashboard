@@ -1099,16 +1099,15 @@ function rmHasMeasuredEdges(outline){
 function rmUpsertEdgeMeasurement(outline, entry){
   if (!outline || !entry) return;
   var list = outline.edgeMeasurements || [];
-  var replaced = false;
+  var now = Date.now();
   outline.edgeMeasurements = list.map(function(m){
     if (!m || m.invalidatedAt) return m;
     if (m.edgeIndex === entry.edgeIndex){
-      replaced = true;
-      return entry;
+      return Object.assign({}, m, { invalidatedAt: now, invalidatedReason: "superseded_by_remeasure" });
     }
     return m;
   });
-  if (!replaced) outline.edgeMeasurements.push(entry);
+  outline.edgeMeasurements.push(entry);
 }
 function rmInvalidateEdgeMeasurements(outline, reason){
   if (!outline) return false;
@@ -1154,6 +1153,16 @@ function rmFormatEdgeFeet(ft){
 function rmHasInheritedScale(outline){
   return !!(outline && (outline.inheritedScale || (outline.calibration && outline.calibration.inherited)));
 }
+function rmAnnotateInheritedScaleMethod(method, outline){
+  if (!method || !rmHasInheritedScale(outline) || rmHasMeasuredEdges(outline)) return method;
+  var note = "scale carried over from a field-measured section; this roof's outline was not itself measured";
+  var label = method.label || "Method: Unknown capture source";
+  if (label.indexOf(note) === -1){
+    var appended = label.replace(/\)$/, "; " + note + ")");
+    label = appended === label ? label + " (" + note + ")" : appended;
+  }
+  return Object.assign({}, method, { accuracyClass: "inherited_scale_image", label: label });
+}
 function rmBuildInheritedScaleRecord(src, factor){
   if (!src) return null;
   var inherited = src.inheritedScale || null;
@@ -1197,8 +1206,8 @@ function rmOutlineMeasurementMethod(outline){
     return outline.measurementMethod;
   }
   if (outline.source === "geotiff_trace"){
-    return { kind: "geotiff", accuracyClass: "survey_grade_source",
-      label: "Method: RTK GeoTIFF trace (survey-grade source)" };
+    return rmAnnotateInheritedScaleMethod({ kind: "geotiff", accuracyClass: "survey_grade_source",
+      label: "Method: RTK GeoTIFF trace (survey-grade source)" }, outline);
   }
   if (outline.source === "kml_groundoverlay_trace"){
     var go = outline.groundOverlay || {};
@@ -1206,11 +1215,11 @@ function rmOutlineMeasurementMethod(outline){
     var errText = maxErr ? "; max quad approx. " + (Math.round(maxErr * 10) / 10) + " ft" : "";
     var detailText = go.mobileTileCapApplied ? "; traced at reduced tile detail" : "";
     var name = go.sourceType === "kmz_superoverlay" ? "KMZ super-overlay tile trace" : "KMZ/KML GroundOverlay trace";
-    return { kind: go.sourceType || "kml_groundoverlay", accuracyClass: "georeferenced_overlay_approx",
+    return rmAnnotateInheritedScaleMethod({ kind: go.sourceType || "kml_groundoverlay", accuracyClass: "georeferenced_overlay_approx",
       maxQuadBBoxErrorFt: maxErr,
-      label: "Method: " + name + " (approx. overlay; not RTK survey-grade" + errText + detailText + ")" };
+      label: "Method: " + name + " (approx. overlay; not RTK survey-grade" + errText + detailText + ")" }, outline);
   }
-  if (rmHasInheritedScale(outline) && !rmHasMeasuredEdges(outline)){
+  if ((outline.source === "manual_trace" || outline.source === "ortho_trace") && rmHasInheritedScale(outline) && !rmHasMeasuredEdges(outline)){
     return { kind: "flat_ortho", accuracyClass: "inherited_scale_image",
       label: "Method: Flat image trace (scale carried over from a field-measured section; this roof's outline was not itself measured)" };
   }
@@ -1224,15 +1233,15 @@ function rmOutlineMeasurementMethod(outline){
       label: "Method: Flat image trace (requires field calibration)" };
   }
   if (outline.source === "walk_corners"){
-    return { kind: "walked_phone_gps", accuracyClass: "field_gps_approx",
-      label: "Method: Walked phone-GPS corners (approximate)" };
+    return rmAnnotateInheritedScaleMethod({ kind: "walked_phone_gps", accuracyClass: "field_gps_approx",
+      label: "Method: Walked phone-GPS corners (approximate)" }, outline);
   }
   if (outline.source === "osm"){
-    return { kind: "osm", accuracyClass: "public_map_approx",
-      label: "Method: OSM footprint trace (approximate public map data)" };
+    return rmAnnotateInheritedScaleMethod({ kind: "osm", accuracyClass: "public_map_approx",
+      label: "Method: OSM footprint trace (approximate public map data)" }, outline);
   }
-  return { kind: "manual_map", accuracyClass: "manual_map_approx",
-    label: "Method: Manual map trace (approximate)" };
+  return rmAnnotateInheritedScaleMethod({ kind: "manual_map", accuracyClass: "manual_map_approx",
+    label: "Method: Manual map trace (approximate)" }, outline);
 }
 function rmOutlineMeasurementMethodSummary(outlines){
   var labels = [];
@@ -2874,9 +2883,7 @@ async function rmCalibrateEdge(edgeIndex){
   rmUpsertEdgeMeasurement(outline, measurementEntry);
   if (!rmConfirmSavedOutlineRescale(outline, appliedFactor)){
     appliedFactor = 1;
-    conflictResolution = "keep_existing";
-    measurementEntry.conflictResolution = conflictResolution;
-    rmUpsertEdgeMeasurement(outline, measurementEntry);
+    measurementEntry.rescaleDeclined = true;
   }
   if (appliedFactor === 1){
     outline.measurementMethod = rmOutlineMeasurementMethod(outline);
@@ -2917,6 +2924,7 @@ async function rmCalibrateEdge(edgeIndex){
      DEV_NOTES.md. */
   if ((outline.source === "manual_trace" || outline.source === "ortho_trace") && rmState.linkedBuildingId){
     var carryOver = rmState.inheritedScaleFactorBuildingId === rmState.linkedBuildingId ? rmState.inheritedScaleFactor : 1;
+    if (rmState.inheritedScaleFactorBuildingId !== rmState.linkedBuildingId) rmState.inheritedScaleFromOutlineId = null;
     rmState.inheritedScaleFactor = carryOver * appliedFactor;
     rmState.inheritedScaleFactorBuildingId = rmState.linkedBuildingId;
     rmState.inheritedScaleFromOutlineId = outline.id || null;
@@ -5843,6 +5851,11 @@ async function rmGetBuildingKnownLocation(bld){
    again either. */
 async function rmEnterMultiRoofCapture(buildingId){
   if (currentViewName !== "roofmapper") showView("roofmapper");
+  if (rmState.inheritedScaleFactorBuildingId && rmState.inheritedScaleFactorBuildingId !== buildingId){
+    rmState.inheritedScaleFactor = 1;
+    rmState.inheritedScaleFactorBuildingId = null;
+    rmState.inheritedScaleFromOutlineId = null;
+  }
   /* Continuing to trace on the SAME already-uploaded ortho for the SAME
      building (e.g. "Trace Another Roof" tapped right after saving a roof
      that was itself traced on an ortho)? Keep the image up instead of
