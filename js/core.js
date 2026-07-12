@@ -166,12 +166,23 @@ async function signOutUser(){
     toast("Signed out");
   }catch(e){ toast("Sign-out failed: " + e.message); }
 }
+/* Without actionCodeSettings, Firebase's password-reset email lands the
+   user on Firebase's own hosted page with no way back to the app at all --
+   Mark's exact complaint about the crew-invite flow. `url` here is the
+   "Continue" link shown after the reset completes; window.location.origin
+   is already environment-aware for free (resolves to whichever
+   dev/production URL the app is actually running on, no extra config
+   needed) -- same principle as isDevEnvironment() above, just via the
+   browser's own location instead of a hostname string match. */
+function passwordResetActionCodeSettings(){
+  return { url: window.location.origin + "/" };
+}
 async function sendPasswordReset(){
   if (!fauth) return;
   var email = val("login-email").trim();
   if (!email){ toast("Enter your email first."); return; }
   try{
-    await fauth.sendPasswordResetEmail(email);
+    await fauth.sendPasswordResetEmail(email, passwordResetActionCodeSettings());
     toast("Password reset email sent (if that account exists) ✓");
   }catch(e){ toast("Couldn't send reset email: " + e.message); }
 }
@@ -481,7 +492,7 @@ async function gateForgotPassword(){
   var email = val("gate-email").trim();
   if (!email){ setLoginGateStatus("Enter your email first.", true); return; }
   try{
-    await fauth.sendPasswordResetEmail(email);
+    await fauth.sendPasswordResetEmail(email, passwordResetActionCodeSettings());
     setLoginGateStatus("Password reset email sent (if that account exists) ✓", false);
   }catch(e){ setLoginGateStatus("Couldn't send reset email: " + e.message, true); }
 }
