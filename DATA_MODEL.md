@@ -482,7 +482,10 @@ as a roof's custom base map); the third — an uploaded drawing/PDF — is block
                   // tapped points on an uploaded, TRUE georeferenced
                   // GeoTIFF, real lat/lng straight from the map, no
                   // synthetic origin and no calibration needed — see
-                  // "GeoTIFF georeferenced ortho support" in DEV_NOTES.md)
+                  // "GeoTIFF georeferenced ortho support" in DEV_NOTES.md) |
+                  // "kml_groundoverlay_trace" (shipped 2026-07-12 -
+                  // tapped points on a KMZ/KML GroundOverlay image placed
+                  // from its KML north/south/east/west bounds)
   osmId,          // e.g. "way/12345" — only set when source is "osm"
   osmType,        // "way" | "relation" — only set when source is "osm"
   tags,           // raw OSM tags at capture time — only set when source is "osm"
@@ -493,11 +496,29 @@ as a roof's custom base map); the third — an uploaded drawing/PDF — is block
                   // not a real-world position, until manual alignment (not
                   // built) happens — shape/area/perimeter are exact once
                   // calibrated, only WHERE on Earth it sits is a placeholder.
-  georeferencedSource, // optional — true only when source is "geotiff_trace".
+  georeferencedSource, // optional - true when source is "geotiff_trace" or
+                  // "kml_groundoverlay_trace".
                   // The OPPOSITE meaning of tracedOnOrtho above: the ring is
-                  // already a real, accurate, RTK-grade position straight
-                  // from the uploaded GeoTIFF's own embedded geodata, not a
-                  // placeholder — no manual alignment or calibration needed.
+                  // already a real-world lat/lng position, not a placeholder.
+                  // GeoTIFF traces are RTK/survey-grade source material;
+                  // KMZ/KML GroundOverlay traces are approximate georeferenced
+                  // overlays and must not be reported as RTK survey-grade.
+  measurementMethod, // optional - persisted audit label for exports/reports:
+                  // { kind, accuracyClass, label, maxQuadBBoxErrorFt? }.
+                  // Examples: RTK GeoTIFF trace, KMZ super-overlay tile trace
+                  // (approximate; not RTK survey-grade), flat image trace,
+                  // walked phone-GPS corners, OSM footprint trace.
+  groundOverlay,  // optional - only when source is "kml_groundoverlay_trace":
+                  // Single-image shape: { sourceType:"kml_groundoverlay" |
+                  // "kmz_groundoverlay", sourceFileName, kmlFileName,
+                  // imageHref, imageFileName, bounds:{north,south,east,west},
+                  // rotation }. Google Earth super-overlay shape:
+                  // { sourceType:"kmz_superoverlay", sourceFileName,
+                  // imageFileName, tileCount, kmlLevel, highestKmlLevel,
+                  // highestTileCount, mobileTileCapApplied, mobileTileCap,
+                  // bounds, maxQuadBBoxErrorFt, tiles:[...] }.
+                  // Rotation/quads are preserved as metadata; current Leaflet
+                  // display warns but does not warp or rotate rasters.
   createdAt,
   calibration     // optional — TWO possible shapes. Manual: set once a tech taps
                   // an edge dimension label and enters a real tape-measured

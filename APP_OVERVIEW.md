@@ -457,11 +457,25 @@ works.
 
 **Have a sharper drone orthomosaic than satellite imagery gives you?** Tap
 **"📷 Trace on My Own Drone Image"** right at the start, before any location search —
-pick an image straight from your device (phone or laptop) and trace directly on it,
-no CompanyCam project or GPS fix needed first. This is different from the "Drone
+pick a KMZ, KML+image, GeoTIFF, PNG, or JPG straight from your device (phone or
+laptop) and trace directly on it, no CompanyCam project or GPS fix needed first.
+This is different from the "Drone
 orthomosaic" base-map upload above (which needs the companion script and real GPS
 corner coordinates for a whole building's base map): this is a quick, no-prep way to
 trace a roof outline on your own image right now.
+
+**Uploading a KMZ or KML GroundOverlay** (common drone-map export format)? The app
+opens the KMZ as a ZIP, reads the KML GroundOverlay, extracts the referenced image,
+and uses the KML north/south/east/west bounds to place it on the map. Google Earth
+super-overlay KMZs work too: the app loads the highest-detail tile set and traces
+right on those georeferenced tiles. If the KML declares rotation, the app warns you
+to verify alignment before saving because the current Leaflet overlay does not rotate
+the image. KMZ/KML traces are labeled as approximate georeferenced overlays in
+exports; they do not use the same survey-grade method label as RTK GeoTIFF traces.
+
+For large tiled KMZs, desktop/laptop tracing is the intended workflow. On likely
+mobile devices, the app automatically steps down to a lower-detail tile level rather
+than trying to mount a large overlay set that could hang the browser.
 
 **Uploading a real GeoTIFF** (the actual output of a georeferenced RTK drone survey,
 e.g. WebODM's `odm_orthophoto.tif`)? The app reads its built-in GPS data automatically
