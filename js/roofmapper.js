@@ -2738,7 +2738,68 @@ function rmConfirmSavedOutlineRescale(outline, factor){
     "Perimeter: " + Math.round(outline.perimeterFt) + " ft -> " + Math.round(newPerimeter) + " ft\n\n" +
     "The measured edge will be saved with source: measured.");
 }
-function rmCalibrateEdge(edgeIndex){
+function rmChooseMeasurementConflict(pct){
+  return new Promise(function(resolve){
+    var overlay = document.createElement("div");
+    overlay.className = "rm-measure-choice-overlay";
+    overlay.setAttribute("role", "dialog");
+    overlay.setAttribute("aria-modal", "true");
+
+    var sheet = document.createElement("div");
+    sheet.className = "rm-measure-choice-sheet";
+
+    var title = document.createElement("h3");
+    title.textContent = "Measurements disagree";
+
+    var body = document.createElement("p");
+    body.textContent = "This measured edge disagrees with the current measured scale by " + pct + "%. Pick how to save it.";
+
+    var actions = document.createElement("div");
+    actions.className = "rm-measure-choice-actions";
+
+    function addButton(label, value, note, primary){
+      var btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "rm-measure-choice-btn" + (primary ? " primary" : "");
+      btn.innerHTML = "<strong></strong><span></span>";
+      btn.querySelector("strong").textContent = label;
+      btn.querySelector("span").textContent = note;
+      btn.addEventListener("click", function(){
+        cleanup();
+        resolve(value);
+      });
+      actions.appendChild(btn);
+      return btn;
+    }
+
+    function cleanup(){
+      document.removeEventListener("keydown", onKeyDown);
+      if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+      if (typeof unlockBodyScroll === "function") unlockBodyScroll();
+    }
+
+    function onKeyDown(e){
+      if (e.key === "Escape"){
+        e.preventDefault();
+        firstBtn.focus();
+      }
+    }
+
+    var firstBtn = addButton("Use my measurement", "use", "Rescale this roof from the taped edge.", true);
+    addButton("Keep existing", "keep_existing", "Save the taped edge without changing scale.", false);
+    addButton("Average them", "average", "Blend the existing scale with this tape reading.", false);
+
+    sheet.appendChild(title);
+    sheet.appendChild(body);
+    sheet.appendChild(actions);
+    overlay.appendChild(sheet);
+    document.body.appendChild(overlay);
+    if (typeof lockBodyScroll === "function") lockBodyScroll();
+    document.addEventListener("keydown", onKeyDown);
+    setTimeout(function(){ firstBtn.focus(); }, 0);
+  });
+}
+async function rmCalibrateEdge(edgeIndex){
   var outline = rmState.outline;
   if (!outline) return;
   var ring = outline.ring;
@@ -2755,25 +2816,19 @@ function rmCalibrateEdge(edgeIndex){
   var existingMeasured = rmActiveMeasuredEdges(outline).filter(function(m){ return m.edgeIndex !== edgeIndex; });
   var appliedFactor = factor;
   var conflictResolution = "use";
+  var hadConflict = false;
   if (existingMeasured.length && Math.abs(factor - 1) > RM_EDGE_MEASURE_SCALE_TOLERANCE){
     var pct = ((factor - 1) * 100).toFixed(1);
-    var choice = prompt("This measured edge disagrees with the current measured scale by " + pct + "%.\n\n" +
-      "Type U to use this edge and rescale the roof.\n" +
-      "Type K to keep the existing scale but save this measured edge.\n" +
-      "Type A to average the existing scale with this edge.", "K");
-    if (choice === null) return;
-    choice = choice.trim().toUpperCase();
-    if (choice === "K" || choice === "KEEP"){
+    hadConflict = true;
+    var choice = await rmChooseMeasurementConflict(pct);
+    if (choice === "keep_existing"){
       appliedFactor = 1;
       conflictResolution = "keep_existing";
-    } else if (choice === "A" || choice === "AVG" || choice === "AVERAGE"){
+    } else if (choice === "average"){
       appliedFactor = Math.sqrt(factor);
       conflictResolution = "average";
-    } else if (choice === "U" || choice === "USE"){
-      conflictResolution = "use";
     } else {
-      toast("Measurement not saved. Enter U, K, or A.");
-      return;
+      conflictResolution = "use";
     }
   }
   if (!rmConfirmSavedOutlineRescale(outline, appliedFactor)) return;
@@ -2784,7 +2839,7 @@ function rmCalibrateEdge(edgeIndex){
     measuredAt: Date.now(),
     rawInput: String(input)
   };
-  if (conflictResolution !== "use") measurementEntry.conflictResolution = conflictResolution;
+  if (hadConflict) measurementEntry.conflictResolution = conflictResolution;
   rmUpsertEdgeMeasurement(outline, measurementEntry);
   if (appliedFactor === 1){
     outline.measurementMethod = rmOutlineMeasurementMethod(outline);
@@ -2813,7 +2868,7 @@ function rmCalibrateEdge(edgeIndex){
     calibratedAt: Date.now()
   };
   delete outline.inheritedScale;
-  if (conflictResolution !== "use") outline.calibration.conflictResolution = conflictResolution;
+  if (hadConflict) outline.calibration.conflictResolution = conflictResolution;
   outline.measurementMethod = rmOutlineMeasurementMethod(outline);
   /* Scale inheritance -- learn from this calibration so the NEXT roof
      traced on this same building (manual_trace/ortho_trace only --
