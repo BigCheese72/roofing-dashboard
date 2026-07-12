@@ -1164,6 +1164,43 @@ async function runPhotoStorageMigration(){
   if (failures.length) console.warn("Photo migration failures (safe to retry):", failures);
   return { migrated: migrated, alreadyDone: alreadyDone, failed: failed, failures: failures };
 }
+/* Thumbnail backfill (see "captions but no photos" in DEV_NOTES.md) --
+   same dry-run-then-apply, owner-only, idempotent-server-side shape as
+   runPhotoStorageMigration() just above, for exactly the same reason:
+   this is a one-time bulk operation over already-saved data, not a
+   day-to-day action. Purely additive server-side (only ever writes the
+   thumb field, never touches img/storageRef/caption/anything else a
+   photo doc already has), so there's nothing here to lose even on a
+   partial failure -- safe to re-run. */
+async function runThumbnailBackfill(){
+  if (!currentAuthClaims || currentAuthClaims.owner !== true){ toast("Owner login required."); return; }
+  toast("Scanning for photos missing a thumbnail…");
+  var scan;
+  try{ scan = await callPhotosApi({ action: "scan_missing_thumbnails" }); }
+  catch(e){ toast("Scan failed: " + e.message); return; }
+
+  if (!scan.missing.length){
+    toast("Nothing to backfill — every migrated photo already has a thumbnail.");
+    return { backfilled: 0, failed: 0, failures: [] };
+  }
+  if (!confirm(scan.missing.length + " photo" + (scan.missing.length === 1 ? "" : "s") +
+    " across " + scan.totalWorkOrders + " work order" + (scan.totalWorkOrders === 1 ? "" : "s") +
+    " will get a real thumbnail generated server-side. Nothing else about these photos changes. Proceed?")) return null;
+
+  var backfilled = 0, failed = 0, failures = [];
+  for (var i = 0; i < scan.missing.length; i++){
+    var item = scan.missing[i];
+    toast("Backfilling thumbnail " + (i + 1) + " of " + scan.missing.length + "…");
+    try{
+      var out = await callPhotosApi({ action: "backfill_thumbnail", workOrderId: item.workOrderId, photoIndex: item.photoIndex });
+      if (!out.skipped) backfilled++;
+    }catch(e){ failed++; failures.push({ workOrderId: item.workOrderId, photoIndex: item.photoIndex, error: e.message }); }
+  }
+  toast(backfilled + " thumbnail" + (backfilled === 1 ? "" : "s") + " backfilled ✓" +
+    (failed ? ", " + failed + " FAILED (safe to retry — nothing was changed on those, run this again)" : "") + ".");
+  if (failures.length) console.warn("Thumbnail backfill failures (safe to retry):", failures);
+  return { backfilled: backfilled, failed: failed, failures: failures };
+}
 /* Admin toggle button removed entirely (2026-07-12) -- there was nothing
    left for it to toggle. isAdmin has followed sign-in state and role
    automatically since Auth Phase 5 (recomputeIsAdmin(), called on every

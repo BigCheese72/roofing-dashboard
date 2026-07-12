@@ -110,6 +110,17 @@
       <p class="hint" style="margin:4px 0 0">One-time cleanup — moves already-saved photos out of Firestore
         into Firebase Storage. Non-destructive: nothing is deleted, safe to run more than once.</p>
     </div>
+    <!-- Thumbnail backfill (see "captions but no photos" in DEV_NOTES.md) --
+         every already-migrated photo falls back to its full-size backup
+         today (js/core.js's imgFallback), this just makes the gallery
+         cheaper to load by generating a real small thumbnail. Additive-only
+         server-side, safe to run more than once. -->
+    <div class="fld" style="max-width:400px;margin:10px 0 0">
+      <label style="font-size:12px">Admin: Backfill Missing Photo Thumbnails</label>
+      <button class="btn" onclick="runThumbnailBackfill()">🖼️ Scan &amp; Backfill Thumbnails</button>
+      <p class="hint" style="margin:4px 0 0">One-time cleanup — generates a real thumbnail for photos migrated
+        to Storage before thumbnails existed. Doesn't touch the photo itself, safe to run more than once.</p>
+    </div>
     <!-- Inspection-report ingestion (CCM Inspect emails -> Warranty
          section, see netlify/functions/inspection-reports.js). A scheduled
          function already polls automatically every 30 min; this button is
