@@ -1065,12 +1065,12 @@ function rmLegacyCalibrationMeasurement(outline){
 function rmMigrateLegacyCalibration(outline){
   var legacy = rmLegacyCalibrationMeasurement(outline);
   if (!outline || !legacy) return false;
-  var list = outline.edgeMeasurements || [];
-  var exists = list.some(function(m){
+  var active = rmActiveEdgeMeasurements(outline);
+  var exists = active.some(function(m){
     return m && m.edgeIndex === legacy.edgeIndex;
   });
   if (exists) return false;
-  outline.edgeMeasurements = list.concat([legacy]);
+  outline.edgeMeasurements = (outline.edgeMeasurements || []).concat([legacy]);
   return true;
 }
 function rmActiveMeasuredEdges(outline){
@@ -1157,7 +1157,7 @@ function rmBuildInheritedScaleRecord(src, factor){
   if (!inherited && src.calibration && src.calibration.inherited){
     inherited = {
       fromOutlineId: null,
-      factor: src.calibration.factor,
+      factor: isFinite(src.calibration.factor) ? src.calibration.factor : null,
       scaleSource: "measured",
       derivedAt: src.calibration.calibratedAt || null
     };
@@ -1167,7 +1167,7 @@ function rmBuildInheritedScaleRecord(src, factor){
   return {
     fromOutlineId: inherited ? (inherited.fromOutlineId || null) : (src.id || null),
     factor: isFinite(factor) ? factor : (inherited && isFinite(inherited.factor) ? inherited.factor :
-      (src.calibration && isFinite(src.calibration.factor) ? src.calibration.factor : 1)),
+      (src.calibration && isFinite(src.calibration.factor) ? src.calibration.factor : null)),
     scaleSource: "measured",
     derivedAt: Date.now()
   };
@@ -1207,15 +1207,15 @@ function rmOutlineMeasurementMethod(outline){
       maxQuadBBoxErrorFt: maxErr,
       label: "Method: " + name + " (approx. overlay; not RTK survey-grade" + errText + detailText + ")" };
   }
+  if (rmHasInheritedScale(outline) && !rmHasMeasuredEdges(outline)){
+    return { kind: "flat_image", accuracyClass: "inherited_scale_image",
+      label: "Method: Flat image trace (scale carried over from a field-measured section; this roof's outline was not itself measured)" };
+  }
   if (outline.source === "ortho_trace"){
     var hasFieldMeasure = rmHasMeasuredEdges(outline);
     if (hasFieldMeasure){
       return { kind: "flat_ortho", accuracyClass: "field_calibrated",
         label: "Method: Flat image trace (field-calibrated)" };
-    }
-    if (rmHasInheritedScale(outline)){
-      return { kind: "flat_ortho", accuracyClass: "inherited_scale_image",
-        label: "Method: Flat image trace (scale carried over from a field-measured section; this roof's outline was not itself measured)" };
     }
     return { kind: "flat_ortho", accuracyClass: "uncalibrated_image",
       label: "Method: Flat image trace (requires field calibration)" };
@@ -2852,6 +2852,8 @@ async function rmCalibrateEdge(edgeIndex){
       appliedFactor = Math.sqrt(factor);
       conflictResolution = "average";
     } else if (choice === "discard"){
+      /* rmMigrateLegacyCalibration() may already have normalized an older
+         tape reading; discarding here means only "do not save this new input." */
       toast("Measurement discarded.");
       return;
     } else {
