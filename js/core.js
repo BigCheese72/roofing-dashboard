@@ -1939,6 +1939,279 @@ function saveDb(db){
     return false;
   }
 }
+
+/* ================= offline-first: IndexedDB photo backup =================
+   Real production risk (Mark, 2026-07-12): commercial roofs are frequent
+   dead zones, and localStorage alone can't reliably hold full-resolution
+   photo bytes -- one shared ~5-10MB quota across every saved order (see
+   saveDb()'s QuotaExceededError branch above, and pruneCachedPhotoDrafts()
+   above that, which exists ONLY because of this limit). IndexedDB has a
+   much higher quota (typically hundreds of MB+, browser/device-dependent)
+   and is the right place for binary photo data.
+
+   Deliberately ADDITIVE, not a replacement for the existing localStorage-
+   based order cache -- every photo captured still flows through the exact
+   same in-memory `photos` array and every existing save/load code path
+   (cloudSaveOrder's CRITICAL DATA-LOSS GUARD, cloudFetchOrder's stripped-
+   copy refusal, orderPhotosAreStrippedLocally -- all untouched, still
+   exactly as hardened/tested tonight). Every photo ALSO gets mirrored into
+   IndexedDB the instant it's captured (see makeLocalPhotoId()/photos.js),
+   keyed by a stable id that never changes even if the photo is later
+   reordered or removed from the array before Save -- pure insurance: if
+   localStorage's write fails (quota), or the tab is killed before a Save
+   ever happens, the real bytes are still recoverable here. */
+var IDB_NAME = "roofops_offline";
+var IDB_VERSION = 1;
+var IDB_PHOTOS_STORE = "photoBlobs";
+var idbOpenPromise = null;
+function openIdb(){
+  if (idbOpenPromise) return idbOpenPromise;
+  idbOpenPromise = new Promise(function(resolve, reject){
+    if (!window.indexedDB){ reject(new Error("IndexedDB not available in this browser")); return; }
+    var req = indexedDB.open(IDB_NAME, IDB_VERSION);
+    req.onupgradeneeded = function(){
+      var idb = req.result;
+      if (!idb.objectStoreNames.contains(IDB_PHOTOS_STORE)) idb.createObjectStore(IDB_PHOTOS_STORE);
+    };
+    req.onsuccess = function(){ resolve(req.result); };
+    req.onerror = function(){ reject(req.error || new Error("IndexedDB open failed")); };
+  });
+  return idbOpenPromise;
+}
+function makeLocalPhotoId(){
+  return "lp_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 10);
+}
+async function idbPutPhoto(localId, dataUrl){
+  if (!localId || !dataUrl) return false;
+  try{
+    var idb = await openIdb();
+    return await new Promise(function(resolve, reject){
+      var tx = idb.transaction(IDB_PHOTOS_STORE, "readwrite");
+      tx.objectStore(IDB_PHOTOS_STORE).put(dataUrl, localId);
+      tx.oncomplete = function(){ resolve(true); };
+      tx.onerror = function(){ reject(tx.error); };
+    });
+  }catch(e){
+    /* Never block the actual capture on this -- the photo is still safe
+       in memory and (once Saved) in localStorage/the cloud, exactly as
+       before this feature existed. This is extra insurance, not the only
+       copy, so a failure here is logged, not surfaced as an error to the
+       tech mid-capture. */
+    console.warn("idbPutPhoto failed (photo still held normally, nothing lost)", e);
+    return false;
+  }
+}
+async function idbGetPhoto(localId){
+  if (!localId) return null;
+  try{
+    var idb = await openIdb();
+    return await new Promise(function(resolve){
+      var tx = idb.transaction(IDB_PHOTOS_STORE, "readonly");
+      var req = tx.objectStore(IDB_PHOTOS_STORE).get(localId);
+      req.onsuccess = function(){ resolve(req.result || null); };
+      req.onerror = function(){ resolve(null); };
+    });
+  }catch(e){ return null; }
+}
+async function idbDeletePhoto(localId){
+  if (!localId) return false;
+  try{
+    var idb = await openIdb();
+    return await new Promise(function(resolve){
+      var tx = idb.transaction(IDB_PHOTOS_STORE, "readwrite");
+      tx.objectStore(IDB_PHOTOS_STORE).delete(localId);
+      tx.oncomplete = function(){ resolve(true); };
+      tx.onerror = function(){ resolve(false); };
+    });
+  }catch(e){ return false; }
+}
+/* Best-effort recovery pass: for any photo in this order missing BOTH a
+   renderable image (thumb/imgFallback/img) and Storage-uploaded bytes
+   (storageRef), try IndexedDB via localId before giving up. Called before
+   a cloud save attempt so a save-time recovery works exactly like a
+   capture-time one -- the tech never needs to know this layer exists. */
+async function idbRecoverPhotoBytes(o){
+  var photos = (o && o.photos) || [];
+  for (var i = 0; i < photos.length; i++){
+    var p = photos[i];
+    if (p && !p.img && !p.storageRef && p.localId){
+      var recovered = await idbGetPhoto(p.localId);
+      if (recovered) p.img = recovered;
+    }
+  }
+  return o;
+}
+
+/* ================= offline-first: sync queue =================
+   Tracks work orders with local changes not yet confirmed saved to the
+   cloud. saveOrder() already writes locally FIRST, before any network
+   attempt (existing, correct behavior, untouched) -- this queue is what
+   turns "the cloud save failed, tell the tech to manually retry" into
+   "retry automatically the moment connectivity returns," and is also what
+   the visible sync-status indicator (renderSyncStatus() below) reads
+   from. One entry per work order id -- saving the same order twice while
+   offline just updates its own queue entry. Safe to retry any number of
+   times: cloudSaveOrder() is a full, idempotent .set() of current state
+   (see its own CRITICAL DATA-LOSS GUARD) -- replaying it never double-
+   posts or duplicates a photo, it just re-asserts the same end state. */
+var SYNC_QUEUE_KEY = "roofops_sync_queue_v1";
+function loadSyncQueue(){
+  try{
+    var raw = localStorage.getItem(SYNC_QUEUE_KEY);
+    return raw ? JSON.parse(raw) : {};
+  }catch(e){ return {}; }
+}
+function saveSyncQueueRaw(q){
+  /* Queue metadata only (ids/labels/timestamps/small error strings) --
+     never photo bytes -- so this is never expected to hit the quota that
+     motivated the IndexedDB layer above. */
+  try{ localStorage.setItem(SYNC_QUEUE_KEY, JSON.stringify(q)); }catch(e){ console.warn("sync queue metadata save failed", e); }
+}
+function markPendingSync(orderId, jobLabel){
+  var q = loadSyncQueue();
+  var existing = q[orderId];
+  q[orderId] = {
+    jobLabel: jobLabel || (existing && existing.jobLabel) || orderId,
+    queuedAt: (existing && existing.queuedAt) || Date.now(),
+    attempts: (existing && existing.attempts) || 0,
+    lastError: null
+  };
+  saveSyncQueueRaw(q);
+  renderSyncStatus();
+}
+function markSynced(orderId){
+  var q = loadSyncQueue();
+  if (q[orderId]){ delete q[orderId]; saveSyncQueueRaw(q); }
+  renderSyncStatus();
+}
+function markSyncFailed(orderId, err){
+  var q = loadSyncQueue();
+  if (!q[orderId]) return;
+  q[orderId].attempts = (q[orderId].attempts || 0) + 1;
+  q[orderId].lastError = (err && err.message) ? err.message : String(err);
+  q[orderId].lastAttemptAt = Date.now();
+  saveSyncQueueRaw(q);
+  renderSyncStatus();
+}
+/* Loud on purpose (Mark: "never a silent failure -- that's the pattern
+   that's bitten us repeatedly"). A queue entry that's failed this many
+   times in a row is treated as PERMANENTLY failed, not silently retried
+   forever in the background -- surfaced with its own persistent status
+   line so it can't be missed, distinct from the routine "offline, will
+   sync" state. Does not remove it from the queue (still worth a manual
+   retry once whatever's wrong is fixed), just changes how it's shown. */
+var SYNC_PERMANENT_FAILURE_THRESHOLD = 6;
+function renderSyncStatus(){
+  var host = document.getElementById("sync-status-bar");
+  if (!host) return;
+  var q = loadSyncQueue();
+  var ids = Object.keys(q);
+  if (!ids.length){
+    host.style.display = "none";
+    host.innerHTML = "";
+    return;
+  }
+  var failedHard = ids.filter(function(id){ return (q[id].attempts || 0) >= SYNC_PERMANENT_FAILURE_THRESHOLD; });
+  var pending = ids.filter(function(id){ return (q[id].attempts || 0) < SYNC_PERMANENT_FAILURE_THRESHOLD; });
+  host.style.display = "";
+  var parts = [];
+  if (pending.length){
+    parts.push('<div>' + (navigator.onLine ? "🔄 Syncing" : "📴 Offline") + " — " + pending.length +
+      " item" + (pending.length === 1 ? "" : "s") + " saved on this device, will sync when you have signal." +
+      ' <button class="btn" style="padding:2px 8px;font-size:12px" onclick="tryFlushSyncQueue()">Retry now</button></div>');
+  }
+  if (failedHard.length){
+    parts.push('<div style="color:#D64545;font-weight:600">⚠️ ' + failedHard.length +
+      " item" + (failedHard.length === 1 ? "" : "s") + " couldn't be synced after repeated tries — " +
+      failedHard.map(function(id){ return esc(q[id].jobLabel || id); }).join(", ") +
+      '. Data is safe on this device. Check your connection, then ' +
+      '<button class="btn" style="padding:2px 8px;font-size:12px" onclick="tryFlushSyncQueue()">Retry now</button>.</div>');
+  }
+  host.innerHTML = parts.join("");
+}
+/* Reconstructs enough of a queued order to retry cloudSaveOrder() for it,
+   even when it's not the order currently open in the editor -- reads the
+   locally-cached copy (loadDb().orders[id]), recovering any photo bytes
+   pruning may have stripped from THAT copy via idbRecoverPhotoBytes()
+   first (see comment there). If the order isn't in the local cache at all
+   (shouldn't happen -- saveOrder() always writes it there before ever
+   queuing it -- but never trust that blindly), the queue entry is dropped
+   rather than left stuck forever on nothing to retry. */
+var syncFlushInFlight = false;
+async function tryFlushSyncQueue(){
+  if (syncFlushInFlight || !fdb || !navigator.onLine) return;
+  var q = loadSyncQueue();
+  var ids = Object.keys(q);
+  if (!ids.length) return;
+  syncFlushInFlight = true;
+  try{
+    for (var i = 0; i < ids.length; i++){
+      var id = ids[i];
+      var db = loadDb();
+      var stored = db.orders[id];
+      if (!stored){ markSynced(id); continue; }
+      try{
+        await idbRecoverPhotoBytes(stored);
+        await cloudSaveOrder(stored);
+        await syncPinCorrectionsToHistory(stored);
+        await logReportAndHistoryEvent(stored, "Saved", null, undefined);
+        markSynced(id);
+        if (typeof renderSaved === "function") renderSaved();
+      }catch(e){
+        markSyncFailed(id, e);
+      }
+    }
+  } finally {
+    syncFlushInFlight = false;
+  }
+}
+/* Backoff: doesn't hammer the network or Firestore on every tick if
+   something's genuinely still down -- delay grows with attempts (5s, 10s,
+   20s... capped at 2min), reset to immediate the moment a real 'online'
+   event fires (that's a real signal, not a guess). */
+var syncPollTimer = null;
+function scheduleSyncPoll(){
+  if (syncPollTimer) return;
+  syncPollTimer = setInterval(function(){
+    var q = loadSyncQueue();
+    var ids = Object.keys(q);
+    if (!ids.length) return;
+    var maxAttempts = ids.reduce(function(m, id){ return Math.max(m, q[id].attempts || 0); }, 0);
+    var delayMs = Math.min(5000 * Math.pow(2, maxAttempts), 120000);
+    var dueAt = ids.reduce(function(min, id){ return Math.min(min, (q[id].lastAttemptAt || 0)); }, Infinity);
+    if (dueAt === Infinity || Date.now() - dueAt >= delayMs) tryFlushSyncQueue();
+  }, 5000);
+}
+window.addEventListener("online", function(){ renderSyncStatus(); tryFlushSyncQueue(); });
+window.addEventListener("offline", function(){ renderSyncStatus(); });
+document.addEventListener("visibilitychange", function(){
+  if (document.visibilityState === "visible") tryFlushSyncQueue();
+});
+scheduleSyncPoll();
+/* Mark: "warn before leaving with unsynced work." Standard beforeunload
+   confirmation -- browsers show their own generic text regardless of the
+   returnValue string's content (a security/spam-prevention restriction,
+   not a bug here), but setting it is what actually triggers the prompt at
+   all. */
+window.addEventListener("beforeunload", function(e){
+  var q = loadSyncQueue();
+  if (Object.keys(q).length){
+    e.preventDefault();
+    e.returnValue = "";
+  }
+});
+/* Mark: "a tech must be able to open RoofOps on a dead-zone roof and have
+   it work at all." See sw.js for the actual cache strategy (network-first,
+   cache as fallback -- never stuck on a stale deploy while online).
+   Registered from a plain <script> in index.html's init block, right after
+   updateAdminUI() -- kept as a real function here (not inline there) so
+   the shared file's footprint for this feature is a single line. */
+function registerServiceWorker(){
+  if (!("serviceWorker" in navigator)) return;
+  navigator.serviceWorker.register("/sw.js").catch(function(e){
+    console.warn("Service worker registration failed (app still works online, just won't have an offline app shell)", e);
+  });
+}
 /* A report's pins are a frozen snapshot by design (see DEV_NOTES.md) so an
    already-sent PDF's content never silently changes. But a pin's *location*
    isn't part of that content \u2014 it's GPS accuracy metadata a tech should be
@@ -2014,8 +2287,27 @@ function saveOrder(opts){
   pruneCachedPhotoDrafts(db);
   var localOk = saveDb(db);
   if (localOk) drawSaved();
+  /* localOnly (see debouncedLocalAutosave() below) is the "persist
+     continuously, not just on submit" half of offline-first -- pure local
+     safety net, deliberately never touches the network or the sync queue
+     itself. If this order already has real unsynced changes queued from a
+     previous explicit Save, that queue entry is left exactly as it is;
+     this just makes sure the LATEST version of the work is the one
+     sitting on the device (and, once online, the one that eventually
+     syncs) even if the tech never gets to tap Save again before losing
+     the tab. */
+  if (opts.localOnly) return Promise.resolve(localOk);
   if (fdb){
     if (!opts.quiet) toast("Saving to cloud\u2026");
+    /* Queued the moment a real (non-localOnly) save attempt starts, not
+       only after a failure -- this is what makes the cloud write a
+       background sync CONCERN rather than a one-shot action the tech must
+       personally see through: if the tab dies mid-request, closes before
+       the response comes back, or this exact attempt fails, the order is
+       already sitting in the queue for tryFlushSyncQueue() to pick up the
+       moment connectivity is confirmed, with no separate "did that save
+       actually finish" step for the tech to remember. */
+    markPendingSync(o.id, o.jobName);
     return cloudSaveOrder(o).then(function(){
       return syncPinCorrectionsToHistory(o);
     }).then(function(){
@@ -2030,6 +2322,7 @@ function saveOrder(opts){
       return logReportAndHistoryEvent(o, "Saved", null, undefined);
     }).then(function(){
       if (!opts.quiet) toast("Saved to cloud \u2713 \u2014 visible on all your devices");
+      markSynced(o.id);
       renderSaved();
       return true;
     }).catch(function(e){
@@ -2038,8 +2331,13 @@ function saveOrder(opts){
          only means "don't announce success," never "hide a real failure."
          Previously this toast was gated behind !opts.quiet, so a failed
          quiet autosave left the tech thinking their work synced when it
-         hadn't. See "Silent cloud-save failure" in DEV_NOTES.md. */
-      toast(cloudErrMsg(e));
+         hadn't. See "Silent cloud-save failure" in DEV_NOTES.md.
+         markSyncFailed (not markSynced) -- the queue entry stays exactly
+         where it is, so tryFlushSyncQueue() keeps retrying automatically;
+         the tech does NOT have to remember to come back and tap Save
+         again once he has signal. */
+      markSyncFailed(o.id, e);
+      toast(cloudErrMsg(e) + (navigator.onLine ? "" : " Will retry automatically once you're back online."));
       return localOk;
     });
   } else if (localOk){
@@ -2047,6 +2345,38 @@ function saveOrder(opts){
   }
   return Promise.resolve(localOk);
 }
+/* ================= offline-first: continuous local autosave =================
+   Mark: "work must survive the browser being killed, the phone locking,
+   the battery dying. Persist continuously, not on submit." Everything
+   above (the sync queue, IndexedDB photo backup) only helps once at least
+   one Save has happened -- this is what covers the gap before that first
+   tap: any input/change anywhere inside the edit form triggers a debounced
+   LOCAL-ONLY save (saveOrder({quiet:true, localOnly:true}) -- see the
+   localOnly branch above) a few seconds after the tech stops typing/
+   capturing. Deliberately local-only: this must never itself trigger a
+   network request every few seconds while someone is mid-sentence on a
+   caption -- the explicit Save button remains the only thing that
+   attempts a cloud sync directly; this is purely the safety net under it.
+   One delegated listener on the edit view (not per-field handlers) so
+   every current and future input in that view is covered automatically,
+   including fields captured well after this was written. */
+var localAutosaveTimer = null;
+var LOCAL_AUTOSAVE_DEBOUNCE_MS = 4000;
+function scheduleLocalAutosave(){
+  if (localAutosaveTimer) clearTimeout(localAutosaveTimer);
+  localAutosaveTimer = setTimeout(function(){
+    localAutosaveTimer = null;
+    if (document.getElementById("view-edit") && document.getElementById("view-edit").style.display !== "none" && currentId){
+      saveOrder({ quiet: true, localOnly: true });
+    }
+  }, LOCAL_AUTOSAVE_DEBOUNCE_MS);
+}
+document.addEventListener("DOMContentLoaded", function(){
+  var editView = document.getElementById("view-edit");
+  if (!editView) return;
+  editView.addEventListener("input", scheduleLocalAutosave);
+  editView.addEventListener("change", scheduleLocalAutosave);
+});
 async function autoSaveBeforeReport(actionLabel){
   var ok = await saveOrder({ quiet: true });
   if (!ok){

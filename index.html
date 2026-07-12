@@ -63,6 +63,12 @@
   <button class="tab cond" id="account-toggle" onclick="openAccountModal()" style="font-size:11px" title="Account">🔐<span class="tab-label"> Account</span></button>
 </header>
 
+<!-- Offline-first sync status (Mark, 2026-07-12: "the tech must always
+     know where he stands... never a silent failure"). Hidden (display:none)
+     whenever the local sync queue is empty -- see renderSyncStatus() in
+     js/core.js, the only thing that ever shows/hides or fills this. -->
+<div class="card no-print" id="sync-status-bar" style="display:none;margin-bottom:12px;padding:8px 14px;background:#FFF4E5;border:1px solid #E8A33D;font-size:13px"></div>
+
 <!-- ================= Require-login gate (Auth Phase 5, dev only -- see
      docs/AUTH_DESIGN.md). Non-dismissible: no close button, no click-outside
      handler, unlike every other modal in this file. Hidden whenever fauth
@@ -1167,6 +1173,7 @@ populateWarrantyGuidelines();
 showView("home");
 renderSaved();
 updateAdminUI();
+registerServiceWorker();
 </script>
 </body>
 </html>
