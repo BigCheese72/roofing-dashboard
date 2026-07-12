@@ -28,8 +28,29 @@ var SAT_MAX_NATIVE_ZOOM = 20;
    blocking precision corner placement now that all tracing is by hand.
    See rmUpdateMapZoomCap() and "Ortho zoom cap" in DEV_NOTES.md. */
 var RM_ORTHO_MAX_ZOOM = 26;
-/* ================= cloud sync (Firebase Firestore) ================= */
-var FIREBASE_CONFIG = {
+/* ================= cloud sync (Firebase Firestore) =================
+   Environment-aware project selection (Firebase split, 2026-07-11): the app
+   is static with no build step, so which Firebase project it talks to is
+   decided entirely at RUNTIME, off window.location.hostname -- there's no
+   other lever available (no env vars reach client-side static files).
+   Production (leak-work-orders.netlify.app, deployed from main) stays on
+   the original `watkins-service-orders` project -- Mark's real data,
+   photos, owner account, published rules, all untouched. Dev (branch
+   deploys, "dev--..." hostnames) and any local/preview environment move to
+   a separate, empty `watkins-service-orders-dev` sandbox project, so dev
+   work can never touch production's real Firestore/Storage/Auth again --
+   the "Shared Firestore, dev/prod risk boundary" constraint that shaped
+   several earlier auth-phase decisions (see docs/AUTH_DESIGN.md) is gone
+   entirely once this is live, not just carefully worked around.
+   Both configs are the public Firebase Web SDK config (apiKey included) --
+   safe to commit, matching Firebase's own documented design: this key
+   identifies the project to Google's servers, it does not grant access on
+   its own (Firestore/Storage rules are what actually gate access). */
+function isDevEnvironment(){
+  var h = window.location.hostname;
+  return h.indexOf("dev--") !== -1 || h === "localhost" || h === "127.0.0.1" || h.indexOf("deploy-preview-") !== -1;
+}
+var FIREBASE_CONFIG_PROD = {
   apiKey: "AIzaSyBZRMpIWde-6DPpg7yAvNOqJAQF5ZBxlAg",
   authDomain: "watkins-service-orders.firebaseapp.com",
   projectId: "watkins-service-orders",
@@ -37,6 +58,22 @@ var FIREBASE_CONFIG = {
   messagingSenderId: "806263881954",
   appId: "1:806263881954:web:16fb8f9cfac591dce25ebb"
 };
+// TODO(Mark): replace every REPLACE_ME below with the real watkins-service-orders-dev
+// Web app config (Firebase Console -> that project -> Project settings -> General ->
+// Your apps -> Web app -> SDK setup and configuration -> Config). Until replaced, dev
+// environments fail to initialize Firebase at all (fdb/fauth stay null, same graceful
+// degrade as any other Firebase init failure) rather than silently falling back to
+// production -- a missing dev config must never result in dev traffic accidentally
+// hitting Mark's real data.
+var FIREBASE_CONFIG_DEV = {
+  apiKey: "REPLACE_ME",
+  authDomain: "watkins-service-orders-dev.firebaseapp.com",
+  projectId: "watkins-service-orders-dev",
+  storageBucket: "watkins-service-orders-dev.firebasestorage.app",
+  messagingSenderId: "REPLACE_ME",
+  appId: "REPLACE_ME"
+};
+var FIREBASE_CONFIG = isDevEnvironment() ? FIREBASE_CONFIG_DEV : FIREBASE_CONFIG_PROD;
 var fdb = null;
 /* fauth (Firebase Authentication, Phase 1 of the auth build -- see
    docs/AUTH_DESIGN.md) is layered ALONGSIDE the existing PIN-based admin
@@ -152,12 +189,23 @@ async function signOutUser(){
     toast("Signed out");
   }catch(e){ toast("Sign-out failed: " + e.message); }
 }
+/* Without actionCodeSettings, Firebase's password-reset email lands the
+   user on Firebase's own hosted page with no way back to the app at all --
+   Mark's exact complaint about the crew-invite flow. `url` here is the
+   "Continue" link shown after the reset completes; window.location.origin
+   is already environment-aware for free (resolves to whichever
+   dev/production URL the app is actually running on, no extra config
+   needed) -- same principle as isDevEnvironment() above, just via the
+   browser's own location instead of a hostname string match. */
+function passwordResetActionCodeSettings(){
+  return { url: window.location.origin + "/" };
+}
 async function sendPasswordReset(){
   if (!fauth) return;
   var email = val("login-email").trim();
   if (!email){ toast("Enter your email first."); return; }
   try{
-    await fauth.sendPasswordResetEmail(email);
+    await fauth.sendPasswordResetEmail(email, passwordResetActionCodeSettings());
     toast("Password reset email sent (if that account exists) ✓");
   }catch(e){ toast("Couldn't send reset email: " + e.message); }
 }
@@ -264,8 +312,10 @@ async function inviteUser(){
     // Public client SDK call -- triggers Firebase's own built-in reset-email
     // flow so the new user sets their own password. No password is ever
     // handled by this browser session or by the account that just created
-    // the user.
-    try{ await fauth.sendPasswordResetEmail(email); }catch(e){}
+    // the user. actionCodeSettings brings them back to the app after they
+    // set their password (Firebase's default hosted page otherwise has no
+    // link back at all) -- this was the exact gap in the crew-invite flow.
+    try{ await fauth.sendPasswordResetEmail(email, passwordResetActionCodeSettings()); }catch(e){}
     toast("Account created ✓ — a password-setup email was sent to " + email);
     await renderUserManagementModal();
   }catch(e){ toast("Couldn't create account: " + e.message); }
@@ -375,7 +425,7 @@ async function gateForgotPassword(){
   var email = val("gate-email").trim();
   if (!email){ setLoginGateStatus("Enter your email first.", true); return; }
   try{
-    await fauth.sendPasswordResetEmail(email);
+    await fauth.sendPasswordResetEmail(email, passwordResetActionCodeSettings());
     setLoginGateStatus("Password reset email sent (if that account exists) ✓", false);
   }catch(e){ setLoginGateStatus("Couldn't send reset email: " + e.message, true); }
 }
