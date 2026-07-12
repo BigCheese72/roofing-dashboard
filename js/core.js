@@ -60,11 +60,8 @@ var FIREBASE_CONFIG_PROD = {
 };
 // TODO(Mark): replace every REPLACE_ME below with the real watkins-service-orders-dev
 // Web app config (Firebase Console -> that project -> Project settings -> General ->
-// Your apps -> Web app -> SDK setup and configuration -> Config). Until replaced, dev
-// environments fail to initialize Firebase at all (fdb/fauth stay null, same graceful
-// degrade as any other Firebase init failure) rather than silently falling back to
-// production -- a missing dev config must never result in dev traffic accidentally
-// hitting Mark's real data.
+// Your apps -> Web app -> SDK setup and configuration -> Config), once that project
+// actually exists.
 var FIREBASE_CONFIG_DEV = {
   apiKey: "REPLACE_ME",
   authDomain: "watkins-service-orders-dev.firebaseapp.com",
@@ -73,7 +70,31 @@ var FIREBASE_CONFIG_DEV = {
   messagingSenderId: "REPLACE_ME",
   appId: "REPLACE_ME"
 };
-var FIREBASE_CONFIG = isDevEnvironment() ? FIREBASE_CONFIG_DEV : FIREBASE_CONFIG_PROD;
+/* CRITICAL SAFETY GUARD, added after a real incident: the dev project
+   doesn't exist yet, so shipping the switch above ALONE broke dev sign-in
+   outright (auth/api-key-not-valid) the moment it deployed -- FIREBASE_CONFIG_DEV's
+   placeholder values are not a valid Firebase config, and there is no
+   partial-credit state for "almost a real API key." This guard checks for
+   the literal placeholder and falls back to production whenever the dev
+   config isn't real yet -- dev behaves EXACTLY as it did before this whole
+   split (same shared watkins-service-orders project) until Mark supplies
+   real dev values, instead of presenting a broken login screen. A clear
+   console warning marks the fallback so it's never mistaken for the real
+   split being live. Once Mark replaces every REPLACE_ME, this guard
+   evaluates false and dev automatically switches to the real separate
+   project with no further code change needed. */
+function devFirebaseConfigIsReal(){
+  return FIREBASE_CONFIG_DEV.apiKey !== "REPLACE_ME" &&
+    FIREBASE_CONFIG_DEV.messagingSenderId !== "REPLACE_ME" &&
+    FIREBASE_CONFIG_DEV.appId !== "REPLACE_ME";
+}
+var FIREBASE_CONFIG;
+if (isDevEnvironment() && devFirebaseConfigIsReal()){
+  FIREBASE_CONFIG = FIREBASE_CONFIG_DEV;
+} else {
+  FIREBASE_CONFIG = FIREBASE_CONFIG_PROD;
+  if (isDevEnvironment()) console.warn("watkins-service-orders-dev config not set yet (still placeholder) -- falling back to the production Firebase config until Mark supplies the real dev project values.");
+}
 var fdb = null;
 /* fauth (Firebase Authentication, Phase 1 of the auth build -- see
    docs/AUTH_DESIGN.md) is layered ALONGSIDE the existing PIN-based admin
