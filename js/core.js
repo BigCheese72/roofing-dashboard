@@ -76,13 +76,18 @@ if (fauth){
     if (user){
       user.getIdTokenResult().then(function(res){
         currentAuthClaims = res.claims;
+        recomputeIsAdmin();
         updateAccountUI();
-      }).catch(function(){ currentAuthClaims = null; updateAccountUI(); });
+        renderLoginGate();
+      }).catch(function(){ currentAuthClaims = null; recomputeIsAdmin(); updateAccountUI(); renderLoginGate(); });
     } else {
       currentAuthClaims = null;
+      recomputeIsAdmin();
       updateAccountUI();
+      renderLoginGate();
     }
   });
+  checkAuthBootstrapStatus();
 }
 function updateAccountUI(){
   var btn = document.getElementById("account-toggle");
@@ -157,6 +162,123 @@ async function sendPasswordReset(){
     await fauth.sendPasswordResetEmail(email);
     toast("Password reset email sent (if that account exists) ✓");
   }catch(e){ toast("Couldn't send reset email: " + e.message); }
+}
+
+/* ================= Require-login gate (Auth Phase 5, dev only) =================
+   See docs/AUTH_DESIGN.md's "Phase 5" section. Blocks the whole app behind
+   #login-gate until someone is signed in -- UNLESS fauth itself isn't
+   configured/available (Email/Password provider not enabled yet, SDK
+   didn't load, etc.), in which case this fails OPEN rather than locking
+   everyone out over an environment gap, matching fdb/fauth's existing
+   null-safe degrade pattern everywhere else in this file. Dev branch only
+   by construction (this code doesn't exist on main) -- zero risk to
+   production, which is a completely separate deployment.
+
+   authBootstrapStatus: null while unchecked/checking (gate stays hidden,
+   never flashes a false "locked out" state before the read completes),
+   true once app_settings/auth_bootstrap confirms an owner exists, false
+   if it doesn't yet -- in which case the gate shows the one-time owner
+   setup form instead of a plain sign-in form. Fails OPEN (treated as
+   "bootstrapped") on a read error too -- a transient Firestore hiccup
+   should never be able to brick the entire app for everyone. */
+var authBootstrapStatus = null;
+async function checkAuthBootstrapStatus(){
+  if (!fdb){ authBootstrapStatus = true; renderLoginGate(); return; }
+  try{
+    var snap = await fdb.collection("app_settings").doc("auth_bootstrap").get();
+    authBootstrapStatus = !!(snap.exists && snap.data().ownerBootstrapped === true);
+  }catch(e){ authBootstrapStatus = true; }
+  renderLoginGate();
+}
+function renderLoginGate(){
+  var gate = document.getElementById("login-gate");
+  if (!gate) return;
+  if (!fauth || authBootstrapStatus === null || currentAuthUser){
+    gate.style.display = "none";
+    return;
+  }
+  gate.style.display = "";
+  lockBodyScroll();
+  var host = document.getElementById("login-gate-body");
+  if (!host) return;
+  host.innerHTML = authBootstrapStatus ? loginGateSignInHtml() : loginGateBootstrapHtml();
+}
+function loginGateSignInHtml(){
+  return '<div class="fld"><label>Email</label><input type="email" id="gate-email" autocomplete="username"></div>' +
+    '<div class="fld"><label>Password</label><input type="password" id="gate-password" autocomplete="current-password"></div>' +
+    '<div class="btnrow"><button class="btn primary" onclick="gateSignIn()">Sign In</button>' +
+    '<button class="btn" onclick="gateForgotPassword()">Forgot Password?</button></div>';
+}
+function loginGateBootstrapHtml(){
+  return '<p class="hint" style="margin:0 0 10px">No owner account exists yet. Complete this one-time setup ' +
+    'with your OWN email and password, plus the bootstrap secret configured in Netlify — this runs exactly once, ever.</p>' +
+    '<div class="fld"><label>Owner Email</label><input type="email" id="bootstrap-email" value="marks@watkinsroofing.net"></div>' +
+    '<div class="fld"><label>Password</label><input type="password" id="bootstrap-password" autocomplete="new-password"></div>' +
+    '<div class="fld"><label>Confirm Password</label><input type="password" id="bootstrap-password2" autocomplete="new-password"></div>' +
+    '<div class="fld"><label>Bootstrap Secret</label><input type="password" id="bootstrap-secret" autocomplete="off"></div>' +
+    '<div class="btnrow"><button class="btn primary" onclick="runOwnerBootstrap()">Create Owner Account</button></div>';
+}
+async function gateSignIn(){
+  var email = val("gate-email").trim();
+  var password = val("gate-password");
+  if (!email || !password){ toast("Enter email and password."); return; }
+  toast("Signing in…");
+  try{ await fauth.signInWithEmailAndPassword(email, password); toast("Signed in ✓"); }
+  catch(e){ toast("Sign-in failed: " + e.message); }
+}
+async function gateForgotPassword(){
+  var email = val("gate-email").trim();
+  if (!email){ toast("Enter your email first."); return; }
+  try{
+    await fauth.sendPasswordResetEmail(email);
+    toast("Password reset email sent (if that account exists) ✓");
+  }catch(e){ toast("Couldn't send reset email: " + e.message); }
+}
+/* One-time owner bootstrap -- creates the owner account, signs into it in
+   THIS browser, force-refreshes the ID token (claims were just set by the
+   Admin SDK moments ago; a token minted before that could still reflect
+   the old, claims-less state), then seeds the 9 approved roles using that
+   fresh owner token. All three steps or none -- if role-seeding fails
+   after a successful account creation, the toast says so explicitly
+   rather than silently leaving roles unseeded. Uses the signed-in
+   credential's own token directly for the seed_roles call rather than
+   authHeaders()/currentAuthUser, since onAuthStateChanged's listener
+   updating those module-level vars is not guaranteed to have already run
+   by the time signInWithEmailAndPassword's own promise resolves. */
+async function runOwnerBootstrap(){
+  var email = val("bootstrap-email").trim();
+  var password = val("bootstrap-password");
+  var password2 = val("bootstrap-password2");
+  var secret = val("bootstrap-secret");
+  if (!email || !password || !secret){ toast("Fill in every field."); return; }
+  if (password !== password2){ toast("Passwords don't match."); return; }
+  if (password.length < 8){ toast("Password must be at least 8 characters."); return; }
+  toast("Creating owner account…");
+  try{
+    var r = await fetch("/.netlify/functions/auth", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "bootstrap_owner", email: email, password: password, secret: secret })
+    });
+    var out = await r.json().catch(function(){ return null; });
+    if (!r.ok || !out || !out.ok) throw new Error((out && out.error) || ("server error " + r.status));
+
+    toast("Owner account created — signing in…");
+    var cred = await fauth.signInWithEmailAndPassword(email, password);
+    var token = await cred.user.getIdToken(true);
+
+    toast("Seeding roles…");
+    var r2 = await fetch("/.netlify/functions/auth", {
+      method: "POST", headers: { "Content-Type": "application/json", "Authorization": "Bearer " + token },
+      body: JSON.stringify({ action: "seed_roles" })
+    });
+    var out2 = await r2.json().catch(function(){ return null; });
+    if (!r2.ok || !out2 || !out2.ok) {
+      throw new Error((out2 && out2.error) || "Role seeding failed — the owner account and sign-in both worked; re-open Account and try again, or ask an admin to re-run seed_roles.");
+    }
+    toast("Owner account ready ✓ — " + out2.seeded.length + " roles seeded.");
+    authBootstrapStatus = true;
+    renderLoginGate();
+  }catch(e){ toast("Setup failed: " + e.message); }
 }
 
 /* Client-side wrappers around netlify/functions/photos.js -- the ONLY
@@ -588,22 +710,42 @@ function getRoofProfile(roof){
 }
 
 /* ================= admin mode =================
-   The PIN is verified server-side (netlify/functions/admin.js) against the
-   ADMIN_PIN environment variable, which is never shipped to the browser.
-   Actual deletes also happen server-side via the Firebase Admin SDK, which
-   is not subject to Firestore rules — firestore.rules (repo root) blocks
-   client-side deletes on these collections entirely, so entering the
-   correct PIN here is what actually unlocks anything, not just a UI check.
-   adminPin is kept in sessionStorage (not in this source file) so a delete
-   request can include it without re-prompting every time. */
-var adminPin = "";
+   Auth Phase 5 (see docs/AUTH_DESIGN.md): isAdmin is now derived from the
+   signed-in user's Firebase custom claims (owner, or role:"admin") -- the
+   PIN is no longer checked by any mutating server action (netlify/
+   functions/admin.js/photos.js/changeorders.js/send-workorder.js all
+   verify a Firebase ID token + the caller's live roles/{role} permission
+   grid instead). isAdmin here only controls which buttons/panels this
+   client SHOWS -- exactly the "UI hiding is convenience only, never the
+   boundary" rule already established in docs/AUTH_DESIGN.md's Enforcement
+   section. A signed-in user whose role has SOME but not all of this bar's
+   underlying permissions (e.g. service_manager has audit.view but isn't
+   admin/owner) won't see this specific bar yet -- a known, deliberate UI
+   scoping gap for tonight, not a security one: every action behind this
+   bar independently re-checks its own specific permission server-side
+   regardless of what this bar shows. */
 var isAdmin = false;
-try{ adminPin = sessionStorage.getItem("roofops-admin-pin") || ""; isAdmin = !!adminPin; }catch(e){}
+function recomputeIsAdmin(){
+  isAdmin = !!(currentAuthClaims && (currentAuthClaims.owner === true || currentAuthClaims.role === "admin"));
+  updateAdminUI();
+}
+/* Attaches the signed-in user's Firebase ID token as a Bearer header --
+   the actual trust boundary every claims-gated server function verifies
+   via admin.auth().verifyIdToken(). Silently omitted if nobody's signed
+   in; the server rejects with 401 in that case, same as any other
+   missing-token call. */
+async function authHeaders(){
+  var h = { "Content-Type": "application/json" };
+  if (fauth && currentAuthUser){
+    try{ h["Authorization"] = "Bearer " + (await currentAuthUser.getIdToken()); }catch(e){}
+  }
+  return h;
+}
 async function callAdminApi(body){
   var r = await fetch("/.netlify/functions/admin", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(Object.assign({ pin: adminPin }, body))
+    headers: await authHeaders(),
+    body: JSON.stringify(body)
   });
   var out = null;
   try{ out = await r.json(); }catch(e){}
@@ -613,7 +755,7 @@ async function callAdminApi(body){
 async function callPhotosApi(body){
   var r = await fetch("/.netlify/functions/photos", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: await authHeaders(),
     body: JSON.stringify(body)
   });
   var out = null;
@@ -623,13 +765,10 @@ async function callPhotosApi(body){
 }
 /* Stage c of the photo storage migration (see "Photo storage migration"
    in DEV_NOTES.md) -- migrates already-saved base64-in-Firestore photos
-   into Firebase Storage. Admin-gated client-side (same isAdmin/adminPin
-   every other bulk/privileged action here already uses) AND the deployed
-   function independently re-checks the PIN itself (netlify/functions/
-   photos.js's migrate_scan/migrate_photo actions) -- defense in depth,
-   not just a client-side gate, matching Mark's explicit "runs against
-   real data ONLY with my go-ahead" requirement being enforced server-side
-   too, not just left to whoever happens to be running this session.
+   into Firebase Storage. Owner-only server-side (photos.js's
+   migrate_scan/migrate_photo -- same exceptional tier as buildings.purge,
+   admin role alone isn't enough), checked client-side too so the button
+   fails fast with a clear message instead of a round trip to a 403.
 
    Dry-run first (migrate_scan writes nothing at all, Storage or
    Firestore) so the tech sees the exact real scope and explicitly
@@ -640,10 +779,10 @@ async function callPhotosApi(body){
    through, say) is always safe; nothing is ever deleted, the original img
    field stays exactly as it was regardless of outcome. */
 async function runPhotoStorageMigration(){
-  if (!isAdmin){ toast("Admin mode required."); return; }
+  if (!currentAuthClaims || currentAuthClaims.owner !== true){ toast("Owner login required."); return; }
   toast("Scanning for photos to migrate…");
   var scan;
-  try{ scan = await callPhotosApi({ action: "migrate_scan", pin: adminPin }); }
+  try{ scan = await callPhotosApi({ action: "migrate_scan" }); }
   catch(e){ toast("Scan failed: " + e.message); return; }
 
   if (!scan.needsMigration.length){
@@ -662,7 +801,7 @@ async function runPhotoStorageMigration(){
     var item = scan.needsMigration[i];
     toast("Migrating photo " + (i + 1) + " of " + scan.needsMigration.length + "…");
     try{
-      var out = await callPhotosApi({ action: "migrate_photo", pin: adminPin, workOrderId: item.workOrderId, photoIndex: item.photoIndex });
+      var out = await callPhotosApi({ action: "migrate_photo", workOrderId: item.workOrderId, photoIndex: item.photoIndex });
       if (out.alreadyMigrated) alreadyDone++; else migrated++;
     }catch(e){ failed++; failures.push({ workOrderId: item.workOrderId, photoIndex: item.photoIndex, error: e.message }); }
   }
@@ -672,30 +811,21 @@ async function runPhotoStorageMigration(){
   if (failures.length) console.warn("Photo migration failures (safe to retry):", failures);
   return { migrated: migrated, alreadyDone: alreadyDone, failed: failed, failures: failures };
 }
-async function toggleAdminMode(){
-  if (isAdmin){
-    isAdmin = false;
-    adminPin = "";
-    try{ sessionStorage.removeItem("roofops-admin-pin"); }catch(e){}
-    toast("Admin mode off");
-    updateAdminUI();
+/* No longer a PIN prompt -- Admin mode now follows sign-in state and role
+   automatically (see block comment above). Clicking this while signed out
+   nudges toward the Account modal; while signed in, it just confirms
+   current status -- there's nothing left to client-side "toggle", the
+   server decides what a given signed-in user can actually do. */
+function toggleAdminMode(){
+  if (!fauth || !currentAuthUser){
+    toast("Sign in first — Admin mode now follows your account's role.");
+    openAccountModal();
     return;
   }
-  var pin = prompt("Enter admin PIN:");
-  if (pin === null) return;
-  toast("Checking PIN…");
-  try{
-    adminPin = pin;
-    await callAdminApi({ action: "check_pin" });
-    isAdmin = true;
-    try{ sessionStorage.setItem("roofops-admin-pin", pin); }catch(e){}
-    toast("Admin mode on — unlink/delete controls unlocked");
-  }catch(e){
-    adminPin = "";
-    isAdmin = false;
-    toast(e.message === "Wrong admin PIN" ? "Wrong PIN" : "Couldn't verify PIN: " + e.message);
-  }
-  updateAdminUI();
+  recomputeIsAdmin();
+  toast(isAdmin ?
+    "Admin mode on (" + (currentAuthClaims.owner ? "owner" : "admin") + ")" :
+    "Your account isn't an owner or admin — ask an admin to change your role.");
 }
 function updateAdminUI(){
   var btn = document.getElementById("admin-toggle");

@@ -59,6 +59,21 @@
   <button class="tab cond" id="account-toggle" onclick="openAccountModal()" style="font-size:11px" title="Account">🔐<span class="tab-label"> Account</span></button>
 </header>
 
+<!-- ================= Require-login gate (Auth Phase 5, dev only -- see
+     docs/AUTH_DESIGN.md). Non-dismissible: no close button, no click-outside
+     handler, unlike every other modal in this file. Hidden whenever fauth
+     isn't configured/available (graceful degrade, matching fdb/fauth's
+     existing null-safe pattern) or once someone is signed in -- see
+     renderLoginGate()/checkAuthBootstrapStatus() in js/core.js. ================= -->
+<div id="login-gate" style="display:none;position:fixed;inset:0;background:#1c2530;z-index:10000;overflow:auto">
+  <div style="max-width:440px;margin:8vh auto;background:#fff;border-radius:8px;overflow:hidden;width:94%">
+    <div style="background:#263238;color:#fff;padding:14px 16px">
+      <b class="cond" style="font-size:18px">RoofOps Field — Sign In Required</b>
+    </div>
+    <div style="padding:16px" id="login-gate-body"></div>
+  </div>
+</div>
+
 <div class="wrap">
 
   <!-- Admin-only, global (not per-work-order) settings — visible on every
