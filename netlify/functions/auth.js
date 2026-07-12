@@ -130,7 +130,11 @@ exports.handler = async function (event) {
   // exactly the "is anything working at all" investigation this exists
   // for. ----
   if (body.action === "whoami_project") {
-    const out = { context: process.env.CONTEXT || null, branch: process.env.BRANCH || null, deployUrl: process.env.URL || null };
+    const out = {
+      context: process.env.CONTEXT || null, branch: process.env.BRANCH || null, deployUrl: process.env.URL || null,
+      deployPrimeUrl: process.env.DEPLOY_PRIME_URL || null, deployUrl2: process.env.DEPLOY_URL || null,
+      siteName: process.env.SITE_NAME || null, deployId: process.env.DEPLOY_ID || null
+    };
     try {
       const raw = process.env.FIREBASE_SERVICE_ACCOUNT;
       out.serviceAccountSet = !!raw;
