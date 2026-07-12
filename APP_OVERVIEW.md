@@ -470,7 +470,8 @@ and uses the KML north/south/east/west bounds to place it on the map. Google Ear
 super-overlay KMZs work too: the app loads the highest-detail tile set and traces
 right on those georeferenced tiles. If the KML declares rotation, the app warns you
 to verify alignment before saving because the current Leaflet overlay does not rotate
-the image.
+the image. KMZ/KML traces are labeled as approximate georeferenced overlays in
+exports; they do not use the same survey-grade method label as RTK GeoTIFF traces.
 
 For the North College Street KMZ, tapping an edge dimension to Calibrate defaults
 the known distance to **28 ft** and asks you to confirm it is the inside-parapet to

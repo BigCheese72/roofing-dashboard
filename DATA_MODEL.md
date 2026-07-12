@@ -499,9 +499,15 @@ as a roof's custom base map); the third — an uploaded drawing/PDF — is block
   georeferencedSource, // optional - true when source is "geotiff_trace" or
                   // "kml_groundoverlay_trace".
                   // The OPPOSITE meaning of tracedOnOrtho above: the ring is
-                  // already a real, accurate, RTK-grade position straight
-                  // from the uploaded GeoTIFF's own embedded geodata, not a
-                  // placeholder — no manual alignment or calibration needed.
+                  // already a real-world lat/lng position, not a placeholder.
+                  // GeoTIFF traces are RTK/survey-grade source material;
+                  // KMZ/KML GroundOverlay traces are approximate georeferenced
+                  // overlays and must not be reported as RTK survey-grade.
+  measurementMethod, // optional - persisted audit label for exports/reports:
+                  // { kind, accuracyClass, label, maxQuadBBoxErrorFt? }.
+                  // Examples: RTK GeoTIFF trace, KMZ super-overlay tile trace
+                  // (approximate; not RTK survey-grade), flat image trace,
+                  // walked phone-GPS corners, OSM footprint trace.
   groundOverlay,  // optional - only when source is "kml_groundoverlay_trace":
                   // Single-image shape: { sourceType:"kml_groundoverlay" |
                   // "kmz_groundoverlay", sourceFileName, kmlFileName,

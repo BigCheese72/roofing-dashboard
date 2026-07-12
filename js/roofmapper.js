@@ -1012,6 +1012,56 @@ function rmDeconflictLabels(items, svgW, svgH, obstacles){
     return Object.assign({}, it, { x: finalPos.x, y: finalPos.y, moved: moved });
   });
 }
+function rmOutlineMeasurementMethod(outline){
+  if (!outline) return { kind: "unknown", label: "Method: Unknown capture source" };
+  if (!outline.source && outline.measurementMethod && outline.measurementMethod.label){
+    return outline.measurementMethod;
+  }
+  if (outline.source === "geotiff_trace"){
+    return { kind: "geotiff", accuracyClass: "survey_grade_source",
+      label: "Method: RTK GeoTIFF trace (survey-grade source)" };
+  }
+  if (outline.source === "kml_groundoverlay_trace"){
+    var go = outline.groundOverlay || {};
+    var maxErr = go.maxQuadBBoxErrorFt || go.quadBBoxErrorFt || 0;
+    var errText = maxErr ? "; max quad approx. " + (Math.round(maxErr * 10) / 10) + " ft" : "";
+    var name = go.sourceType === "kmz_superoverlay" ? "KMZ super-overlay tile trace" : "KMZ/KML GroundOverlay trace";
+    return { kind: go.sourceType || "kml_groundoverlay", accuracyClass: "georeferenced_overlay_approx",
+      maxQuadBBoxErrorFt: maxErr,
+      label: "Method: " + name + " (approx. overlay; not RTK survey-grade" + errText + ")" };
+  }
+  if (outline.source === "ortho_trace"){
+    return { kind: "flat_ortho", accuracyClass: outline.calibration ? "field_calibrated" : "uncalibrated_image",
+      label: outline.calibration ? "Method: Flat image trace (field-calibrated)" : "Method: Flat image trace (requires field calibration)" };
+  }
+  if (outline.source === "walk_corners"){
+    return { kind: "walked_phone_gps", accuracyClass: "field_gps_approx",
+      label: "Method: Walked phone-GPS corners (approximate)" };
+  }
+  if (outline.source === "osm"){
+    return { kind: "osm", accuracyClass: "public_map_approx",
+      label: "Method: OSM footprint trace (approximate public map data)" };
+  }
+  return { kind: "manual_map", accuracyClass: "manual_map_approx",
+    label: "Method: Manual map trace (approximate)" };
+}
+function rmOutlineMeasurementMethodSummary(outlines){
+  var labels = [];
+  (outlines || []).forEach(function(outline){
+    var label = rmOutlineMeasurementMethod(outline).label.replace(/^Method:\s*/, "");
+    if (labels.indexOf(label) === -1) labels.push(label);
+  });
+  return labels.length ? "Methods: " + labels.join("; ") : "Method: Unknown capture source";
+}
+function rmCopyOutlineSourceMetadata(src, dest){
+  if (!src || !dest) return dest;
+  if (src.georeferencedSource) dest.georeferencedSource = true;
+  if (src.tracedOnOrtho) dest.tracedOnOrtho = true;
+  if (src.groundOverlay) dest.groundOverlay = Object.assign({}, src.groundOverlay);
+  if (src.measurementMethod) dest.measurementMethod = Object.assign({}, src.measurementMethod);
+  else dest.measurementMethod = rmOutlineMeasurementMethod(dest);
+  return dest;
+}
 function rmBuildOutlineSvg(outline, overlay){
   var origin = rmGeomRingCentroid(outline.ring);
   var pts = outline.ring.map(function(p){ return rmExportProjectPoint(p, origin); });
@@ -1042,7 +1092,7 @@ function rmBuildOutlineSvg(outline, overlay){
      at worst. Plain Math.min(MAX_SCALE, fitRatio) is the correct clamp. */
   var scale = Math.min(RM_EXPORT_MAX_SCALE, RM_EXPORT_MAX_CANVAS_DIM / Math.max(w, h));
   var hasBuildingInfo = !!(overlay && (overlay.buildingName || overlay.buildingAddress));
-  var headerH = hasBuildingInfo ? 76 : 60;
+  var headerH = hasBuildingInfo ? 94 : 78;
   var footerH = overlay ? 64 : 40; /* extra room for the legend line when features are included */
   var svgW = Math.max(240, w * scale), svgH = Math.max(240, h * scale) + headerH + footerH;
   function toSvg(p){
@@ -1156,6 +1206,8 @@ function rmBuildOutlineSvg(outline, overlay){
   headerSvg += '<text x="16" y="' + statsY + '" font-family="Arial, sans-serif" font-size="13" fill="#5B6770">Area: ' +
     outline.areaSqFt.toFixed(0) + ' sq ft &#183; Perimeter: ' + outline.perimeterFt.toFixed(0) + ' ft &#183; Generated ' +
     rmEscXml(new Date(outline.createdAt || Date.now()).toLocaleDateString()) + '</text>';
+  headerSvg += '<text x="16" y="' + (statsY + 18) + '" font-family="Arial, sans-serif" font-size="12" fill="#5B6770">' +
+    rmEscXml(rmOutlineMeasurementMethod(outline).label) + '</text>';
   var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + svgW + '" height="' + svgH + '" viewBox="0 0 ' + svgW + ' ' + svgH + '">' +
     '<rect width="100%" height="100%" fill="#ffffff"/>' +
     headerSvg + basemapSvg +
@@ -1259,7 +1311,7 @@ function rmBuildMultiRoofOutlineSvg(data){
   var w = (maxX - minX) + padFt * 2, h = (maxY - minY) + padFt * 2;
   var scale = Math.min(RM_EXPORT_MAX_SCALE, RM_EXPORT_MAX_CANVAS_DIM / Math.max(w, h)); /* see the same fix + explanation in rmBuildOutlineSvg() above */
   var hasBuildingInfo = !!(data.buildingName || data.buildingAddress);
-  var headerH = hasBuildingInfo ? 84 : 66;
+  var headerH = hasBuildingInfo ? 102 : 84;
   var footerH = 84; /* legend + disclaimer, taller than the single-roof footer */
   var svgW = Math.max(240, w * scale), svgH = Math.max(240, h * scale) + headerH + footerH;
   function toSvg(p){
@@ -1393,6 +1445,8 @@ function rmBuildMultiRoofOutlineSvg(data){
   }
   headerSvg += '<text x="16" y="' + statsY + '" font-family="Arial, sans-serif" font-size="13" fill="#5B6770">Total area: ' +
     Math.round(totalAreaSqFt) + ' sq ft &#183; Generated ' + rmEscXml(new Date().toLocaleDateString()) + '</text>';
+  headerSvg += '<text x="16" y="' + (statsY + 18) + '" font-family="Arial, sans-serif" font-size="12" fill="#5B6770">' +
+    rmEscXml(rmOutlineMeasurementMethodSummary(data.roofs.map(function(r){ return r.outline; }))) + '</text>';
   var scaleBarFt = 20, scaleBarPx = scaleBarFt * scale;
   /* North arrow -- this projection's "up" (toSvg's y flip) genuinely is
      geographic north (rmExportProjectPoint/rmGeomToLocalXY use a plain
@@ -2395,6 +2449,7 @@ function rmOnVertexDragEnd(vertexIndex, droppedLatLng, marker){
      hand-edited wouldn't mean what any of them used to. */
   delete outline.squared;
   delete outline.calibration;
+  outline.measurementMethod = rmOutlineMeasurementMethod(outline);
   rmState.preSquareRing = null;
   var undoBtn = document.getElementById("rm-undo-square-btn");
   if (undoBtn) undoBtn.style.display = "none";
@@ -2427,7 +2482,7 @@ async function rmPersistVertexEdit(){
     roof.roof_outlines = (roof.roof_outlines || []).map(function(o){
       return o.id === outline.id ? Object.assign({}, o, {
         ring: outline.ring, areaSqFt: outline.areaSqFt, perimeterFt: outline.perimeterFt,
-        center: outline.center, calibration: null, squared: null
+        center: outline.center, calibration: null, squared: null, measurementMethod: outline.measurementMethod
       }) : o;
     });
     var roofIdx = roofs.findIndex(function(r){ return r.id === roof.id; });
@@ -2516,6 +2571,7 @@ function rmCalibrateEdge(edgeIndex){
     outline.calibration.verified = true;
     outline.calibration.description = "Northeasternmost west-to-east wall, inside parapet";
   }
+  outline.measurementMethod = rmOutlineMeasurementMethod(outline);
   /* Scale inheritance -- learn from this calibration so the NEXT roof
      traced on this same building (manual_trace/ortho_trace only --
      OSM footprints are independently georeferenced, walk_corners has no
@@ -2569,7 +2625,7 @@ async function rmPersistCalibration(rescaledAssets){
     roof.roof_outlines = (roof.roof_outlines || []).map(function(o){
       return o.id === outline.id ? Object.assign({}, o, {
         ring: outline.ring, areaSqFt: outline.areaSqFt, perimeterFt: outline.perimeterFt,
-        center: outline.center, calibration: outline.calibration
+        center: outline.center, calibration: outline.calibration, measurementMethod: outline.measurementMethod
       }) : o;
     });
     if (rescaledAssets) roof.roof_assets = rescaledAssets;
@@ -2643,6 +2699,8 @@ function rmUndoSquareUp(){
    computation differs. */
 async function rmPersistOutlineGeometryEdit(){
   var outline = rmState.outline;
+  if (!outline) return;
+  outline.measurementMethod = rmOutlineMeasurementMethod(outline);
   if (!rmState.linkedBuildingId || !rmState.linkedRoofId || !outline.id){
     toast("Will save with the outline.");
     return;
@@ -2657,7 +2715,7 @@ async function rmPersistOutlineGeometryEdit(){
     roof.roof_outlines = (roof.roof_outlines || []).map(function(o){
       return o.id === outline.id ? Object.assign({}, o, {
         ring: outline.ring, areaSqFt: outline.areaSqFt, perimeterFt: outline.perimeterFt,
-        center: outline.center, squared: outline.squared || null
+        center: outline.center, squared: outline.squared || null, measurementMethod: outline.measurementMethod
       }) : o;
     });
     var roofIdx = roofs.findIndex(function(r){ return r.id === roof.id; });
@@ -2956,6 +3014,7 @@ function rmExitAlignMode(persist){
        against a ring that's since moved wouldn't mean what it used to). */
     delete outline.squared;
     delete outline.calibration;
+    outline.measurementMethod = rmOutlineMeasurementMethod(outline);
     rmState.preSquareRing = null;
     document.getElementById("rm-undo-square-btn").style.display = "none";
     rmState.preResnapRing = null;
@@ -3472,11 +3531,18 @@ function rmStartKmlSuperOverlayTrace(tiles, meta){
     "Tap the roof's corners in order, right on the KMZ orthomosaic above. This KMZ is a tiled Google Earth " +
     "overlay, so RoofMapper loaded the highest-detail tile set for tracing.";
   var msg = "KMZ super-overlay loaded (" + tiles.length + " tiles) -- trace the roof on the orthomosaic.";
+  var warns = [];
   if ((meta.maxQuadBBoxErrorFt || 0) > 0.25){
-    msg += " Note: KML tile quads are approximated to rectangular overlays (max corner difference ~" +
-      Math.round(meta.maxQuadBBoxErrorFt * 10) / 10 + " ft). Verify alignment before saving.";
+    warns.push("KML tile quads are approximated to rectangular overlays (max corner difference ~" +
+      Math.round(meta.maxQuadBBoxErrorFt * 10) / 10 + " ft)");
   }
-  rmSetStatus(msg, (meta.maxQuadBBoxErrorFt || 0) > 0.25 ? "warn" : null);
+  if (tiles.length > 40){
+    warns.push("large tile count may be slow on field phones; load-test this KMZ on the actual device before crew use");
+  }
+  if (warns.length){
+    msg += " Note: " + warns.join("; ") + ". Verify alignment before saving.";
+  }
+  rmSetStatus(msg, warns.length ? "warn" : null);
   rmUpdateControlVisibility();
 }
 function rmKmzKmlLevel(path){
@@ -3976,6 +4042,7 @@ function rmFinishTrace(){
      it sits is a placeholder. See "Ortho upload + flat-canvas tracing" in
      DEV_NOTES.md. */
   if (tracedOnOrtho) outline.tracedOnOrtho = true;
+  outline.measurementMethod = rmOutlineMeasurementMethod(outline);
   /* Scale inheritance (Mark: "he should not have to re-calibrate for every
      roof... scale is a property of the building/base image, not of an
      individual roof") -- applies to manual_trace/ortho_trace only (OSM
@@ -3998,6 +4065,7 @@ function rmFinishTrace(){
     outline.areaSqFt = rmGeomPolygonAreaSqMeters(scaledRing) * 10.7639;
     outline.perimeterFt = rmGeomPolygonPerimeterMeters(scaledRing) * 3.28084;
     outline.calibration = { inherited: true, factor: rmState.inheritedScaleFactor, calibratedAt: Date.now() };
+    outline.measurementMethod = rmOutlineMeasurementMethod(outline);
   }
   rmCancelTrace();
   rmDrawFinalOutline(outline);
@@ -4628,6 +4696,7 @@ async function rmSaveSplitSectionsToBuilding(buildingId){
         center: sec.center, source: baseOutline.source, tags: baseOutline.tags || {},
         isSiteBoundary: false, calibration: baseOutline.calibration || null, createdAt: Date.now()
       };
+      rmCopyOutlineSourceMetadata(baseOutline, outlineEntry);
       var newRoof = {
         id: genId("roof"), label: label, roofSystem: "",
         roof_base_map_type: null, roof_base_map_url: null, roof_base_map_bounds: null,
@@ -4718,6 +4787,7 @@ async function rmSaveSplitSectionsToExistingRoof(buildingId, roofId){
       center: sections[0].center, source: baseOutline.source, tags: baseOutline.tags || {},
       isSiteBoundary: false, calibration: baseOutline.calibration || null, createdAt: Date.now()
     };
+    rmCopyOutlineSourceMetadata(baseOutline, primaryOutline);
     origRoof.roof_outlines = (origRoof.roof_outlines || []).concat([primaryOutline]);
     var renamed = [];
     if ((origRoof.label || "Roof").trim() !== sections[0].label.trim()){
@@ -4749,6 +4819,7 @@ async function rmSaveSplitSectionsToExistingRoof(buildingId, roofId){
         center: sec.center, source: baseOutline.source, tags: baseOutline.tags || {},
         isSiteBoundary: false, calibration: baseOutline.calibration || null, createdAt: Date.now()
       };
+      rmCopyOutlineSourceMetadata(baseOutline, outlineEntry);
       var newRoof = {
         id: genId("roof"), label: label, roofSystem: "",
         roof_base_map_type: null, roof_base_map_url: null, roof_base_map_bounds: null,

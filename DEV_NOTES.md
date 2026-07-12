@@ -5631,6 +5631,12 @@ Implementation:
   KMZ tiles. Because normal Leaflet image overlays cannot warp `gx:LatLonQuad`
   rasters, the importer records `quadBBoxErrorFt`/`maxQuadBBoxErrorFt` and shows
   a warning when tile quads are being approximated to rectangular bounds.
+  Large tiled KMZs (>40 overlay images; North College is 59 at level 3) also
+  show a field-performance warning until the exact phone/browser path is tested.
+- Exports now print a capture-method line. GeoTIFF traces can say
+  `RTK GeoTIFF trace (survey-grade source)`; KMZ/KML traces say they are an
+  approximate GroundOverlay/super-overlay source and explicitly not RTK
+  survey-grade, including the max quad approximation when known.
 - KML+image upload matches the local paired image the same way.
 - The image is resized through the same bounded `rmResizeDataUrlToOrtho()` path
   used by flat orthos, then drawn as a Leaflet `imageOverlay` at the KML bounds.
