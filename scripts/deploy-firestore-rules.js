@@ -96,9 +96,22 @@ const credPath = path.join(os.tmpdir(), "firestore-rules-deploy-credentials.json
 fs.writeFileSync(credPath, raw, { mode: 0o600 });
 
 try {
+  // INDEXES ship with RULES, for exactly the same reason (2026-07-13): a
+  // composite index that exists only because somebody once clicked the
+  // "create it here" link in a Firestore error message is an index that does
+  // NOT exist in the next project you deploy to. warranty_review_queue had no
+  // index on watkins-service-orders-dev, so list_review_queue() returned
+  // 9 FAILED_PRECONDITION -- the review queue, which is the entire safety net
+  // behind "never silently file a warranty report on the wrong roof", was
+  // unreadable. Reports would have been staged in Firestore and stayed
+  // invisible. Same trap as "The Firestore rules trap" above, different noun.
+  //
+  // --non-interactive will not DELETE indexes missing from firestore.indexes.json
+  // (that needs --force), so this is additive and cannot drop an index somebody
+  // created by hand.
   const result = spawnSync(
     "npx",
-    ["--yes", "firebase-tools", "deploy", "--only", "firestore:rules", "--project", projectId, "--non-interactive"],
+    ["--yes", "firebase-tools", "deploy", "--only", "firestore:rules,firestore:indexes", "--project", projectId, "--non-interactive"],
     {
       stdio: "inherit",
       env: Object.assign({}, process.env, { GOOGLE_APPLICATION_CREDENTIALS: credPath }),
@@ -109,10 +122,10 @@ try {
     fail("Could not launch firebase-tools: " + result.error.message);
   }
   if (result.status !== 0) {
-    fail("firebase-tools exited with status " + result.status + ". Rules were NOT published to " + projectId + ". See the build log above for the real error (a permission error here means this deploy context's service account needs the Firebase Rules Admin role on " + projectId + ").");
+    fail("firebase-tools exited with status " + result.status + ". Rules and/or indexes were NOT published to " + projectId + ". See the build log above for the real error (a permission error here means this deploy context's service account needs the Firebase Rules Admin role, and Cloud Datastore Index Admin, on " + projectId + ").");
   }
 
-  console.log("[deploy-firestore-rules] Firestore rules published to " + projectId + ".");
+  console.log("[deploy-firestore-rules] Firestore rules + indexes published to " + projectId + ".");
 } finally {
   try { fs.unlinkSync(credPath); } catch (e) { /* best-effort cleanup, not worth failing the build over */ }
 }
