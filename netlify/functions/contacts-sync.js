@@ -65,6 +65,12 @@ const NOISE_LOCAL = [
   /^news(letter)?s?$/i, /^marketing$/i, /^updates?$/i, /^billing$/i, /^receipts?$/i,
   /^invites?$/i, /^team$/i, /^hello$/i, /^automated/i, /^system/i, /^webmaster$/i,
   /^security$/i, /^account(s)?[-_]?(security|team)?$/i, /^help$/i, /^admin$/i,
+  // Shared/role mailboxes at suppliers and manufacturers. These reply, so they
+  // look like people, but there is no person behind them to put on a card.
+  /^warranty/i, /^repairforwarranty$/i, /^claims?$/i, /^orders?$/i, /^dispatch$/i,
+  /^scheduling$/i, /^estimating$/i, /^bids?$/i, /^quotes?$/i, /^purchasing$/i,
+  /^shipping$/i, /^returns?$/i, /^subscriptions?$/i, /^careers?$/i, /^jobs?$/i,
+  /^(ap|ar|hr)$/i, /^payroll$/i, /^accounting$/i, /^customerservice$/i, /^service$/i,
 ];
 
 // Mark's own automated RoofOps mail: workorders@ and the per-job WO#####@ aliases.
@@ -136,12 +142,46 @@ function ownText(body) {
   return t.slice(0, cut);
 }
 
-// The signature is the tail of the sender's own text. Take the last ~14
-// non-empty lines: long enough for a block with address + phones + site,
-// short enough not to swallow the message body itself.
-function sigLines(body) {
+// Find the SIGNATURE BLOCK, not merely "the last few lines".
+//
+// Naively taking the tail of the message drags prose in with it — a two-line
+// reply has no signature at all, and "Yes, and the CO for wall panels..." will
+// happily match a company regex on the word "CO". So anchor the block: find an
+// explicit delimiter ("--"), or the last line that is just the sender's own
+// name, or the first line carrying a phone/contact marker, and take from there
+// down. If no anchor exists, there is NO signature — return nothing rather than
+// inventing one out of the body text.
+function sigLines(body, displayName) {
   const lines = ownText(body).split("\n").map(l => l.replace(/\s+/g, " ").trim()).filter(Boolean);
-  return lines.slice(-14);
+  if (!lines.length) return [];
+
+  const name = String(displayName || "").trim().toLowerCase();
+  const nameBits = name.replace(/,/g, " ").split(/\s+/).filter(w => w.length > 2);
+
+  let start = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    const low = l.toLowerCase();
+    if (/^--+\s*$/.test(l) || /^(thanks|thank you|regards|best|sincerely|cheers)[,!.]?$/i.test(l)) {
+      start = i + 1; // delimiter / sign-off: the block starts after it
+      continue;
+    }
+    // A line that is JUST the person's name (not a sentence containing it).
+    if (nameBits.length >= 2 && l.length <= 45 && nameBits.every(b => low.includes(b))) {
+      start = i;
+    }
+  }
+  // Fallback anchor: the first line that carries a phone or a contact label.
+  if (start < 0) {
+    for (let i = 0; i < lines.length; i++) {
+      if (PHONE_RE.test(lines[i]) || /\b(office|mobile|cell|direct|fax|main)\b\s*[:.\-]/i.test(lines[i])) {
+        start = Math.max(0, i - 2);
+        break;
+      }
+    }
+  }
+  if (start < 0 || start >= lines.length) return [];   // no signature — say so
+  return lines.slice(start, start + 12);
 }
 
 const PHONE_RE = /(?:\+?1[\s.\-]?)?\(?\b(\d{3})\)?[\s.\-]?(\d{3})[\s.\-]?(\d{4})\b(?:\s*(?:x|ext\.?|extension)\s*(\d{1,6}))?/i;
@@ -180,21 +220,28 @@ function extractPhones(lines) {
   return out;
 }
 
+// SaaS/app/tracking hosts that turn up in message bodies and footers but are
+// never the sender's own website. (Wade Sanderson is not employed by CompanyCam.)
+const NOT_A_WEBSITE = /^(app\.|www\.)?(companycam|salesforce|force|my\.salesforce|docusign|calendly|dropbox|box|onedrive|sharepoint|google|goo\.gl|bit\.ly|linkedin|facebook|twitter|instagram|youtube|zoom|teams|outlook|office|microsoft|apple|amazonaws|mailchimp|constantcontact|sendgrid|hubspot|smartsheet|dotloop|adobe|acrobat|wetransfer|sharefile|egnyte|procore|buildertrend)\b/i;
+
 function extractWebsite(lines, senderDomain) {
+  let fallback = null;
   for (const line of lines) {
     const m = line.match(/\b((?:https?:\/\/)?(?:www\.)?[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)+)(\/[^\s|]*)?/i);
     if (!m) continue;
     let host = m[1].replace(/^https?:\/\//i, "").replace(/^www\./i, "").toLowerCase();
     if (/@/.test(line) && line.indexOf(host) > line.indexOf("@")) continue; // part of an email address
     if (/\.(png|jpg|jpeg|gif|svg)$/i.test(host)) continue;
-    if (/^(linkedin|facebook|twitter|x|instagram|youtube|maps\.google)\./i.test(host)) continue;
-    if (/^(outlook|office|microsoft|google|apple)\./i.test(host)) continue;
-    // A site on the sender's own mail domain is almost certainly their company site.
-    if (host === senderDomain || host.endsWith("." + senderDomain) || /\.(com|net|org|co|us|biz)$/i.test(host)) {
-      return m[1].replace(/^https?:\/\//i, "");
+    if (NOT_A_WEBSITE.test(host)) continue;
+    if (!/\.(com|net|org|co|us|biz|info|io)$/i.test(host)) continue;
+    // A site on the sender's own mail domain is almost certainly their company
+    // site — take it outright. Anything else is only a fallback.
+    if (host === senderDomain || host.endsWith("." + senderDomain) || senderDomain.endsWith("." + host)) {
+      return host;
     }
+    if (!fallback) fallback = host;
   }
-  return null;
+  return fallback;
 }
 
 const TITLE_WORDS = /\b(president|vice president|vp|owner|principal|partner|director|manager|supervisor|superintendent|foreman|estimator|sales|account executive|account manager|representative|rep\b|specialist|consultant|engineer|architect|coordinator|administrator|assistant|controller|accountant|analyst|technician|inspector|project manager|pm\b|ceo|cfo|coo|cto|territory|business development|bd\b|operations|service|field|senior|sr\.|jr\.)\b/i;
@@ -220,28 +267,42 @@ function extractAddress(lines) {
   return null;
 }
 
+// Prose, not a label. A signature line is a fragment ("General Superintendent",
+// "Watkins Roofing Inc."); a body line is a sentence ("Yes, and the CO for wall
+// panels is approved"). Reject anything that reads like a sentence — that one
+// check is what stops COMPANY_WORDS matching the "CO" in "the CO for wall".
+function looksLikeProse(line) {
+  if (/[.?!]\s+\S/.test(line)) return true;                 // mid-line sentence break
+  if (/\b(i|we|you|they|it|he|she)\b\s+\b(will|can|have|has|am|are|is|was|were|think|need|want|would|should|could)\b/i.test(line)) return true;
+  if (/^(yes|no|ok|okay|sure|thanks|thank|please|sorry|hi|hello|hey|got|per|attached|see|let|here|that|this|there|and|but|so|if|when)\b/i.test(line)) return true;
+  if (/\?$/.test(line)) return true;
+  if (line.split(/\s+/).length > 9) return true;            // too long to be a label
+  if (/^[a-z]/.test(line)) return true;                     // labels are capitalised
+  return false;
+}
+
 function extractCompanyAndTitle(lines, displayName, senderDomain) {
   let company = null, title = null;
-  const nameParts = String(displayName || "").toLowerCase().split(/[\s,]+/).filter(w => w.length > 2);
+  const nameParts = String(displayName || "").toLowerCase().replace(/,/g, " ").split(/\s+/).filter(w => w.length > 2);
   for (const line of lines) {
-    if (line.length > 90) continue;                 // prose, not a sig line
+    if (line.length > 70) continue;
     if (/@/.test(line)) continue;                   // email line
     if (PHONE_RE.test(line)) continue;              // phone line
+    if (looksLikeProse(line)) continue;             // body text, not a sig label
     const low = line.toLowerCase();
     if (nameParts.length && nameParts.every(p => low.includes(p))) continue; // the name itself
     if (!title && TITLE_WORDS.test(line) && !COMPANY_WORDS.test(line)) { title = line.replace(/^[-|\s]+/, "").trim(); continue; }
     if (!company && COMPANY_WORDS.test(line)) { company = line.replace(/^[-|\s]+/, "").trim(); continue; }
   }
-  // Weak fallback: a title-cased line right under the name, when nothing matched.
-  if (!company && senderDomain && !/^(gmail|yahoo|hotmail|outlook|aol|icloud|msn|comcast|att|sbcglobal|charter)\./i.test(senderDomain + ".")) {
-    company = null; // deliberately NOT guessing the company from the domain — see header note
-  }
+  // Deliberately NOT guessing the company from the mail domain: "cletusbagby@
+  // yahoo.com" does not work at Yahoo, and a plausible-looking wrong employer
+  // on a customer's card is worse than a blank field.
   return { company, title };
 }
 
 function parseSignature(body, displayName, email) {
   const senderDomain = String(email || "").split("@")[1] || "";
-  const lines = sigLines(body);
+  const lines = sigLines(body, displayName);
   const phones = extractPhones(lines);
   const { company, title } = extractCompanyAndTitle(lines, displayName, senderDomain);
   return {
