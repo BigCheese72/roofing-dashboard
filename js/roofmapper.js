@@ -1056,12 +1056,14 @@ function rmNormalizeEdgeMeasurement(outline, m){
   var decision = storedDecision || "use";
   var appliedFactor = rmIsFiniteNumber(m.appliedFactor) ? m.appliedFactor : null;
   var factor = rmIsFiniteNumber(m.factor) ? m.factor : null;
+  var composedAppliedFactor = rmIsFiniteNumber(m.composedAppliedFactor) ? m.composedAppliedFactor : null;
   return Object.assign({}, m, {
     id: m.id || ("legacy-edge-" + m.edgeIndex + "-" + String(m.measuredAt || "unknown")),
     source: "measured",
     factor: factor,
     decision: decision,
     appliedFactor: appliedFactor,
+    composedAppliedFactor: composedAppliedFactor,
     rescaleApplied: typeof m.rescaleApplied === "boolean" ? m.rescaleApplied :
       (storedDecision ? (decision === "use" || decision === "average") :
         (rmIsFiniteNumber(appliedFactor) ? Math.abs(appliedFactor - 1) > 0.000001 : null))
@@ -1157,9 +1159,26 @@ function rmLatestAppliedMeasuredEdge(outline){
     return (b.measuredAt || 0) - (a.measuredAt || 0);
   })[0];
 }
+function rmMeasurementScaleStillApplied(m){
+  return !!(m && (!m.invalidatedAt || m.invalidatedReason === "superseded_by_remeasure"));
+}
 function rmComposedAppliedScaleFactor(outline){
-  var list = rmActiveMeasuredEdges(outline).filter(function(m){
-    return m && m.rescaleApplied === true && rmIsFiniteNumber(m.appliedFactor);
+  var recorded = rmAllMeasuredEdgeRecords(outline).filter(function(m){
+    return rmMeasurementScaleStillApplied(m) && m.rescaleApplied === true && rmIsFiniteNumber(m.composedAppliedFactor);
+  });
+  if (recorded.length){
+    return recorded.slice().sort(function(a, b){
+      return (b.measuredAt || 0) - (a.measuredAt || 0);
+    })[0].composedAppliedFactor;
+  }
+  var inherited = outline && outline.inheritedScale && rmIsFiniteNumber(outline.inheritedScale.factor) ?
+    outline.inheritedScale.factor : null;
+  if (rmIsFiniteNumber(inherited)) return inherited;
+  var legacyInherited = outline && outline.calibration && outline.calibration.inherited &&
+    rmIsFiniteNumber(outline.calibration.factor) ? outline.calibration.factor : null;
+  if (rmIsFiniteNumber(legacyInherited)) return legacyInherited;
+  var list = rmAllMeasuredEdgeRecords(outline).filter(function(m){
+    return rmMeasurementScaleStillApplied(m) && m.rescaleApplied === true && rmIsFiniteNumber(m.appliedFactor);
   });
   if (!list.length) return null;
   return list.slice().sort(function(a, b){
@@ -1276,9 +1295,9 @@ function rmBuildInheritedScaleRecord(src, factor){
       derivedAt: src.calibration.calibratedAt || null
     };
   }
-  var direct = rmLatestAppliedMeasuredEdge(src);
+  var hasAppliedMeasurement = !!rmLatestAppliedMeasuredEdge(src);
   var composedFactor = rmComposedAppliedScaleFactor(src);
-  if (!inherited && !direct) return null;
+  if (!inherited && !hasAppliedMeasurement) return null;
   return {
     fromOutlineId: inherited ? (inherited.fromOutlineId || null) : (src.id || null),
     factor: rmIsFiniteNumber(factor) ? factor : (inherited && rmIsFiniteNumber(inherited.factor) ? inherited.factor :
@@ -2719,17 +2738,13 @@ function rmRenderOutlineStats(outline){
     'OpenStreetMap, not a single roof — the numbers below cover the whole site. Use only as a rough reference; ' +
     'trace or measure the actual roof separately.</p>' : '';
   /* Scale inheritance indicator -- Mark: "show the user that the scale is
-     inherited." outline.calibration.inherited (set by rmFinishTrace() when
-     it auto-applies a factor learned from an earlier roof on this same
-     building) is distinct from a manually-tapped edge calibration
-     (calibration.edgeIndex set instead) -- only the inherited case gets
-     this note; a real edge tap already has its own green-highlighted
-     label on the map. */
+     inherited." Gate this on the measurement model; the legacy calibration
+     mirror is read only through the model for older outlines. */
   var scaleNote = "";
   if (method && method.label){
     scaleNote = '<p class="hint" style="margin:0 0 8px">' + esc(method.label.replace(/^Method:\s*/, "")) + '</p>';
   }
-  if (outline.calibration && outline.calibration.inherited){
+  if (method && method.scaleSource && method.scaleSource.kind === "inherited"){
     scaleNote += '<p class="hint" style="margin:0 0 8px">Scale inherited from this building&rsquo;s earlier ' +
       'calibration. Tap any edge&rsquo;s length to override it for just this roof.</p>';
   }
@@ -3135,12 +3150,15 @@ async function rmCalibrateEdge(edgeIndex){
     }
   }
   var rescaleApplied = decision === "use" || decision === "average";
+  var priorComposedFactor = rmComposedAppliedScaleFactor(outline);
+  if (!rmIsFiniteNumber(priorComposedFactor)) priorComposedFactor = 1;
   var measurementEntry = {
     id: rmMeasurementId(edgeIndex),
     edgeIndex: edgeIndex,
     measuredFt: measuredFt,
     factor: factor,
     appliedFactor: appliedFactor,
+    composedAppliedFactor: rescaleApplied ? priorComposedFactor * appliedFactor : null,
     rescaleApplied: rescaleApplied,
     decision: decision,
     source: "measured",
@@ -4734,7 +4752,6 @@ function rmFinishTrace(){
       scaleSource: "measured",
       derivedAt: Date.now()
     };
-    outline.calibration = { inherited: true, factor: rmState.inheritedScaleFactor, calibratedAt: Date.now() };
     rmRefreshOutlineMeasurementModel(outline);
   }
   rmCancelTrace();
