@@ -152,15 +152,33 @@ function kvTable(rows){
    happen entirely on this side of that call: renderLeakReportDoc() stays
    deliberately synchronous (no Firestore access mid-render, same as
    always) and just reads whatever this module-level var already holds by
-   the time it runs. null/empty means "no linked roof outline" -- the
-   report renders exactly as it always did, roof plan section omitted. */
-var rmReportRoofPlanData = null;
+   the time it runs.
+
+   PR #17 review, QUESTION 1: this used to be a bare array with no
+   identity check. If renderDoc() ever fires again for a DIFFERENT work
+   order before a fresh goToPreview() completes for it, the previous
+   order's roof plan and field-measurement table would render on the new
+   order's customer-facing document -- a wrong-roof provenance block.
+   Keyed to `currentId` (js/workorders.js's own module-level "which order
+   is currently loaded" var) rather than collect().id: collect() builds a
+   FRESH id (`"wo_" + Date.now()`) on every call for a not-yet-saved order
+   (currentId still null), so comparing against collect().id would treat
+   the SAME unsaved order as stale on every single render. currentId stays
+   stable until the order is actually saved/loaded/reset, which is the
+   identity that actually matters here. rmReportRoofPlanEntriesFor() is
+   the single read path -- nothing should read rmReportRoofPlanData
+   directly. */
+var rmReportRoofPlanData = null; /* { woId, entries } | null */
+function rmReportRoofPlanEntriesFor(){
+  if (!rmReportRoofPlanData || rmReportRoofPlanData.woId !== currentId) return [];
+  return rmReportRoofPlanData.entries;
+}
 async function goToPreview(){
   var photoCheck = await ensurePhotosLoadedForExport();
   if (!photoCheck.ok) alert(photosMissingWarning(photoCheck.missingCount));
   var roofPlanResult = await rmFetchReportRoofOutlines(collect());
   if (roofPlanResult.error) toast("Roof plan couldn't be loaded: " + roofPlanResult.error);
-  rmReportRoofPlanData = roofPlanResult.roofEntries;
+  rmReportRoofPlanData = { woId: currentId, entries: roofPlanResult.roofEntries };
   showView("preview");
 }
 function renderDoc(){
@@ -333,37 +351,57 @@ function rmReportMeasuredScaleSentence(measuredFt, edgeIndex){
   else if (ftLabel) detail = " (" + ftLabel + " measured)";
   return "Scale set by field measurement" + detail + ".";
 }
-/* PR #17 review, REQUIRED 3: a real field measurement whose decision was
-   "keep_existing" or "record_only" (a human taped an edge but chose NOT to
-   rescale the drawing off it) still leaves a real edgeMeasurements[] entry
-   -- but rmBuildScaleSource() (roofmapper.js) only classifies scaleSource
-   as "measured" via rmLatestAppliedMeasuredEdge(), which filters to
-   rescaleApplied===true specifically. So that entry fell through to
-   "image"/"none", and this sentence printed "No field scale recorded...
-   not verified against a physical measurement" on a roof that WAS taped --
-   the exact provenance-denial bug this feature exists to prevent. Fixed
-   by independently checking rmLatestActiveMeasuredEdge() (roofmapper.js,
-   read-only, does NOT filter on rescaleApplied) as a fallback BEFORE
-   falling through to "no field scale" -- reusing roofmapper's own
-   accessor, not re-deriving its edgeMeasurements/legacy-migration logic
-   here. Never edits js/roofmapper.js; ss.kind === "measured" (the applied
-   case) still takes priority when both are true. */
-function rmReportScaleSentence(ss, outline){
+/* The PRIMARY scale clause: answers "how was this drawing's current
+   scale actually determined" -- exactly one of measured/inherited/image/
+   none/unknown, matching ss.kind as roofmapper computed it. Never touches
+   edgeMeasurements directly; this is purely "what does ss.kind say." */
+function rmReportPrimaryScaleClause(ss){
   if (ss && ss.kind === "measured") return rmReportMeasuredScaleSentence(ss.measuredFt, ss.edgeIndex);
-  var unapplied = (outline && typeof rmLatestActiveMeasuredEdge === "function") ? rmLatestActiveMeasuredEdge(outline) : null;
-  if (unapplied){
-    var ftLabel = rmReportFeetLabel(unapplied.measuredFt);
-    var decisionLabel = typeof rmMeasurementDecisionLabel === "function" ? rmMeasurementDecisionLabel(unapplied) : (unapplied.decision || "recorded");
-    var detail = ftLabel ? " (" + ftLabel + " on edge " + (unapplied.edgeIndex + 1) + ")" : "";
-    return "A field measurement is on record for this roof" + detail + ", but was not applied to this drawing's scale (" + decisionLabel + ").";
-  }
-  if (!ss || ss.kind === "none") return "No field scale recorded — dimensions are as-drawn, not verified against a physical measurement.";
-  if (ss.kind === "image") return "Scale derived from the georeferenced source image; not field-verified.";
-  if (ss.kind === "inherited"){
+  if (ss && ss.kind === "image") return "Scale derived from the georeferenced source image; not field-verified.";
+  if (ss && ss.kind === "inherited"){
     return "Scale carried from a field-measured section on this building" +
       (typeof ss.factor === "number" ? "." : " (exact factor not on record).");
   }
+  if (!ss || ss.kind === "none") return "No field scale recorded — dimensions are as-drawn, not verified against a physical measurement.";
   return "Scale source unknown.";
+}
+/* PR #17 review, REQUIRED 4: the first fix for REQUIRED 3 put this
+   disclosure ABOVE the image/inherited primary clauses, so it PREEMPTED
+   them -- an inherited-scale roof (or an image-scale roof) that also
+   happens to carry an unapplied tape reading lost its inherited/image
+   disclosure entirely, going from "Scale carried from a field-measured
+   section..." to a DIFFERENT, less-informative sentence. A roof with MORE
+   provenance must never disclose LESS. Fixed by making this a SUPPLEMENTAL
+   clause, appended after the primary clause rather than replacing it --
+   the two facts ("how the drawing's actual scale was determined" and "a
+   tape reading exists on record but wasn't applied") are independent and
+   both true simultaneously, so both are stated. Never fires when
+   ss.kind==="measured" (that case's own tape already IS the primary
+   clause -- nothing to add). Guards edgeIndex the same way
+   rmReportMeasuredScaleSentence() does (typeof ... === "number", not a
+   truthy check) -- null + 1 === 1 in JS, which would otherwise fabricate
+   "edge 1" for a record with no known edge index. */
+function rmReportUnappliedMeasurementClause(ss, outline){
+  if (ss && ss.kind === "measured") return null;
+  var unapplied = (outline && typeof rmLatestActiveMeasuredEdge === "function") ? rmLatestActiveMeasuredEdge(outline) : null;
+  if (!unapplied) return null;
+  var ftLabel = rmReportFeetLabel(unapplied.measuredFt);
+  var decisionLabel = typeof rmMeasurementDecisionLabel === "function" ? rmMeasurementDecisionLabel(unapplied) : (unapplied.decision || "recorded");
+  var edgeDetail = (ftLabel && typeof unapplied.edgeIndex === "number") ? (" (" + ftLabel + " on edge " + (unapplied.edgeIndex + 1) + ")") :
+    (ftLabel ? " (" + ftLabel + " measured)" : "");
+  return "A field measurement is also on record for this roof" + edgeDetail + ", but was not applied to this drawing's scale (" +
+    decisionLabel + ") — see Field Measurements.";
+}
+/* Composes the two independent scale facts rather than one preempting the
+   other -- see rmReportUnappliedMeasurementClause()'s comment for why this
+   structure exists. If you find yourself wanting to add another early
+   "if (...) return someSentence" branch above the primary clause, that's
+   the REQUIRED 4 bug reappearing -- add a new supplemental clause and
+   concatenate instead. */
+function rmReportScaleSentence(ss, outline){
+  var primary = rmReportPrimaryScaleClause(ss);
+  var supplemental = rmReportUnappliedMeasurementClause(ss, outline);
+  return supplemental ? (primary + " " + supplemental) : primary;
 }
 /* Per-edge visual distinction (Mark's explicit "must look different at a
    glance, a derived edge must NEVER wear a measured badge" -- this exact
@@ -391,8 +429,13 @@ function rmReportMeasurementRows(outline){
   }).map(function(m){
     var decisionLabel = typeof rmMeasurementDecisionLabel === "function" ? rmMeasurementDecisionLabel(m) : (m.decision || "recorded");
     var ftLabel = rmReportFeetLabel(m.measuredFt) || "—";
+    /* typeof check, not a truthy one -- null + 1 === 1 in JS, which would
+       otherwise fabricate "Edge 1" for a record with no known edge index
+       (low-reachability today per PR #17 review, since roofmapper.js
+       already rejects a null edgeIndex on write, but this and its sibling
+       clause three lines apart in this file should never disagree). */
     return {
-      edgeLabel: "Edge " + (m.edgeIndex + 1),
+      edgeLabel: typeof m.edgeIndex === "number" ? ("Edge " + (m.edgeIndex + 1)) : "Edge —",
       measuredFtLabel: ftLabel,
       status: m.invalidatedAt ? "Archived" : "Active",
       reason: m.invalidatedReason ? String(m.invalidatedReason).replace(/_/g, " ") : null,
@@ -507,8 +550,23 @@ function rmBuildReportRoofPlanSvg(roofEntries){
          derived edges still round to whole feet, measured edges keep 0.1 ft
          precision unless they're within 0.05ft of a whole number. A
          measured badge (✓/!) and a rounded-away number must never appear
-         on the same label. */
-      var dimLabel = meta.prefix + rmFormatEdgeFeet(meta.labelFt, meta.measured) + " ft";
+         on the same label.
+
+         REQUIRED 5: that call was unguarded while every other roofmapper
+         accessor in this file is -- rmFormatEdgeFeet isn't defined in
+         export.js (its only other appearances here are inside comments),
+         so a page where roofmapper.js failed to load would throw a
+         ReferenceError BEFORE rmReportEdgeMeta()'s own deliberate fallback
+         (a few lines up) ever got a chance to matter, killing the whole
+         roof plan SVG instead of degrading gracefully. Guarded the same
+         way as every other roofmapper call in this file, falling back to
+         rmReportFeetLabel() (which already handles measured precision
+         correctly) rather than bare Math.round(). Also: a formatted value
+         of "" (non-finite labelFt) now suppresses the prefix too -- a
+         checkmark with no number behind it is still a fabricated claim. */
+      var formattedFt = typeof rmFormatEdgeFeet === "function" ?
+        rmFormatEdgeFeet(meta.labelFt, meta.measured) : (rmReportFeetLabel(meta.labelFt) || "").replace(/ ft$/, "");
+      var dimLabel = (formattedFt ? meta.prefix : "") + (formattedFt || "?") + " ft";
       var dimW = Math.max(34, dimLabel.length * 7.5 + 10);
       shapeSvg += '<rect x="' + (svgMid.x - dimW / 2).toFixed(1) + '" y="' + (svgMid.y - 10).toFixed(1) + '" width="' +
         dimW.toFixed(1) + '" height="20" rx="4" fill="' + meta.bg + '"' + (meta.border ? ' stroke="#fff" stroke-width="1.5"' : '') + '/>' +
@@ -633,13 +691,16 @@ function renderLeakReportDoc(o){
     })())
     .concat([["Roof System",o.roofSystem]]));
 
-  /* Roof plan + capture/scale provenance -- rmReportRoofPlanData is
-     populated by goToPreview() before this ever runs (see its own
-     comment); null/empty (no linked roof, or a Change Order which never
-     reaches this function) just omits the section entirely, same as the
+  /* Roof plan + capture/scale provenance -- rmReportRoofPlanEntriesFor()
+     is populated by goToPreview() before this ever runs (see its own
+     comment) and keyed to currentId, so a stale entry from a different
+     work order is silently dropped rather than rendered here. Empty (no
+     linked roof, a Change Order which never reaches this function, or a
+     stale/mismatched entry) just omits the section entirely, same as the
      report always did before this existed. */
-  if (rmReportRoofPlanData && rmReportRoofPlanData.length){
-    var plan = rmBuildReportRoofPlanSvg(rmReportRoofPlanData);
+  var roofPlanEntries = rmReportRoofPlanEntriesFor();
+  if (roofPlanEntries.length){
+    var plan = rmBuildReportRoofPlanSvg(roofPlanEntries);
     if (plan){
       h += "<h3 class='cond'>Roof Plan</h3>" +
         "<div style='border:1px solid #CFD8DC;border-radius:6px;overflow:hidden'>" + plan.svg + "</div>";
@@ -647,10 +708,10 @@ function renderLeakReportDoc(o){
          tech's conflict-resolution decision, not just the active number.
          One list per roof that actually has any measurement history;
          silently omitted for a roof with none (nothing to disclose). */
-      var historyBlocks = rmReportRoofPlanData.map(function(r){
+      var historyBlocks = roofPlanEntries.map(function(r){
         var rows = rmReportMeasurementRows(r.outline);
         if (!rows.length) return "";
-        return "<p style='font-weight:700;margin:10px 0 4px'>" + (rmReportRoofPlanData.length > 1 ? esc(r.roofLabel) + " — " : "") + "Field Measurements</p>" +
+        return "<p style='font-weight:700;margin:10px 0 4px'>" + (roofPlanEntries.length > 1 ? esc(r.roofLabel) + " — " : "") + "Field Measurements</p>" +
           "<table><thead><tr><th style='width:70px'>Edge</th><th style='width:70px'>Length</th>" +
           "<th style='width:80px'>Status</th><th>What Happened</th></tr></thead><tbody>" +
           rows.map(function(row){

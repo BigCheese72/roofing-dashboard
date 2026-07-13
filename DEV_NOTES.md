@@ -7404,31 +7404,88 @@ than re-deriving the source-code-to-label mapping here, so a future change
 to Codex's classification logic shows up automatically instead of a second,
 drifting copy.
 
-**PR #17 review, REQUIRED 3 — a real bug: the report could deny a
-measurement that exists.** `rmBuildScaleSource()` (`js/roofmapper.js`)
-only classifies `scaleSource.kind` as `"measured"` via
-`rmLatestAppliedMeasuredEdge()`, which filters to entries where
+**PR #17 review, REQUIRED 3 then REQUIRED 4 — the scale sentence went
+through two real bugs before landing on the right structure, and the
+lesson is worth keeping.** First bug (REQUIRED 3): `rmBuildScaleSource()`
+(`js/roofmapper.js`) only classifies `scaleSource.kind` as `"measured"`
+via `rmLatestAppliedMeasuredEdge()`, which filters to entries where
 `rescaleApplied === true`. A real `edgeMeasurements[]` entry whose
 `decision` was `"keep_existing"` or `"record_only"` (a human genuinely
 taped an edge but chose NOT to rescale the drawing off it) doesn't pass
-that filter, so it fell straight through to `"image"`/`"none"` — and the
-scale sentence printed "No field scale recorded... not verified against a
-physical measurement" on a roof that WAS taped. The exact provenance-
-denial bug this feature exists to prevent, on the customer-facing PDF.
-Fixed entirely inside `js/export.js` (`js/roofmapper.js` untouched):
-`rmReportScaleSentence()` now independently checks
-`rmLatestActiveMeasuredEdge()` (`js/roofmapper.js`, read-only, does NOT
-filter on `rescaleApplied`) as a fallback before ever declaring "no field
-scale" — if a real measurement is on record but wasn't applied, the
-sentence now says so honestly: *"A field measurement is on record for this
-roof (42.5 ft on edge 1), but was not applied to this drawing's scale
-(kept existing scale)."* The applied case (`ss.kind === "measured"`) still
-takes priority and renders exactly as before. Verified all three cases
-directly: applied → "Scale set by field measurement…"; recorded-but-
-unapplied → the new honest sentence; genuinely no measurement at all → the
-original "No field scale recorded" text, unchanged — and re-verified
-through the actual `goToPreview()`/`generatePdf()` render, not just the
-data function.
+that filter, so it fell through to `"image"`/`"none"`, and the scale
+sentence printed "No field scale recorded... not verified against a
+physical measurement" on a roof that WAS taped.
+
+The first fix added an `unapplied`-measurement check — but placed it
+ABOVE the `image`/`inherited` branches, so it PREEMPTED them instead of
+composing with them (REQUIRED 4). An inherited-scale roof, or an
+image-scale roof, that ALSO happened to carry an unapplied tape reading
+lost its inherited/image disclosure entirely — going from "Scale carried
+from a field-measured section on this building." to a strictly
+LESS-informative sentence the moment MORE provenance existed. A roof with
+more provenance must never disclose less.
+
+**The actual fix is structural, not another branch**
+(`rmReportScaleSentence()` now composes two independent parts instead of
+picking one):
+- `rmReportPrimaryScaleClause(ss)` — answers "how was this drawing's
+  current scale actually determined," exactly `ss.kind` as roofmapper
+  computed it (measured / inherited / image / none / unknown). Untouched
+  by whether an unrelated unapplied measurement exists.
+- `rmReportUnappliedMeasurementClause(ss, outline)` — an OPTIONAL
+  supplemental clause, appended (not substituted) only when
+  `ss.kind !== "measured"` (the applied case already fully discloses its
+  own tape) AND `rmLatestActiveMeasuredEdge()` finds a real
+  active-but-unapplied entry.
+- `rmReportScaleSentence()` just concatenates: `primary + " " +
+  supplemental` when supplemental exists, else `primary` alone.
+
+Guarded `.edgeIndex` with `typeof … === "number"` in both the primary and
+supplemental clauses (and in `rmReportMeasurementRows()`'s edge label) —
+`null + 1 === 1` in JS, so an unguarded add would fabricate "edge 1" for
+a record with no known edge index rather than showing nothing.
+
+**Six cases executed and shown as rendered method lines** (not just
+helper return values):
+```
+1. survey_grade capture + measured (applied) scale:
+   "Traced from an RTK orthomosaic (survey-grade). Scale set by field
+    measurement (42.5 ft on edge 1)."
+2. estimated (satellite) capture + measured (applied) scale:
+   "Traced from satellite/flat imagery (estimated). Scale set by field
+    measurement (31.3 ft on edge 3)." -- capture stays "estimated", never
+    upgraded by the measured scale.
+3. inherited scale + a DECLINED tape (keep_existing):
+   "Traced from satellite/flat imagery (estimated). Scale carried from a
+    field-measured section on this building. A field measurement is also
+    on record for this roof (42.5 ft on edge 1), but was not applied to
+    this drawing's scale (kept existing scale) — see Field Measurements."
+    -- the inherited disclosure SURVIVES; this is the exact case REQUIRED 4
+    broke and is now fixed.
+4. legacy Tri-Delta: inherited, no factor key:
+   "...Scale carried from a field-measured section on this building
+    (exact factor not on record)." -- never "unmeasured".
+5. image scale (georeferenced capture, no applied tape) + a recorded
+   tape: "Traced from an RTK orthomosaic (survey-grade). Scale derived
+    from the georeferenced source image; not field-verified. A field
+    measurement is also on record for this roof (20.1 ft on edge 2), but
+    was not applied to this drawing's scale (recorded only) — see Field
+    Measurements." -- the image disclosure also survives.
+6. genuinely no measurement: either "No field scale recorded —
+    dimensions are as-drawn, not verified against a physical measurement."
+    (manual_trace, no inheritance) or "Scale derived from the
+    georeferenced source image; not field-verified." (OSM/geotiff/KMZ/
+    walk_corners sources are themselves georeferenced captures per
+    roofmapper's own rmBuildScaleSource() classification, so a bare OSM
+    footprint with no tape correctly reads as "image", not "none" -- this
+    is roofmapper's existing classification, not something this PR
+    invented or should override).
+```
+
+Also re-confirmed the `rmFetchReportRoofOutlines()` zero-write property
+still holds after this restructure (write log length 0 across the same
+test run), and re-ran the no-linked-building fallback and Change Order
+regression clean.
 
 **Per-edge visual distinction** (`rmReportEdgeMeta()`, wraps roofmapper's
 own `rmEdgeDimensionMeta()`): a measured edge renders as a bordered green
@@ -7456,6 +7513,26 @@ renders `"55 ft"` (no badge, correctly rounded); re-verified in the actual
 rendered SVG output of a full report, including under the conflict
 (orange `"!"`) path — the measured value itself must stay precise even
 when it disagrees with the drawing's geometry.
+
+**PR #17 review, REQUIRED 5 — the `rmFormatEdgeFeet` call above was
+unguarded, which killed the deliberate fallback.** Every OTHER roofmapper
+accessor call in this file is guarded (`typeof … === "function"`) except
+this one — and `rmFormatEdgeFeet` isn't defined in `js/export.js` at all
+(its only other appearances here were inside comments). A page where
+`js/roofmapper.js` failed to load would hit a `ReferenceError` on this
+line BEFORE `rmReportEdgeMeta()`'s own deliberate fallback (a few lines
+earlier in the same function) ever got a chance to matter — killing the
+entire roof plan SVG instead of degrading gracefully, exactly the
+opposite of what that fallback exists for. Fixed the same way every other
+call in this file is guarded, falling back to `rmReportFeetLabel()`
+(which already handles measured precision correctly) rather than bare
+`Math.round()`. Also suppresses the ✓/! prefix whenever the formatted
+value comes out empty (a non-finite `labelFt`) — a checkmark with no
+number behind it is still a fabricated claim, even if it's better than
+the old `"✓ 0 ft"`. Verified by deleting `window.rmFormatEdgeFeet`
+entirely and confirming `rmBuildReportRoofPlanSvg()` no longer throws and
+still produces a plan (via the fallback), where before this fix it threw
+a `ReferenceError` and killed the whole roof plan section.
 
 **Legend** (`RM_REPORT_LEGEND_ITEMS`): three swatches (measured-matching,
 measured-conflict, derived) drawn directly on the roof plan SVG so a
@@ -7549,6 +7626,28 @@ synchronous `renderDoc()` -- `js/core.js` is out of scope for this change,
 so the fetch has to complete entirely on this side of that call) and
 separately in `generatePdf()` (fetches fresh, since a direct PDF download
 doesn't necessarily pass through Preview first).
+
+**PR #17 review, QUESTION 1 — a stale roof plan could render on the
+wrong report.** `rmReportRoofPlanData` was a bare array with no identity
+check. If `renderDoc()` ever fired for a DIFFERENT work order before a
+fresh `goToPreview()` completed for it, the previous order's roof plan
+and field-measurement table would render on the new order's
+customer-facing document — a wrong-roof provenance block. Fixed by
+keying it: `rmReportRoofPlanData` is now `{ woId, entries }`, and
+`rmReportRoofPlanEntriesFor()` (the sole read path — nothing reads
+`rmReportRoofPlanData` directly anymore) returns `[]` whenever
+`woId !== currentId`. Keyed to `currentId` (`js/workorders.js`'s own
+"which order is currently loaded" var), deliberately NOT `collect().id`
+-- `collect()` fabricates a fresh id (`"wo_" + Date.now()`) on every
+single call for a not-yet-saved order (`currentId` still `null`), so
+comparing against `collect().id` would treat the SAME unsaved order as
+stale on every render, which is worse than not checking at all. Verified
+by previewing order A (real roof plan, `currentId` forced to a stable
+value), then switching `currentId` to a different value WITHOUT calling
+`goToPreview()` again (simulating `renderDoc()` firing for a different
+order mid-flight) and confirming `rmReportRoofPlanEntriesFor()` returns
+`[]` and the rendered HTML has no "Roof Plan" section at all for the
+second order — rather than silently showing order A's data.
 
 **Findings numbered and cross-referenced to photos** (`rmReportPhotoFindingRefs()`):
 uses the existing `photo.finding_id` field (already set whenever a photo
