@@ -671,6 +671,23 @@ exports.handler = async function (event) {
       });
     }
 
+    // ---- folder_create: create a top-level mail folder if it doesn't already
+    // exist. Idempotent — an existing folder of the same name is returned as-is
+    // rather than duplicated. Creating a folder moves no mail by itself.
+    if (action === "folder_create") {
+      const name = String(body.displayName || "").trim();
+      if (!name) return resp(400, { error: "displayName required" });
+      const cur = await gj("/me/mailFolders?$top=100&$select=id,displayName");
+      const hit = (cur.value || []).find(f => String(f.displayName).toLowerCase() === name.toLowerCase());
+      if (hit) return resp(200, { id: hit.id, displayName: hit.displayName, created: false });
+      const made = await gj("/me/mailFolders", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ displayName: name }),
+      });
+      return resp(200, { id: made.id, displayName: made.displayName, created: true });
+    }
+
     // ---- list_messages: READ-ONLY listing with the fields needed both to build
     // a routing table (who lives in which folder already) and to write an audit
     // log (id + subject + sender + read state) before anything is moved.
