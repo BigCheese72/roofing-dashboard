@@ -7404,6 +7404,32 @@ than re-deriving the source-code-to-label mapping here, so a future change
 to Codex's classification logic shows up automatically instead of a second,
 drifting copy.
 
+**PR #17 review, REQUIRED 3 — a real bug: the report could deny a
+measurement that exists.** `rmBuildScaleSource()` (`js/roofmapper.js`)
+only classifies `scaleSource.kind` as `"measured"` via
+`rmLatestAppliedMeasuredEdge()`, which filters to entries where
+`rescaleApplied === true`. A real `edgeMeasurements[]` entry whose
+`decision` was `"keep_existing"` or `"record_only"` (a human genuinely
+taped an edge but chose NOT to rescale the drawing off it) doesn't pass
+that filter, so it fell straight through to `"image"`/`"none"` — and the
+scale sentence printed "No field scale recorded... not verified against a
+physical measurement" on a roof that WAS taped. The exact provenance-
+denial bug this feature exists to prevent, on the customer-facing PDF.
+Fixed entirely inside `js/export.js` (`js/roofmapper.js` untouched):
+`rmReportScaleSentence()` now independently checks
+`rmLatestActiveMeasuredEdge()` (`js/roofmapper.js`, read-only, does NOT
+filter on `rescaleApplied`) as a fallback before ever declaring "no field
+scale" — if a real measurement is on record but wasn't applied, the
+sentence now says so honestly: *"A field measurement is on record for this
+roof (42.5 ft on edge 1), but was not applied to this drawing's scale
+(kept existing scale)."* The applied case (`ss.kind === "measured"`) still
+takes priority and renders exactly as before. Verified all three cases
+directly: applied → "Scale set by field measurement…"; recorded-but-
+unapplied → the new honest sentence; genuinely no measurement at all → the
+original "No field scale recorded" text, unchanged — and re-verified
+through the actual `goToPreview()`/`generatePdf()` render, not just the
+data function.
+
 **Per-edge visual distinction** (`rmReportEdgeMeta()`, wraps roofmapper's
 own `rmEdgeDimensionMeta()`): a measured edge renders as a bordered green
 pill with a ✓ prefix when it matches the drawing's geometry, or orange with
@@ -7411,6 +7437,25 @@ pill with a ✓ prefix when it matches the drawing's geometry, or orange with
 always plain dark, no border, no prefix — the same logic that drives the
 live map's own edge labels, reused rather than reimplemented, so the report
 can never show a measured edge differently than RoofMapper itself does.
+
+**PR #17 review, REQUIRED 2 — a real bug: a derived number wearing a
+measured badge.** The roof-plan SVG's dimension label used to do
+`meta.prefix + Math.round(meta.labelFt) + " ft"` — unconditionally
+rounding regardless of whether the edge was measured. A tech tapes 42' 6"
+and the customer PDF printed "✓ 43 ft": the ✓ asserts a human measurement
+while the number is one the tape never produced, and it directly
+contradicted the SAME report's own Field Measurements table and the live
+map, both of which correctly showed 42.5 ft. Fixed by calling
+`js/roofmapper.js`'s own `rmFormatEdgeFeet(ft, measured)` (confirmed
+exposed globally, called directly rather than re-derived — file boundary
+respected) instead of a bare `Math.round()`: a derived edge still rounds
+to whole feet; a measured edge keeps 0.1 ft precision unless it's within
+0.05 ft of a whole number. Verified directly: a measured 42.5 ft edge
+renders `"✓ 42.5 ft"` (not `"✓ 43 ft"`); a derived 55.4 ft edge still
+renders `"55 ft"` (no badge, correctly rounded); re-verified in the actual
+rendered SVG output of a full report, including under the conflict
+(orange `"!"`) path — the measured value itself must stay precise even
+when it disagrees with the drawing's geometry.
 
 **Legend** (`RM_REPORT_LEGEND_ITEMS`): three swatches (measured-matching,
 measured-conflict, derived) drawn directly on the roof plan SVG so a

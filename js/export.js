@@ -296,7 +296,7 @@ function rmReportMethodSentences(outline){
   var ss = method.scaleSource || null;
   return {
     captureSentence: rmReportCaptureSentence(cs),
-    scaleSentence: rmReportScaleSentence(ss),
+    scaleSentence: rmReportScaleSentence(ss, outline),
     captureSource: cs,
     scaleSource: ss
   };
@@ -326,25 +326,42 @@ function rmReportCaptureSentence(cs){
   }
   return sentence;
 }
-function rmReportScaleSentence(ss){
+function rmReportMeasuredScaleSentence(measuredFt, edgeIndex){
+  var detail = "";
+  var ftLabel = rmReportFeetLabel(measuredFt);
+  if (ftLabel && typeof edgeIndex === "number") detail = " (" + ftLabel + " on edge " + (edgeIndex + 1) + ")";
+  else if (ftLabel) detail = " (" + ftLabel + " measured)";
+  return "Scale set by field measurement" + detail + ".";
+}
+/* PR #17 review, REQUIRED 3: a real field measurement whose decision was
+   "keep_existing" or "record_only" (a human taped an edge but chose NOT to
+   rescale the drawing off it) still leaves a real edgeMeasurements[] entry
+   -- but rmBuildScaleSource() (roofmapper.js) only classifies scaleSource
+   as "measured" via rmLatestAppliedMeasuredEdge(), which filters to
+   rescaleApplied===true specifically. So that entry fell through to
+   "image"/"none", and this sentence printed "No field scale recorded...
+   not verified against a physical measurement" on a roof that WAS taped --
+   the exact provenance-denial bug this feature exists to prevent. Fixed
+   by independently checking rmLatestActiveMeasuredEdge() (roofmapper.js,
+   read-only, does NOT filter on rescaleApplied) as a fallback BEFORE
+   falling through to "no field scale" -- reusing roofmapper's own
+   accessor, not re-deriving its edgeMeasurements/legacy-migration logic
+   here. Never edits js/roofmapper.js; ss.kind === "measured" (the applied
+   case) still takes priority when both are true. */
+function rmReportScaleSentence(ss, outline){
+  if (ss && ss.kind === "measured") return rmReportMeasuredScaleSentence(ss.measuredFt, ss.edgeIndex);
+  var unapplied = (outline && typeof rmLatestActiveMeasuredEdge === "function") ? rmLatestActiveMeasuredEdge(outline) : null;
+  if (unapplied){
+    var ftLabel = rmReportFeetLabel(unapplied.measuredFt);
+    var decisionLabel = typeof rmMeasurementDecisionLabel === "function" ? rmMeasurementDecisionLabel(unapplied) : (unapplied.decision || "recorded");
+    var detail = ftLabel ? " (" + ftLabel + " on edge " + (unapplied.edgeIndex + 1) + ")" : "";
+    return "A field measurement is on record for this roof" + detail + ", but was not applied to this drawing's scale (" + decisionLabel + ").";
+  }
   if (!ss || ss.kind === "none") return "No field scale recorded — dimensions are as-drawn, not verified against a physical measurement.";
   if (ss.kind === "image") return "Scale derived from the georeferenced source image; not field-verified.";
   if (ss.kind === "inherited"){
     return "Scale carried from a field-measured section on this building" +
       (typeof ss.factor === "number" ? "." : " (exact factor not on record).");
-  }
-  if (ss.kind === "measured"){
-    var detail = "";
-    var ftLabel = rmReportFeetLabel(ss.measuredFt);
-    if (ftLabel && typeof ss.edgeIndex === "number") detail = " (" + ftLabel + " on edge " + (ss.edgeIndex + 1) + ")";
-    else if (ftLabel) detail = " (" + ftLabel + " measured)";
-    /* Back-compat, Mark's explicit hard rule: a legacy Tri-Delta calibration
-       with no stored factor key was STILL a real field measurement -- ss.kind
-       is already "measured" here regardless of whether ss.factor/appliedFactor
-       came through (rmBuildScaleSource() on the roofmapper side already
-       handles this; we just never gate the sentence on factor being present,
-       only on measuredFt, which legacy entries do carry). */
-    return "Scale set by field measurement" + detail + ".";
   }
   return "Scale source unknown.";
 }
@@ -481,7 +498,17 @@ function rmBuildReportRoofPlanSvg(roofEntries){
                        y: (rmExportProjectPoint(ea, origin).y + rmExportProjectPoint(eb, origin).y) / 2 };
       var svgMid = toSvg(midFeet);
       var meta = rmReportEdgeMeta(r.outline, e, distFt);
-      var dimLabel = meta.prefix + Math.round(meta.labelFt) + " ft";
+      /* PR #17 review, REQUIRED 2: this used to be Math.round(meta.labelFt)
+         unconditionally -- a tech tapes 42' 6" and the customer PDF printed
+         "✓ 43 ft", asserting a human measurement while showing a number the
+         tape never produced (and disagreeing with the Field Measurements
+         table and live map, both of which correctly show 42.5 ft). Fixed
+         by calling roofmapper's own rmFormatEdgeFeet(ft, measured) --
+         derived edges still round to whole feet, measured edges keep 0.1 ft
+         precision unless they're within 0.05ft of a whole number. A
+         measured badge (✓/!) and a rounded-away number must never appear
+         on the same label. */
+      var dimLabel = meta.prefix + rmFormatEdgeFeet(meta.labelFt, meta.measured) + " ft";
       var dimW = Math.max(34, dimLabel.length * 7.5 + 10);
       shapeSvg += '<rect x="' + (svgMid.x - dimW / 2).toFixed(1) + '" y="' + (svgMid.y - 10).toFixed(1) + '" width="' +
         dimW.toFixed(1) + '" height="20" rx="4" fill="' + meta.bg + '"' + (meta.border ? ' stroke="#fff" stroke-width="1.5"' : '') + '/>' +
