@@ -291,7 +291,13 @@ function extractCompanyAndTitle(lines, displayName, senderDomain) {
     if (looksLikeProse(line)) continue;             // body text, not a sig label
     const low = line.toLowerCase();
     if (nameParts.length && nameParts.every(p => low.includes(p))) continue; // the name itself
-    if (!title && TITLE_WORDS.test(line) && !COMPANY_WORDS.test(line)) { title = line.replace(/^[-|\s]+/, "").trim(); continue; }
+
+    // Title wins over company on an ambiguous line. "Roof Management
+    // Coordinator" is a job, not an employer — but it trips COMPANY_WORDS on
+    // "Management". Only a STRONG company marker (a legal suffix like Inc/LLC)
+    // outranks a title match.
+    const strongCompany = /\b(inc\.?|llc|l\.l\.c\.|ltd\.?|corp\.?|corporation|company|& sons|group|holdings)\b/i.test(line);
+    if (!title && TITLE_WORDS.test(line) && !strongCompany) { title = line.replace(/^[-|\s]+/, "").trim(); continue; }
     if (!company && COMPANY_WORDS.test(line)) { company = line.replace(/^[-|\s]+/, "").trim(); continue; }
   }
   // Deliberately NOT guessing the company from the mail domain: "cletusbagby@
