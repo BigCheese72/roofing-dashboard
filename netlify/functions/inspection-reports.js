@@ -240,18 +240,53 @@ async function resolveSupersedes(db, buildingId, subject) {
 }
 
 // ---- Email polling ----
+// Fetches every message from the CCM Inspect sender.
+//
+// The original query combined $filter on from/emailAddress/address with
+// $orderby=receivedDateTime desc. Microsoft Graph REJECTS that combination:
+//
+//   400 InefficientFilter: "The restriction or sort order is too complex
+//                           for this operation."
+//
+// Graph will not sort on one property while filtering on a nested one, so the
+// poller's very first Graph call failed every time -- it could never have
+// pulled a single report. This was invisible until the credentials were fixed:
+// before that it died at token acquisition and never reached the query.
+//
+// $orderby is dropped rather than worked around. Sort order was only ever
+// cosmetic here: every matching message is processed, and
+// ingested_email_attachments makes re-processing a no-op, so the ORDER in which
+// they arrive changes nothing. Losing the sort would only matter if we relied
+// on $top to keep just the newest N -- so we don't: we page through
+// @odata.nextLink instead and look at all of them (bounded, so a runaway
+// mailbox can't spin forever).
+const MAX_POLL_PAGES = 5;
+const POLL_PAGE_SIZE = 50;
+
+async function fetchCcmMessages(mailbox) {
+  const filter = "from/emailAddress/address eq '" + CCM_SENDER.replace(/'/g, "''") + "'";
+  let url = "/users/" + encodeURIComponent(mailbox) + "/messages?$filter=" + encodeURIComponent(filter) +
+    "&$top=" + POLL_PAGE_SIZE + "&$select=id,subject,receivedDateTime,hasAttachments";
+
+  const all = [];
+  for (let page = 0; page < MAX_POLL_PAGES && url; page++) {
+    const r = await graphFetch(url);
+    const t = await r.text();
+    if (!r.ok) return { ok: false, error: "Graph said: " + r.status + " " + t.slice(0, 500) };
+    let json;
+    try { json = JSON.parse(t); } catch (e) { return { ok: false, error: "Graph response was not valid JSON" }; }
+    (json.value || []).forEach(m => all.push(m));
+    url = json["@odata.nextLink"] || null;
+  }
+  return { ok: true, messages: all };
+}
+
 async function pollOnce(db, hostname, actorUid, actorLabel) {
   const { mailbox } = requireGraphEnv(); // throws with a clear message if GRAPH_* env vars aren't set
-  const filter = "from/emailAddress/address eq '" + CCM_SENDER.replace(/'/g, "''") + "'";
-  const url = "/users/" + encodeURIComponent(mailbox) + "/messages?$filter=" + encodeURIComponent(filter) +
-    "&$top=25&$orderby=receivedDateTime desc&$select=id,subject,receivedDateTime,hasAttachments";
-  const r = await graphFetch(url);
-  const t = await r.text();
-  if (!r.ok) {
-    return { ok: false, error: "Graph said: " + r.status + " " + t.slice(0, 500) };
-  }
-  const json = JSON.parse(t);
-  const messages = (json.value || []).filter(m => m.hasAttachments);
+
+  const fetched = await fetchCcmMessages(mailbox);
+  if (!fetched.ok) return { ok: false, error: fetched.error };
+  const messages = fetched.messages.filter(m => m.hasAttachments);
 
   const summary = { checked: messages.length, filed: [], queued: [], skippedAlreadyProcessed: 0, errors: [] };
   const buildings = await loadCandidateBuildings(db);
