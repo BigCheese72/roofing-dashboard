@@ -7404,88 +7404,127 @@ than re-deriving the source-code-to-label mapping here, so a future change
 to Codex's classification logic shows up automatically instead of a second,
 drifting copy.
 
-**PR #17 review, REQUIRED 3 then REQUIRED 4 — the scale sentence went
-through two real bugs before landing on the right structure, and the
-lesson is worth keeping.** First bug (REQUIRED 3): `rmBuildScaleSource()`
-(`js/roofmapper.js`) only classifies `scaleSource.kind` as `"measured"`
-via `rmLatestAppliedMeasuredEdge()`, which filters to entries where
-`rescaleApplied === true`. A real `edgeMeasurements[]` entry whose
-`decision` was `"keep_existing"` or `"record_only"` (a human genuinely
-taped an edge but chose NOT to rescale the drawing off it) doesn't pass
-that filter, so it fell through to `"image"`/`"none"`, and the scale
-sentence printed "No field scale recorded... not verified against a
-physical measurement" on a roof that WAS taped.
+**PR #17 review — the scale sentence went through three branch-based
+patches before landing on a real compositional model, and the lesson is
+worth keeping precisely because branch-picking kept looking locally
+correct while being globally wrong.** REQUIRED 3: `rmBuildScaleSource()`
+only classifies `scaleSource.kind` as `"measured"` via
+`rmLatestAppliedMeasuredEdge()` (filters `rescaleApplied === true`), so a
+real `edgeMeasurements[]` entry recorded as `"keep_existing"`/
+`"record_only"` fell through to `"image"`/`"none"`, printing "not
+verified against a physical measurement" on a roof that WAS taped.
+REQUIRED 4: the fix for that added an `unapplied`-measurement check
+ABOVE the `image`/`inherited` branches, so it PREEMPTED them — an
+inherited- or image-scale roof that ALSO carried an unapplied tape lost
+its inherited/image disclosure entirely the moment MORE provenance
+existed. REQUIRED 6/7/8 (this pass): that fix was still a single optional
+"supplemental" SLOT that refused to fire whenever `ss.kind==="measured"`
+— which had no way to disclose a THIRD fact once PR #25/#26 landed
+`measurementStale` (a geometry edit like a re-snap invalidates a tape's
+specific edge/length while the SCALE it set stays in force —
+`rmMeasurementInvalidationKeepsScale()`/`rmMeasurementScaleStillApplied()`
+in `js/roofmapper.js`). Mark's real Tri-Delta flow — tape, re-snap,
+re-tape — produces exactly three facts on record (an applied-but-now-
+edge-stale reading, what superseded it, and the fresh one), and a
+one-slot model can only ever surface one of them. Also caught in this
+pass: the `"none"` wording could print ALONGSIDE a real measurement
+disclosure (REQUIRED 6) and `.edgeIndex + 1` was unguarded in the new
+slot (REQUIRED 5's `null + 1 === 1` lesson, recurring).
 
-The first fix added an `unapplied`-measurement check — but placed it
-ABOVE the `image`/`inherited` branches, so it PREEMPTED them instead of
-composing with them (REQUIRED 4). An inherited-scale roof, or an
-image-scale roof, that ALSO happened to carry an unapplied tape reading
-lost its inherited/image disclosure entirely — going from "Scale carried
-from a field-measured section on this building." to a strictly
-LESS-informative sentence the moment MORE provenance existed. A roof with
-more provenance must never disclose less.
+**The actual fix: the scale sentence is TWO independent clauses, computed
+separately from independent facts, and concatenated — never selected
+between.** If a change to this code ever needs another
+`if (...) return someSentence` branch sitting above/instead-of another,
+that's this exact bug reappearing.
 
-**The actual fix is structural, not another branch**
-(`rmReportScaleSentence()` now composes two independent parts instead of
-picking one):
-- `rmReportPrimaryScaleClause(ss)` — answers "how was this drawing's
-  current scale actually determined," exactly `ss.kind` as roofmapper
-  computed it (measured / inherited / image / none / unknown). Untouched
-  by whether an unrelated unapplied measurement exists.
-- `rmReportUnappliedMeasurementClause(ss, outline)` — an OPTIONAL
-  supplemental clause, appended (not substituted) only when
-  `ss.kind !== "measured"` (the applied case already fully discloses its
-  own tape) AND `rmLatestActiveMeasuredEdge()` finds a real
-  active-but-unapplied entry.
-- `rmReportScaleSentence()` just concatenates: `primary + " " +
-  supplemental` when supplemental exists, else `primary` alone.
+- **Clause 2 (applied scale)** — `rmReportAppliedScaleClause(ss)` —
+  answers "how was the drawing's CURRENTLY-APPLIED scale determined":
+  measured / inherited / image, or **absent** (empty string, not a
+  sentence) when `ss.kind` is `"none"`/unknown. When measured and NOT
+  stale, names the real edge/length and returns that record's `id` as
+  `disclosedId` (so clause 3 doesn't repeat it verbatim). When measured
+  AND `ss.measurementStale` (roofmapper deliberately nulls the specific
+  edge/length in this case, since the original edge no longer
+  corresponds to current geometry post-edit), states that plainly
+  without inventing a number, and returns `disclosedId: null` — the real
+  historical number still has to reach the reader, and clause 3 is where
+  it does.
+- **Clause 3 (additional measurements on record)** —
+  `rmReportAdditionalMeasurementsClause(outline, disclosedId)` — every
+  record from `rmAllMeasuredEdgeRecords()` (the SAME source of truth the
+  Field Measurements table renders from — the sentence and the table can
+  never disagree about which measurements exist) except the one exact id
+  clause 2 already fully named. Each item gets its own status via
+  `rmReportMeasurementStatusLabel()`: `"applied"` (a genuinely separate,
+  still-active, still-applied reading — compounding recalibrations),
+  the plain decision label (`"kept existing scale"`/`"recorded only"`)
+  for an active-but-not-applied entry, or `"superseded by <reason>"` for
+  anything invalidated — explicitly naming the reason (e.g. "superseded
+  by resnap neighbors") rather than silently dropping it or presenting it
+  as current.
+- `rmReportScaleSentence()` joins `[clause2, clause3]` filtering out
+  whichever is empty; the `"No field scale recorded... not verified
+  against a physical measurement"` fallback fires ONLY when BOTH come
+  back empty — by construction it can never appear next to a real
+  measurement, because if any measurement of any status exists, clause 3
+  is non-empty.
 
-Guarded `.edgeIndex` with `typeof … === "number"` in both the primary and
-supplemental clauses (and in `rmReportMeasurementRows()`'s edge label) —
-`null + 1 === 1` in JS, so an unguarded add would fabricate "edge 1" for
-a record with no known edge index rather than showing nothing.
+Guarded `.edgeIndex` with `typeof … === "number"` everywhere an edge
+number gets printed (`rmReportMeasuredScaleSentence()`, the new clause-3
+item builder, and `rmReportMeasurementRows()`'s edge label) — `null + 1
+=== 1` in JS, so an unguarded add fabricates "edge 1" for a record with
+no known edge index rather than showing nothing.
 
-**Six cases executed and shown as rendered method lines** (not just
-helper return values):
+**Six cases executed and shown as rendered method lines**, including the
+exact multi-measurement scenario the earlier one-slot model couldn't
+represent:
 ```
-1. survey_grade capture + measured (applied) scale:
+1. survey_grade + applied measured 42.5 ft:
    "Traced from an RTK orthomosaic (survey-grade). Scale set by field
     measurement (42.5 ft on edge 1)."
-2. estimated (satellite) capture + measured (applied) scale:
+2. estimated + applied measured:
    "Traced from satellite/flat imagery (estimated). Scale set by field
-    measurement (31.3 ft on edge 3)." -- capture stays "estimated", never
-    upgraded by the measured scale.
-3. inherited scale + a DECLINED tape (keep_existing):
+    measurement (31.3 ft on edge 3)." -- capture stays "estimated".
+3. inherited + a DECLINED (keep_existing) tape:
    "Traced from satellite/flat imagery (estimated). Scale carried from a
-    field-measured section on this building. A field measurement is also
-    on record for this roof (42.5 ft on edge 1), but was not applied to
-    this drawing's scale (kept existing scale) — see Field Measurements."
-    -- the inherited disclosure SURVIVES; this is the exact case REQUIRED 4
-    broke and is now fixed.
-4. legacy Tri-Delta: inherited, no factor key:
+    field-measured section on this building. Also on record: 42.5 ft on
+    edge 1 (kept existing scale) — see Field Measurements."
+    -- inherited disclosure survives; this is the case REQUIRED 4 broke.
+4. Mark's Tri-Delta flow -- tape 42.5 (applied) -> re-snap (invalidates
+   it with a "keeps scale" reason -> stale) -> fresh tape 61.25 (applied):
+   "Traced from an RTK orthomosaic (survey-grade). Scale set by field
+    measurement (61.3 ft on edge 2). Also on record: 42.5 ft on edge 1
+    (superseded by resnap neighbors) — see Field Measurements."
+    -- ALL THREE facts present: capture, the currently-applied 61.25 ft
+    reading, AND the superseded 42.5 ft reading with its real number and
+    why it no longer applies. Also verified the INVERSE ordering (the
+    stale entry wins the "latest applied" slot because the fresh one's
+    decision was "record_only", exercising the measurementStale/redacted-
+    number path in clause 2): "Scale set by a field measurement on this
+    roof (edge since edited — see Field Measurements for the original
+    reading). Additional field measurements on record: 61.3 ft on edge 2
+    (recorded only); 42.5 ft on edge 1 (superseded by resnap neighbors)
+    — see Field Measurements." -- still loses nothing; both real numbers
+    reach the reader via clause 3 even when clause 2 can't cite one.
+5. legacy Tri-Delta: inherited, no factor key:
    "...Scale carried from a field-measured section on this building
     (exact factor not on record)." -- never "unmeasured".
-5. image scale (georeferenced capture, no applied tape) + a recorded
-   tape: "Traced from an RTK orthomosaic (survey-grade). Scale derived
-    from the georeferenced source image; not field-verified. A field
-    measurement is also on record for this roof (20.1 ft on edge 2), but
-    was not applied to this drawing's scale (recorded only) — see Field
-    Measurements." -- the image disclosure also survives.
-6. genuinely no measurement: either "No field scale recorded —
-    dimensions are as-drawn, not verified against a physical measurement."
-    (manual_trace, no inheritance) or "Scale derived from the
-    georeferenced source image; not field-verified." (OSM/geotiff/KMZ/
-    walk_corners sources are themselves georeferenced captures per
-    roofmapper's own rmBuildScaleSource() classification, so a bare OSM
-    footprint with no tape correctly reads as "image", not "none" -- this
-    is roofmapper's existing classification, not something this PR
-    invented or should override).
+6. genuinely no measurement: "No field scale recorded — dimensions are
+    as-drawn, not verified against a physical measurement." -- and
+    confirmed this text NEVER co-occurs with a measurement disclosure in
+    any of cases 1-5 (REQUIRED 6) -- by construction, not by an added
+    check, since the fallback only fires when both clauses are empty.
 ```
 
-Also re-confirmed the `rmFetchReportRoofOutlines()` zero-write property
-still holds after this restructure (write log length 0 across the same
-test run), and re-ran the no-linked-building fallback and Change Order
-regression clean.
+Also re-confirmed the `rmFetchReportRoofOutlines()` zero-write property,
+the REQUIRED 2 badge/precision fix, the REQUIRED 5 guard fallback, and
+the QUESTION 1 stale-roof-plan-across-reports fix all still hold after
+this restructure, and re-ran the no-linked-building fallback and Change
+Order regression clean. Also re-synced this branch's `js/roofmapper.js`
+with `origin/dev` before starting this pass (a merge, not a rebase --
+PR #25/#26 had landed `measurementStale` since this branch was created,
+and building against a stale copy of Codex's file would have meant
+verifying against a schema that no longer matched production).
 
 **Per-edge visual distinction** (`rmReportEdgeMeta()`, wraps roofmapper's
 own `rmEdgeDimensionMeta()`): a measured edge renders as a bordered green

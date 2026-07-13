@@ -344,6 +344,53 @@ function rmReportCaptureSentence(cs){
   }
   return sentence;
 }
+/* ---- Scale sentence: built by COMPOSING independent clauses, never by
+   an if/else that picks one and assumes it's alone. This replaced two
+   earlier branch-based attempts (PR #17 review REQUIRED 3, then REQUIRED
+   4) that each fixed one interaction and broke another -- REQUIRED 3's
+   fix preempted the inherited/image disclosure; REQUIRED 4's fix (a
+   single optional "supplemental" slot that refused to fire whenever
+   ss.kind==="measured") had no way to disclose a THIRD fact once PR #25/
+   #26 landed measurementStale: a roof that was taped, then re-snapped
+   (which invalidates the tape's specific edge/length but keeps its SCALE
+   in force -- see rmMeasurementScaleStillApplied()'s "keeps scale"
+   reason list in roofmapper.js), then taped again, has THREE facts on
+   record (an applied-but-now-edge-stale reading, and whatever superseded
+   it) and the old one-slot model could only ever surface one.
+
+   The fix: the scale sentence is TWO independent clauses, computed
+   separately and concatenated, never selected between:
+
+   CLAUSE 2 (applied scale) -- how the drawing's CURRENTLY-APPLIED scale
+   was determined: measured / inherited / image, or absent entirely when
+   ss.kind is "none"/unknown (absent is not the same as "not verified" --
+   see the fallback at the bottom). When measured AND NOT stale, names the
+   exact edge/length AND marks that record as fully disclosed (so clause 3
+   doesn't repeat it). When measured but ss.measurementStale (PR #25/#26
+   deliberately nulls the specific edge/length in this case, since the
+   original edge no longer corresponds to current geometry after the
+   edit) states that plainly without inventing a number, and does NOT mark
+   anything as disclosed -- the real number still needs to reach the
+   reader, which is clause 3's job.
+
+   CLAUSE 3 (additional measurements on record) -- every OTHER measurement
+   record (rmAllMeasuredEdgeRecords(), same source of truth the Field
+   Measurements table renders from) that clause 2 didn't already fully
+   name, each with its own status: applied (a genuinely separate, still-
+   active applied reading -- compounding recalibrations), recorded-only /
+   kept-existing-scale (rmMeasurementDecisionLabel()), or superseded (by
+   remeasure, or by a "keeps scale" geometry edit like a re-snap -- named
+   explicitly as superseded, never silently dropped and never presented as
+   if it were current).
+
+   Nothing here can suppress anything else: clause 2 is computed from
+   ss.kind alone; clause 3 is computed from every record minus AT MOST one
+   (whatever clause 2 fully named). Adding a measurement can only ADD a
+   clause-3 item, never remove clause 2. "No field scale recorded... not
+   verified against a physical measurement" is the FALLBACK, used only
+   when BOTH clauses come back empty -- it can never appear next to a real
+   measurement disclosure, because if any measurement exists (of any
+   status) clause 3 is non-empty by construction. */
 function rmReportMeasuredScaleSentence(measuredFt, edgeIndex){
   var detail = "";
   var ftLabel = rmReportFeetLabel(measuredFt);
@@ -351,57 +398,74 @@ function rmReportMeasuredScaleSentence(measuredFt, edgeIndex){
   else if (ftLabel) detail = " (" + ftLabel + " measured)";
   return "Scale set by field measurement" + detail + ".";
 }
-/* The PRIMARY scale clause: answers "how was this drawing's current
-   scale actually determined" -- exactly one of measured/inherited/image/
-   none/unknown, matching ss.kind as roofmapper computed it. Never touches
-   edgeMeasurements directly; this is purely "what does ss.kind say." */
-function rmReportPrimaryScaleClause(ss){
-  if (ss && ss.kind === "measured") return rmReportMeasuredScaleSentence(ss.measuredFt, ss.edgeIndex);
-  if (ss && ss.kind === "image") return "Scale derived from the georeferenced source image; not field-verified.";
-  if (ss && ss.kind === "inherited"){
-    return "Scale carried from a field-measured section on this building" +
-      (typeof ss.factor === "number" ? "." : " (exact factor not on record).");
+/* Returns { text, disclosedId } -- disclosedId is the ONE measurement
+   record id clause 2 fully named (its real edge+length are already in
+   the sentence), if any, so clause 3 doesn't repeat it. text is "" when
+   ss.kind is "none"/unknown -- that is the ABSENCE of an applied-scale
+   clause, not a sentence of its own; the "not verified" fallback is
+   decided later, once clause 3 is known too. */
+function rmReportAppliedScaleClause(ss){
+  if (ss && ss.kind === "measured"){
+    if (ss.measurementStale){
+      /* roofmapper (rmBuildScaleSource(), PR #25/#26) deliberately nulls
+         ss.measuredFt/edgeIndex/measurementId here -- the tape's scale is
+         still in effect, but its original edge no longer corresponds to
+         current geometry after a resnap/vertex-edit/square-up, so citing
+         a specific "edge N" here would be a stale claim about current
+         geometry. The real historical number still reaches the reader
+         via clause 3 (nothing is excluded when disclosedId is null). */
+      return { text: "Scale set by a field measurement on this roof (edge since edited — see Field Measurements for the original reading).", disclosedId: null };
+    }
+    return { text: rmReportMeasuredScaleSentence(ss.measuredFt, ss.edgeIndex), disclosedId: ss.measurementId || null };
   }
-  if (!ss || ss.kind === "none") return "No field scale recorded — dimensions are as-drawn, not verified against a physical measurement.";
-  return "Scale source unknown.";
+  if (ss && ss.kind === "image") return { text: "Scale derived from the georeferenced source image; not field-verified.", disclosedId: null };
+  if (ss && ss.kind === "inherited"){
+    return {
+      text: "Scale carried from a field-measured section on this building" + (typeof ss.factor === "number" ? "." : " (exact factor not on record)."),
+      disclosedId: null
+    };
+  }
+  return { text: "", disclosedId: null };
 }
-/* PR #17 review, REQUIRED 4: the first fix for REQUIRED 3 put this
-   disclosure ABOVE the image/inherited primary clauses, so it PREEMPTED
-   them -- an inherited-scale roof (or an image-scale roof) that also
-   happens to carry an unapplied tape reading lost its inherited/image
-   disclosure entirely, going from "Scale carried from a field-measured
-   section..." to a DIFFERENT, less-informative sentence. A roof with MORE
-   provenance must never disclose LESS. Fixed by making this a SUPPLEMENTAL
-   clause, appended after the primary clause rather than replacing it --
-   the two facts ("how the drawing's actual scale was determined" and "a
-   tape reading exists on record but wasn't applied") are independent and
-   both true simultaneously, so both are stated. Never fires when
-   ss.kind==="measured" (that case's own tape already IS the primary
-   clause -- nothing to add). Guards edgeIndex the same way
-   rmReportMeasuredScaleSentence() does (typeof ... === "number", not a
-   truthy check) -- null + 1 === 1 in JS, which would otherwise fabricate
-   "edge 1" for a record with no known edge index. */
-function rmReportUnappliedMeasurementClause(ss, outline){
-  if (ss && ss.kind === "measured") return null;
-  var unapplied = (outline && typeof rmLatestActiveMeasuredEdge === "function") ? rmLatestActiveMeasuredEdge(outline) : null;
-  if (!unapplied) return null;
-  var ftLabel = rmReportFeetLabel(unapplied.measuredFt);
-  var decisionLabel = typeof rmMeasurementDecisionLabel === "function" ? rmMeasurementDecisionLabel(unapplied) : (unapplied.decision || "recorded");
-  var edgeDetail = (ftLabel && typeof unapplied.edgeIndex === "number") ? (" (" + ftLabel + " on edge " + (unapplied.edgeIndex + 1) + ")") :
-    (ftLabel ? " (" + ftLabel + " measured)" : "");
-  return "A field measurement is also on record for this roof" + edgeDetail + ", but was not applied to this drawing's scale (" +
-    decisionLabel + ") — see Field Measurements.";
+/* Human status for one edgeMeasurements record, for clause 3's list --
+   NOT the same wording rmMeasurementDecisionLabel() alone would give,
+   because clause 3 additionally needs to distinguish "superseded by a
+   geometry edit that kept the scale in force" (rmMeasurementInvalidationKeepsScale,
+   PR #25/#26) from a plain archived/no-longer-relevant entry. */
+function rmReportMeasurementStatusLabel(m){
+  var decisionLabel = typeof rmMeasurementDecisionLabel === "function" ? rmMeasurementDecisionLabel(m) : (m.decision || "recorded");
+  if (!m.invalidatedAt) return m.rescaleApplied ? "applied" : decisionLabel;
+  var keepsScale = typeof rmMeasurementInvalidationKeepsScale === "function" && rmMeasurementInvalidationKeepsScale(m.invalidatedReason);
+  var reasonText = m.invalidatedReason ? String(m.invalidatedReason).replace(/_/g, " ") : "geometry edit";
+  return keepsScale ? ("superseded by " + reasonText) : ("superseded — " + decisionLabel + (m.invalidatedReason ? ", " + reasonText : ""));
 }
-/* Composes the two independent scale facts rather than one preempting the
-   other -- see rmReportUnappliedMeasurementClause()'s comment for why this
-   structure exists. If you find yourself wanting to add another early
-   "if (...) return someSentence" branch above the primary clause, that's
-   the REQUIRED 4 bug reappearing -- add a new supplemental clause and
-   concatenate instead. */
+/* Clause 3: every measurement record NOT already fully named by clause 2
+   (rmAllMeasuredEdgeRecords() -- the exact same source of truth the Field
+   Measurements table renders from, so the two can never disagree about
+   WHICH measurements exist). A record is excluded only by exact id match
+   against disclosedId; nothing is excluded by kind/status, so a stale
+   record, a declined-but-active record, and a genuinely superseded record
+   all reach the reader every time they exist. Guards edgeIndex with
+   typeof === "number" (null + 1 === 1 in JS would otherwise fabricate
+   "edge 1" for a record with no known edge index). */
+function rmReportAdditionalMeasurementsClause(outline, disclosedId){
+  if (!outline || typeof rmAllMeasuredEdgeRecords !== "function") return "";
+  var records = rmAllMeasuredEdgeRecords(outline).filter(function(m){ return m && m.id !== disclosedId; });
+  if (!records.length) return "";
+  records = records.slice().sort(function(a, b){ return (b.measuredAt || 0) - (a.measuredAt || 0); });
+  var parts = records.map(function(m){
+    var ftLabel = rmReportFeetLabel(m.measuredFt);
+    var edgeLabel = typeof m.edgeIndex === "number" ? ("edge " + (m.edgeIndex + 1)) : "an unspecified edge";
+    return (ftLabel || "an unspecified length") + " on " + edgeLabel + " (" + rmReportMeasurementStatusLabel(m) + ")";
+  });
+  var lead = parts.length === 1 ? "Also on record: " : "Additional field measurements on record: ";
+  return lead + parts.join("; ") + " — see Field Measurements.";
+}
 function rmReportScaleSentence(ss, outline){
-  var primary = rmReportPrimaryScaleClause(ss);
-  var supplemental = rmReportUnappliedMeasurementClause(ss, outline);
-  return supplemental ? (primary + " " + supplemental) : primary;
+  var applied = rmReportAppliedScaleClause(ss);
+  var additional = rmReportAdditionalMeasurementsClause(outline, applied.disclosedId);
+  if (!applied.text && !additional) return "No field scale recorded — dimensions are as-drawn, not verified against a physical measurement.";
+  return [applied.text, additional].filter(Boolean).join(" ");
 }
 /* Per-edge visual distinction (Mark's explicit "must look different at a
    glance, a derived edge must NEVER wear a measured badge" -- this exact
