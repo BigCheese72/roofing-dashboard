@@ -96,36 +96,75 @@ const credPath = path.join(os.tmpdir(), "firestore-rules-deploy-credentials.json
 fs.writeFileSync(credPath, raw, { mode: 0o600 });
 
 try {
-  // INDEXES ship with RULES, for exactly the same reason (2026-07-13): a
-  // composite index that exists only because somebody once clicked the
-  // "create it here" link in a Firestore error message is an index that does
-  // NOT exist in the next project you deploy to. warranty_review_queue had no
-  // index on watkins-service-orders-dev, so list_review_queue() returned
-  // 9 FAILED_PRECONDITION -- the review queue, which is the entire safety net
-  // behind "never silently file a warranty report on the wrong roof", was
-  // unreadable. Reports would have been staged in Firestore and stayed
-  // invisible. Same trap as "The Firestore rules trap" above, different noun.
-  //
-  // --non-interactive will not DELETE indexes missing from firestore.indexes.json
-  // (that needs --force), so this is additive and cannot drop an index somebody
-  // created by hand.
-  const result = spawnSync(
+  // ---- RULES: still fatal. Unchanged. A rules publish that silently didn't
+  // happen is the incident this script was written for. ----
+  const rulesResult = spawnSync(
     "npx",
-    ["--yes", "firebase-tools", "deploy", "--only", "firestore:rules,firestore:indexes", "--project", projectId, "--non-interactive"],
+    ["--yes", "firebase-tools", "deploy", "--only", "firestore:rules", "--project", projectId, "--non-interactive"],
     {
       stdio: "inherit",
       env: Object.assign({}, process.env, { GOOGLE_APPLICATION_CREDENTIALS: credPath }),
     }
   );
 
-  if (result.error) {
-    fail("Could not launch firebase-tools: " + result.error.message);
+  if (rulesResult.error) {
+    fail("Could not launch firebase-tools: " + rulesResult.error.message);
   }
-  if (result.status !== 0) {
-    fail("firebase-tools exited with status " + result.status + ". Rules and/or indexes were NOT published to " + projectId + ". See the build log above for the real error (a permission error here means this deploy context's service account needs the Firebase Rules Admin role, and Cloud Datastore Index Admin, on " + projectId + ").");
+  if (rulesResult.status !== 0) {
+    fail("firebase-tools exited with status " + rulesResult.status + ". Rules were NOT published to " + projectId + ". See the build log above for the real error (a permission error here means this deploy context's service account needs the Firebase Rules Admin role on " + projectId + ").");
   }
+  console.log("[deploy-firestore-rules] Firestore rules published to " + projectId + ".");
 
-  console.log("[deploy-firestore-rules] Firestore rules + indexes published to " + projectId + ".");
+  // ---- INDEXES: attempted, and LOUD on failure, but NOT fatal. ----
+  //
+  // Composite indexes belong in the repo for the same reason rules do: an
+  // index that exists only because somebody once clicked the "create it here"
+  // link in a Firestore error message is an index that does not exist in the
+  // next project you deploy to. warranty_review_queue had no index on
+  // watkins-service-orders-dev, so list_review_queue() returned
+  // 9 FAILED_PRECONDITION -- the REVIEW QUEUE, the entire safety net behind
+  // "never silently file a warranty report on the wrong roof", was unreadable.
+  //
+  // But this must NOT fail the build, and that is a deliberate reversal:
+  // publishing indexes needs an IAM role (Cloud Datastore Index Admin /
+  // datastore.indexes.create) that the rules-publishing service accounts do
+  // not automatically have. On 2026-07-13 making this fatal turned a missing
+  // IAM grant into a hard failure of EVERY dev deploy -- a self-inflicted
+  // outage of the deploy pipeline, which is strictly worse than the missing
+  // index it was trying to prevent. Rules staying fatal preserves the original
+  // incident's lesson; indexes warn loudly instead, and the missing index still
+  // surfaces immediately and unmissably at runtime as a FAILED_PRECONDITION.
+  //
+  // --non-interactive will not DELETE indexes absent from firestore.indexes.json
+  // (that needs --force), so this is additive and cannot drop a hand-made index.
+  const idxResult = spawnSync(
+    "npx",
+    ["--yes", "firebase-tools", "deploy", "--only", "firestore:indexes", "--project", projectId, "--non-interactive"],
+    {
+      stdio: "inherit",
+      env: Object.assign({}, process.env, { GOOGLE_APPLICATION_CREDENTIALS: credPath }),
+    }
+  );
+
+  if (idxResult.error || idxResult.status !== 0) {
+    console.error("");
+    console.error("=============================================================");
+    console.error("[deploy-firestore-rules] WARNING: Firestore INDEXES were NOT published to " + projectId + ".");
+    console.error("Rules published fine; only indexes failed. The build is NOT failed for this.");
+    console.error("");
+    console.error("If the error above is 'HTTP Error: 403, The caller does not have permission',");
+    console.error("this deploy context's FIREBASE_SERVICE_ACCOUNT needs the IAM role:");
+    console.error("    Cloud Datastore Index Admin   (roles/datastore.indexAdmin)");
+    console.error("on project " + projectId + ". Grant it in Google Cloud Console > IAM, then redeploy.");
+    console.error("");
+    console.error("Until then, any query needing a composite index returns 9 FAILED_PRECONDITION.");
+    console.error("That currently includes the warranty REVIEW QUEUE (list_review_queue) and");
+    console.error("resolveSupersedes() -- i.e. inspection-report filing and the review queue both.");
+    console.error("=============================================================");
+    console.error("");
+  } else {
+    console.log("[deploy-firestore-rules] Firestore indexes published to " + projectId + ".");
+  }
 } finally {
   try { fs.unlinkSync(credPath); } catch (e) { /* best-effort cleanup, not worth failing the build over */ }
 }
