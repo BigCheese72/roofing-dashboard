@@ -1084,15 +1084,17 @@ function rmActiveEdgeMeasurements(outline){
   });
 }
 function rmLegacyCalibrationEntry(c){
-  var factor = rmIsFiniteNumber(c.factor) ? c.factor : null;
+  var decision = c.conflictResolution || "use";
+  var appliedFactor = rmIsFiniteNumber(c.factor) ? c.factor : null;
+  var factor = decision === "average" ? null : appliedFactor;
   return {
     id: "legacy-calibration-" + c.edgeIndex,
     edgeIndex: c.edgeIndex,
     measuredFt: c.measuredFt,
     factor: factor,
-    appliedFactor: factor,
+    appliedFactor: appliedFactor,
     rescaleApplied: true,
-    decision: "use",
+    decision: decision,
     source: "measured",
     measuredAt: c.calibratedAt || null,
     rawInput: c.rawInput || String(c.measuredFt),
@@ -1137,6 +1139,15 @@ function rmGetMeasuredEdge(outline, edgeIndex){
 }
 function rmLatestActiveMeasuredEdge(outline){
   var list = rmActiveMeasuredEdges(outline);
+  if (!list.length) return null;
+  return list.slice().sort(function(a, b){
+    return (b.measuredAt || 0) - (a.measuredAt || 0);
+  })[0];
+}
+function rmLatestAppliedMeasuredEdge(outline){
+  var list = rmActiveMeasuredEdges(outline).filter(function(m){
+    return m && m.rescaleApplied === true;
+  });
   if (!list.length) return null;
   return list.slice().sort(function(a, b){
     return (b.measuredAt || 0) - (a.measuredAt || 0);
@@ -1313,7 +1324,7 @@ function rmBuildCaptureSource(outline){
     label: source === "manual_trace" ? "Manual flat-image trace" : "Manual map trace (approximate)" };
 }
 function rmBuildScaleSource(outline, captureSource){
-  var measured = rmLatestActiveMeasuredEdge(outline);
+  var measured = rmLatestAppliedMeasuredEdge(outline);
   if (measured){
     return {
       kind: "measured",
@@ -1335,8 +1346,9 @@ function rmBuildScaleSource(outline, captureSource){
       fromOutlineId: inherited ? (inherited.fromOutlineId || null) : null
     };
   }
-  if (captureSource && (captureSource.mechanism === "geotiff" || captureSource.mechanism === "kmz_overlay")){
-    return { kind: "image", label: "scale from georeferenced image", factor: null };
+  if (captureSource && (captureSource.mechanism === "geotiff" || captureSource.mechanism === "kmz_overlay" ||
+      captureSource.mechanism === "osm" || captureSource.mechanism === "walk_corners")){
+    return { kind: "image", label: "scale from georeferenced capture", factor: null };
   }
   return { kind: "none", label: "no field scale recorded", factor: null };
 }
@@ -1351,6 +1363,45 @@ function rmBuildMeasurementMethodFromSources(captureSource, scaleSource){
     scaleProvenance: scaleSource.kind === "measured" || scaleSource.kind === "inherited" ? scaleSource : null,
     maxQuadBBoxErrorFt: captureSource.maxQuadBBoxErrorFt || null
   };
+}
+function rmLegacyCaptureSourceFromMethod(method){
+  if (!method || !method.label) return null;
+  var kind = method.kind || "manual_map";
+  var accuracy = method.accuracyClass || "manual_map_approx";
+  var label = String(method.label).replace(/^Method:\s*/, "");
+  var mechanism = "manual_map", rank = "estimated";
+  if (kind === "geotiff" || accuracy === "survey_grade_source"){
+    mechanism = "geotiff"; rank = "survey";
+  } else if (kind === "kml_groundoverlay" || kind === "kmz_superoverlay" || accuracy === "georeferenced_overlay_approx"){
+    mechanism = "kmz_overlay"; rank = "approximate";
+  } else if (kind === "flat_ortho" || accuracy === "uncalibrated_image"){
+    mechanism = "ortho_image"; rank = "estimated";
+  } else if (kind === "walked_phone_gps" || accuracy === "field_gps_approx"){
+    mechanism = "walk_corners"; rank = "approximate";
+  } else if (kind === "osm" || accuracy === "public_map_approx"){
+    mechanism = "osm"; rank = "estimated";
+  }
+  return {
+    mechanism: mechanism,
+    rank: rank,
+    kind: kind,
+    accuracyClass: accuracy,
+    label: label
+  };
+}
+function rmLegacyMeasurementMethodWithSources(outline){
+  var stored = outline && outline.measurementMethod;
+  if (!stored || !stored.label) return null;
+  if (stored.captureSource) return stored;
+  var captureSource = rmLegacyCaptureSourceFromMethod(stored);
+  if (!captureSource) return stored;
+  var scaleSource = rmBuildScaleSource(outline, captureSource);
+  return Object.assign({}, stored, {
+    captureSource: captureSource,
+    scaleSource: scaleSource,
+    scaleProvenance: scaleSource.kind === "measured" || scaleSource.kind === "inherited" ? scaleSource : null,
+    maxQuadBBoxErrorFt: captureSource.maxQuadBBoxErrorFt || stored.maxQuadBBoxErrorFt || null
+  });
 }
 function rmRefreshOutlineMeasurementModel(outline){
   if (!outline) return null;
@@ -1372,8 +1423,8 @@ function rmOutlineMeasurementPersistence(outline){
 }
 function rmOutlineMeasurementMethod(outline){
   if (!outline) return { kind: "unknown", label: "Method: Unknown capture source" };
-  if (!outline.source && outline.measurementMethod && outline.measurementMethod.label && outline.measurementMethod.captureSource){
-    return outline.measurementMethod;
+  if (!outline.source && outline.measurementMethod && outline.measurementMethod.label){
+    return rmLegacyMeasurementMethodWithSources(outline);
   }
   var captureSource = rmBuildCaptureSource(outline);
   var scaleSource = rmBuildScaleSource(outline, captureSource);
@@ -1418,9 +1469,7 @@ function rmCopyOutlineSourceMetadata(src, dest){
   if (src.tracedOnOrtho) dest.tracedOnOrtho = true;
   if (src.groundOverlay) dest.groundOverlay = Object.assign({}, src.groundOverlay);
   if (src.captureSource) dest.captureSource = Object.assign({}, src.captureSource);
-  if (src.scaleSource) dest.scaleSource = Object.assign({}, src.scaleSource);
-  if (src.measurementMethod) dest.measurementMethod = Object.assign({}, src.measurementMethod);
-  else rmRefreshOutlineMeasurementModel(dest);
+  rmRefreshOutlineMeasurementModel(dest);
   return dest;
 }
 function rmDropSplitMeasurementMetadata(outlineEntry, baseOutline){
