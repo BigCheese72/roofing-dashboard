@@ -363,16 +363,32 @@ exports.handler = async function (event) {
           const j = await gj(url, { headers: { Prefer: 'outlook.body-content-type="text"' } });
           const msgs = (j.value || []).slice().sort((x, y) =>
             String(y.receivedDateTime || "").localeCompare(String(x.receivedDateTime || "")));
-          const m = msgs[0];
-          if (!m) { out.push({ email, found: false }); continue; }
-          const ea = (m.from && m.from.emailAddress) || {};
-          const parsed = parseSignature((m.body && m.body.content) || "", ea.name || "", email);
+          if (!msgs.length) { out.push({ email, found: false }); continue; }
+
+          // The MOST RECENT message is often a two-line reply with no signature
+          // at all ("Thanks, will do"). So parse the last several messages and
+          // keep the richest signature, preferring newer ones on a tie — that
+          // gets the current signature without being defeated by a short reply.
+          const ea = (msgs[0].from && msgs[0].from.emailAddress) || {};
+          const score = p => [p.company, p.jobTitle, p.website, p.address,
+            p.phones.business, p.phones.mobile, p.phones.fax].filter(Boolean).length;
+          let best = null, bestScore = -1;
+          for (const m of msgs) {
+            const nm = (m.from && m.from.emailAddress && m.from.emailAddress.name) || ea.name || "";
+            const p = parseSignature((m.body && m.body.content) || "", nm, email);
+            const s = score(p);
+            if (s > bestScore) { bestScore = s; best = p; }   // strict >: newer wins ties
+            if (bestScore >= 5) break;                        // rich enough, stop early
+          }
+
           out.push({
             email,
             found: true,
             displayName: ea.name || null,
-            lastMessage: m.receivedDateTime || null,
-            ...parsed,
+            lastMessage: msgs[0].receivedDateTime || null,
+            fieldsFound: bestScore,
+            messagesScanned: msgs.length,
+            ...best,
           });
         } catch (e) {
           out.push({ email, found: false, error: String(e.message || e).slice(0, 160) });
