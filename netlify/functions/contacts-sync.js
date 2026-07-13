@@ -97,6 +97,7 @@ function classify(email, displayName) {
   // Long random locals are bulk-mailer VERP/bounce addresses, never people.
   if (/^[a-z0-9]{20,}$/i.test(local) || /=/.test(local)) return { keep: false, reason: "bulk-mailer generated address" };
   if (/^(mark|marks)$/i.test(local) && domain === "watkinsroofing.net") return { keep: false, reason: "Mark himself" };
+  if (e === "mark.sheppard72@gmail.com") return { keep: false, reason: "Mark himself (personal address)" };
 
   const dn = String(displayName || "").trim();
   if (/\b(newsletter|no.?reply|notification|digest|alerts?)\b/i.test(dn)) {
@@ -351,11 +352,18 @@ exports.handler = async function (event) {
       for (const email of emails) {
         const addr = String(email).toLowerCase().replace(/'/g, "''");
         try {
-          const url = "/me/messages?$top=1&$orderby=receivedDateTime desc" +
+          // NOTE: $filter + $orderby together across the whole mailbox makes
+          // Graph return 400 InefficientFilter ("restriction or sort order is
+          // too complex") — Exchange won't sort a cross-folder filtered set.
+          // So: filter only, pull a handful, and pick the newest ourselves.
+          // Signatures change over time, and we want the CURRENT one.
+          const url = "/me/messages?$top=10" +
             "&$filter=" + encodeURIComponent("from/emailAddress/address eq '" + addr + "'") +
             "&$select=" + encodeURIComponent("from,receivedDateTime,body");
           const j = await gj(url, { headers: { Prefer: 'outlook.body-content-type="text"' } });
-          const m = (j.value || [])[0];
+          const msgs = (j.value || []).slice().sort((x, y) =>
+            String(y.receivedDateTime || "").localeCompare(String(x.receivedDateTime || "")));
+          const m = msgs[0];
           if (!m) { out.push({ email, found: false }); continue; }
           const ea = (m.from && m.from.emailAddress) || {};
           const parsed = parseSignature((m.body && m.body.content) || "", ea.name || "", email);
