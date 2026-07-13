@@ -1076,24 +1076,36 @@ function rmArchiveLegacyCalibrationMismatch(outline, c){
     invalidatedReason: "legacy_calibration_ring_mismatch"
   })]);
 }
+function rmLegacyCalibrationShouldCheckRing(outline, c){
+  if (!outline || !c) return false;
+  return !c.source && !Object.prototype.hasOwnProperty.call(c, "factor");
+}
+function rmLegacyCalibrationRingMismatch(outline, c){
+  if (!rmLegacyCalibrationShouldCheckRing(outline, c)) return false;
+  var ring = outline.ring || [];
+  var a = ring[c.edgeIndex], b = ring[c.edgeIndex + 1];
+  var edgeFt = a && b ? rmGeomHaversineMeters(a, b) * 3.28084 : null;
+  return !rmIsFiniteNumber(edgeFt) ||
+    Math.abs(edgeFt - c.measuredFt) / c.measuredFt > RM_LEGACY_CALIBRATION_EDGE_TOLERANCE;
+}
 function rmLegacyCalibrationMeasurement(outline){
   if (!outline || !outline.calibration || outline.calibration.inherited) return null;
   var c = outline.calibration;
   if (!rmIsFiniteNumber(c.edgeIndex) || !rmIsFiniteNumber(c.measuredFt) || c.measuredFt <= 0) return null;
-  var ring = outline.ring || [];
-  var a = ring[c.edgeIndex], b = ring[c.edgeIndex + 1];
-  var edgeFt = a && b ? rmGeomHaversineMeters(a, b) * 3.28084 : null;
-  var mismatch = !rmIsFiniteNumber(edgeFt) ||
-    Math.abs(edgeFt - c.measuredFt) / c.measuredFt > RM_LEGACY_CALIBRATION_EDGE_TOLERANCE;
-  if (mismatch){
-    rmArchiveLegacyCalibrationMismatch(outline, c);
-    return null;
-  }
+  if (rmLegacyCalibrationRingMismatch(outline, c)) return null;
   return rmLegacyCalibrationEntry(c);
 }
 function rmMigrateLegacyCalibration(outline){
+  if (!outline || !outline.calibration || outline.calibration.inherited) return false;
+  var c = outline.calibration;
+  if (!rmIsFiniteNumber(c.edgeIndex) || !rmIsFiniteNumber(c.measuredFt) || c.measuredFt <= 0) return false;
+  if (rmLegacyCalibrationRingMismatch(outline, c)){
+    rmArchiveLegacyCalibrationMismatch(outline, c);
+    delete outline.calibration;
+    return true;
+  }
   var legacy = rmLegacyCalibrationMeasurement(outline);
-  if (!outline || !legacy) return false;
+  if (!legacy) return false;
   var active = rmActiveEdgeMeasurements(outline);
   var exists = active.some(function(m){
     return m && m.edgeIndex === legacy.edgeIndex;
@@ -1134,6 +1146,7 @@ function rmUpsertEdgeMeasurement(outline, entry){
     return m;
   });
   outline.edgeMeasurements.push(entry);
+  return entry;
 }
 function rmInvalidateEdgeMeasurements(outline, reason){
   if (!outline) return false;
@@ -1189,14 +1202,15 @@ function rmAppendMethodScaleNote(method, note, scaleProvenance){
   return Object.assign({}, method, { label: label, scaleProvenance: scaleProvenance });
 }
 function rmMeasuredScaleProvenance(outline){
-  if (!outline || !outline.calibration || outline.calibration.inherited) return null;
-  var legacy = rmLegacyCalibrationMeasurement(outline);
-  if (!legacy) return null;
+  var active = rmActiveMeasuredEdges(outline);
+  if (!active.length) return null;
+  var measured = active[0];
   return {
     source: "measured",
-    factor: rmIsFiniteNumber(outline.calibration.factor) ? outline.calibration.factor : null,
-    edgeIndex: legacy.edgeIndex,
-    measuredFt: legacy.measuredFt
+    factor: outline && outline.calibration && !outline.calibration.inherited &&
+      rmIsFiniteNumber(outline.calibration.factor) ? outline.calibration.factor : null,
+    edgeIndex: measured.edgeIndex,
+    measuredFt: measured.measuredFt
   };
 }
 function rmInheritedScaleProvenance(outline){
@@ -1210,9 +1224,11 @@ function rmInheritedScaleProvenance(outline){
   };
 }
 function rmAnnotateMeasuredScaleMethod(method, outline){
-  return rmAppendMethodScaleNote(method,
+  var annotated = rmAppendMethodScaleNote(method,
     "scale field-calibrated from a tape-measured edge on this roof",
     rmMeasuredScaleProvenance(outline));
+  if (annotated && annotated.scaleProvenance) annotated.accuracyClass = "field_calibrated";
+  return annotated;
 }
 function rmAnnotateInheritedScaleMethod(method, outline){
   if (!method || !rmHasInheritedScale(outline) || rmHasMeasuredEdges(outline)) return method;
@@ -2940,10 +2956,10 @@ async function rmCalibrateEdge(edgeIndex){
     rawInput: String(input)
   };
   if (hadConflict) measurementEntry.conflictResolution = conflictResolution;
-  rmUpsertEdgeMeasurement(outline, measurementEntry);
+  var storedMeasurementEntry = rmUpsertEdgeMeasurement(outline, measurementEntry) || measurementEntry;
   if (!rmConfirmSavedOutlineRescale(outline, appliedFactor)){
     appliedFactor = 1;
-    measurementEntry.rescaleDeclined = true;
+    storedMeasurementEntry.rescaleDeclined = true;
   }
   if (appliedFactor === 1){
     outline.measurementMethod = rmOutlineMeasurementMethod(outline);
