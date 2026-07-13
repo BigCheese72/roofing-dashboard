@@ -7379,6 +7379,144 @@ no NEW code was needed for graceful failure, only confirmation that the
 existing chain covers this specific cause too. Once Mark attaches Blaze
 billing, dev photo upload starts working with zero code changes.
 
+### Report provenance rendering: capture/scale/edge-measurement transparency (shipped)
+
+Codex's field-measured-dimensions work (`js/roofmapper.js`, merged to `dev`
+via PR #7) gave every `roof_outlines[]` entry two independent, persisted
+fields — `captureSource` (how the geometry was traced; immutable) and
+`scaleSource` (how the scale factor was determined; independent, NOT a rung
+on the capture confidence ladder) — plus `edgeMeasurements[]` (per-edge tape
+readings, archived not deleted, each carrying the tech's conflict-resolution
+decision). None of it was visible on the customer-facing work order report
+until now — this section is the render side, entirely in `js/export.js`
+(the file this repo's ownership split assigns to reports/exports, as
+opposed to `js/roofmapper.js`'s live-map capture side).
+
+**Two sentences, never merged** (`rmReportMethodSentences()`): capture and
+scale are stated as two separate sentences, e.g. "Traced from an RTK
+orthomosaic (survey-grade). Scale set by field measurement (180 ft on edge
+1)." The scale sentence never upgrades the capture sentence's confidence —
+a satellite trace with a taped edge still says "estimated" for capture, it
+just also says "measured" for scale. Reads `outline.captureSource`/
+`.scaleSource` via `rmOutlineMeasurementMethod()` (`js/roofmapper.js`,
+confirmed read-only — doesn't mutate the outline or touch Firestore) rather
+than re-deriving the source-code-to-label mapping here, so a future change
+to Codex's classification logic shows up automatically instead of a second,
+drifting copy.
+
+**Per-edge visual distinction** (`rmReportEdgeMeta()`, wraps roofmapper's
+own `rmEdgeDimensionMeta()`): a measured edge renders as a bordered green
+pill with a ✓ prefix when it matches the drawing's geometry, or orange with
+"!" when it disagrees beyond tolerance; a derived (unmeasured) edge is
+always plain dark, no border, no prefix — the same logic that drives the
+live map's own edge labels, reused rather than reimplemented, so the report
+can never show a measured edge differently than RoofMapper itself does.
+
+**Legend** (`RM_REPORT_LEGEND_ITEMS`): three swatches (measured-matching,
+measured-conflict, derived) drawn directly on the roof plan SVG so a
+customer can read the confidence levels without a separate key elsewhere in
+the document.
+
+**Archived measurements + the tech's decision** (`rmReportMeasurementRows()`,
+wraps roofmapper's `rmAllMeasuredEdgeRecords()`/`rmMeasurementDecisionLabel()`):
+a "Field Measurements" table (HTML: below the roof plan; PDF: its own
+`autoTable`) lists every measurement on the roof, active AND archived/
+superseded, each with what actually happened — "used to rescale," "kept
+existing scale," "averaged with existing scale," or "recorded only" — plus
+when and (for an archived entry) why it was superseded. Provenance the
+reader never sees isn't provenance.
+
+**Back-compat, verified against a synthetic legacy record matching Mark's
+real Tri-Delta roofs exactly** (a `calibration` object with `edgeIndex`/
+`measuredFt`/`calibratedAt` but genuinely no `factor` key): confirmed the
+scale sentence still reads "Scale set by field measurement (47 ft on edge
+3)" — `scaleSource.kind` stays `"measured"` and `rescaleApplied: true` even
+though `factor`/`appliedFactor` come back `null`. Never renders a legacy
+roof as unmeasured or unscaled just because the exact factor wasn't
+recorded at the time — `rmOutlineMeasurementMethod()`'s own legacy-migration
+logic (`rmLegacyCalibrationEntry()`) already handles this correctly; this
+render layer just never gates the sentence on `factor` being present, only
+on `measuredFt`, which every legacy entry carries.
+
+**Roof plan on the report** (`rmBuildReportRoofPlanSvg()`): one shared SVG
+render path for both the HTML report (embedded inline, `<svg>` directly in
+`renderLeakReportDoc()`'s output) and the PDF (rasterized via
+`rmRasterizeSvgToCanvas()` and embedded as a PNG in `generateLeakReportPdf()`)
+so the two never drift apart into two different drawings. Multi-roof
+support projects every roof into one shared coordinate space (same
+technique RoofMapper's own multi-roof export uses) with roof-name labels
+placed via a ported/rebuilt `rmDeconflictLabels()` (the original attempt at
+this lived on `fix/finish-firebase-split@8e70823`, built against the
+pre-modularization monolith and never merged — this is a clean
+re-implementation against the real `js/export.js`, not a copy-paste of
+that commit). A real bug caught in testing and worth calling out
+precisely: embedding the roof plan's ~2200px PNG without `compress: true`
+on the `jsPDF` constructor turned a 2-page report into a 14.3MB PDF (jsPDF
+stores image XObject streams RAW/undeflated by default) — the exact same
+bug already fixed once before in the RoofMapper export path (see "single
+shared render path" above). Fixed the same way: `compress: true`, bringing
+the same report down to 91KB.
+
+**Data fetch** (`rmFetchReportRoofOutlines()`): derives the linked
+building via `ensureCustomerAndBuilding()` (`js/core.js`, the SAME
+deterministic `bld_`/`cust_` id derivation already used everywhere else in
+the app — no new field, no new collection), fetches the building doc, and
+takes each covered roof's LATEST `roof_outlines[]` entry. Falls back to
+"the building's only roof" when `reportDistinctRoofIds()` comes back empty
+(a plain single-roof job's findings usually carry no `roofId` at all — GPS
+auto-assign only starts stamping one once a building has more than one
+roof) — without this fallback the overwhelmingly common single-roof case
+would never show a roof plan at all. Never throws; a report for a job with
+no linked building (still most jobs, historically) just gets `[]` and the
+roof plan section is omitted, exactly like before this existed. Hooked in
+at `goToPreview()` (populates a module-level `rmReportRoofPlanData` BEFORE
+`showView("preview")` triggers `js/core.js`'s synchronous `renderDoc()` --
+`js/core.js` is out of scope for this change, so the fetch has to complete
+entirely on this side of that call) and separately in `generatePdf()`
+(fetches fresh, since a direct PDF download doesn't necessarily pass
+through Preview first).
+
+**Findings numbered and cross-referenced to photos** (`rmReportPhotoFindingRefs()`):
+uses the existing `photo.finding_id` field (already set whenever a photo
+is captured from a specific finding's own camera button, `js/photos.js` —
+not a new field) to add a "Photos" column to the findings table (`#1, #2`)
+and a "(Finding #N)" back-reference on each photo's caption, in both the
+HTML report and the PDF. Fixed a numbering-consistency risk while building
+this: the PDF's photo grid re-filters its own local `fp` (drops photos
+missing usable `w`/`h` dimensions) before numbering, which would silently
+shift every later photo's number out of sync with the findings table's
+cross-reference; fixed by numbering off `refs.fp` (the same unfiltered
+list the findings table itself was built from) instead of the locally
+re-filtered array.
+
+**Watkins branding**: the real logo (`LOGO`) and brand red (`#B4223F` /
+`rgb(180,34,63)`, confirmed against the actual brand color already defined
+in `css/app.css`'s banner comment) were already correct on the Change
+Order PDF; extended the same brand red to the Leak/Repair/Inspection
+report's title (previously plain dark gray) for consistency across every
+document type, both HTML (`.t1` inline style) and PDF (`doc.setTextColor`).
+
+**Tested** end-to-end with a mocked `fdb` (no real writes; a fresh worktree
+checkout, `feature/report-provenance`, cut from `origin/dev` — see the git
+housekeeping note in this session's handoff for why a clean branch mattered
+here): seeded a building+roof matching `ensureCustomerAndBuilding()`'s
+real id derivation, with a survey-grade capture, one active field
+measurement, one archived/superseded one, and a linked photo. Verified:
+the two-sentence method text matches the spec's own example format
+almost verbatim; measured-vs-derived-vs-conflict edge coloring, confirmed
+against BOTH a direct function call and the actual rendered SVG's edge
+labels (the synthetic test ring's real geometric length legitimately
+disagreed with the fabricated measurement, correctly triggering the
+conflict/orange path — not a bug, a correct tolerance check firing on
+mismatched test data); the legacy-no-factor-key back-compat case;
+full HTML render (roof plan SVG present, method text present, legend
+present, measurement history present, archived badge present, photo
+cross-reference present); full PDF generation (2 pages, 91KB after the
+compress fix, no exceptions) including the same checks; the no-linked-
+building fallback (empty array, no crash, roof plan section cleanly
+omitted, rest of the report unaffected); and a Change Order regression
+check (entirely unaffected, still 1 page, still generates cleanly).
+
 ## Roadmap (not built yet, foundation only)
 
 - **RoofOps Dashboard**: cross-building reporting, search, filters — reads from
