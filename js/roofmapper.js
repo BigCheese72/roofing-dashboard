@@ -1085,15 +1085,17 @@ function rmActiveEdgeMeasurements(outline){
 }
 function rmLegacyCalibrationEntry(c){
   var decision = c.conflictResolution || "use";
-  var appliedFactor = rmIsFiniteNumber(c.factor) ? c.factor : null;
-  var factor = decision === "average" ? null : appliedFactor;
+  var appliesScale = decision === "use" || decision === "average";
+  var knownFactor = rmIsFiniteNumber(c.factor) ? c.factor : null;
+  var appliedFactor = appliesScale ? knownFactor : 1;
+  var factor = decision === "average" ? null : knownFactor;
   return {
     id: "legacy-calibration-" + c.edgeIndex,
     edgeIndex: c.edgeIndex,
     measuredFt: c.measuredFt,
     factor: factor,
     appliedFactor: appliedFactor,
-    rescaleApplied: true,
+    rescaleApplied: appliesScale,
     decision: decision,
     source: "measured",
     measuredAt: c.calibratedAt || null,
@@ -1261,8 +1263,7 @@ function rmBuildInheritedScaleRecord(src, factor){
       derivedAt: src.calibration.calibratedAt || null
     };
   }
-  var direct = rmLatestActiveMeasuredEdge(src);
-  if (direct && !direct.rescaleApplied) direct = null;
+  var direct = rmLatestAppliedMeasuredEdge(src);
   if (!inherited && !direct) return null;
   return {
     fromOutlineId: inherited ? (inherited.fromOutlineId || null) : (src.id || null),
@@ -1366,10 +1367,10 @@ function rmBuildMeasurementMethodFromSources(captureSource, scaleSource){
 }
 function rmLegacyCaptureSourceFromMethod(method){
   if (!method || !method.label) return null;
-  var kind = method.kind || "manual_map";
-  var accuracy = method.accuracyClass || "manual_map_approx";
+  var kind = method.kind || "unknown";
+  var accuracy = method.accuracyClass || "unknown";
   var label = String(method.label).replace(/^Method:\s*/, "");
-  var mechanism = "manual_map", rank = "estimated";
+  var mechanism = "unknown", rank = "unknown";
   if (kind === "geotiff" || accuracy === "survey_grade_source"){
     mechanism = "geotiff"; rank = "survey";
   } else if (kind === "kml_groundoverlay" || kind === "kmz_superoverlay" || accuracy === "georeferenced_overlay_approx"){
@@ -1380,6 +1381,8 @@ function rmLegacyCaptureSourceFromMethod(method){
     mechanism = "walk_corners"; rank = "approximate";
   } else if (kind === "osm" || accuracy === "public_map_approx"){
     mechanism = "osm"; rank = "estimated";
+  } else if (kind === "manual_map" || accuracy === "manual_map_approx"){
+    mechanism = "manual_map"; rank = "estimated";
   }
   return {
     mechanism: mechanism,
@@ -2710,7 +2713,7 @@ function rmRenderOutlineStats(outline){
     scaleNote = '<p class="hint" style="margin:0 0 8px">📏 Scale inherited from this building’s earlier ' +
       'calibration — no need to re-measure. Tap any edge’s length to override it for just this roof.</p>';
   }
-  if (!scaleNote && method && method.scaleSource && method.scaleSource.kind !== "none"){
+  if (!scaleNote && method && method.label){
     scaleNote = '<p class="hint" style="margin:0 0 8px">' + esc(method.label.replace(/^Method:\s*/, "")) + '</p>';
   }
   document.getElementById("rm-outline-stats").innerHTML = scaleNote +
@@ -3114,7 +3117,7 @@ async function rmCalibrateEdge(edgeIndex){
       decision = "use";
     }
   }
-  var rescaleApplied = Math.abs(appliedFactor - 1) > 0.000001;
+  var rescaleApplied = decision === "use" || decision === "average";
   var measurementEntry = {
     id: rmMeasurementId(edgeIndex),
     edgeIndex: edgeIndex,
