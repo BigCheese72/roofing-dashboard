@@ -414,7 +414,13 @@ function rmReportAppliedScaleClause(ss){
          a specific "edge N" here would be a stale claim about current
          geometry. The real historical number still reaches the reader
          via clause 3 (nothing is excluded when disclosedId is null). */
-      return { text: "Scale set by a field measurement on this roof (edge since edited — see Field Measurements for the original reading).", disclosedId: null };
+      /* No "see Field Measurements" pointer here: disclosedId is null, so
+         clause 3 is GUARANTEED to carry this record (the stale record is
+         what rmLatestAppliedMeasuredEdge() returned, so it is by
+         construction in rmAllMeasuredEdgeRecords()) and it appends the
+         pointer itself. Saying it twice in one sentence reads like a
+         glitch on a customer PDF. */
+      return { text: "Scale set by a field measurement on this roof; the edge it was taken on has since been edited.", disclosedId: null };
     }
     return { text: rmReportMeasuredScaleSentence(ss.measuredFt, ss.edgeIndex), disclosedId: ss.measurementId || null };
   }
@@ -435,9 +441,28 @@ function rmReportAppliedScaleClause(ss){
 function rmReportMeasurementStatusLabel(m){
   var decisionLabel = typeof rmMeasurementDecisionLabel === "function" ? rmMeasurementDecisionLabel(m) : (m.decision || "recorded");
   if (!m.invalidatedAt) return m.rescaleApplied ? "applied" : decisionLabel;
-  var keepsScale = typeof rmMeasurementInvalidationKeepsScale === "function" && rmMeasurementInvalidationKeepsScale(m.invalidatedReason);
   var reasonText = m.invalidatedReason ? String(m.invalidatedReason).replace(/_/g, " ") : "geometry edit";
-  return keepsScale ? ("superseded by " + reasonText) : ("superseded — " + decisionLabel + (m.invalidatedReason ? ", " + reasonText : ""));
+  /* "invalidated" here does NOT mean "no longer in force" -- that is the
+     trap. rmMeasurementInvalidationKeepsScale() (roofmapper.js:1185)
+     returns TRUE for every reason we currently emit, because none of
+     vertex_edit / square_up / resnap_neighbors / align_outline UN-scale
+     the ring: the tape's correction is still physically in the geometry,
+     only the edge it was taken on has moved. Labelling those "superseded"
+     would tell the reader the measurement is no longer in effect, which is
+     false in exactly the direction that matters -- so we say what actually
+     happened to it instead. */
+  if (m.invalidatedReason === "superseded_by_remeasure"){
+    return "superseded by a later re-measurement" +
+      (m.rescaleApplied ? "; its rescale is still in this drawing" : "");
+  }
+  var keepsScale = typeof rmMeasurementInvalidationKeepsScale === "function" && rmMeasurementInvalidationKeepsScale(m.invalidatedReason);
+  /* No parentheses in these labels -- clause 3 already wraps the status in
+     parens, and a nested "(still applied; edge since edited (resnap
+     neighbors))" reads like a bug on a customer-facing PDF. */
+  if (keepsScale){
+    return (m.rescaleApplied ? "still applied; edge since edited by " : "recorded; edge since edited by ") + reasonText;
+  }
+  return "archived after " + reasonText;
 }
 /* Clause 3: every measurement record NOT already fully named by clause 2
    (rmAllMeasuredEdgeRecords() -- the exact same source of truth the Field
@@ -461,11 +486,36 @@ function rmReportAdditionalMeasurementsClause(outline, disclosedId){
   var lead = parts.length === 1 ? "Also on record: " : "Additional field measurements on record: ";
   return lead + parts.join("; ") + " — see Field Measurements.";
 }
+/* Composes clause 2 + clause 3. The ONLY place allowed to decide what an
+   ABSENT applied-scale clause means, because that answer depends on clause
+   3 as well:
+
+   ss.kind "none"  -- we KNOW nothing was applied. But "no field scale was
+     applied" and "no tape exists" are DIFFERENT facts, and the old wording
+     ("not verified against a physical measurement") asserted the second
+     while only being entitled to the first. That sentence next to a real
+     tape reading is the REQUIRED 6 self-contradiction. So the "not
+     verified" clause is used ONLY when clause 3 is empty -- i.e. only when
+     there is genuinely no measurement of any status on this roof. When a
+     tape does exist but was not applied, we still state the as-drawn fact
+     (the reader needs it -- a roof with MORE provenance must never
+     disclose LESS, per REQUIRED 4), just without denying the tape.
+
+   ss.kind unknown / ss missing -- we DON'T know. Say so. The previous
+     revision of this function collapsed this into the "none" fallback,
+     which fabricates a specific claim ("no field scale recorded") out of an
+     absence of information. Honest unknown beats a confident wrong answer. */
 function rmReportScaleSentence(ss, outline){
   var applied = rmReportAppliedScaleClause(ss);
   var additional = rmReportAdditionalMeasurementsClause(outline, applied.disclosedId);
-  if (!applied.text && !additional) return "No field scale recorded — dimensions are as-drawn, not verified against a physical measurement.";
-  return [applied.text, additional].filter(Boolean).join(" ");
+  if (applied.text) return additional ? (applied.text + " " + additional) : applied.text;
+  if (!ss || ss.kind !== "none"){
+    return additional ? ("Scale source unknown. " + additional) : "Scale source unknown.";
+  }
+  if (additional){
+    return "No field measurement was applied to this drawing's scale — dimensions are as-drawn. " + additional;
+  }
+  return "No field scale recorded — dimensions are as-drawn, not verified against a physical measurement.";
 }
 /* Per-edge visual distinction (Mark's explicit "must look different at a
    glance, a derived edge must NEVER wear a measured badge" -- this exact
