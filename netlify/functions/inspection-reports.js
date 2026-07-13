@@ -28,7 +28,8 @@
 // double-files the same PDF.
 const { getDb, getAdmin, requirePermission, hostnameFromEvent } = require("./lib/authGuard");
 const { graphFetch, requireEnv: requireGraphEnv } = require("./lib/graphAuth");
-const { normalizeText, normalizeAddress, isConfidentContainmentMatch, extractAddressCandidates } = require("./lib/textMatch");
+const { extractAddressCandidates } = require("./lib/textMatch");
+const { matchBuilding } = require("./lib/buildingMatch");
 const { uploadDocumentToCompanyCam } = require("./lib/companyCamDocuments");
 
 const CCM_SENDER = "rogelio.ruiz@ccminspect.com";
@@ -71,35 +72,6 @@ async function loadCandidateBuildings(db) {
   });
   return out;
 }
-function matchBuilding(buildings, candidateText) {
-  const addrCandidates = extractAddressCandidates(candidateText).map(normalizeAddress).filter(Boolean);
-  const addrMatches = [];
-  buildings.forEach(b => {
-    const bAddr = normalizeAddress(b.location);
-    if (!bAddr) return;
-    if (addrCandidates.some(c => isConfidentContainmentMatch(c, bAddr))) addrMatches.push(b);
-  });
-  const uniqueAddr = dedupeById(addrMatches);
-  if (uniqueAddr.length === 1) return { building: uniqueAddr[0], method: "address", matchedText: addrCandidates.join(" | ") };
-  if (uniqueAddr.length > 1) return { building: null, method: "ambiguous_address", matchedText: addrCandidates.join(" | ") };
-
-  const normCandidate = normalizeText(candidateText);
-  const nameMatches = buildings.filter(b => {
-    const bName = normalizeText(b.name);
-    return bName && bName.length >= 4 && normCandidate.indexOf(bName) !== -1;
-  });
-  const uniqueName = dedupeById(nameMatches);
-  if (uniqueName.length === 1) return { building: uniqueName[0], method: "name", matchedText: uniqueName[0].name };
-  if (uniqueName.length > 1) return { building: null, method: "ambiguous_name", matchedText: normCandidate };
-
-  return { building: null, method: "no_match", matchedText: normCandidate };
-}
-function dedupeById(list) {
-  const seen = new Set(); const out = [];
-  list.forEach(b => { if (!seen.has(b.id)) { seen.add(b.id); out.push(b); } });
-  return out;
-}
-
 // ---- Filing: stores the PDF in our own Storage, best-effort-uploads to
 // CompanyCam if a project is linked, applies supersede logic, writes the
 // warranty_reports doc + audit entry. Shared by the poller, manual upload,
@@ -162,7 +134,12 @@ async function fileReport(db, hostname, opts) {
     after: {
       fileName: opts.fileName, sourceType: opts.sourceType, matchMethod: opts.matchMethod,
       companyCamUploadStatus: ccStatus, supersedes: supersedes
-    }
+    },
+    // Full matching provenance: what it matched, what it rejected, and why.
+    // Present on every filed report (email-matched, manual, or review-queue
+    // assignment) so a wrong filing can always be traced back to the decision
+    // that produced it. null for paths where a human chose the building.
+    matchDecision: opts.matchDecision || null
   });
   return { ok: true, reportId, companyCamUploadStatus: ccStatus, companyCamUploadError: ccResult.error || null };
 }
@@ -234,7 +211,7 @@ async function pollOnce(db, hostname, actorUid, actorLabel) {
             sourceType: "email", sourceEmailId: msg.id, sourceEmailSubject: msg.subject || "",
             sourceAttachmentId: att.id, matchMethod: match.method, matchedText: match.matchedText,
             actorUid: actorUid || "email-poller", actorLabel: actorLabel || "email-poller",
-            supersedesReportId: supersedesId
+            supersedesReportId: supersedesId, matchDecision: match.decision
           });
           await idemRef.set({ outcome: "filed", buildingId: match.building.id, reportId: fileResult.reportId, processedAt: Date.now() });
           summary.filed.push({ messageId: msg.id, attachmentName: att.name, buildingId: match.building.id, method: match.method });
@@ -249,6 +226,10 @@ async function pollOnce(db, hostname, actorUid, actorLabel) {
             byteSize: att.size || null, sourceEmailId: msg.id, sourceEmailSubject: msg.subject || "",
             sourceAttachmentId: att.id, extractedAddress: addrCandidates[0] || null,
             extractedName: null, matchReason: match.method, status: "pending",
+            // Carried onto the queue item so the review UI can show Mark WHY
+            // this landed here -- and which buildings were considered and
+            // rejected -- instead of presenting a bare unexplained PDF.
+            matchDecision: match.decision || null,
             createdAt: Date.now(), resolvedAt: null, resolvedBy: null, resolvedReportId: null
           });
           await idemRef.set({ outcome: "queued", reviewItemId: itemId, processedAt: Date.now() });
@@ -256,7 +237,8 @@ async function pollOnce(db, hostname, actorUid, actorLabel) {
             actorUid: actorUid || "email-poller", actorRole: actorLabel || "email-poller",
             action: "warranty_report_queued_for_review",
             target: { collection: "warranty_review_queue", id: itemId },
-            before: null, after: { sourceEmailSubject: msg.subject || "", reason: match.method }
+            before: null, after: { sourceEmailSubject: msg.subject || "", reason: match.method },
+            matchDecision: match.decision || null
           });
           summary.queued.push({ messageId: msg.id, attachmentName: att.name, reason: match.method });
         }

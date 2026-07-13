@@ -2698,6 +2698,59 @@ environment variables, never in the browser or the repo.
   change needed — re-run the same check later (it can take up to ~30 minutes
   after the mailbox was added to the group).
 
+### Warranty-report matching: token alignment (and the wrong-roof bug it fixed)
+
+The inspection-report matcher (`netlify/functions/lib/textMatch.js`, plus the
+new `lib/buildingMatch.js`) originally compared addresses and building names
+with a **raw substring test** (`String.indexOf`). Substrings don't respect token
+boundaries, so it silently auto-filed warranty reports onto the **wrong roof**:
+
+| report for | auto-filed onto | why |
+| --- | --- | --- |
+| 1234 Oak Ave | **234 Oak Ave** | `"1234 oak".indexOf("234 oak") !== -1` |
+| 12 Elm St | **112 Elm St** | `"112 elm".indexOf("12 elm") !== -1` |
+| 500 Park Way | **1500 Park Way** | `"1500 park".indexOf("500 park") !== -1` |
+| "Ridgewood Elementary" | building named **"Ridge"** | name substring |
+| "Oakstone Industrial" | building named **"Oaks"** | name substring |
+
+All five bypassed the review queue entirely. Found by *executing* the old
+matcher, not by reading it — the address cases only reproduce when a building's
+stored `location` is a bare street address with no city (ordinary data entry),
+so reading the code alone made them look safe.
+
+**The fix is token alignment, not a tighter substring:**
+
+- **Addresses** — the leading street **number must match exactly**, and the
+  street-name tokens must align from the first token onward (`isTokenPrefix`).
+  `100 N Main` therefore no longer matches `100 Main`: they diverge at token 0
+  and are, in fact, different roofs.
+- **Names** — whole-token (word-boundary) runs only, *plus* a distinctiveness
+  gate: a single-token name that is short or generic ("Shop", "Warehouse",
+  "Main") is not evidence and will never auto-file. It queues instead.
+- **Address extraction** stops at the street suffix instead of greedily
+  swallowing up to 40 trailing characters, so matching no longer depends on
+  incidental subject wording (`"12 Elm St.pdf"` used to normalize to
+  `"12 elm pdf"`, which masked collisions in some subjects and caused spurious
+  misses in others).
+
+**The bias is toward the review queue, always.** A false trip to the queue costs
+Mark ten seconds; a silent misfile costs a warranty claim and a customer's
+trust. Anything short of exactly one confident, unambiguous match is queued for
+a human to assign.
+
+**Every ingestion decision is audit-logged**, filed *or* queued, via a
+`matchDecision` record on the audit entry (and on the review-queue item): what
+it matched, which buildings it **rejected**, and why — including near-misses
+(same street, wrong house number) and a `rejectedByNewRule` flag marking cases
+the old substring rule would have misfiled. When something does go wrong, the
+decision that produced it is recoverable.
+
+**Regression tests: `tests/buildingMatch.test.js`, run with `npm test`** — no new
+dependencies, `node:test` is built into Node. All five collisions above are
+covered, and were confirmed to FAIL against the old code before the fix landed.
+If a future change reintroduces substring matching, the suite goes red.
+
+
 ### Field-value memory / autocomplete (shipped 2026-07-10, dev only)
 
 **Goal (from Mark)**: an actual build, following up on the earlier "did we address
