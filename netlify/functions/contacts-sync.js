@@ -671,6 +671,111 @@ exports.handler = async function (event) {
       });
     }
 
+    // ---- list_messages: READ-ONLY listing with the fields needed both to build
+    // a routing table (who lives in which folder already) and to write an audit
+    // log (id + subject + sender + read state) before anything is moved.
+    // Selecting isRead does NOT change it. Nothing here writes.
+    if (action === "list_messages") {
+      const pages = Math.min(5, Math.max(1, parseInt(body.pages || "3", 10)));
+      let url = body.nextLink;
+      if (!url) {
+        if (!body.folderId) return resp(400, { error: "folderId required" });
+        url = "/me/mailFolders/" + encodeURIComponent(body.folderId) + "/messages" +
+          "?$top=200&$select=id,subject,from,receivedDateTime,isRead";
+      }
+      const rows = [];
+      let next = url;
+      for (let i = 0; i < pages && next; i++) {
+        const j = await gj(next);
+        for (const m of (j.value || [])) {
+          const ea = (m.from && m.from.emailAddress) || {};
+          rows.push({
+            id: m.id,
+            s: (m.subject || "(no subject)").slice(0, 120),
+            e: String(ea.address || "").toLowerCase(),
+            n: ea.name || null,
+            d: m.receivedDateTime || null,
+            r: !!m.isRead,
+          });
+        }
+        next = j["@odata.nextLink"] || null;
+      }
+      return resp(200, { rows, nextLink: next });
+    }
+
+    // ---- move: THE ONLY MAIL MUTATION IN THIS FILE. POST /messages/{id}/move.
+    // Move does not alter isRead, does not delete, does not notify anyone, and
+    // is fully reversible (the message keeps its id's identity in the new
+    // folder and can be moved straight back). There is deliberately NO delete,
+    // NO forward, NO send, and NO isRead action anywhere in this function.
+    if (action === "move") {
+      const moves = (body.moves || []).slice(0, 20);
+      const results = [];
+      for (const mv of moves) {
+        try {
+          const r = await graphFetchDelegated("/me/messages/" + encodeURIComponent(mv.id) + "/move", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ destinationId: mv.destinationId }),
+          });
+          if (r.status === 429) {
+            const ra = r.headers.get("Retry-After");
+            results.push({ id: mv.id, status: "throttled", retryAfter: ra ? Number(ra) : 10 });
+            continue;
+          }
+          const t = await r.text();
+          if (!r.ok) {
+            let code = "";
+            try { code = (JSON.parse(t).error || {}).code || ""; } catch (e) { /* noop */ }
+            results.push({ id: mv.id, status: "error", error: (r.status + " " + code).slice(0, 100) });
+          } else {
+            results.push({ id: mv.id, status: "moved" });
+          }
+        } catch (e) {
+          results.push({ id: mv.id, status: "error", error: String(e.message || e).slice(0, 100) });
+        }
+      }
+      return resp(200, {
+        moved: results.filter(r => r.status === "moved").length,
+        throttled: results.filter(r => r.status === "throttled"),
+        errors: results.filter(r => r.status === "error"),
+        results,
+      });
+    }
+
+    // ---- rules_create: adds inbox rules. ADDITIVE ONLY — it never edits,
+    // disables or deletes an existing rule. The only action a created rule may
+    // carry is moveToFolder: this code refuses to build a rule that deletes,
+    // forwards, or marks mail read, regardless of what the caller asks for.
+    if (action === "rules_create") {
+      const wanted = (body.rules || []).slice(0, 12);
+      const results = [];
+      for (const r of wanted) {
+        if (!r.destinationId || !Array.isArray(r.senderContains) || !r.senderContains.length) {
+          results.push({ name: r.displayName, status: "skipped", reason: "needs destinationId + senderContains" });
+          continue;
+        }
+        const payload = {
+          displayName: r.displayName,
+          sequence: r.sequence,
+          isEnabled: true,
+          conditions: { senderContains: r.senderContains },
+          actions: { moveToFolder: r.destinationId, stopProcessingRules: true },
+        };
+        try {
+          const created = await gj("/me/mailFolders/inbox/messageRules", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          results.push({ name: r.displayName, status: "created", id: created && created.id, matchCount: r.senderContains.length });
+        } catch (e) {
+          results.push({ name: r.displayName, status: "error", error: String(e.message || e).slice(0, 180) });
+        }
+      }
+      return resp(200, { results });
+    }
+
     return resp(400, { error: "Unknown action: " + String(action) });
   } catch (e) {
     return resp(e.statusCode && e.statusCode >= 400 && e.statusCode < 600 ? e.statusCode : 500, {
