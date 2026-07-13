@@ -998,14 +998,23 @@ function inlineRoofById(ctx, roofId){
   return (ctx.roofs || []).find(function(r){ return r.id === roofId; }) ||
     (ctx.roofs && ctx.roofs[0]) || getRoofById(ctx.building || {}, roofId);
 }
-function inlineHistoryPinsForMap(events, hasCustomBaseMap){
+function inlineHistoryPinsForMap(events, roofId, hasCustomBaseMap){
   var allPins = [];
   events.forEach(function(e){ (e.pins || []).forEach(function(p){
     allPins.push(Object.assign({ eventDate: e.date }, p));
   }); });
   return hasCustomBaseMap ?
-    allPins.filter(function(p){ return typeof p.x === "number" && typeof p.y === "number"; }) :
+    allPins.filter(function(p){ return (p.roofId || "roof_default") === roofId &&
+      typeof p.x === "number" && typeof p.y === "number"; }) :
     allPins.filter(function(p){ return typeof p.lat === "number" && typeof p.lng === "number"; });
+}
+function inlineHistoryAssetsForMap(roofs, roof, hasCustomBaseMap){
+  roof = roof || {};
+  if (hasCustomBaseMap) return roof.roof_assets || [];
+  return (roofs || []).reduce(function(acc, r){
+    (r.roof_assets || []).forEach(function(a){ acc.push(a); });
+    return acc;
+  }, []);
 }
 function inlineHistoryOutlines(roofs, hasCustomBaseMap){
   if (hasCustomBaseMap) return [];
@@ -1051,28 +1060,33 @@ async function refreshInlineBuildingHistory(){
     var hasCustomBaseMap = !!((roof.roof_base_map_type === "roof_plan" || roof.roof_base_map_type === "sketch") && roof.roof_base_map_url);
     var orthoOverlay = (roof.roof_base_map_type === "drone_ortho" && roof.roof_base_map_url && roof.roof_base_map_bounds) ?
       { url: roof.roof_base_map_url, bounds: roof.roof_base_map_bounds } : null;
-    var roofAssets = roof.roof_assets || [];
+    var roofAssets = inlineHistoryAssetsForMap(ctx.roofs, roof, hasCustomBaseMap);
     var outlines = inlineHistoryOutlines(ctx.roofs, hasCustomBaseMap);
     /* Inline Building History is building-wide: outlines, pins, and the
        timeline all describe the same building-level history. The selected
        roof only chooses a roof-specific base image when one is set. */
-    var mapPins = inlineHistoryPinsForMap(events, hasCustomBaseMap);
+    var mapPins = inlineHistoryPinsForMap(events, roofId, hasCustomBaseMap);
     var latestEvents = events.slice(0, 8);
     var roofLabel = roof.label || "Roof";
     var hasMapBase = hasCustomBaseMap || orthoOverlay || outlines.length || mapPins.length || roofAssets.length;
+    var mapLabel = hasCustomBaseMap ?
+      'Roof map using <b>' + esc(roofLabel) + '</b>\'s saved base image.' :
+      'Building-wide roof map' + (orthoOverlay ? ' using the saved drone orthophoto.' : '.');
+    var eventCountLabel = latestEvents.length && latestEvents.length < events.length ?
+      'Showing ' + latestEvents.length + ' of ' + events.length + ' prior events' :
+      (events.length ? events.length + ' prior event' + (events.length === 1 ? '' : 's') : '');
     var mapHtml = hasMapBase ?
       '<div style="margin:8px 0 12px">' +
-        '<p class="hint" style="margin:0 0 6px">Roof map for <b>' + esc(roofLabel) + '</b>' +
-        (hasCustomBaseMap ? ' using its saved base image.' : (orthoOverlay ? ' using its drone orthophoto.' : '.')) + '</p>' +
+        '<p class="hint" style="margin:0 0 6px">' + mapLabel + '</p>' +
         '<div id="wo-inline-building-map" style="height:min(38vh,320px);border-radius:6px;overflow:hidden;border:1px solid var(--line)"></div>' +
       '</div>' :
-      '<p class="hint">No saved roof base map, outline, feature, or pin is available for this roof yet.</p>';
+      '<p class="hint">No saved roof base map, outline, feature, or pin is available for this building yet.</p>';
     var eventsHtml = latestEvents.length ?
       latestEvents.map(function(e){ return timelineEventHtml(e, ctx.buildingId, { readOnly: true }); }).join("") :
       '<div class="empty">No prior leak, inspection, or repair history is logged for this building yet.</div>';
     body.innerHTML = mapHtml +
       '<div class="evt-head" style="margin:0 0 6px"><span class="evt-tag">Read-only</span>' +
-      (events.length ? '<span class="evt-tag">' + events.length + ' prior event' + (events.length === 1 ? '' : 's') + '</span>' : '') +
+      (eventCountLabel ? '<span class="evt-tag">' + eventCountLabel + '</span>' : '') +
       '</div>' +
       '<div>' + eventsHtml + '</div>';
     if (hasMapBase){
@@ -1404,6 +1418,7 @@ function warrantyColor(w){
 }
 var buildingMap = null;
 var buildingMapByElementId = {};
+var buildingMapRenderSeqByElementId = {};
 function getBuildingMapHandle(mapElementId){
   return mapElementId === "building-map" ? buildingMap : buildingMapByElementId[mapElementId];
 }
@@ -1472,12 +1487,15 @@ function renderBuildingMap(pins, customBld, bldAddress, orthoOverlay, assets, bu
   var el = document.getElementById(mapElementId);
   if (!el) return;
   removeBuildingMapHandle(mapElementId);
+  var renderSeq = (buildingMapRenderSeqByElementId[mapElementId] || 0) + 1;
+  buildingMapRenderSeqByElementId[mapElementId] = renderSeq;
   if (customBld){
     var img = new Image();
     img.onload = function(){
       var w = img.naturalWidth, h = img.naturalHeight;
       var bounds = [[0,0],[h,w]];
       setTimeout(function(){
+        if (buildingMapRenderSeqByElementId[mapElementId] !== renderSeq) return;
         var map = L.map(mapElementId, { crs: L.CRS.Simple, minZoom: -5 });
         setBuildingMapHandle(mapElementId, map);
         L.imageOverlay(customBld.roof_base_map_url, bounds).addTo(map);
@@ -1496,7 +1514,10 @@ function renderBuildingMap(pins, customBld, bldAddress, orthoOverlay, assets, bu
         setTimeout(function(){ var latest = getBuildingMapHandle(mapElementId); if (latest) latest.invalidateSize(); }, 300);
       }, 50);
     };
-    img.onerror = function(){ el.innerHTML = '<p class="hint">Couldn’t load the custom base map image.</p>'; };
+    img.onerror = function(){
+      if (buildingMapRenderSeqByElementId[mapElementId] !== renderSeq) return;
+      el.innerHTML = '<p class="hint">Couldn’t load the custom base map image.</p>';
+    };
     img.src = customBld.roof_base_map_url;
     return;
   }
@@ -1516,6 +1537,7 @@ function renderBuildingMap(pins, customBld, bldAddress, orthoOverlay, assets, bu
       }
     }
     setTimeout(function(){
+      if (buildingMapRenderSeqByElementId[mapElementId] !== renderSeq) return;
       var map = center ? L.map(mapElementId).setView([center.lat, center.lng], zoom) : L.map(mapElementId);
       setBuildingMapHandle(mapElementId, map);
       L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
