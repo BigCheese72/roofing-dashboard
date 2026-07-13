@@ -511,7 +511,6 @@ exports.handler = async function (event) {
         if (bp.length) payload.businessPhones = bp;
         if (it.mobilePhone) payload.mobilePhone = it.mobilePhone;
         if (it.homePhone) payload.homePhones = [it.homePhone];
-        if (it.faxNumber) payload.businessFaxNumber = it.faxNumber;
         if (it.website) payload.businessHomePage = it.website; // stored as text; never fetched
         if (it.address && (it.address.street || it.address.city)) {
           payload.businessAddress = {
@@ -522,7 +521,15 @@ exports.handler = async function (event) {
             countryOrRegion: it.address.country || undefined,
           };
         }
-        if (it.notes) payload.personalNotes = it.notes;
+        // Microsoft Graph's `contact` resource has NO fax property — fax is an
+        // Outlook/MAPI-only field, and sending `businessFaxNumber` makes Graph
+        // reject the whole payload with 400 UnableToDeserializePostBody. So a
+        // fax found in a signature is preserved as a note rather than dropped
+        // on the floor (or silently mislabelled as another phone type).
+        const notes = [];
+        if (it.faxNumber) notes.push("Fax: " + it.faxNumber);
+        if (it.notes) notes.push(it.notes);
+        if (notes.length) payload.personalNotes = notes.join("\n");
 
         try {
           // Does a contact already exist for this address? Dedupe on the
