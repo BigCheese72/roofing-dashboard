@@ -97,7 +97,8 @@ function isBackdatedEvent(e){
   var enteredDay = new Date(e.enteredAt); enteredDay.setHours(0,0,0,0);
   return eventDay < enteredDay.getTime();
 }
-function timelineEventHtml(e, buildingId){
+function timelineEventHtml(e, buildingId, opts){
+  opts = opts || {};
   var backdated = isBackdatedEvent(e);
   return '<div class="evt-item"' + (e._dup ? ' style="border-left-color:#D64545"' : '') + '><div class="evt-head">' +
     '<span class="evt-date">' + esc(e.date || fmtTs(e.createdAt)) + '</span>' +
@@ -110,7 +111,7 @@ function timelineEventHtml(e, buildingId){
     (backdated ? '<span class="evt-tag" style="background:#ECEFF1;color:#5B6770" title="Entered ' +
       esc(fmtTs(e.enteredAt)) + ', for an event dated ' + esc(e.date) + '">🕓 Added later</span>' : '') +
     (e._dup ? '<span class="evt-tag" style="background:#FBE2E2;color:#D64545">Possible duplicate</span>' : '') +
-    (isAdmin ? '<span class="sp"></span><button class="btn danger" onclick="deleteHistoryEventAdmin(\'' + e._id + '\', \'' + buildingId + '\')">Delete (admin)</button>' : '') +
+    (isAdmin && !opts.readOnly ? '<span class="sp"></span><button class="btn danger" onclick="deleteHistoryEventAdmin(\'' + e._id + '\', \'' + buildingId + '\')">Delete (admin)</button>' : '') +
     '</div>' +
     (e.workOrderNo ? '<div class="evt-row">Job No. ' + esc(e.workOrderNo) + '</div>' : '') +
     (e.technician ? '<div class="evt-row">Technician: ' + esc(e.technician) + '</div>' : '') +
@@ -152,6 +153,23 @@ function renderTimelineList(){
   host.innerHTML = filtered.length ?
     filtered.map(function(e){ return timelineEventHtml(e, historyBuildingId); }).join("") :
     '<div class="empty">No timeline entries match these filters.</div>';
+}
+async function loadBuildingHistoryEvents(buildingId, limit){
+  if (!fdb || !buildingId) return [];
+  /* Keep this query shape identical to the main Building History page:
+     buildingId equality + createdAt order + limit. Firestore rules already
+     allow reads on building_history_events, and this is the existing indexed
+     path instead of a new ad-hoc query for the work-order inline card. */
+  var qs = await fdb.collection("building_history_events")
+    .where("buildingId", "==", buildingId).orderBy("createdAt", "desc").limit(limit || 50).get();
+  var events = [];
+  qs.forEach(function(d){ events.push(Object.assign({ _id: d.id }, d.data())); });
+  events.sort(function(a, b){
+    var d = parseMDYDate(b.date) - parseMDYDate(a.date);
+    return d !== 0 ? d : (b.createdAt || 0) - (a.createdAt || 0);
+  });
+  flagDuplicateEvents(events);
+  return events;
 }
 async function openBuildingHistory(buildingId){
   var detail = document.getElementById("history-detail");
@@ -271,23 +289,7 @@ async function openBuildingHistory(buildingId){
       'Permanent features (drains, HVAC units, hatches, etc.) can be added any time.</p>' +
       '<div id="building-map" style="height:min(50vh,420px);border-radius:6px;overflow:hidden;margin-bottom:10px"></div>' +
       addFeatureBtnHtml + ' ' + addRoofBtnHtml + ' ' + autoAssignBtnHtml + ' ' + bulkReassignBtnHtml + '</div>';
-    var qs = await fdb.collection("building_history_events")
-      .where("buildingId", "==", buildingId).orderBy("createdAt", "desc").limit(50).get();
-    var events = [];
-    qs.forEach(function(d){ events.push(Object.assign({ _id: d.id }, d.data())); });
-    /* Mark: "show the timeline ordered by the EVENT date" -- the query
-       above orders by createdAt (when it was ENTERED, a Firestore-native
-       field) purely to fetch the most-recently-touched 50 records; that's
-       NOT the same as chronological order once a backfilled record's real
-       date can be anywhere in the past. Re-sort client-side by the actual
-       date field (parseMDYDate() -- plain string orderBy would sort
-       "M/D/YY" lexicographically wrong) before anything renders. Same-day
-       events keep their createdAt order as a stable tiebreak. See
-       "Retroactive backfill: back-dating" in DEV_NOTES.md. */
-    events.sort(function(a, b){
-      var d = parseMDYDate(b.date) - parseMDYDate(a.date);
-      return d !== 0 ? d : (b.createdAt || 0) - (a.createdAt || 0);
-    });
+    var events = await loadBuildingHistoryEvents(buildingId, 50);
     if (!events.length){
       historyEvents = [];
       historyBuildingId = buildingId;
@@ -298,7 +300,6 @@ async function openBuildingHistory(buildingId){
       renderBuildingMap([], hasCustomBaseMap ? roof : null, bld.location, orthoOverlay, roofAssets, buildingId, allRoofOutlinesForMap);
       return;
     }
-    flagDuplicateEvents(events);
     var dupCount = events.filter(function(e){ return e._dup; }).length;
     historyEvents = events;
     historyBuildingId = buildingId;
