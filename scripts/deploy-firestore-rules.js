@@ -6,19 +6,31 @@
 // were never published to production, and the app failed with "Missing or
 // insufficient permissions" in front of the crew).
 //
-// SAFETY: the target project is derived ONLY from the SAME
-// FIREBASE_SERVICE_ACCOUNT credential Netlify already injects per deploy
-// context (Production / Deploy Previews / Branch deploys / Preview Server
-// & Agent Runners each hold their own value) -- never hardcoded, never
-// read from a separate "which environment am I" flag that could drift out
-// of sync with the actual credential. A Production-context build can only
-// ever publish to whatever project its own service account belongs to,
-// same for every other context. This is the same derive-don't-hardcode
-// principle netlify/functions/photos.js uses for its Storage bucket.
+// SAFETY, TWO INDEPENDENT FACTS MUST AGREE -- credential-derivation ALONE
+// is not enough. Real incident, 2026-07-12, ~8:15 PM: this script's first
+// version derived the target project solely from FIREBASE_SERVICE_ACCOUNT,
+// on the theory that "a deploy-preview build can only ever hold a
+// dev-scoped credential." That was false -- Netlify's deploy-preview
+// context was, at the time, configured with PRODUCTION's service account,
+// and an unmerged PR branch's build silently published firestore.rules to
+// watkins-service-orders (production). Nothing in the code caught it; the
+// only reason it didn't cause an outage is that the rules change happened
+// to be a strict superset of what was already live. Luck is not a control.
+//
+// So this script now checks the deploy context (process.env.CONTEXT,
+// Netlify's own built-in build variable) against an EXPECTED project id
+// for that context (FIRESTORE_RULES_EXPECTED_PROJECT_ID, set per-context
+// in netlify.toml -- see [context.*.environment] blocks there; these are
+// project ids, not secrets, so they're committed rather than depending on
+// a separate manual Netlify dashboard step). If the credential-derived
+// project and the context-expected project disagree, this refuses to
+// publish at all. A mis-scoped FIREBASE_SERVICE_ACCOUNT now fails the
+// build loudly instead of silently publishing to the wrong project.
 //
 // FAILS THE BUILD (non-zero exit) on any error -- a rules publish that
-// silently didn't happen is exactly the failure mode this script exists
-// to eliminate. No try/catch that swallows and continues.
+// silently didn't happen (or silently happened to the wrong project) is
+// exactly the failure mode this script exists to eliminate. No try/catch
+// that swallows and continues.
 "use strict";
 
 const fs = require("fs");
@@ -50,6 +62,32 @@ if (!creds.project_id) {
 
 const projectId = creds.project_id;
 console.log("[deploy-firestore-rules] Target project (derived from this deploy's own service account): " + projectId);
+
+// Independent second check -- see the SAFETY comment at the top of this
+// file for why credential-derivation alone already failed once. CONTEXT is
+// set automatically by Netlify (production | deploy-preview | branch-deploy);
+// FIRESTORE_RULES_EXPECTED_PROJECT_ID is set per-context in netlify.toml.
+const context = process.env.CONTEXT;
+const expectedProjectId = process.env.FIRESTORE_RULES_EXPECTED_PROJECT_ID;
+
+if (!expectedProjectId) {
+  fail(
+    `No FIRESTORE_RULES_EXPECTED_PROJECT_ID is configured for context "${context || "(unset)"}". ` +
+    "Add a [context.<name>.environment] block for it in netlify.toml before this can safely publish rules -- " +
+    "refusing to guess."
+  );
+}
+
+if (projectId !== expectedProjectId) {
+  fail(
+    `REFUSING TO PUBLISH. Context "${context}" expects project "${expectedProjectId}" but this deploy's ` +
+    `FIREBASE_SERVICE_ACCOUNT belongs to "${projectId}". FIREBASE_SERVICE_ACCOUNT is mis-scoped for this ` +
+    "Netlify context -- fix it in Site configuration > Environment variables, then redeploy. " +
+    "(This exact mismatch published rules to production once already -- see the SAFETY comment above.)"
+  );
+}
+
+console.log(`[deploy-firestore-rules] Context "${context}" independently confirms target project "${projectId}" -- proceeding.`);
 
 // Firebase CLI needs the credentials as a FILE path, not inline JSON --
 // written to the build's own temp dir, which Netlify tears down with the
