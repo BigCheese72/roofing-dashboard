@@ -17,9 +17,26 @@ function closeCC(){
   ccSelected = {};
   ccTargetFindingId = null;
 }
+/* ccApi()/ccApiPost() are the ONLY two places this app talks to
+   netlify/functions/companycam.js -- every CompanyCam action (projects,
+   project_detail, photos, image, upload_document) funnels through one of
+   them, which is why attaching the token here covers every call site.
+
+   As of 2026-07-13 companycam.js REQUIRES a verified Firebase ID token on
+   every action and 401s without one (it was previously wide open to the
+   internet -- project names, customer addresses, jobsite photos, and
+   document upload into Mark's account, all on the server's own CompanyCam
+   token). authHeaders() (js/core.js -- loaded before this file) attaches it
+   as `Authorization: Bearer <token>` via getIdToken(), which auto-refreshes
+   the ~1hr-lived token, so a tech with a tab open all day never sees a
+   spurious 401. Note ccApi() is a GET and previously sent no headers at all;
+   it sends the Authorization header now. The Content-Type authHeaders() also
+   sets is harmless on a bodyless GET. */
 async function ccApi(params){
   var qs = Object.keys(params).map(function(k){ return k + "=" + encodeURIComponent(params[k]); }).join("&");
-  var r = await fetch("/.netlify/functions/companycam?" + qs);
+  var r = await fetch("/.netlify/functions/companycam?" + qs, {
+    headers: await authHeaders()
+  });
   var out = null;
   try{ out = await r.json(); }catch(e){}
   if (!r.ok || !out) throw new Error((out && out.error) || ("server error " + r.status));
@@ -28,7 +45,7 @@ async function ccApi(params){
 async function ccApiPost(body){
   var r = await fetch("/.netlify/functions/companycam", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: await authHeaders(),
     body: JSON.stringify(body)
   });
   var out = null;

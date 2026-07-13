@@ -10,10 +10,49 @@
 // limited to project metadata + photo/document metadata (ids, URLs,
 // timestamps) — it cannot pull things like who-changed-what or deleted
 // items.
+//
+// AUTHENTICATION (2026-07-13): every action here -- both the GET read
+// actions and the POST write -- is now gated on a VERIFIED Firebase ID
+// token. This proxy previously had NO gate whatsoever, which meant anyone
+// on the internet, with no token, could enumerate every CompanyCam project
+// (names AND customer addresses), read jobsite photos, use `action=image`
+// as an open image proxy, and `upload_document` INTO Mark's CompanyCam
+// account -- all on Mark's own COMPANYCAM_TOKEN, which never leaves the
+// server and so was effectively lent to the entire internet.
+//
+// The gate is AUTHENTICATION, not permission: any signed-in Watkins user
+// passes, because every one of these is a normal field operation a tech
+// does constantly (import photos, link a project, save a PDF back). It must
+// NOT become a role/permission check. verifyCaller() proves WHO you are and
+// throws 401 if you're nobody; requirePermission() is the role-gate and is
+// deliberately NOT used here.
 const { uploadDocumentToCompanyCam } = require("./lib/companyCamDocuments");
+const { verifyCaller } = require("./lib/authGuard");
 
 function resp(code, obj) {
   return { statusCode: code, headers: { "Content-Type": "application/json" }, body: JSON.stringify(obj) };
+}
+
+// Fail-closed authentication gate -- identical contract to the one in
+// photos.js. Leaks nothing to an unauthenticated caller: a flat
+// "Unauthorized" whether the token was missing, malformed, expired, or
+// revoked, never an echo of an internal message, and never a hint about
+// whether a project/photo exists. Real reason goes to console.error
+// (Netlify function logs), not to the caller.
+//
+// An infrastructure failure (missing FIREBASE_SERVICE_ACCOUNT, or the
+// authGuard cross-project safety guard tripping) verifies nobody, so it
+// returns 503 rather than falling open.
+async function requireAuth(event) {
+  try {
+    return { caller: await verifyCaller(event) };
+  } catch (e) {
+    if (e && e.statusCode === 401) {
+      return { errorResponse: resp(401, { error: "Unauthorized" }) };
+    }
+    console.error("companycam.js auth infrastructure failure:", e && e.message ? e.message : e);
+    return { errorResponse: resp(503, { error: "Service unavailable" }) };
+  }
 }
 function formatAddress(address) {
   if (!address) return "";
@@ -39,6 +78,16 @@ function mapProject(pr) {
   };
 }
 exports.handler = async function (event) {
+  // ---- AUTHENTICATION: first thing, for EVERY method and EVERY action. ----
+  // Deliberately ahead of the COMPANYCAM_TOKEN env read below: an
+  // unauthenticated caller must not be able to tell a configured deploy from
+  // a misconfigured one (the old code's "COMPANYCAM_TOKEN is not set" 500 was
+  // reachable by anyone), and the endpoint must never depend on being
+  // correctly configured in order to be safe. Same ordering discipline as the
+  // outlook.js fix.
+  const gate = await requireAuth(event);
+  if (gate.errorResponse) return gate.errorResponse;
+
   // Two possible tokens: COMPANYCAM_TOKEN is the read-only token used for
   // search/list/photo actions. COMPANYCAM_WRITE_TOKEN is an optional,
   // separately-scoped token for the one write action (upload_document) —
