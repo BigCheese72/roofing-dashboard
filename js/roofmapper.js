@@ -1183,7 +1183,7 @@ function rmLatestAppliedMeasuredEdge(outline){
   })[0];
 }
 function rmMeasurementInvalidationKeepsScale(reason){
-  return reason === "superseded_by_remeasure" || reason === "geometry_edit" ||
+  return reason === "superseded_by_remeasure" ||
     reason === "vertex_edit" || reason === "square_up" ||
     reason === "resnap_neighbors" || reason === "align_outline";
 }
@@ -1241,7 +1241,7 @@ function rmInvalidateEdgeMeasurements(outline, reason){
     outline.edgeMeasurements = outline.edgeMeasurements.map(function(m){
       if (!m || m.invalidatedAt) return m;
       changed = true;
-      return Object.assign({}, m, { invalidatedAt: now, invalidatedReason: reason || "geometry_edit" });
+      return Object.assign({}, m, { invalidatedAt: now, invalidatedReason: reason || "unknown_edit" });
     });
   }
   if (outline.calibration){
@@ -1393,14 +1393,17 @@ function rmBuildCaptureSource(outline){
 function rmBuildScaleSource(outline, captureSource){
   var measured = rmLatestAppliedMeasuredEdge(outline);
   if (measured){
+    var measurementStale = !!measured.invalidatedAt;
     return {
       kind: "measured",
-      label: "tape-measured edge on this roof",
+      label: measurementStale ? "tape-measured scale on this roof; edge has since been edited" : "tape-measured edge on this roof",
       factor: rmIsFiniteNumber(measured.factor) ? measured.factor : null,
       appliedFactor: rmIsFiniteNumber(measured.appliedFactor) ? measured.appliedFactor : null,
-      edgeIndex: measured.edgeIndex,
-      measuredFt: measured.measuredFt,
-      measurementId: measured.id || null
+      edgeIndex: measurementStale ? null : measured.edgeIndex,
+      measuredFt: measurementStale ? null : measured.measuredFt,
+      measurementId: measurementStale ? null : (measured.id || null),
+      measurementStale: measurementStale,
+      measurementInvalidatedReason: measurementStale ? (measured.invalidatedReason || null) : null
     };
   }
   if (rmHasInheritedScale(outline)){
