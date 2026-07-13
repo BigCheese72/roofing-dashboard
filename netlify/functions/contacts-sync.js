@@ -573,6 +573,104 @@ exports.handler = async function (event) {
       });
     }
 
+    // ---- diag: WHERE do the contacts actually live? /me/contacts only ever
+    // reads the DEFAULT contacts folder, so "443 in /me/contacts" and "Mark
+    // sees 155 in Outlook" can both be true if something is paging, filtering,
+    // or if there are extra contact folders. Count everything, everywhere.
+    if (action === "diag") {
+      const out = { defaultFolder: {}, contactFolders: [] };
+
+      // Authoritative server-side count of the default folder.
+      try {
+        const c = await gj("/me/contacts/$count", { headers: { ConsistencyLevel: "eventual" } });
+        out.defaultFolder.odataCount = c;
+      } catch (e) { out.defaultFolder.odataCountError = String(e.message || e).slice(0, 120); }
+
+      // Independently: actually page through and count, so we don't trust one number.
+      let n = 0, pages = 0;
+      let next = "/me/contacts?$top=100&$select=id";
+      while (next && pages < 40) {
+        const j = await gj(next);
+        n += (j.value || []).length;
+        next = j["@odata.nextLink"] || null;
+        pages++;
+      }
+      out.defaultFolder.pagedCount = n;
+      out.defaultFolder.pagesWalked = pages;
+
+      // Any non-default contact folders? (A contact in one of these is invisible
+      // in the default "Your contacts" view.)
+      const f = await gj("/me/contactFolders?$top=50&$select=id,displayName,parentFolderId");
+      for (const folder of (f.value || [])) {
+        let cnt = null;
+        try {
+          const jj = await gj("/me/contactFolders/" + encodeURIComponent(folder.id) + "/contacts?$top=1&$count=true",
+            { headers: { ConsistencyLevel: "eventual" } });
+          cnt = jj["@odata.count"] != null ? jj["@odata.count"] : null;
+        } catch (e) { /* count unsupported here; leave null */ }
+        out.contactFolders.push({ id: folder.id, displayName: folder.displayName, count: cnt });
+      }
+      return resp(200, out);
+    }
+
+    // ---- masterCategories: read (and optionally create) Outlook colour
+    // categories so `categories` on a contact renders natively with a colour
+    // instead of appearing as an unknown string.
+    if (action === "categories_setup") {
+      const want = body.categories || [];   // [{name, color}]
+      const cur = await gj("/me/outlook/masterCategories?$top=100");
+      const have = new Set((cur.value || []).map(c => String(c.displayName)));
+      const created = [];
+      for (const w of want) {
+        if (have.has(w.name)) continue;
+        try {
+          await gj("/me/outlook/masterCategories", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ displayName: w.name, color: w.color }),
+          });
+          created.push(w.name);
+        } catch (e) { /* already exists / race — harmless */ }
+      }
+      const after = await gj("/me/outlook/masterCategories?$top=100");
+      return resp(200, { created, all: (after.value || []).map(c => ({ name: c.displayName, color: c.color })) });
+    }
+
+    // ---- categorize: PATCH `categories` onto existing contacts. Touches ONLY
+    // the categories property — never the name, phones, or anything Mark typed.
+    if (action === "categorize") {
+      const items = (body.items || []).slice(0, 40);
+      const results = [];
+      for (const it of items) {
+        try {
+          await gj("/me/contacts/" + encodeURIComponent(it.id), {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ categories: [it.category] }),
+          });
+          results.push({ id: it.id, category: it.category, status: "ok" });
+        } catch (e) {
+          results.push({ id: it.id, status: "error", error: String(e.message || e).slice(0, 140) });
+        }
+      }
+      return resp(200, { ok: results.filter(r => r.status === "ok").length, errors: results.filter(r => r.status === "error") });
+    }
+
+    // ---- rules_list: READ-ONLY. Reports the inbox rules that already exist.
+    // This function has NO action that creates, edits, enables or deletes a
+    // rule — the rule plan is produced for a human to approve, and activating
+    // it is deliberately not something this code can do.
+    if (action === "rules_list") {
+      const j = await gj("/me/mailFolders/inbox/messageRules");
+      return resp(200, {
+        rules: (j.value || []).map(r => ({
+          id: r.id, displayName: r.displayName, sequence: r.sequence,
+          isEnabled: r.isEnabled, hasError: r.hasError,
+          conditions: r.conditions || null, actions: r.actions || null,
+        })),
+      });
+    }
+
     return resp(400, { error: "Unknown action: " + String(action) });
   } catch (e) {
     return resp(e.statusCode && e.statusCode >= 400 && e.statusCode < 600 ? e.statusCode : 500, {
