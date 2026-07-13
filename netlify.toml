@@ -61,16 +61,33 @@
   # fix for this exact class of build failure.
   external_node_modules = ["firebase-admin"]
 
-[functions."inspection-reports"]
-  # Netlify Scheduled Functions -- invokes inspection-reports.js's handler
-  # automatically on this cadence with a body of {"next_run": "<ISO date>"}
-  # and no way to attach custom headers, which is exactly the signal
-  # inspection-reports.js uses to recognize this as Netlify's own scheduler
-  # (vs. the manual "Check for New Inspection Reports" button, which always
-  # carries a real, permission-checked owner/admin token). Briefly removed
-  # while chasing a build failure that turned out to be the missing
-  # SECRETS_SCAN_SMART_DETECTION_OMIT_VALUES above, not this -- restored
-  # once the real cause was confirmed. Every 30 minutes is a starting
-  # point, not a hard requirement -- Mark can tighten or loosen this
-  # without any code change.
-  schedule = "*/30 * * * *"
+# NOTE: the Netlify Scheduled Function that used to live here has been REMOVED
+# (2026-07-13). It ran inspection-reports.js every 30 minutes, and the function
+# recognized "this is Netlify's own scheduler" by the presence of a `next_run`
+# field in the POST body -- because Netlify's cron cannot attach custom headers,
+# so there was nothing else to key off.
+#
+# But a caller-supplied body field is not authentication. Anyone on the internet
+# could POST {"next_run":"x"} to the function URL and drive the poller: read
+# Mark's mailbox through Graph, pull attachments, write to Firestore/Storage/
+# CompanyCam, and read attachment filenames and building ids out of the response.
+# Confirmed reachable in production -- an anonymous POST reached the handler.
+#
+# A Netlify scheduled invocation carries NO forgery-proof signal, so there is no
+# way to keep this schedule and also authenticate it. The automated trigger
+# therefore moved to a caller that CAN authenticate:
+#
+#     .github/workflows/poll-inspection-reports.yml
+#
+# which POSTs {"action":"poll"} with an x-roofops-poll-key header holding
+# POLLER_SHARED_SECRET (compared with timingSafeEqual server-side).
+#
+# TO RE-ENABLE AUTOMATIC POLLING, two matching values must be set:
+#   1. Netlify  > Site configuration > Environment variables:  POLLER_SHARED_SECRET
+#   2. GitHub   > repo Settings > Secrets and variables > Actions:  POLLER_SHARED_SECRET
+# Use a long random value (>= 32 chars; the function refuses anything shorter).
+#
+# Until both are set, automatic polling stays OFF and the poll path is closed to
+# everyone except a signed-in user with warranty.manage_reports clicking
+# "Check for New Inspection Reports" in the app. That is a deliberate, fail-closed
+# default: no polling is strictly better than public polling.
