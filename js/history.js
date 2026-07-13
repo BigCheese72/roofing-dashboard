@@ -164,6 +164,14 @@ async function loadBuildingHistoryEvents(buildingId, limit){
     .where("buildingId", "==", buildingId).orderBy("createdAt", "desc").limit(limit || 50).get();
   var events = [];
   qs.forEach(function(d){ events.push(Object.assign({ _id: d.id }, d.data())); });
+  /* Mark: "show the timeline ordered by the EVENT date" -- the query
+     above orders by createdAt (when it was ENTERED, a Firestore-native
+     field) purely to fetch the most-recently-touched records; that's NOT
+     the same as chronological order once a backfilled record's real date
+     can be anywhere in the past. Re-sort client-side by the actual date
+     field (parseMDYDate() -- plain string orderBy would sort "M/D/YY"
+     lexicographically wrong) before anything renders. Same-day events keep
+     their createdAt order as a stable tiebreak. */
   events.sort(function(a, b){
     var d = parseMDYDate(b.date) - parseMDYDate(a.date);
     return d !== 0 ? d : (b.createdAt || 0) - (a.createdAt || 0);
