@@ -11,6 +11,29 @@
 // to ~30 minutes after being added) — not a code/credential bug. The raw
 // Graph error body is passed through in the response so that's easy to
 // tell apart from a real auth failure.
+//
+// ---------------------------------------------------------------------
+// AUTHENTICATION (added 2026-07-13 -- this endpoint used to be PUBLIC)
+// ---------------------------------------------------------------------
+// This function reads Mark's actual mailbox: folder names, message
+// subjects, senders, and body previews. It shipped with NO auth guard at
+// all, which meant that the moment the GRAPH_* env vars were set in
+// Netlify, anyone on the internet who knew (or guessed) the function URL
+// could read his mail. It was only ever "safe" because it was broken.
+//
+// Every action is now behind requirePermission(..., "warranty.manage_reports")
+// -- the same permission inspection-reports.js already requires for its
+// mailbox-derived actions, since this is the same mailbox and the same
+// class of data. No new permission key was invented: warranty.manage_reports
+// is granted to owner, admin, service_manager and ops_manager in
+// lib/permissions.js.
+//
+// The auth check runs FIRST, before requireEnv(), deliberately. If the env
+// check ran first, an unauthenticated caller would get a 500 ("missing env
+// var") instead of a 401, and the endpoint's protection would silently
+// depend on it staying misconfigured. Auth is not allowed to be
+// conditional on configuration.
+const { requirePermission } = require("./lib/authGuard");
 const { graphFetch, requireEnv } = require("./lib/graphAuth");
 
 function resp(code, obj) {
@@ -39,6 +62,15 @@ function mapMessage(m) {
 }
 
 exports.handler = async function (event) {
+  // ---- AUTH FIRST. Before the env check, before the action dispatch,
+  // before anything touches Graph. There is no unauthenticated path
+  // through this function -- including the "unknown action" branch. ----
+  try {
+    await requirePermission(event, "warranty.manage_reports");
+  } catch (e) {
+    return resp(e.statusCode || 401, { error: e.message });
+  }
+
   let mailbox;
   try {
     ({ mailbox } = requireEnv());
