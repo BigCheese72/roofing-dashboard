@@ -599,6 +599,8 @@ function rmMakeSplitSection(ring, label){
    geometry function here (no rmState/map access) so it's independently
    testable. See "Square Up" in DEV_NOTES.md. */
 var RM_SQUARE_TOLERANCE_DEG = 12; /* requirement: ~10-15° */
+var RM_EDGE_MEASURE_SCALE_TOLERANCE = 0.01; /* +/-1% agreement for later measured edges */
+var RM_EDGE_MEASURE_LABEL_TOLERANCE_FT = 0.5; /* labels round to feet, so sub-foot drift can still render honestly */
 var RM_SQUARE_CURVE_SINGLE_TURN_MAX = 35; /* a per-vertex turn under this reads as "not a sharp corner" */
 var RM_SQUARE_CURVE_CUMULATIVE_MIN = 40; /* but a RUN of small turns summing past this reads as an arc, not GPS/trace noise */
 function rmGeomComputeSquaredRing(ring){
@@ -1012,39 +1014,460 @@ function rmDeconflictLabels(items, svgW, svgH, obstacles){
     return Object.assign({}, it, { x: finalPos.x, y: finalPos.y, moved: moved });
   });
 }
+function rmParseFeetInches(raw){
+  var original = raw === null || raw === undefined ? "" : String(raw);
+  var s = original.trim();
+  if (!s) return null;
+  s = s.replace(/[\u2018\u2019\u2032]/g, "'")
+    .replace(/[\u201c\u201d\u2033]/g, '"')
+    .replace(/\b(feet|foot|ft)\b/gi, "'")
+    .replace(/\b(inches|inch|in)\b/gi, '"')
+    .replace(/\s+/g, " ")
+    .trim();
+  var ftIn = s.match(/^(\d+(?:\.\d+)?)\s*'\s*(\d+(?:\.\d+)?)?\s*"?$/);
+  if (ftIn){
+    var feet = parseFloat(ftIn[1]);
+    var inches = ftIn[2] === undefined ? 0 : parseFloat(ftIn[2]);
+    if (isFinite(feet) && isFinite(inches) && inches >= 0){
+      return { feet: feet + inches / 12, normalized: s };
+    }
+  }
+  var inchOnly = s.match(/^(\d+(?:\.\d+)?)\s*"$/);
+  if (inchOnly){
+    var inchFt = parseFloat(inchOnly[1]);
+    if (isFinite(inchFt) && inchFt > 0) return { feet: inchFt / 12, normalized: s };
+  }
+  var decimalFeet = s.match(/^(\d+(?:\.\d+)?)\s*'?$/);
+  if (decimalFeet){
+    var dec = parseFloat(decimalFeet[1]);
+    if (isFinite(dec) && dec > 0) return { feet: dec, normalized: s };
+  }
+  return null;
+}
+function rmIsFiniteNumber(v){
+  return typeof v === "number" && isFinite(v);
+}
+function rmMeasurementId(edgeIndex){
+  return "edge-" + edgeIndex + "-" + Date.now() + "-" + Math.floor(Math.random() * 100000);
+}
+function rmNormalizeEdgeMeasurement(outline, m){
+  if (!m || !rmIsFiniteNumber(m.edgeIndex) || !rmIsFiniteNumber(m.measuredFt) || m.measuredFt <= 0) return null;
+  var storedDecision = m.decision || m.conflictResolution || (m.rescaleDeclined ? "record_only" : null);
+  var decision = storedDecision || "use";
+  var appliedFactor = rmIsFiniteNumber(m.appliedFactor) ? m.appliedFactor : null;
+  var factor = rmIsFiniteNumber(m.factor) ? m.factor : null;
+  var composedAppliedFactor = rmIsFiniteNumber(m.composedAppliedFactor) ? m.composedAppliedFactor : null;
+  return Object.assign({}, m, {
+    id: m.id || ("legacy-edge-" + m.edgeIndex + "-" + String(m.measuredAt || "unknown")),
+    source: "measured",
+    factor: factor,
+    decision: decision,
+    appliedFactor: appliedFactor,
+    composedAppliedFactor: composedAppliedFactor,
+    rescaleApplied: typeof m.rescaleApplied === "boolean" ? m.rescaleApplied :
+      (storedDecision ? (decision === "use" || decision === "average") :
+        (rmIsFiniteNumber(appliedFactor) ? Math.abs(appliedFactor - 1) > 0.000001 : null))
+  });
+}
+function rmAllMeasuredEdgeRecords(outline){
+  var records = ((outline && outline.edgeMeasurements) || []).map(function(m){
+    return rmNormalizeEdgeMeasurement(outline, m);
+  }).filter(Boolean);
+  var legacy = rmLegacyCalibrationMeasurement(outline);
+  if (legacy && !records.some(function(m){
+    return (!m.invalidatedAt && m.edgeIndex === legacy.edgeIndex) ||
+      (m.legacyCalibration && m.edgeIndex === legacy.edgeIndex && m.measuredFt === legacy.measuredFt);
+  })){
+    records.push(legacy);
+  }
+  return records;
+}
+function rmActiveEdgeMeasurements(outline){
+  return rmAllMeasuredEdgeRecords(outline).filter(function(m){
+    return m && !m.invalidatedAt;
+  });
+}
+function rmLegacyCalibrationEntry(c){
+  var decision = c.conflictResolution || "use";
+  var appliesScale = decision === "use" || decision === "average";
+  var knownFactor = rmIsFiniteNumber(c.factor) ? c.factor : null;
+  var appliedFactor = appliesScale ? knownFactor : 1;
+  var factor = decision === "average" ? null : knownFactor;
+  return {
+    id: "legacy-calibration-" + c.edgeIndex,
+    edgeIndex: c.edgeIndex,
+    measuredFt: c.measuredFt,
+    factor: factor,
+    appliedFactor: appliedFactor,
+    rescaleApplied: appliesScale,
+    decision: decision,
+    source: "measured",
+    measuredAt: c.calibratedAt || null,
+    rawInput: c.rawInput || String(c.measuredFt),
+    legacyCalibration: true
+  };
+}
+function rmLegacyCalibrationMeasurement(outline){
+  if (!outline || !outline.calibration || outline.calibration.inherited) return null;
+  var c = outline.calibration;
+  if (!rmIsFiniteNumber(c.edgeIndex) || !rmIsFiniteNumber(c.measuredFt) || c.measuredFt <= 0) return null;
+  return rmLegacyCalibrationEntry(c);
+}
+function rmMigrateLegacyCalibration(outline){
+  if (!outline || !outline.calibration || outline.calibration.inherited) return false;
+  var c = outline.calibration;
+  if (!rmIsFiniteNumber(c.edgeIndex) || !rmIsFiniteNumber(c.measuredFt) || c.measuredFt <= 0) return false;
+  var legacy = rmLegacyCalibrationMeasurement(outline);
+  if (!legacy) return false;
+  var exists = ((outline.edgeMeasurements) || []).some(function(m){
+    return m && m.legacyCalibration && m.edgeIndex === legacy.edgeIndex && m.measuredFt === legacy.measuredFt;
+  });
+  if (exists) return false;
+  outline.edgeMeasurements = (outline.edgeMeasurements || []).concat([legacy]);
+  return true;
+}
+function rmActiveMeasuredEdges(outline){
+  var active = rmActiveEdgeMeasurements(outline).filter(function(m){
+    return m.source === "measured";
+  });
+  var legacy = rmLegacyCalibrationMeasurement(outline);
+  if (legacy && !active.some(function(m){ return m.edgeIndex === legacy.edgeIndex; })){
+    active.push(legacy);
+  }
+  return active;
+}
+function rmGetMeasuredEdge(outline, edgeIndex){
+  var list = rmActiveMeasuredEdges(outline);
+  for (var i = 0; i < list.length; i++){
+    if (list[i].edgeIndex === edgeIndex) return list[i];
+  }
+  return null;
+}
+function rmLatestActiveMeasuredEdge(outline){
+  var list = rmActiveMeasuredEdges(outline);
+  if (!list.length) return null;
+  return list.slice().sort(function(a, b){
+    return (b.measuredAt || 0) - (a.measuredAt || 0);
+  })[0];
+}
+function rmLatestAppliedMeasuredEdge(outline){
+  var list = rmActiveMeasuredEdges(outline).filter(function(m){
+    return m && m.rescaleApplied === true;
+  });
+  if (!list.length) return null;
+  return list.slice().sort(function(a, b){
+    return (b.measuredAt || 0) - (a.measuredAt || 0);
+  })[0];
+}
+function rmMeasurementScaleStillApplied(m){
+  return !!(m && (!m.invalidatedAt || m.invalidatedReason === "superseded_by_remeasure"));
+}
+function rmComposedAppliedScaleFactor(outline){
+  var recorded = rmAllMeasuredEdgeRecords(outline).filter(function(m){
+    return rmMeasurementScaleStillApplied(m) && m.rescaleApplied === true && rmIsFiniteNumber(m.composedAppliedFactor);
+  });
+  if (recorded.length){
+    return recorded.slice().sort(function(a, b){
+      return (b.measuredAt || 0) - (a.measuredAt || 0);
+    })[0].composedAppliedFactor;
+  }
+  var inherited = outline && outline.inheritedScale && rmIsFiniteNumber(outline.inheritedScale.factor) ?
+    outline.inheritedScale.factor : null;
+  if (rmIsFiniteNumber(inherited)) return inherited;
+  var legacyInherited = outline && outline.calibration && outline.calibration.inherited &&
+    rmIsFiniteNumber(outline.calibration.factor) ? outline.calibration.factor : null;
+  if (rmIsFiniteNumber(legacyInherited)) return legacyInherited;
+  var list = rmAllMeasuredEdgeRecords(outline).filter(function(m){
+    return rmMeasurementScaleStillApplied(m) && m.rescaleApplied === true && rmIsFiniteNumber(m.appliedFactor);
+  });
+  if (!list.length) return null;
+  return list.slice().sort(function(a, b){
+    return (a.measuredAt || 0) - (b.measuredAt || 0);
+  }).reduce(function(product, m){
+    return product * m.appliedFactor;
+  }, 1);
+}
+function rmHasMeasuredEdges(outline){
+  return !!rmActiveMeasuredEdges(outline).length;
+}
+function rmUpsertEdgeMeasurement(outline, entry){
+  if (!outline || !entry) return;
+  entry = rmNormalizeEdgeMeasurement(outline, entry) || entry;
+  var list = outline.edgeMeasurements || [];
+  var now = Date.now();
+  outline.edgeMeasurements = list.map(function(m){
+    if (!m || m.invalidatedAt) return m;
+    if (m.edgeIndex === entry.edgeIndex){
+      return Object.assign({}, m, { invalidatedAt: now, invalidatedReason: "superseded_by_remeasure", supersededBy: entry.id || null });
+    }
+    return m;
+  });
+  outline.edgeMeasurements.push(entry);
+  return entry;
+}
+function rmInvalidateEdgeMeasurements(outline, reason){
+  if (!outline) return false;
+  var changed = rmMigrateLegacyCalibration(outline);
+  var now = Date.now();
+  if (outline.edgeMeasurements && outline.edgeMeasurements.length){
+    outline.edgeMeasurements = outline.edgeMeasurements.map(function(m){
+      if (!m || m.invalidatedAt) return m;
+      changed = true;
+      return Object.assign({}, m, { invalidatedAt: now, invalidatedReason: reason || "geometry_edit" });
+    });
+  }
+  if (outline.calibration){
+    /* Safe to clear this legacy mirror after migration; the tape record now
+       lives in edgeMeasurements[] and carries the invalidation audit trail. */
+    changed = true;
+    delete outline.calibration;
+  }
+  rmRefreshOutlineMeasurementModel(outline);
+  return changed;
+}
+function rmSnapshotMeasurementState(outline){
+  if (!outline) return null;
+  return {
+    calibration: outline.calibration ? Object.assign({}, outline.calibration) : null,
+    inheritedScale: outline.inheritedScale ? Object.assign({}, outline.inheritedScale) : null,
+    captureSource: outline.captureSource ? Object.assign({}, outline.captureSource) : null,
+    scaleSource: outline.scaleSource ? Object.assign({}, outline.scaleSource) : null,
+    edgeMeasurements: outline.edgeMeasurements ? outline.edgeMeasurements.map(function(m){ return Object.assign({}, m); }) : []
+  };
+}
+function rmRestoreMeasurementState(outline, snap){
+  if (!outline || !snap) return;
+  outline.calibration = snap.calibration ? Object.assign({}, snap.calibration) : null;
+  outline.inheritedScale = snap.inheritedScale ? Object.assign({}, snap.inheritedScale) : null;
+  outline.captureSource = snap.captureSource ? Object.assign({}, snap.captureSource) : null;
+  outline.scaleSource = snap.scaleSource ? Object.assign({}, snap.scaleSource) : null;
+  outline.edgeMeasurements = snap.edgeMeasurements ? snap.edgeMeasurements.map(function(m){ return Object.assign({}, m); }) : [];
+  rmRefreshOutlineMeasurementModel(outline);
+}
+function rmFormatEdgeFeet(ft, measured){
+  if (!rmIsFiniteNumber(ft)) return "";
+  if (!measured) return String(Math.round(ft));
+  var rounded = Math.round(ft);
+  if (Math.abs(ft - rounded) < 0.05) return String(rounded);
+  return String(Math.round(ft * 10) / 10);
+}
+function rmHasInheritedScale(outline){
+  return !!(outline && (outline.inheritedScale || (outline.calibration && outline.calibration.inherited)));
+}
+function rmAppendMethodScaleNote(method, note, scaleProvenance){
+  if (!method || !scaleProvenance) return method;
+  var label = method.label || "Method: Unknown capture source";
+  if (label.indexOf(note) === -1){
+    var appended = label.replace(/\)$/, "; " + note + ")");
+    label = appended === label ? label + " (" + note + ")" : appended;
+  }
+  return Object.assign({}, method, { label: label, scaleProvenance: scaleProvenance });
+}
+function rmMeasuredScaleProvenance(outline){
+  var measured = rmLatestActiveMeasuredEdge(outline);
+  if (!measured) return null;
+  return {
+    source: "measured",
+    factor: rmIsFiniteNumber(measured.factor) ? measured.factor : null,
+    edgeIndex: measured.edgeIndex,
+    measuredFt: measured.measuredFt,
+    measurementId: measured.id || null
+  };
+}
+function rmInheritedScaleProvenance(outline){
+  if (!rmHasInheritedScale(outline)) return null;
+  var inherited = outline.inheritedScale || null;
+  return {
+    source: "inherited",
+    fromOutlineId: inherited ? (inherited.fromOutlineId || null) : null,
+    factor: inherited && rmIsFiniteNumber(inherited.factor) ? inherited.factor :
+      (outline.calibration && rmIsFiniteNumber(outline.calibration.factor) ? outline.calibration.factor : null)
+  };
+}
+function rmBuildInheritedScaleRecord(src, factor){
+  if (!src) return null;
+  var inherited = src.inheritedScale || null;
+  if (!inherited && src.calibration && src.calibration.inherited){
+    inherited = {
+      fromOutlineId: null,
+      factor: rmIsFiniteNumber(src.calibration.factor) ? src.calibration.factor : null,
+      scaleSource: "measured",
+      derivedAt: src.calibration.calibratedAt || null
+    };
+  }
+  var hasAppliedMeasurement = !!rmLatestAppliedMeasuredEdge(src);
+  var composedFactor = rmComposedAppliedScaleFactor(src);
+  if (!inherited && !hasAppliedMeasurement) return null;
+  return {
+    fromOutlineId: inherited ? (inherited.fromOutlineId || null) : (src.id || null),
+    factor: rmIsFiniteNumber(factor) ? factor : (inherited && rmIsFiniteNumber(inherited.factor) ? inherited.factor :
+      (rmIsFiniteNumber(composedFactor) ? composedFactor : null)),
+    scaleSource: "measured",
+    derivedAt: Date.now()
+  };
+}
+function rmEdgeDimensionMeta(outline, edgeIndex, distFt){
+  var measured = rmGetMeasuredEdge(outline, edgeIndex);
+  if (measured){
+    var matches = !rmIsFiniteNumber(distFt) || Math.abs((measured.measuredFt || 0) - distFt) <= RM_EDGE_MEASURE_LABEL_TOLERANCE_FT;
+    return {
+      measured: true,
+      conflict: !matches,
+      bg: matches ? "#2E7D32" : "#F57C00",
+      prefix: matches ? "\u2713 " : "! ",
+      border: true,
+      labelFt: measured.measuredFt,
+      measuredFt: measured.measuredFt,
+      derivedFt: distFt,
+      labelIsMeasured: true
+    };
+  }
+  return { measured: false, bg: "#263238", prefix: "", border: false, labelFt: distFt, labelIsMeasured: false };
+}
+function rmBuildCaptureSource(outline){
+  var source = outline && outline.source;
+  if (source === "geotiff_trace"){
+    return { mechanism: "geotiff", rank: "survey", kind: "geotiff", accuracyClass: "survey_grade_source",
+      label: "RTK GeoTIFF trace (survey-grade source)" };
+  }
+  if (source === "kml_groundoverlay_trace"){
+    var go = (outline && outline.groundOverlay) || {};
+    var maxErr = go.maxQuadBBoxErrorFt || go.quadBBoxErrorFt || 0;
+    var detailText = go.mobileTileCapApplied ? "; reduced tile detail" : "";
+    var name = go.sourceType === "kmz_superoverlay" ? "KMZ super-overlay tile trace" : "KMZ/KML GroundOverlay trace";
+    return { mechanism: "kmz_overlay", rank: "approximate", kind: go.sourceType || "kml_groundoverlay",
+      accuracyClass: "georeferenced_overlay_approx",
+      maxQuadBBoxErrorFt: maxErr,
+      label: name + " (approximate overlay; not RTK survey-grade" +
+        (maxErr ? "; max quad approx. " + (Math.round(maxErr * 10) / 10) + " ft" : "") + detailText + ")" };
+  }
+  if (source === "ortho_trace"){
+    return { mechanism: "ortho_image", rank: "estimated", kind: "flat_ortho",
+      accuracyClass: "uncalibrated_image", label: "Flat image trace" };
+  }
+  if (source === "walk_corners"){
+    return { mechanism: "walk_corners", rank: "approximate", kind: "walked_phone_gps",
+      accuracyClass: "field_gps_approx", label: "Walked phone-GPS corners (approximate)" };
+  }
+  if (source === "osm"){
+    return { mechanism: "osm", rank: "estimated", kind: "osm",
+      accuracyClass: "public_map_approx", label: "OSM footprint trace (approximate public map data)" };
+  }
+  if (source === "manual_trace"){
+    return { mechanism: "manual_map", rank: "estimated", kind: "flat_ortho",
+      accuracyClass: "uncalibrated_image", label: "Manual flat-image trace" };
+  }
+  return { mechanism: "unknown", rank: "unknown", kind: "unknown",
+    accuracyClass: "unknown", label: "Unknown capture source" };
+}
+function rmBuildScaleSource(outline, captureSource){
+  var measured = rmLatestAppliedMeasuredEdge(outline);
+  if (measured){
+    return {
+      kind: "measured",
+      label: "tape-measured edge on this roof",
+      factor: rmIsFiniteNumber(measured.factor) ? measured.factor : null,
+      appliedFactor: rmIsFiniteNumber(measured.appliedFactor) ? measured.appliedFactor : null,
+      edgeIndex: measured.edgeIndex,
+      measuredFt: measured.measuredFt,
+      measurementId: measured.id || null
+    };
+  }
+  if (rmHasInheritedScale(outline)){
+    var inherited = outline.inheritedScale || null;
+    return {
+      kind: "inherited",
+      label: "scale inherited from a field-measured section",
+      factor: inherited && rmIsFiniteNumber(inherited.factor) ? inherited.factor :
+        (outline.calibration && rmIsFiniteNumber(outline.calibration.factor) ? outline.calibration.factor : null),
+      fromOutlineId: inherited ? (inherited.fromOutlineId || null) : null
+    };
+  }
+  if (captureSource && (captureSource.mechanism === "geotiff" || captureSource.mechanism === "kmz_overlay" ||
+      captureSource.mechanism === "osm" || captureSource.mechanism === "walk_corners")){
+    return { kind: "image", label: "scale from georeferenced capture", factor: null };
+  }
+  return { kind: "none", label: "no field scale recorded", factor: null };
+}
+function rmBuildMeasurementMethodFromSources(captureSource, scaleSource){
+  var label = "Method: Capture: " + captureSource.label + ". Scale: " + scaleSource.label + ".";
+  return {
+    kind: captureSource.kind,
+    accuracyClass: captureSource.accuracyClass,
+    label: label,
+    captureSource: captureSource,
+    scaleSource: scaleSource,
+    scaleProvenance: scaleSource.kind === "measured" || scaleSource.kind === "inherited" ? scaleSource : null,
+    maxQuadBBoxErrorFt: captureSource.maxQuadBBoxErrorFt || null
+  };
+}
+function rmLegacyCaptureSourceFromMethod(method){
+  if (!method || !method.label) return null;
+  var kind = method.kind || "unknown";
+  var accuracy = method.accuracyClass || "unknown";
+  var label = String(method.label).replace(/^Method:\s*/, "");
+  var mechanism = "unknown", rank = "unknown";
+  if (kind === "geotiff" || accuracy === "survey_grade_source"){
+    mechanism = "geotiff"; rank = "survey";
+  } else if (kind === "kml_groundoverlay" || kind === "kmz_superoverlay" || accuracy === "georeferenced_overlay_approx"){
+    mechanism = "kmz_overlay"; rank = "approximate";
+  } else if (kind === "flat_ortho" || accuracy === "uncalibrated_image"){
+    mechanism = "ortho_image"; rank = "estimated";
+  } else if (kind === "walked_phone_gps" || accuracy === "field_gps_approx"){
+    mechanism = "walk_corners"; rank = "approximate";
+  } else if (kind === "osm" || accuracy === "public_map_approx"){
+    mechanism = "osm"; rank = "estimated";
+  } else if (kind === "manual_map" || accuracy === "manual_map_approx"){
+    mechanism = "manual_map"; rank = "estimated";
+  }
+  return {
+    mechanism: mechanism,
+    rank: rank,
+    kind: kind,
+    accuracyClass: accuracy,
+    label: label
+  };
+}
+function rmLegacyMeasurementMethodWithSources(outline){
+  var stored = outline && outline.measurementMethod;
+  if (!stored || !stored.label) return null;
+  if (stored.captureSource) return stored;
+  var captureSource = rmLegacyCaptureSourceFromMethod(stored);
+  if (!captureSource) return stored;
+  var scaleSource = rmBuildScaleSource(outline, captureSource);
+  return Object.assign({}, stored, {
+    captureSource: captureSource,
+    scaleSource: scaleSource,
+    scaleProvenance: scaleSource.kind === "measured" || scaleSource.kind === "inherited" ? scaleSource : null,
+    maxQuadBBoxErrorFt: captureSource.maxQuadBBoxErrorFt || stored.maxQuadBBoxErrorFt || null
+  });
+}
+function rmRefreshOutlineMeasurementModel(outline){
+  if (!outline) return null;
+  var method = rmOutlineMeasurementMethod(outline);
+  outline.captureSource = method.captureSource || null;
+  outline.scaleSource = method.scaleSource || null;
+  outline.measurementMethod = method;
+  return method;
+}
+function rmOutlineMeasurementPersistence(outline){
+  var method = rmRefreshOutlineMeasurementModel(outline);
+  return {
+    captureSource: method && method.captureSource ? method.captureSource : null,
+    scaleSource: method && method.scaleSource ? method.scaleSource : null,
+    measurementMethod: method,
+    edgeMeasurements: outline && outline.edgeMeasurements ? outline.edgeMeasurements : [],
+    inheritedScale: outline && outline.inheritedScale ? outline.inheritedScale : null
+  };
+}
 function rmOutlineMeasurementMethod(outline){
   if (!outline) return { kind: "unknown", label: "Method: Unknown capture source" };
   if (!outline.source && outline.measurementMethod && outline.measurementMethod.label){
-    return outline.measurementMethod;
+    return rmLegacyMeasurementMethodWithSources(outline);
   }
-  if (outline.source === "geotiff_trace"){
-    return { kind: "geotiff", accuracyClass: "survey_grade_source",
-      label: "Method: RTK GeoTIFF trace (survey-grade source)" };
-  }
-  if (outline.source === "kml_groundoverlay_trace"){
-    var go = outline.groundOverlay || {};
-    var maxErr = go.maxQuadBBoxErrorFt || go.quadBBoxErrorFt || 0;
-    var errText = maxErr ? "; max quad approx. " + (Math.round(maxErr * 10) / 10) + " ft" : "";
-    var detailText = go.mobileTileCapApplied ? "; traced at reduced tile detail" : "";
-    var name = go.sourceType === "kmz_superoverlay" ? "KMZ super-overlay tile trace" : "KMZ/KML GroundOverlay trace";
-    return { kind: go.sourceType || "kml_groundoverlay", accuracyClass: "georeferenced_overlay_approx",
-      maxQuadBBoxErrorFt: maxErr,
-      label: "Method: " + name + " (approx. overlay; not RTK survey-grade" + errText + detailText + ")" };
-  }
-  if (outline.source === "ortho_trace"){
-    return { kind: "flat_ortho", accuracyClass: outline.calibration ? "field_calibrated" : "uncalibrated_image",
-      label: outline.calibration ? "Method: Flat image trace (field-calibrated)" : "Method: Flat image trace (requires field calibration)" };
-  }
-  if (outline.source === "walk_corners"){
-    return { kind: "walked_phone_gps", accuracyClass: "field_gps_approx",
-      label: "Method: Walked phone-GPS corners (approximate)" };
-  }
-  if (outline.source === "osm"){
-    return { kind: "osm", accuracyClass: "public_map_approx",
-      label: "Method: OSM footprint trace (approximate public map data)" };
-  }
-  return { kind: "manual_map", accuracyClass: "manual_map_approx",
-    label: "Method: Manual map trace (approximate)" };
+  var captureSource = rmBuildCaptureSource(outline);
+  var scaleSource = rmBuildScaleSource(outline, captureSource);
+  return rmBuildMeasurementMethodFromSources(captureSource, scaleSource);
 }
 function rmOutlineMeasurementMethodSummary(outlines){
   var labels = [];
@@ -1054,14 +1477,49 @@ function rmOutlineMeasurementMethodSummary(outlines){
   });
   return labels.length ? "Methods: " + labels.join("; ") : "Method: Unknown capture source";
 }
+function rmMeasurementDecisionLabel(m){
+  var d = m && (m.decision || m.conflictResolution);
+  if (d === "keep_existing") return "kept existing scale";
+  if (d === "average") return "averaged with existing scale";
+  if (d === "record_only") return "recorded only";
+  if (d === "use") return "used to rescale";
+  return "recorded";
+}
+function rmMeasurementHistoryHtml(outline){
+  var records = rmAllMeasuredEdgeRecords(outline);
+  if (!records.length) return "";
+  records = records.slice().sort(function(a, b){
+    return (b.measuredAt || 0) - (a.measuredAt || 0);
+  });
+  var rows = records.map(function(m){
+    var state = m.invalidatedAt ? "Archived" : "Active";
+    var reason = m.invalidatedReason ? " - " + String(m.invalidatedReason).replace(/_/g, " ") : "";
+    var when = m.measuredAt ? " - " + new Date(m.measuredAt).toLocaleDateString() : "";
+    return '<div class="rm-measure-history-row">' +
+      '<b>Edge ' + (m.edgeIndex + 1) + ': ' + esc(rmFormatEdgeFeet(m.measuredFt, true)) + ' ft</b>' +
+      '<span>' + esc(state + reason + " - " + rmMeasurementDecisionLabel(m) + when) + '</span>' +
+      '</div>';
+  }).join("");
+  return '<div class="rm-measure-history"><div class="rm-measure-history-title">Field measurements</div>' + rows + '</div>';
+}
 function rmCopyOutlineSourceMetadata(src, dest){
   if (!src || !dest) return dest;
   if (src.georeferencedSource) dest.georeferencedSource = true;
   if (src.tracedOnOrtho) dest.tracedOnOrtho = true;
   if (src.groundOverlay) dest.groundOverlay = Object.assign({}, src.groundOverlay);
-  if (src.measurementMethod) dest.measurementMethod = Object.assign({}, src.measurementMethod);
-  else dest.measurementMethod = rmOutlineMeasurementMethod(dest);
+  if (src.captureSource) dest.captureSource = Object.assign({}, src.captureSource);
+  rmRefreshOutlineMeasurementModel(dest);
   return dest;
+}
+function rmDropSplitMeasurementMetadata(outlineEntry, baseOutline){
+  if (!outlineEntry) return outlineEntry;
+  outlineEntry.calibration = null;
+  outlineEntry.edgeMeasurements = [];
+  var inherited = rmBuildInheritedScaleRecord(baseOutline, baseOutline && baseOutline.inheritedScale ? baseOutline.inheritedScale.factor : null);
+  if (inherited) outlineEntry.inheritedScale = inherited;
+  else delete outlineEntry.inheritedScale;
+  rmRefreshOutlineMeasurementModel(outlineEntry);
+  return outlineEntry;
 }
 function rmBuildOutlineSvg(outline, overlay){
   var origin = rmGeomRingCentroid(outline.ring);
@@ -1125,7 +1583,6 @@ function rmBuildOutlineSvg(outline, overlay){
      re-rendered as SVG pills instead of Leaflet divIcons. Mark: "No edge
      dimensions are drawn on the outline, even though we built calibration/
      dimensions" -- true gap, never wired into export before this fix. */
-  var calibratedIdx = outline.calibration ? outline.calibration.edgeIndex : -1;
   var dimSvg = "";
   for (var i = 0; i < outline.ring.length - 1; i++){
     var ea = outline.ring[i], eb = outline.ring[i + 1];
@@ -1134,11 +1591,11 @@ function rmBuildOutlineSvg(outline, overlay){
     var midFeet = { x: (rmExportProjectPoint(ea, origin).x + rmExportProjectPoint(eb, origin).x) / 2,
                      y: (rmExportProjectPoint(ea, origin).y + rmExportProjectPoint(eb, origin).y) / 2 };
     var svgMid = toSvg(midFeet);
-    var isCal = i === calibratedIdx;
-    var dimLabel = (isCal ? "✓ " : "") + Math.round(distFt) + " ft";
+    var dimMeta = rmEdgeDimensionMeta(outline, i, distFt);
+    var dimLabel = dimMeta.prefix + rmFormatEdgeFeet(dimMeta.labelFt, dimMeta.labelIsMeasured) + " ft";
     var dimW = Math.max(38, dimLabel.length * 8 + 12);
     dimSvg += '<rect x="' + (svgMid.x - dimW / 2).toFixed(1) + '" y="' + (svgMid.y - 12).toFixed(1) + '" width="' +
-      dimW.toFixed(1) + '" height="24" rx="5" fill="' + (isCal ? "#2E7D32" : "#263238") + '"/>' +
+      dimW.toFixed(1) + '" height="24" rx="5" fill="' + dimMeta.bg + '"/>' +
       '<text x="' + svgMid.x.toFixed(1) + '" y="' + (svgMid.y + 5).toFixed(1) +
       '" font-family="Arial, sans-serif" font-size="14" font-weight="700" fill="#fff" text-anchor="middle">' +
       rmEscXml(dimLabel) + '</text>';
@@ -1347,7 +1804,6 @@ function rmBuildMultiRoofOutlineSvg(data){
     shapeSvg += '<path d="' + pathD + '" fill="rgba(232,96,10,0.15)" stroke="#E8600A" stroke-width="2.5" stroke-linejoin="round"/>';
     /* Edge dimensions, same real-world haversine lengths the single-roof
        export/live map both use. */
-    var calibratedIdx = r.outline.calibration ? r.outline.calibration.edgeIndex : -1;
     for (var e = 0; e < r.outline.ring.length - 1; e++){
       var ea = r.outline.ring[e], eb = r.outline.ring[e + 1];
       var distFt = rmGeomHaversineMeters(ea, eb) * 3.28084;
@@ -1355,11 +1811,11 @@ function rmBuildMultiRoofOutlineSvg(data){
       var midFeet = { x: (rmExportProjectPoint(ea, origin).x + rmExportProjectPoint(eb, origin).x) / 2,
                        y: (rmExportProjectPoint(ea, origin).y + rmExportProjectPoint(eb, origin).y) / 2 };
       var svgMid = toSvg(midFeet);
-      var isCal = e === calibratedIdx;
-      var dimLabel = (isCal ? "✓ " : "") + Math.round(distFt) + " ft";
+      var dimMeta = rmEdgeDimensionMeta(r.outline, e, distFt);
+      var dimLabel = dimMeta.prefix + rmFormatEdgeFeet(dimMeta.labelFt, dimMeta.labelIsMeasured) + " ft";
       var dimW = Math.max(36, dimLabel.length * 8 + 12);
       shapeSvg += '<rect x="' + (svgMid.x - dimW / 2).toFixed(1) + '" y="' + (svgMid.y - 11).toFixed(1) + '" width="' +
-        dimW.toFixed(1) + '" height="22" rx="5" fill="' + (isCal ? "#2E7D32" : "#263238") + '"/>' +
+        dimW.toFixed(1) + '" height="22" rx="5" fill="' + dimMeta.bg + '"/>' +
         '<text x="' + svgMid.x.toFixed(1) + '" y="' + (svgMid.y + 5).toFixed(1) +
         '" font-family="Arial, sans-serif" font-size="13" font-weight="700" fill="#fff" text-anchor="middle">' +
         rmEscXml(dimLabel) + '</text>';
@@ -1649,6 +2105,9 @@ var rmState = {
      rmUndoSquareUp()) -- null whenever the current outline hasn't been
      squared, or after an undo. */
   preSquareRing: null,
+  preSquareMeasurementState: null,
+  preResnapMeasurementState: null,
+  preAlignMeasurementState: null,
   /* Vertex (per-corner) edit mode -- rmToggleVertexEdit(). vertexHandleLayerGroup
      holds the draggable per-vertex markers, only populated while active. */
   vertexEditActive: false,
@@ -1693,6 +2152,7 @@ var rmState = {
      a factor learned for one building to a different one. */
   inheritedScaleFactor: 1,
   inheritedScaleFactorBuildingId: null,
+  inheritedScaleFromOutlineId: null,
   /* Set momentarily by rmEnterMultiRoofCapture() around its
      rmClearFootprintLayers() call when continuing to trace on the SAME
      already-uploaded ortho for the SAME building -- see
@@ -2103,16 +2563,19 @@ function rmClearGeneratedOutline(){
   if (rmState.map && rmState.dimensionLayerGroup) rmState.map.removeLayer(rmState.dimensionLayerGroup);
   rmState.dimensionLayerGroup = null;
   rmState.preSquareRing = null;
+  rmState.preSquareMeasurementState = null;
   var undoBtn = document.getElementById("rm-undo-square-btn");
   if (undoBtn) undoBtn.style.display = "none";
   var squareStatus = document.getElementById("rm-square-status");
   if (squareStatus) squareStatus.textContent = "";
   rmState.preResnapRing = null;
+  rmState.preResnapMeasurementState = null;
   var undoResnapBtn = document.getElementById("rm-undo-resnap-btn");
   if (undoResnapBtn) undoResnapBtn.style.display = "none";
   var resnapStatus = document.getElementById("rm-resnap-status");
   if (resnapStatus) resnapStatus.textContent = "";
   rmState.preAlignRing = null;
+  rmState.preAlignMeasurementState = null;
   var undoAlignBtn = document.getElementById("rm-undo-align-btn");
   if (undoAlignBtn) undoAlignBtn.style.display = "none";
   if (rmAlignState.active) rmExitAlignMode(false); /* discard, nothing left to save it to */
@@ -2269,26 +2732,27 @@ function rmDeselectFootprint(){
   toast("Selection cleared — tap the correct building's outline on the map, or search again.");
 }
 function rmRenderOutlineStats(outline){
+  var method = rmRefreshOutlineMeasurementModel(outline);
   document.getElementById("rm-outline-warning").innerHTML = outline.isSiteBoundary ?
     '<p class="rm-status warn" style="margin:0 0 10px">⚠️ This traces the property/site boundary from ' +
     'OpenStreetMap, not a single roof — the numbers below cover the whole site. Use only as a rough reference; ' +
     'trace or measure the actual roof separately.</p>' : '';
   /* Scale inheritance indicator -- Mark: "show the user that the scale is
-     inherited." outline.calibration.inherited (set by rmFinishTrace() when
-     it auto-applies a factor learned from an earlier roof on this same
-     building) is distinct from a manually-tapped edge calibration
-     (calibration.edgeIndex set instead) -- only the inherited case gets
-     this note; a real edge tap already has its own green-highlighted
-     label on the map. */
+     inherited." Gate this on the measurement model; the legacy calibration
+     mirror is read only through the model for older outlines. */
   var scaleNote = "";
-  if (outline.calibration && outline.calibration.inherited){
-    scaleNote = '<p class="hint" style="margin:0 0 8px">📏 Scale inherited from this building’s earlier ' +
-      'calibration — no need to re-measure. Tap any edge’s length to override it for just this roof.</p>';
+  if (method && method.label){
+    scaleNote = '<p class="hint" style="margin:0 0 8px">' + esc(method.label.replace(/^Method:\s*/, "")) + '</p>';
+  }
+  if (method && method.scaleSource && method.scaleSource.kind === "inherited"){
+    scaleNote += '<p class="hint" style="margin:0 0 8px">Scale inherited from this building&rsquo;s earlier ' +
+      'calibration. Tap any edge&rsquo;s length to override it for just this roof.</p>';
   }
   document.getElementById("rm-outline-stats").innerHTML = scaleNote +
     '<div class="stat"><b>' + outline.areaSqFt.toFixed(0) + '</b><span>Sq Ft</span></div>' +
     '<div class="stat"><b>' + outline.perimeterFt.toFixed(0) + '</b><span>Perimeter Ft</span></div>' +
-    '<div class="stat"><b>' + outline.ring.length + '</b><span>Points</span></div>';
+    '<div class="stat"><b>' + outline.ring.length + '</b><span>Points</span></div>' +
+    rmMeasurementHistoryHtml(outline);
   document.getElementById("rm-outline-panel").style.display = "";
 }
 /* Shared by rmGenerateOutline() (OSM footprint) and rmFinishTrace() (Phase
@@ -2308,22 +2772,20 @@ function rmDrawEdgeDimensions(outline){
   if (rmState.dimensionLayerGroup) map.removeLayer(rmState.dimensionLayerGroup);
   rmState.dimensionLayerGroup = L.layerGroup().addTo(map);
   var ring = outline.ring;
-  var calibratedIdx = outline.calibration ? outline.calibration.edgeIndex : -1;
   for (var i = 0; i < ring.length - 1; i++){
     var a = ring[i], b = ring[i + 1];
     var distFt = rmGeomHaversineMeters(a, b) * 3.28084;
     if (distFt < 1) continue; /* skip degenerate/near-zero edges from ring cleanup */
     var midLat = (a.lat + b.lat) / 2, midLng = (a.lng + b.lng) / 2;
-    var isCalibrated = i === calibratedIdx;
-    var bg = isCalibrated ? "#2E7D32" : "#263238";
-    var label = (isCalibrated ? "✓ " : "") + Math.round(distFt) + " ft";
+    var dimMeta = rmEdgeDimensionMeta(outline, i, distFt);
+    var label = dimMeta.prefix + rmFormatEdgeFeet(dimMeta.labelFt, dimMeta.labelIsMeasured) + " ft";
     var marker = L.marker([midLat, midLng], {
       icon: L.divIcon({
         className: "", iconSize: null,
-        html: '<div style="background:' + bg + ';color:#fff;padding:3px 7px;border-radius:4px;' +
+        html: '<div style="background:' + dimMeta.bg + ';color:#fff;padding:3px 7px;border-radius:4px;' +
           'font-size:11px;font-weight:700;white-space:nowrap;transform:translate(-50%,-50%);' +
           'box-shadow:0 1px 3px rgba(0,0,0,.4);cursor:pointer' +
-          (isCalibrated ? ";border:1.5px solid #fff" : "") + '">' + label + '</div>'
+          (dimMeta.border ? ";border:1.5px solid #fff" : "") + '">' + label + '</div>'
       }),
       interactive: true
     }).addTo(rmState.dimensionLayerGroup);
@@ -2448,8 +2910,8 @@ function rmOnVertexDragEnd(vertexIndex, droppedLatLng, marker){
      undo snapshots, since "undo" against a ring that's since been
      hand-edited wouldn't mean what any of them used to. */
   delete outline.squared;
-  delete outline.calibration;
-  outline.measurementMethod = rmOutlineMeasurementMethod(outline);
+  rmInvalidateEdgeMeasurements(outline, "vertex_edit");
+  rmRefreshOutlineMeasurementModel(outline);
   rmState.preSquareRing = null;
   var undoBtn = document.getElementById("rm-undo-square-btn");
   if (undoBtn) undoBtn.style.display = "none";
@@ -2479,10 +2941,14 @@ async function rmPersistVertexEdit(){
     var roofs = getBuildingRoofs(bld);
     var roof = roofs.find(function(r){ return r.id === rmState.linkedRoofId; });
     if (!roof){ toast("Couldn't find the linked roof to save."); return; }
+    var measurementFields = rmOutlineMeasurementPersistence(outline);
     roof.roof_outlines = (roof.roof_outlines || []).map(function(o){
       return o.id === outline.id ? Object.assign({}, o, {
         ring: outline.ring, areaSqFt: outline.areaSqFt, perimeterFt: outline.perimeterFt,
-        center: outline.center, calibration: null, squared: null, measurementMethod: outline.measurementMethod
+        center: outline.center, calibration: outline.calibration || null, squared: null,
+        edgeMeasurements: measurementFields.edgeMeasurements, inheritedScale: measurementFields.inheritedScale,
+        captureSource: measurementFields.captureSource, scaleSource: measurementFields.scaleSource,
+        measurementMethod: measurementFields.measurementMethod
       }) : o;
     });
     var roofIdx = roofs.findIndex(function(r){ return r.id === roof.id; });
@@ -2496,16 +2962,19 @@ function rmDrawFinalOutline(outline){
   rmClearLinkedFeatures(); /* a freshly captured outline is never linked yet */
   rmClearSplitState(); /* and never has a pending split from whatever outline was showing before */
   rmState.preSquareRing = null; /* a fresh outline was never squared -- no stale Undo button */
+  rmState.preSquareMeasurementState = null;
   var undoBtn = document.getElementById("rm-undo-square-btn");
   if (undoBtn) undoBtn.style.display = "none";
   var squareStatus = document.getElementById("rm-square-status");
   if (squareStatus) squareStatus.textContent = "";
   rmState.preResnapRing = null; /* a fresh outline was never re-snapped -- no stale Undo button */
+  rmState.preResnapMeasurementState = null;
   var undoResnapBtn = document.getElementById("rm-undo-resnap-btn");
   if (undoResnapBtn) undoResnapBtn.style.display = "none";
   var resnapStatus = document.getElementById("rm-resnap-status");
   if (resnapStatus) resnapStatus.textContent = "";
   rmState.preAlignRing = null; /* a fresh outline was never aligned -- no stale Undo button */
+  rmState.preAlignMeasurementState = null;
   var undoAlignBtn = document.getElementById("rm-undo-align-btn");
   if (undoAlignBtn) undoAlignBtn.style.display = "none";
   if (rmAlignState.active) rmExitAlignMode(false); /* a fresh outline replaces whatever was being aligned */
@@ -2535,31 +3004,192 @@ function rmDrawFinalOutline(outline){
    measurement, one edit, the whole outline becomes accurate. Works on any
    outline (OSM/manual_trace/walk_corners) since it's pure geometry on the
    ring -- see "Dimensions" > "Calibrate-by-known-edge" in ROADMAP.md. */
-function rmCalibrateEdge(edgeIndex){
+function rmMeasurementImpactHtml(outline, factor){
+  if (!outline || Math.abs(factor - 1) < 0.000001) return "";
+  var newArea = outline.areaSqFt * factor * factor;
+  var newPerimeter = outline.perimeterFt * factor;
+  return '<div class="rm-measure-impact">' +
+    '<b>If applied:</b><br>' +
+    'Area: ' + Math.round(outline.areaSqFt) + ' sq ft -> ' + Math.round(newArea) + ' sq ft<br>' +
+    'Perimeter: ' + Math.round(outline.perimeterFt) + ' ft -> ' + Math.round(newPerimeter) + ' ft' +
+    '</div>';
+}
+function rmChooseMeasurementConflict(pct, opts){
+  opts = opts || {};
+  return new Promise(function(resolve){
+    var overlay = document.createElement("div");
+    overlay.className = "rm-measure-choice-overlay";
+    overlay.setAttribute("role", "dialog");
+    overlay.setAttribute("aria-modal", "true");
+
+    var sheet = document.createElement("div");
+    sheet.className = "rm-measure-choice-sheet";
+
+    var title = document.createElement("h3");
+    title.textContent = opts.conflict ? "Measurements disagree" : "Apply field measurement";
+
+    var body = document.createElement("p");
+    body.textContent = opts.conflict ?
+      "This measured edge disagrees with the current measured scale by " + pct + "%. Pick how to save it." :
+      "Save this tape reading and choose whether to rescale the saved roof from it.";
+
+    var actions = document.createElement("div");
+    actions.className = "rm-measure-choice-actions";
+    var buttons = [];
+
+    function addButton(label, value, note, primary){
+      var btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "rm-measure-choice-btn" + (primary ? " primary" : "");
+      btn.innerHTML = "<strong></strong><span></span>";
+      btn.querySelector("strong").textContent = label;
+      btn.querySelector("span").textContent = note;
+      btn.addEventListener("click", function(){
+        cleanup();
+        resolve(value);
+      });
+      actions.appendChild(btn);
+      buttons.push(btn);
+      return btn;
+    }
+
+    function cleanup(){
+      document.removeEventListener("keydown", onKeyDown);
+      if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+      if (typeof unlockBodyScroll === "function") unlockBodyScroll();
+    }
+
+    function onKeyDown(e){
+      if (e.key === "Escape"){
+        e.preventDefault();
+        discardBtn.focus();
+      } else if (e.key === "Tab"){
+        var first = buttons[0], last = buttons[buttons.length - 1];
+        if (e.shiftKey && document.activeElement === first){
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last){
+          e.preventDefault();
+          first.focus();
+        }
+      }
+    }
+
+    var firstBtn = addButton(opts.conflict ? "Use my measurement" : "Apply measurement", "use",
+      "Rescale this roof from the taped edge.", true);
+    addButton(opts.conflict ? "Keep existing" : "Record only", opts.conflict ? "keep_existing" : "record_only",
+      "Save the taped edge without changing scale.", false);
+    if (opts.conflict) addButton("Average them", "average", "Blend the existing scale with this tape reading.", false);
+    var discardBtn = addButton("Discard this measurement", "discard", "Close this sheet without saving this tape entry.", false);
+    discardBtn.classList.add("danger");
+
+    sheet.appendChild(title);
+    sheet.appendChild(body);
+    if (opts.impactHtml) sheet.insertAdjacentHTML("beforeend", opts.impactHtml);
+    sheet.appendChild(actions);
+    overlay.appendChild(sheet);
+    document.body.appendChild(overlay);
+    if (typeof lockBodyScroll === "function") lockBodyScroll();
+    document.addEventListener("keydown", onKeyDown);
+    setTimeout(function(){ firstBtn.focus(); }, 0);
+  });
+}
+async function rmCalibrateEdge(edgeIndex){
   var outline = rmState.outline;
   if (!outline) return;
   var ring = outline.ring;
   var a = ring[edgeIndex], b = ring[edgeIndex + 1];
   if (!a || !b) return;
   var currentFt = rmGeomHaversineMeters(a, b) * 3.28084;
-  var input = prompt("Real field-measured length of this edge, in feet (currently ~" +
-    Math.round(currentFt) + " ft):", String(Math.round(currentFt)));
+  var input = prompt("Real field-measured length of this edge (examples: 42' 6\", 42.5, 42.5 ft). Currently ~" +
+    Math.round(currentFt) + " ft:", String(Math.round(currentFt)));
   if (input === null) return; /* canceled */
-  var measuredFt = parseFloat(input);
-  if (!isFinite(measuredFt) || measuredFt <= 0){ toast("Enter a length greater than 0."); return; }
+  var parsed = rmParseFeetInches(input);
+  if (!parsed || !isFinite(parsed.feet) || parsed.feet <= 0){ toast("Enter a length greater than 0."); return; }
+  var measuredFt = parsed.feet;
   var factor = measuredFt / currentFt;
+  rmMigrateLegacyCalibration(outline);
+  var existingMeasured = rmActiveMeasuredEdges(outline).filter(function(m){ return m.edgeIndex !== edgeIndex; });
+  var appliedFactor = factor;
+  var decision = "use";
+  var hadConflict = false;
+  if (existingMeasured.length && Math.abs(factor - 1) > RM_EDGE_MEASURE_SCALE_TOLERANCE){
+    var pct = Math.abs((factor - 1) * 100).toFixed(1);
+    hadConflict = true;
+    var choice = await rmChooseMeasurementConflict(pct, {
+      conflict: true,
+      impactHtml: rmMeasurementImpactHtml(outline, factor)
+    });
+    if (choice === "keep_existing"){
+      appliedFactor = 1;
+      decision = "keep_existing";
+    } else if (choice === "average"){
+      appliedFactor = Math.sqrt(factor);
+      decision = "average";
+    } else if (choice === "discard"){
+      /* rmMigrateLegacyCalibration() may already have normalized an older
+         tape reading; discarding here means only "do not save this new input." */
+      toast("Measurement discarded.");
+      return;
+    } else {
+      decision = "use";
+    }
+  } else if (rmState.linkedBuildingId && rmState.linkedRoofId && outline.id && Math.abs(factor - 1) > 0.000001){
+    var applyChoice = await rmChooseMeasurementConflict(null, {
+      conflict: false,
+      impactHtml: rmMeasurementImpactHtml(outline, factor)
+    });
+    if (applyChoice === "record_only"){
+      appliedFactor = 1;
+      decision = "record_only";
+    } else if (applyChoice === "discard"){
+      toast("Measurement discarded.");
+      return;
+    } else {
+      decision = "use";
+    }
+  }
+  var rescaleApplied = decision === "use" || decision === "average";
+  var priorComposedFactor = rmComposedAppliedScaleFactor(outline);
+  if (!rmIsFiniteNumber(priorComposedFactor)) priorComposedFactor = 1;
+  var measurementEntry = {
+    id: rmMeasurementId(edgeIndex),
+    edgeIndex: edgeIndex,
+    measuredFt: measuredFt,
+    factor: factor,
+    appliedFactor: appliedFactor,
+    composedAppliedFactor: rescaleApplied ? priorComposedFactor * appliedFactor : null,
+    rescaleApplied: rescaleApplied,
+    decision: decision,
+    source: "measured",
+    measuredAt: Date.now(),
+    measuredBy: null,
+    rawInput: String(input)
+  };
+  if (hadConflict) measurementEntry.conflictResolution = decision;
+  rmUpsertEdgeMeasurement(outline, measurementEntry);
+  if (appliedFactor === 1){
+    delete outline.calibration;
+    rmRefreshOutlineMeasurementModel(outline);
+    rmDrawEdgeDimensions(outline);
+    rmRenderOutlineStats(outline);
+    rmUpdateExportHint();
+    rmPersistCalibration(null);
+    return;
+  }
   /* Uniform scale about the ring's own centroid -- preserves shape/angles,
      changes only size, exactly matching "rescales proportionally." Fresh
      centroid each call so repeated recalibrations (off the same or a
      different edge) compound correctly with no drift. */
   var centroid = rmGeomRingCentroid(ring);
-  var newRing = ring.map(function(p){ return rmGeomScalePoint(p, centroid, factor); });
+  var newRing = ring.map(function(p){ return rmGeomScalePoint(p, centroid, appliedFactor); });
   outline.ring = newRing;
   outline.areaSqFt = rmGeomPolygonAreaSqMeters(newRing) * 10.7639;
   outline.perimeterFt = rmGeomPolygonPerimeterMeters(newRing) * 3.28084;
-  outline.center = centroid;
-  outline.calibration = { edgeIndex: edgeIndex, measuredFt: measuredFt, calibratedAt: Date.now() };
-  outline.measurementMethod = rmOutlineMeasurementMethod(outline);
+  outline.center = rmGeomRingCentroid(newRing);
+  delete outline.calibration;
+  delete outline.inheritedScale;
+  rmRefreshOutlineMeasurementModel(outline);
   /* Scale inheritance -- learn from this calibration so the NEXT roof
      traced on this same building (manual_trace/ortho_trace only --
      OSM footprints are independently georeferenced, walk_corners has no
@@ -2570,8 +3200,9 @@ function rmCalibrateEdge(edgeIndex){
      DEV_NOTES.md. */
   if ((outline.source === "manual_trace" || outline.source === "ortho_trace") && rmState.linkedBuildingId){
     var carryOver = rmState.inheritedScaleFactorBuildingId === rmState.linkedBuildingId ? rmState.inheritedScaleFactor : 1;
-    rmState.inheritedScaleFactor = carryOver * factor;
+    rmState.inheritedScaleFactor = carryOver * appliedFactor;
     rmState.inheritedScaleFactorBuildingId = rmState.linkedBuildingId;
+    rmState.inheritedScaleFromOutlineId = outline.id || null;
   }
   /* If features are already placed on a saved roof, keep them visually
      anchored to the roof by applying the identical transform -- otherwise
@@ -2580,7 +3211,7 @@ function rmCalibrateEdge(edgeIndex){
   var rescaledAssets = null;
   if (rmState.linkedAssetsCache && rmState.linkedAssetsCache.length){
     rescaledAssets = rmState.linkedAssetsCache.map(function(asset){
-      var p = rmGeomScalePoint({ lat: asset.lat, lng: asset.lng }, centroid, factor);
+      var p = rmGeomScalePoint({ lat: asset.lat, lng: asset.lng }, centroid, appliedFactor);
       return Object.assign({}, asset, { lat: p.lat, lng: p.lng });
     });
     rmState.linkedAssetsCache = rescaledAssets;
@@ -2610,10 +3241,14 @@ async function rmPersistCalibration(rescaledAssets){
     var roofs = getBuildingRoofs(bld);
     var roof = roofs.find(function(r){ return r.id === rmState.linkedRoofId; });
     if (!roof){ toast("Couldn't find the linked roof to save calibration."); return; }
+    var measurementFields = rmOutlineMeasurementPersistence(outline);
     roof.roof_outlines = (roof.roof_outlines || []).map(function(o){
       return o.id === outline.id ? Object.assign({}, o, {
         ring: outline.ring, areaSqFt: outline.areaSqFt, perimeterFt: outline.perimeterFt,
-        center: outline.center, calibration: outline.calibration, measurementMethod: outline.measurementMethod
+        center: outline.center, calibration: outline.calibration || null,
+        edgeMeasurements: measurementFields.edgeMeasurements, inheritedScale: measurementFields.inheritedScale,
+        captureSource: measurementFields.captureSource, scaleSource: measurementFields.scaleSource,
+        measurementMethod: measurementFields.measurementMethod
       }) : o;
     });
     if (rescaledAssets) roof.roof_assets = rescaledAssets;
@@ -2639,11 +3274,13 @@ function rmSquareUpOutline(){
     return;
   }
   rmState.preSquareRing = outline.ring; /* for Undo -- one level, matches Calibrate's own no-history-stack simplicity */
+  rmState.preSquareMeasurementState = rmSnapshotMeasurementState(outline);
   outline.ring = result.ring;
   outline.areaSqFt = rmGeomPolygonAreaSqMeters(result.ring) * 10.7639;
   outline.perimeterFt = rmGeomPolygonPerimeterMeters(result.ring) * 3.28084;
   outline.center = rmGeomRingCentroid(result.ring);
   outline.squared = { at: Date.now(), tolerance: RM_SQUARE_TOLERANCE_DEG, snappedEdges: result.snappedCount };
+  rmInvalidateEdgeMeasurements(outline, "square_up");
   if (rmState.outlineLayer) rmState.outlineLayer.setLatLngs(result.ring.map(function(p){ return [p.lat, p.lng]; }));
   rmDrawEdgeDimensions(outline);
   rmRenderOutlineStats(outline);
@@ -2663,7 +3300,9 @@ function rmUndoSquareUp(){
   outline.perimeterFt = rmGeomPolygonPerimeterMeters(outline.ring) * 3.28084;
   outline.center = rmGeomRingCentroid(outline.ring);
   delete outline.squared;
+  rmRestoreMeasurementState(outline, rmState.preSquareMeasurementState);
   rmState.preSquareRing = null;
+  rmState.preSquareMeasurementState = null;
   if (rmState.outlineLayer) rmState.outlineLayer.setLatLngs(outline.ring.map(function(p){ return [p.lat, p.lng]; }));
   rmDrawEdgeDimensions(outline);
   rmRenderOutlineStats(outline);
@@ -2688,7 +3327,7 @@ function rmUndoSquareUp(){
 async function rmPersistOutlineGeometryEdit(){
   var outline = rmState.outline;
   if (!outline) return;
-  outline.measurementMethod = rmOutlineMeasurementMethod(outline);
+  rmRefreshOutlineMeasurementModel(outline);
   if (!rmState.linkedBuildingId || !rmState.linkedRoofId || !outline.id){
     toast("Will save with the outline.");
     return;
@@ -2700,10 +3339,14 @@ async function rmPersistOutlineGeometryEdit(){
     var roofs = getBuildingRoofs(bld);
     var roof = roofs.find(function(r){ return r.id === rmState.linkedRoofId; });
     if (!roof){ toast("Couldn't find the linked roof to save."); return; }
+    var measurementFields = rmOutlineMeasurementPersistence(outline);
     roof.roof_outlines = (roof.roof_outlines || []).map(function(o){
       return o.id === outline.id ? Object.assign({}, o, {
         ring: outline.ring, areaSqFt: outline.areaSqFt, perimeterFt: outline.perimeterFt,
-        center: outline.center, squared: outline.squared || null, measurementMethod: outline.measurementMethod
+        center: outline.center, calibration: outline.calibration || null, squared: outline.squared || null,
+        edgeMeasurements: measurementFields.edgeMeasurements, inheritedScale: measurementFields.inheritedScale,
+        captureSource: measurementFields.captureSource, scaleSource: measurementFields.scaleSource,
+        measurementMethod: measurementFields.measurementMethod
       }) : o;
     });
     var roofIdx = roofs.findIndex(function(r){ return r.id === roof.id; });
@@ -2773,10 +3416,12 @@ function rmSnapExistingOutlineToNeighbors(){
     return;
   }
   rmState.preResnapRing = ring; /* one-level Undo, same simplicity as Square Up/Calibrate */
+  rmState.preResnapMeasurementState = rmSnapshotMeasurementState(outline);
   outline.ring = newRing;
   outline.areaSqFt = rmGeomPolygonAreaSqMeters(newRing) * 10.7639;
   outline.perimeterFt = rmGeomPolygonPerimeterMeters(newRing) * 3.28084;
   outline.center = rmGeomRingCentroid(newRing);
+  rmInvalidateEdgeMeasurements(outline, "resnap_neighbors");
   if (rmState.outlineLayer) rmState.outlineLayer.setLatLngs(newRing.map(function(p){ return [p.lat, p.lng]; }));
   rmDrawEdgeDimensions(outline);
   rmRenderOutlineStats(outline);
@@ -2794,7 +3439,9 @@ function rmUndoResnapToNeighbors(){
   outline.areaSqFt = rmGeomPolygonAreaSqMeters(outline.ring) * 10.7639;
   outline.perimeterFt = rmGeomPolygonPerimeterMeters(outline.ring) * 3.28084;
   outline.center = rmGeomRingCentroid(outline.ring);
+  rmRestoreMeasurementState(outline, rmState.preResnapMeasurementState);
   rmState.preResnapRing = null;
+  rmState.preResnapMeasurementState = null;
   if (rmState.outlineLayer) rmState.outlineLayer.setLatLngs(outline.ring.map(function(p){ return [p.lat, p.lng]; }));
   rmDrawEdgeDimensions(outline);
   rmRenderOutlineStats(outline);
@@ -2996,18 +3643,22 @@ function rmExitAlignMode(persist){
   }
   rmAlignState.moveMarker = null; rmAlignState.rotateMarker = null; rmAlignState.scaleMarker = null;
   if (persist && moved && outline){
+    var preAlignMeasurementState = rmSnapshotMeasurementState(outline);
     /* A transform invalidates any prior "square"/"calibrated" guarantee,
        same reasoning already applied to a manual vertex drag -- and drops
        the Square Up/Re-Snap undo snapshots for the same reason ("undo"
        against a ring that's since moved wouldn't mean what it used to). */
     delete outline.squared;
-    delete outline.calibration;
-    outline.measurementMethod = rmOutlineMeasurementMethod(outline);
+    rmInvalidateEdgeMeasurements(outline, "align_outline");
+    rmRefreshOutlineMeasurementModel(outline);
     rmState.preSquareRing = null;
+    rmState.preSquareMeasurementState = null;
     document.getElementById("rm-undo-square-btn").style.display = "none";
     rmState.preResnapRing = null;
+    rmState.preResnapMeasurementState = null;
     document.getElementById("rm-undo-resnap-btn").style.display = "none";
     rmState.preAlignRing = rmAlignState.originalRing;
+    rmState.preAlignMeasurementState = preAlignMeasurementState;
     document.getElementById("rm-undo-align-btn").style.display = "";
     toast("Outline aligned ✓");
     rmPersistOutlineGeometryEdit();
@@ -3033,7 +3684,9 @@ function rmUndoAlign(){
   outline.areaSqFt = rmGeomPolygonAreaSqMeters(outline.ring) * 10.7639;
   outline.perimeterFt = rmGeomPolygonPerimeterMeters(outline.ring) * 3.28084;
   outline.center = rmGeomRingCentroid(outline.ring);
+  rmRestoreMeasurementState(outline, rmState.preAlignMeasurementState);
   rmState.preAlignRing = null;
+  rmState.preAlignMeasurementState = null;
   if (rmState.outlineLayer) rmState.outlineLayer.setLatLngs(outline.ring.map(function(p){ return [p.lat, p.lng]; }));
   rmDrawEdgeDimensions(outline);
   rmRenderOutlineStats(outline);
@@ -4071,7 +4724,7 @@ function rmFinishTrace(){
      it sits is a placeholder. See "Ortho upload + flat-canvas tracing" in
      DEV_NOTES.md. */
   if (tracedOnOrtho) outline.tracedOnOrtho = true;
-  outline.measurementMethod = rmOutlineMeasurementMethod(outline);
+  rmRefreshOutlineMeasurementModel(outline);
   /* Scale inheritance (Mark: "he should not have to re-calibrate for every
      roof... scale is a property of the building/base image, not of an
      individual roof") -- applies to manual_trace/ortho_trace only (OSM
@@ -4093,8 +4746,13 @@ function rmFinishTrace(){
     outline.center = centroid;
     outline.areaSqFt = rmGeomPolygonAreaSqMeters(scaledRing) * 10.7639;
     outline.perimeterFt = rmGeomPolygonPerimeterMeters(scaledRing) * 3.28084;
-    outline.calibration = { inherited: true, factor: rmState.inheritedScaleFactor, calibratedAt: Date.now() };
-    outline.measurementMethod = rmOutlineMeasurementMethod(outline);
+    outline.inheritedScale = {
+      fromOutlineId: rmState.inheritedScaleFromOutlineId || null,
+      factor: rmState.inheritedScaleFactor,
+      scaleSource: "measured",
+      derivedAt: Date.now()
+    };
+    rmRefreshOutlineMeasurementModel(outline);
   }
   rmCancelTrace();
   rmDrawFinalOutline(outline);
@@ -4723,9 +5381,10 @@ async function rmSaveSplitSectionsToBuilding(buildingId){
       var outlineEntry = {
         id: genId("rmo"), ring: sec.ring, areaSqFt: sec.areaSqFt, perimeterFt: sec.perimeterFt,
         center: sec.center, source: baseOutline.source, tags: baseOutline.tags || {},
-        isSiteBoundary: false, calibration: baseOutline.calibration || null, createdAt: Date.now()
+        isSiteBoundary: false, calibration: null, edgeMeasurements: [], createdAt: Date.now()
       };
       rmCopyOutlineSourceMetadata(baseOutline, outlineEntry);
+      rmDropSplitMeasurementMetadata(outlineEntry, baseOutline);
       var newRoof = {
         id: genId("roof"), label: label, roofSystem: "",
         roof_base_map_type: null, roof_base_map_url: null, roof_base_map_bounds: null,
@@ -4814,9 +5473,10 @@ async function rmSaveSplitSectionsToExistingRoof(buildingId, roofId){
     var primaryOutline = {
       id: genId("rmo"), ring: sections[0].ring, areaSqFt: sections[0].areaSqFt, perimeterFt: sections[0].perimeterFt,
       center: sections[0].center, source: baseOutline.source, tags: baseOutline.tags || {},
-      isSiteBoundary: false, calibration: baseOutline.calibration || null, createdAt: Date.now()
+      isSiteBoundary: false, calibration: null, edgeMeasurements: [], createdAt: Date.now()
     };
     rmCopyOutlineSourceMetadata(baseOutline, primaryOutline);
+    rmDropSplitMeasurementMetadata(primaryOutline, baseOutline);
     origRoof.roof_outlines = (origRoof.roof_outlines || []).concat([primaryOutline]);
     var renamed = [];
     if ((origRoof.label || "Roof").trim() !== sections[0].label.trim()){
@@ -4846,9 +5506,10 @@ async function rmSaveSplitSectionsToExistingRoof(buildingId, roofId){
       var outlineEntry = {
         id: genId("rmo"), ring: sec.ring, areaSqFt: sec.areaSqFt, perimeterFt: sec.perimeterFt,
         center: sec.center, source: baseOutline.source, tags: baseOutline.tags || {},
-        isSiteBoundary: false, calibration: baseOutline.calibration || null, createdAt: Date.now()
+        isSiteBoundary: false, calibration: null, edgeMeasurements: [], createdAt: Date.now()
       };
       rmCopyOutlineSourceMetadata(baseOutline, outlineEntry);
+      rmDropSplitMeasurementMetadata(outlineEntry, baseOutline);
       var newRoof = {
         id: genId("roof"), label: label, roofSystem: "",
         roof_base_map_type: null, roof_base_map_url: null, roof_base_map_bounds: null,
@@ -4908,6 +5569,7 @@ async function rmSaveOutlineToBuilding(buildingId, roofId){
        for a brand-new building from rmCreateBuildingAndSave, where the
        first roof is unambiguous. */
     var roof = roofs.find(function(r){ return r.id === roofId; }) || roofs[0];
+    rmRefreshOutlineMeasurementModel(rmState.outline);
     var entry = Object.assign({}, rmState.outline, { id: genId("rmo") });
     roof.roof_outlines = (roof.roof_outlines || []).concat([entry]);
     /* Record the saved id back onto the in-memory outline so a later
@@ -5468,6 +6130,11 @@ async function rmGetBuildingKnownLocation(bld){
    again either. */
 async function rmEnterMultiRoofCapture(buildingId){
   if (currentViewName !== "roofmapper") showView("roofmapper");
+  if (rmState.inheritedScaleFactorBuildingId && rmState.inheritedScaleFactorBuildingId !== buildingId){
+    rmState.inheritedScaleFactor = 1;
+    rmState.inheritedScaleFactorBuildingId = null;
+    rmState.inheritedScaleFromOutlineId = null;
+  }
   /* Continuing to trace on the SAME already-uploaded ortho for the SAME
      building (e.g. "Trace Another Roof" tapped right after saving a roof
      that was itself traced on an ortho)? Keep the image up instead of
