@@ -404,7 +404,7 @@ function rmReportMeasuredScaleSentence(measuredFt, edgeIndex){
    ss.kind is "none"/unknown -- that is the ABSENCE of an applied-scale
    clause, not a sentence of its own; the "not verified" fallback is
    decided later, once clause 3 is known too. */
-function rmReportAppliedScaleClause(ss){
+function rmReportAppliedScaleClause(ss, outline){
   if (ss && ss.kind === "measured"){
     if (ss.measurementStale){
       /* roofmapper (rmBuildScaleSource(), PR #25/#26) deliberately nulls
@@ -420,7 +420,27 @@ function rmReportAppliedScaleClause(ss){
          construction in rmAllMeasuredEdgeRecords()) and it appends the
          pointer itself. Saying it twice in one sentence reads like a
          glitch on a customer PDF. */
-      return { text: "Scale set by a field measurement on this roof; the edge it was taken on has since been edited.", disclosedId: null };
+      /* Issue #29 -- this used to hardcode "the edge it was taken on has
+         since been edited" for EVERY stale reason. measurementStale is
+         also set for invalidatedReason==="superseded_by_remeasure" --
+         which is NOT a geometry edit, nothing moved, the SAME edge was
+         just taped again. Asserting "edited" there was a fabricated claim
+         on a customer PDF, and it directly contradicted clause 3's own
+         (already-correct) status for the identical record a few lines
+         later. Fixed by looking up the real record and reusing
+         rmReportMeasurementStatusLabel() -- the SAME reason-aware wording
+         clause 3 already uses -- rather than a second, independently-
+         maintained (and in this case wrong) copy of "what does this
+         invalidation reason mean." Clause 2 and clause 3 now describe the
+         same record identically because they call the same function; they
+         cannot drift apart again. Defense-in-depth alongside Codex's
+         issue #28 (fixing measurementStale itself, roofmapper-side, so it
+         only means "a geometry edit moved this edge") -- this reads the
+         real invalidatedReason regardless of what the flag means, so it
+         renders the truth even if the flag is ever imprecise again. */
+      var staleRecord = (outline && typeof rmLatestAppliedMeasuredEdge === "function") ? rmLatestAppliedMeasuredEdge(outline) : null;
+      var staleStatus = staleRecord ? rmReportMeasurementStatusLabel(staleRecord) : "since changed";
+      return { text: "Scale set by a field measurement on this roof (" + staleStatus + ").", disclosedId: null };
     }
     return { text: rmReportMeasuredScaleSentence(ss.measuredFt, ss.edgeIndex), disclosedId: ss.measurementId || null };
   }
@@ -506,7 +526,7 @@ function rmReportAdditionalMeasurementsClause(outline, disclosedId){
      which fabricates a specific claim ("no field scale recorded") out of an
      absence of information. Honest unknown beats a confident wrong answer. */
 function rmReportScaleSentence(ss, outline){
-  var applied = rmReportAppliedScaleClause(ss);
+  var applied = rmReportAppliedScaleClause(ss, outline);
   var additional = rmReportAdditionalMeasurementsClause(outline, applied.disclosedId);
   if (applied.text) return additional ? (applied.text + " " + additional) : applied.text;
   if (!ss || ss.kind !== "none"){
