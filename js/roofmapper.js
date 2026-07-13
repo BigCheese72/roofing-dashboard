@@ -1052,7 +1052,8 @@ function rmMeasurementId(edgeIndex){
 }
 function rmNormalizeEdgeMeasurement(outline, m){
   if (!m || !rmIsFiniteNumber(m.edgeIndex) || !rmIsFiniteNumber(m.measuredFt) || m.measuredFt <= 0) return null;
-  var decision = m.decision || m.conflictResolution || (m.rescaleDeclined ? "record_only" : "use");
+  var storedDecision = m.decision || m.conflictResolution || (m.rescaleDeclined ? "record_only" : null);
+  var decision = storedDecision || "use";
   var appliedFactor = rmIsFiniteNumber(m.appliedFactor) ? m.appliedFactor : null;
   var factor = rmIsFiniteNumber(m.factor) ? m.factor : null;
   return Object.assign({}, m, {
@@ -1062,7 +1063,8 @@ function rmNormalizeEdgeMeasurement(outline, m){
     decision: decision,
     appliedFactor: appliedFactor,
     rescaleApplied: typeof m.rescaleApplied === "boolean" ? m.rescaleApplied :
-      (rmIsFiniteNumber(appliedFactor) ? Math.abs(appliedFactor - 1) > 0.000001 : null)
+      (storedDecision ? (decision === "use" || decision === "average") :
+        (rmIsFiniteNumber(appliedFactor) ? Math.abs(appliedFactor - 1) > 0.000001 : null))
   });
 }
 function rmAllMeasuredEdgeRecords(outline){
@@ -1154,6 +1156,17 @@ function rmLatestAppliedMeasuredEdge(outline){
   return list.slice().sort(function(a, b){
     return (b.measuredAt || 0) - (a.measuredAt || 0);
   })[0];
+}
+function rmComposedAppliedScaleFactor(outline){
+  var list = rmActiveMeasuredEdges(outline).filter(function(m){
+    return m && m.rescaleApplied === true && rmIsFiniteNumber(m.appliedFactor);
+  });
+  if (!list.length) return null;
+  return list.slice().sort(function(a, b){
+    return (a.measuredAt || 0) - (b.measuredAt || 0);
+  }).reduce(function(product, m){
+    return product * m.appliedFactor;
+  }, 1);
 }
 function rmHasMeasuredEdges(outline){
   return !!rmActiveMeasuredEdges(outline).length;
@@ -1264,11 +1277,12 @@ function rmBuildInheritedScaleRecord(src, factor){
     };
   }
   var direct = rmLatestAppliedMeasuredEdge(src);
+  var composedFactor = rmComposedAppliedScaleFactor(src);
   if (!inherited && !direct) return null;
   return {
     fromOutlineId: inherited ? (inherited.fromOutlineId || null) : (src.id || null),
     factor: rmIsFiniteNumber(factor) ? factor : (inherited && rmIsFiniteNumber(inherited.factor) ? inherited.factor :
-      (direct && rmIsFiniteNumber(direct.appliedFactor) ? direct.appliedFactor : null)),
+      (rmIsFiniteNumber(composedFactor) ? composedFactor : null)),
     scaleSource: "measured",
     derivedAt: Date.now()
   };
@@ -1320,9 +1334,12 @@ function rmBuildCaptureSource(outline){
     return { mechanism: "osm", rank: "estimated", kind: "osm",
       accuracyClass: "public_map_approx", label: "OSM footprint trace (approximate public map data)" };
   }
-  return { mechanism: "manual_map", rank: "estimated", kind: source === "manual_trace" ? "flat_ortho" : "manual_map",
-    accuracyClass: source === "manual_trace" ? "uncalibrated_image" : "manual_map_approx",
-    label: source === "manual_trace" ? "Manual flat-image trace" : "Manual map trace (approximate)" };
+  if (source === "manual_trace"){
+    return { mechanism: "manual_map", rank: "estimated", kind: "flat_ortho",
+      accuracyClass: "uncalibrated_image", label: "Manual flat-image trace" };
+  }
+  return { mechanism: "unknown", rank: "unknown", kind: "unknown",
+    accuracyClass: "unknown", label: "Unknown capture source" };
 }
 function rmBuildScaleSource(outline, captureSource){
   var measured = rmLatestAppliedMeasuredEdge(outline);
@@ -2709,12 +2726,12 @@ function rmRenderOutlineStats(outline){
      this note; a real edge tap already has its own green-highlighted
      label on the map. */
   var scaleNote = "";
-  if (outline.calibration && outline.calibration.inherited){
-    scaleNote = '<p class="hint" style="margin:0 0 8px">📏 Scale inherited from this building’s earlier ' +
-      'calibration — no need to re-measure. Tap any edge’s length to override it for just this roof.</p>';
-  }
-  if (!scaleNote && method && method.label){
+  if (method && method.label){
     scaleNote = '<p class="hint" style="margin:0 0 8px">' + esc(method.label.replace(/^Method:\s*/, "")) + '</p>';
+  }
+  if (outline.calibration && outline.calibration.inherited){
+    scaleNote += '<p class="hint" style="margin:0 0 8px">Scale inherited from this building&rsquo;s earlier ' +
+      'calibration. Tap any edge&rsquo;s length to override it for just this roof.</p>';
   }
   document.getElementById("rm-outline-stats").innerHTML = scaleNote +
     '<div class="stat"><b>' + outline.areaSqFt.toFixed(0) + '</b><span>Sq Ft</span></div>' +
