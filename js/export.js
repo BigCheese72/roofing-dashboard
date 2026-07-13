@@ -408,39 +408,71 @@ function rmReportAppliedScaleClause(ss, outline){
   if (ss && ss.kind === "measured"){
     if (ss.measurementStale){
       /* roofmapper (rmBuildScaleSource(), PR #25/#26) deliberately nulls
-         ss.measuredFt/edgeIndex/measurementId here -- the tape's scale is
-         still in effect, but its original edge no longer corresponds to
-         current geometry after a resnap/vertex-edit/square-up, so citing
-         a specific "edge N" here would be a stale claim about current
-         geometry. The real historical number still reaches the reader
-         via clause 3 (nothing is excluded when disclosedId is null). */
-      /* No "see Field Measurements" pointer here: disclosedId is null, so
-         clause 3 is GUARANTEED to carry this record (the stale record is
-         what rmLatestAppliedMeasuredEdge() returned, so it is by
-         construction in rmAllMeasuredEdgeRecords()) and it appends the
-         pointer itself. Saying it twice in one sentence reads like a
-         glitch on a customer PDF. */
+         ss.measuredFt/edgeIndex/measurementId here whenever measurementStale
+         is set -- but NOT every stale reason means the same thing (see
+         below): a genuine geometry edit really did move the original edge,
+         so citing "edge N" would be a stale claim about current geometry
+         and this function stays non-specific for that case, relying on
+         clause 3 to supply the historical number (disclosedId left null).
+         A supersede-by-remeasure never moved anything, so THAT case names
+         the real edge/length directly and excludes it from clause 3 via
+         disclosedId instead -- see the reason-gated branches below, not a
+         single "always vague, always null" rule. */
       /* Issue #29 -- this used to hardcode "the edge it was taken on has
          since been edited" for EVERY stale reason. measurementStale is
          also set for invalidatedReason==="superseded_by_remeasure" --
          which is NOT a geometry edit, nothing moved, the SAME edge was
          just taped again. Asserting "edited" there was a fabricated claim
-         on a customer PDF, and it directly contradicted clause 3's own
-         (already-correct) status for the identical record a few lines
-         later. Fixed by looking up the real record and reusing
-         rmReportMeasurementStatusLabel() -- the SAME reason-aware wording
-         clause 3 already uses -- rather than a second, independently-
-         maintained (and in this case wrong) copy of "what does this
-         invalidation reason mean." Clause 2 and clause 3 now describe the
-         same record identically because they call the same function; they
-         cannot drift apart again. Defense-in-depth alongside Codex's
+         on a customer PDF.
+
+         PR #30 review found the first attempt at this fix stopped short
+         in two ways (REQUIRED 20/21):
+         - It called rmReportMeasurementStatusLabel(staleRecord) WITHOUT
+           first confirming staleRecord.invalidatedAt was actually set --
+           ss.measurementStale and a freshly re-derived staleRecord could
+           in principle disagree (a snapshot ss vs. live outline), and
+           rmReportMeasurementStatusLabel()'s own first line
+           (`if (!m.invalidatedAt) return m.rescaleApplied ? "applied" :
+           decisionLabel;`) would then render a confident, contentless
+           "(applied)" -- dropping both the measured length AND the
+           staleness. Both branches below now gate on staleRecord.invalidatedAt
+           explicitly before doing anything with it.
+         - For superseded_by_remeasure specifically, geometry was NEVER
+           touched -- staleRecord.measuredFt/.edgeIndex are STILL TRUE
+           statements about the current drawing, and it's the reading
+           whose rescale is actually in force. The first attempt described
+           its STATUS ("superseded by...") but never NAMED it, then left
+           disclosedId: null, so clause 3 re-printed the identical status
+           string for the identical record one line later under
+           "Additional" -- verbatim duplication, and the record wasn't
+           "additional" to anything. Fixed by reason-gating: a genuine
+           supersede-by-remeasure NAMES the real edge+length (matching
+           what issue #29 asked for in the first place) and discloses the
+           id so clause 3 doesn't repeat it; a genuine geometry edit
+           (resnap/square_up/align/vertex_edit) still stays non-specific
+           about the edge number (the original edge no longer corresponds
+           to current geometry after those) and leaves disclosedId null so
+           clause 3 supplies the historical number instead.
+
+         Clause 2 and clause 3 still can't drift apart into a self-
+         contradiction, because whichever branch fires here uses either
+         rmReportMeasuredScaleSentence() (the same namer the non-stale
+         "measured" path already uses) or rmReportMeasurementStatusLabel()
+         (clause 3's own function) -- never a third, independent copy of
+         "what does this reason mean." Defense-in-depth alongside Codex's
          issue #28 (fixing measurementStale itself, roofmapper-side, so it
          only means "a geometry edit moved this edge") -- this reads the
-         real invalidatedReason regardless of what the flag means, so it
-         renders the truth even if the flag is ever imprecise again. */
+         real invalidatedReason regardless of what the flag means. */
       var staleRecord = (outline && typeof rmLatestAppliedMeasuredEdge === "function") ? rmLatestAppliedMeasuredEdge(outline) : null;
-      var staleStatus = staleRecord ? rmReportMeasurementStatusLabel(staleRecord) : "since changed";
-      return { text: "Scale set by a field measurement on this roof (" + staleStatus + ").", disclosedId: null };
+      if (staleRecord && staleRecord.invalidatedAt && staleRecord.invalidatedReason === "superseded_by_remeasure"){
+        return { text: rmReportMeasuredScaleSentence(staleRecord.measuredFt, staleRecord.edgeIndex), disclosedId: staleRecord.id || null };
+      }
+      var staleReasonText = (staleRecord && staleRecord.invalidatedAt) ? rmReportMeasurementStatusLabel(staleRecord) :
+        (ss.measurementInvalidatedReason ? String(ss.measurementInvalidatedReason).replace(/_/g, " ") : null);
+      /* Prefer honest silence over a vague specific claim -- clause 3
+         always carries the record when it exists, so nothing is lost by
+         not fabricating a caveat here when the reason itself is unknown. */
+      return { text: "Scale set by a field measurement on this roof" + (staleReasonText ? " (" + staleReasonText + ")" : "") + ".", disclosedId: null };
     }
     return { text: rmReportMeasuredScaleSentence(ss.measuredFt, ss.edgeIndex), disclosedId: ss.measurementId || null };
   }

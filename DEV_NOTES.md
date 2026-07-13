@@ -7555,14 +7555,56 @@ imprecise again.
 Verified all three cases: (1) a genuine geometry edit (resnap) with no
 re-tape → "Scale set by a field measurement on this roof (still applied;
 edge since edited by resnap neighbors)." — correct, edited claim is true
-here; (2) re-tape the SAME edge, pick "Record only" → "Scale set by a
-field measurement on this roof (superseded by a later re-measurement;
-its rescale is still in this drawing)." — the exact repro; confirmed
-zero occurrences of "has since been edited" anywhere in the rendered
-report; (3) a clean, never-stale tape → unchanged, "Scale set by field
-measurement (42.5 ft on edge 1)." with no staleness caveat at all.
-Re-confirmed zero-write property, REQUIRED 2/5 fixes, QUESTION 1's
+here; (2) re-tape the SAME edge, pick "Record only" → (see the PR #30
+review follow-up below for the final wording); (3) a clean, never-stale
+tape → unchanged, "Scale set by field measurement (42.5 ft on edge 1)."
+with no staleness caveat at all. Confirmed zero occurrences of "has since
+been edited" anywhere `js/export.js` renders — **scoped to this file**;
+`js/roofmapper.js` independently carries the same fabricated string in
+`rmBuildMeasurementMethodFromSources()`'s `method.label` (composed into
+the roof-map SVG header at `rmOutlineMeasurementMethod(outline).label`,
+line ~1701) and is out of scope here — `js/roofmapper.js` is Codex's
+file; tracked as REQUIRED 2 on issue #28, not fixed by this PR. Re-
+confirmed zero-write property, REQUIRED 2/5 fixes, QUESTION 1's
 staleness keying, and the Change Order regression all still hold.
+
+**PR #30 review, REQUIRED 20 + 21 — the fix above stopped short: it
+removed the lie but didn't restore the truth it had in hand.** Two
+follow-up bugs, both in the same stale branch: (REQUIRED 20) the code
+called `rmReportMeasurementStatusLabel(staleRecord)` without first
+confirming `staleRecord.invalidatedAt` was actually set — if a re-derived
+`staleRecord` ever disagreed with `ss.measurementStale` (a snapshot `ss`
+vs. live `outline`), that function's own first line
+(`if (!m.invalidatedAt) return m.rescaleApplied ? "applied" :
+decisionLabel;`) would render a confident, contentless `"(applied)"`,
+dropping both the measured length and the staleness. (REQUIRED 21) for
+`superseded_by_remeasure` specifically, clause 2 described the record's
+STATUS but never NAMED its real edge/length (which are still true
+statements about the drawing — geometry never moved on a supersede) and
+left `disclosedId: null`, so clause 3 re-printed the IDENTICAL status
+string for the IDENTICAL record one line later under "Additional" —
+word-for-word duplication, and the record wasn't additional to anything.
+
+Fixed by reason-gating explicitly: a genuine `superseded_by_remeasure`
+now calls `rmReportMeasuredScaleSentence(staleRecord.measuredFt,
+staleRecord.edgeIndex)` (the same namer the non-stale "measured" path
+already uses) and sets `disclosedId: staleRecord.id` so clause 3 doesn't
+repeat it; a genuine geometry-edit reason still stays non-specific about
+the edge number (correctly — the original edge no longer corresponds to
+current geometry after those) with `disclosedId: null` so clause 3
+supplies the historical number instead. Both branches now require
+`staleRecord.invalidatedAt` to be truthy before touching the record at
+all, which also subsumes REQUIRED 20 from the prior review pass — the
+`"(applied)"` leak can no longer be reached from inside the stale branch.
+Verified: `"(applied)"` leak test (a `measurementStale: true` ss paired
+with an outline whose `rmLatestAppliedMeasuredEdge()` returns null)
+correctly falls back to `"Scale set by a field measurement on this
+roof."` with no parenthetical, not `"(applied)"`. The exact repro (42.5
+ft applied, re-taped 40 ft "Record only") now renders: "Scale set by
+field measurement (42.5 ft on edge 1). Also on record: 40 ft on edge 1
+(recorded only) — see Field Measurements." — the applied tape is named,
+the record-only tape is genuinely additional (not a duplicate), zero
+verbatim repetition.
 
 **Per-edge visual distinction** (`rmReportEdgeMeta()`, wraps roofmapper's
 own `rmEdgeDimensionMeta()`): a measured edge renders as a bordered green
