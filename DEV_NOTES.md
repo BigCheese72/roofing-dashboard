@@ -7457,24 +7457,53 @@ bug already fixed once before in the RoofMapper export path (see "single
 shared render path" above). Fixed the same way: `compress: true`, bringing
 the same report down to 91KB.
 
-**Data fetch** (`rmFetchReportRoofOutlines()`): derives the linked
-building via `ensureCustomerAndBuilding()` (`js/core.js`, the SAME
-deterministic `bld_`/`cust_` id derivation already used everywhere else in
-the app — no new field, no new collection), fetches the building doc, and
-takes each covered roof's LATEST `roof_outlines[]` entry. Falls back to
-"the building's only roof" when `reportDistinctRoofIds()` comes back empty
-(a plain single-roof job's findings usually carry no `roofId` at all — GPS
-auto-assign only starts stamping one once a building has more than one
-roof) — without this fallback the overwhelmingly common single-roof case
-would never show a roof plan at all. Never throws; a report for a job with
-no linked building (still most jobs, historically) just gets `[]` and the
-roof plan section is omitted, exactly like before this existed. Hooked in
-at `goToPreview()` (populates a module-level `rmReportRoofPlanData` BEFORE
-`showView("preview")` triggers `js/core.js`'s synchronous `renderDoc()` --
-`js/core.js` is out of scope for this change, so the fetch has to complete
-entirely on this side of that call) and separately in `generatePdf()`
-(fetches fresh, since a direct PDF download doesn't necessarily pass
-through Preview first).
+**Data fetch, and a real bug caught in PR review** (`rmFetchReportRoofOutlines()`):
+the first version of this function derived the linked building by calling
+`ensureCustomerAndBuilding()` (`js/core.js`) -- which, despite its name,
+WRITES: `customers.set()`, `buildings.set()` (creates the doc if it
+doesn't exist), and `saveBuildingRoofs()` (rewrites the entire `roofs[]`
+array). Called from two entry points a user reasonably expects to be
+read-only -- opening Preview, tapping Download PDF -- that meant just
+LOOKING at a report mutated production data: could conjure a phantom
+`buildings/` doc from a typo'd job name, and rewrote the `roofs[]` array
+(the very array carrying `edgeMeasurements`/`captureSource`/`scaleSource`)
+on every single preview. Both write paths swallowed their own errors, so
+it failed silently in both directions. Caught in PR #17 review before
+merge, not after.
+
+Fixed to be **strictly read-only**: derives the same deterministic
+`bld_`/`cust_` id by calling `slugify()` directly (a pure string utility,
+safe on its own -- this is the literal id-formation formula, not a
+re-derivation of `ensureCustomerAndBuilding()`'s business logic) and does
+exactly one `fdb.collection("buildings").doc(bldId).get()` -- no
+`.set()`, no `.update()`, no `saveBuildingRoofs()`, verified with a
+mocked `fdb` that logs every write call and asserting the log stays empty
+across both `goToPreview()` and `generatePdf()`, plus that the building
+doc's own bytes are unchanged before/after (a sentinel field). If the
+building genuinely doesn't exist (or the work order was never linked to
+one -- still most jobs, historically), returns `{roofEntries: [], error:
+null}` and the report renders from the work order's own data alone,
+exactly like before this feature existed -- it does NOT create the
+building to make the roof plan render (verified: building count
+unchanged after a run with a deliberately made-up job name). Errors are
+NOT swallowed: a genuine lookup failure (network, permissions) returns
+`{roofEntries: [], error: message}`, and both callers
+(`goToPreview()`/`generatePdf()`) `toast()` it rather than silently
+rendering as if there were simply no linked building -- those are
+different states and the reader deserves to know which one happened
+(verified with a mocked `fdb` whose `.get()` rejects).
+
+Falls back to "the building's only roof" when `reportDistinctRoofIds()`
+comes back empty (a plain single-roof job's findings usually carry no
+`roofId` at all — GPS auto-assign only starts stamping one once a
+building has more than one roof) — without this fallback the
+overwhelmingly common single-roof case would never show a roof plan at
+all. Hooked in at `goToPreview()` (populates a module-level
+`rmReportRoofPlanData` BEFORE `showView("preview")` triggers `js/core.js`'s
+synchronous `renderDoc()` -- `js/core.js` is out of scope for this change,
+so the fetch has to complete entirely on this side of that call) and
+separately in `generatePdf()` (fetches fresh, since a direct PDF download
+doesn't necessarily pass through Preview first).
 
 **Findings numbered and cross-referenced to photos** (`rmReportPhotoFindingRefs()`):
 uses the existing `photo.finding_id` field (already set whenever a photo

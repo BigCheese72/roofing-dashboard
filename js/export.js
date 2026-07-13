@@ -158,7 +158,9 @@ var rmReportRoofPlanData = null;
 async function goToPreview(){
   var photoCheck = await ensurePhotosLoadedForExport();
   if (!photoCheck.ok) alert(photosMissingWarning(photoCheck.missingCount));
-  rmReportRoofPlanData = await rmFetchReportRoofOutlines(collect());
+  var roofPlanResult = await rmFetchReportRoofOutlines(collect());
+  if (roofPlanResult.error) toast("Roof plan couldn't be loaded: " + roofPlanResult.error);
+  rmReportRoofPlanData = roofPlanResult.roofEntries;
   showView("preview");
 }
 function renderDoc(){
@@ -209,27 +211,49 @@ function reportDistinctRoofIds(o){
    the customer sees -- no second, drifting copy of that logic lives here.
    See "Report provenance rendering" in DEV_NOTES.md. */
 
-/* Fetches the report's linked building via the SAME deterministic id
-   derivation ensureCustomerAndBuilding() (js/core.js) already uses
-   elsewhere in the app -- no new field, no new collection, just reading
-   the existing roofs[]/roof_outlines[] shape off the existing buildings
-   doc. Returns the LATEST outline for every roof this report actually
-   covers (reportDistinctRoofIds(), with a single-roof fallback since a
-   plain one-roof job's findings often carry no roofId at all -- GPS
-   auto-assign only starts stamping roofId once a building has more than
-   one roof). Never throws -- a report for a work order with no linked
-   building/roof (most jobs, historically) just gets an empty array and
-   the roof plan section is skipped entirely, exactly like today. */
+/* Fetches the report's linked building — STRICTLY READ-ONLY. Fixed
+   (2026-07-13, PR #17 review) after a real bug: this used to call
+   ensureCustomerAndBuilding() (js/core.js), which despite its name WRITES
+   -- customers.set(), buildings.set() (creates the doc if it doesn't
+   exist), and saveBuildingRoofs() (rewrites the entire roofs[] array,
+   including the edgeMeasurements/captureSource/scaleSource fields PR #7
+   just landed). Called from two READ-ONLY entry points -- opening Preview,
+   tapping Download PDF -- that means just LOOKING at a report was
+   mutating production data: conjuring a phantom buildings/ doc from a
+   typo'd job name, and rewriting the roofs array on every single preview.
+   Both failure directions were silent (both layers swallowed errors).
+
+   Fixed by deriving the SAME deterministic bld_/cust_ id
+   (slugify() is a pure string utility, safe to call directly -- this is
+   NOT a re-derivation of business logic, it's the literal id-formation
+   formula, which has to live somewhere read-only-safe since
+   ensureCustomerAndBuilding() itself can't be used here) and doing exactly
+   ONE read: fdb.collection("buildings").doc(bldId).get(). No .set(), no
+   .update(), no saveBuildingRoofs(), no side effects of any kind. If the
+   building genuinely doesn't exist, this returns roofEntries:[] and the
+   report renders from the work order's own data alone, same as it always
+   did before this feature existed -- it does NOT create the building to
+   make the roof plan render.
+
+   Errors are NOT swallowed: a real lookup failure (network error,
+   permissions) returns `error` for the caller to surface (see
+   goToPreview()/generatePdf()) rather than silently rendering as if there
+   were simply no linked building -- those are different states and a
+   report reader deserves to know which one happened. This function itself
+   still never THROWS (a bad Firestore read must not crash Preview/PDF
+   generation entirely -- the roof plan is a valuable addition to the
+   report, not a hard requirement for it to render at all). */
 async function rmFetchReportRoofOutlines(o){
-  if (!fdb) return [];
+  var bldName = (o.jobName || "").trim();
+  if (!fdb || !bldName) return { roofEntries: [], error: null };
+  var custId = (o.billTo || "").trim() ? ("cust_" + slugify(o.billTo)) : null;
+  var bldId = "bld_" + slugify((custId || "nocust") + "_" + bldName);
   try{
-    var link = await ensureCustomerAndBuilding(o);
-    if (!link || !link.buildingId) return [];
-    var snap = await fdb.collection("buildings").doc(link.buildingId).get();
-    if (!snap.exists) return [];
+    var snap = await fdb.collection("buildings").doc(bldId).get(); /* READ ONLY -- see comment above; never .set()/.update() from this path */
+    if (!snap.exists) return { roofEntries: [], error: null };
     var bld = snap.data();
-    var roofs = getBuildingRoofs(bld);
-    if (!roofs.length) return [];
+    var roofs = getBuildingRoofs(bld); /* pure in-memory transform, no I/O -- confirmed by reading its body */
+    if (!roofs.length) return { roofEntries: [], error: null };
     var ids = reportDistinctRoofIds(o);
     if (!ids.length && roofs.length === 1) ids = [roofs[0].id];
     var out = [];
@@ -246,10 +270,12 @@ async function rmFetchReportRoofOutlines(o){
         assets: (roof.roof_assets || []).filter(function(a){ return typeof a.lat === "number" && typeof a.lng === "number"; })
       });
     });
-    return out;
+    return { roofEntries: out, error: null };
   }catch(e){
-    console.warn("Couldn't load roof plan for report:", e);
-    return [];
+    /* NOT swallowed -- returned for the caller to surface (toast), per
+       PR #17 review. A failed lookup and "no linked building" are
+       different states; the report reader deserves to know which. */
+    return { roofEntries: [], error: e.message || "Couldn't load the roof plan." };
   }
 }
 
@@ -922,8 +948,9 @@ async function generatePdf(){
      direct "Download PDF" tap), so this fetches fresh rather than relying
      on goToPreview()'s cached rmReportRoofPlanData -- same fetch, just not
      assuming an ordering between the two entry points. */
-  var roofPlanData = await rmFetchReportRoofOutlines(o);
-  return generateLeakReportPdf(o, roofPlanData);
+  var roofPlanResult = await rmFetchReportRoofOutlines(o);
+  if (roofPlanResult.error) toast("Roof plan couldn't be loaded: " + roofPlanResult.error);
+  return generateLeakReportPdf(o, roofPlanResult.roofEntries);
 }
 async function generateLeakReportPdf(o, roofPlanData){
   var isRepair = o.woType === "Repair";
