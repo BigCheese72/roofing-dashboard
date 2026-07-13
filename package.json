@@ -4,6 +4,7 @@
   "version": "1.0.0",
   "description": "RoofOps Field (Watkins Roofing work order app) — Netlify Functions dependencies.",
   "dependencies": {
-    "firebase-admin": "^12.6.0"
+    "firebase-admin": "^12.6.0",
+    "jimp": "^0.22.12"
   }
 }
