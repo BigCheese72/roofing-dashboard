@@ -2,25 +2,34 @@
 // Storage, using the Firebase Admin SDK (service-account credentials, not
 // subject to Storage security rules at all).
 //
-// WHY THIS EXISTS (see "Photo storage migration" in DEV_NOTES.md): the app
-// has no user auth yet, so Storage security rules are deny-all — that's
-// correct and must stay that way (an open bucket would make every
-// customer's roof photos world-readable to anyone who guessed a URL).
-// Firestore's rules are open (`allow read, write: if true`, same "no login
-// yet" tradeoff already accepted for every other collection), so the
-// client already talks to Firestore directly with no gate beyond that. The
-// client must NEVER be given direct Storage access the same way — instead
-// it calls this function, which does the real read/write server-side and
-// returns only what's needed (a storage reference to save in Firestore, or
-// the actual image bytes to display/embed). The bucket itself stays
-// completely sealed to the browser.
+// WHY THIS EXISTS (see "Photo storage migration" in DEV_NOTES.md): Storage
+// security rules are deny-all — that's correct and must stay that way (an
+// open bucket would make every customer's roof photos world-readable to
+// anyone who guessed a URL). The client must NEVER be given direct Storage
+// access — instead it calls this function, which does the real read/write
+// server-side and returns only what's needed (a storage reference to save
+// in Firestore, or the actual image bytes to display/embed). The bucket
+// itself stays completely sealed to the browser.
 //
-// This is deliberately NOT admin-PIN-gated like admin.js — regular techs
-// upload/view photos constantly in normal field use, not just admins. It's
-// a trusted proxy for a resource that can't have open client rules, at the
-// same "no auth yet" security tier every other collection already has, not
-// a privileged action. Basic input validation (safe id/index shapes) below
-// guards against abuse regardless.
+// AUTHENTICATION (2026-07-13): every action here is now gated on a VERIFIED
+// Firebase ID token. Until today this function was a trusted proxy with NO
+// gate at all -- the header comment used to justify that with "the app has
+// no user auth yet," which went stale the moment Firebase Auth shipped, and
+// the guard was never added. The practical effect was that anyone on the
+// internet, with no token, could upload into the bucket, read any work
+// order's photos, and DELETE a photo given only a workOrderId + index.
+//
+// The gate is AUTHENTICATION, not permission: any signed-in Watkins user
+// passes. This is deliberate and load-bearing -- techs must keep FULL
+// ability to view, upload, and delete photos on their own work orders (they
+// need to be able to fix their own mistakes in the field), so this must NOT
+// become a role/permission check. verifyCaller() is exactly that primitive:
+// it proves WHO you are and throws 401 if you're nobody, without asking
+// what you're allowed to do. requirePermission() is the role-gate and is
+// deliberately NOT used here.
+//
+// The migrate_*/thumbnail actions stay additionally owner-gated below --
+// authentication is the floor for every action, not the ceiling for those.
 const { getAdmin, verifyCaller, hostnameFromEvent } = require("./lib/authGuard");
 
 // workOrderId shapes seen in real data: "wo_1783782867489" (Date.now()-based,
@@ -72,20 +81,57 @@ function decodeDataUrl(dataUrl) {
   catch (e) { return null; }
 }
 
+// Fail-closed authentication gate. Runs before the body is even parsed, so
+// no action branch, no validation message, and no config/env read is
+// reachable without a verified identity.
+//
+// Deliberately leaks NOTHING to an unauthenticated caller: a flat
+// "Unauthorized" regardless of whether the token was missing, malformed,
+// expired, or revoked, and never an echo of an internal error message. The
+// real reason goes to console.error (Netlify function logs, visible to Mark,
+// not to the internet).
+//
+// An infrastructure failure (missing FIREBASE_SERVICE_ACCOUNT, or the
+// authGuard cross-project safety guard tripping) can't verify anybody, so it
+// returns 503 and NOT a pass -- a misconfigured deploy is a closed door, not
+// an open one. This is the same ordering discipline as the outlook.js fix:
+// the endpoint must never depend on being correctly configured in order to
+// be safe.
+async function requireAuth(event) {
+  try {
+    return { caller: await verifyCaller(event) };
+  } catch (e) {
+    if (e && e.statusCode === 401) {
+      return { errorResponse: resp(401, { error: "Unauthorized" }) };
+    }
+    console.error("photos.js auth infrastructure failure:", e && e.message ? e.message : e);
+    return { errorResponse: resp(503, { error: "Service unavailable" }) };
+  }
+}
+
 exports.handler = async function (event) {
   if (event.httpMethod !== "POST") {
     return resp(405, { error: "Method not allowed" });
   }
+
+  // ---- AUTHENTICATION: every action, before anything else. ----
+  // verifyCaller() also primes the Admin SDK singleton with this request's
+  // hostname (it calls getAuth(hostnameFromEvent(event)) internally), so the
+  // cross-project safety guard in lib/authGuard.js is armed on a cold
+  // container by this call, exactly as it is for send-workorder.js.
+  const gate = await requireAuth(event);
+  if (gate.errorResponse) return gate.errorResponse;
+  const caller = gate.caller;
+
   let body;
   try { body = JSON.parse(event.body || "{}"); }
   catch (e) { return resp(400, { error: "Bad request" }); }
 
   try {
-    // Prime the Admin SDK singleton with this request's hostname BEFORE
-    // any action branch touches Storage/Firestore -- see the safety-guard
-    // comment in lib/authGuard.js. admin.apps.length caches init for the
-    // process's lifetime, so this only truly matters on a cold container,
-    // but every handler primes it the same way for consistent coverage.
+    // Belt-and-braces prime of the Admin SDK singleton (a no-op after
+    // requireAuth above, since admin.apps.length caches init for the
+    // process's lifetime) -- kept so this handler still matches the
+    // priming convention every other function file follows.
     getAdmin(hostnameFromEvent(event));
 
     if (body.action === "upload") {
@@ -161,10 +207,11 @@ exports.handler = async function (event) {
     }
 
     // ---- Existing-photo migration (Stage c, see "Photo storage migration"
-    // in DEV_NOTES.md) -- claims-gated (Auth Phase 5, see docs/AUTH_DESIGN.md),
-    // unlike every action above. Those are normal field-use operations (any
-    // tech uploads/views photos constantly); this is a one-time bulk
-    // rewrite of already-saved data, explicitly gated on Mark's own
+    // in DEV_NOTES.md) -- OWNER-gated (Auth Phase 5, see docs/AUTH_DESIGN.md)
+    // on top of the authentication every action in this file now requires.
+    // The actions above are normal field-use operations (any signed-in tech
+    // uploads/views/deletes photos constantly, by design); this is a
+    // one-time bulk rewrite of already-saved data, explicitly gated on Mark's own
     // go-ahead per his own instruction, not just something this session
     // chose not to call yet. Owner-only, not a permissions.js key lookup --
     // there's no dedicated "migrate photos" permission (it's an
@@ -173,9 +220,12 @@ exports.handler = async function (event) {
     // heavily audited" tier as buildings.purge.
     if (body.action === "migrate_scan" || body.action === "migrate_photo" ||
         body.action === "scan_missing_thumbnails" || body.action === "backfill_thumbnail") {
-      let caller;
-      try { caller = await verifyCaller(event); }
-      catch (e) { return resp(e.statusCode || 401, { error: e.message }); }
+      // The caller is already VERIFIED by requireAuth() at the top of the
+      // handler (that used to happen right here, and only for these four
+      // actions -- it's now the floor for every action in this file), so
+      // this is purely the extra owner check these bulk operations carry on
+      // top of authentication. 403 (not 401): you're authenticated, you're
+      // just not the owner.
       if (!caller.owner) return resp(403, { error: "Owner only" });
     }
 

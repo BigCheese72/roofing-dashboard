@@ -606,16 +606,30 @@ async function runOwnerBootstrap(){
 
 /* Client-side wrappers around netlify/functions/photos.js -- the ONLY
    place this app is allowed to touch Firebase Storage. Mark's explicit
-   architecture decision: the app has no user auth yet, so Storage
-   security rules must stay deny-all (an open bucket would make every
-   customer's roof photos world-readable to anyone who guessed a URL) --
-   the client therefore never talks to Storage directly, only through this
-   server-side proxy (Admin SDK, service-account credentials, not subject
-   to Storage rules). The bucket itself stays completely sealed to the
-   browser. See "Photo storage migration" in DEV_NOTES.md. */
+   architecture decision: Storage security rules stay deny-all (an open
+   bucket would make every customer's roof photos world-readable to anyone
+   who guessed a URL) -- the client therefore never talks to Storage
+   directly, only through this server-side proxy (Admin SDK,
+   service-account credentials, not subject to Storage rules). The bucket
+   itself stays completely sealed to the browser. See "Photo storage
+   migration" in DEV_NOTES.md.
+
+   EVERY call below goes through authHeaders(), which attaches the signed-in
+   user's Firebase ID token as `Authorization: Bearer <token>`. As of
+   2026-07-13 photos.js REQUIRES that token on every action (upload, get,
+   get_batch, delete) and 401s without it -- previously these four were
+   reachable by anyone on the internet with no token at all, including
+   `delete`. authHeaders() calls getIdToken(), which transparently refreshes
+   an expired token (Firebase ID tokens last ~1hr, and a tech's tab is open
+   all day), so it must never be replaced with a token cached in a variable.
+
+   This is an AUTHENTICATION gate, not a permission gate: any signed-in
+   Watkins user passes, so a tech keeps FULL view/upload/delete on their own
+   work orders and photos -- fixing your own mistake in the field is a
+   supported operation, not a privileged one. */
 async function uploadPhotoToStorage(workOrderId, photoIndex, dataUrl){
   var r = await fetch("/.netlify/functions/photos", {
-    method: "POST", headers: { "Content-Type": "application/json" },
+    method: "POST", headers: await authHeaders(),
     body: JSON.stringify({ action: "upload", workOrderId: workOrderId, photoIndex: photoIndex, dataUrl: dataUrl })
   });
   var out = null;
@@ -626,7 +640,7 @@ async function uploadPhotoToStorage(workOrderId, photoIndex, dataUrl){
 async function deletePhotoFromStorage(workOrderId, photoIndex){
   try{
     var r = await fetch("/.netlify/functions/photos", {
-      method: "POST", headers: { "Content-Type": "application/json" },
+      method: "POST", headers: await authHeaders(),
       body: JSON.stringify({ action: "delete", workOrderId: workOrderId, photoIndex: photoIndex })
     });
     await r.json().catch(function(){});
@@ -634,7 +648,7 @@ async function deletePhotoFromStorage(workOrderId, photoIndex){
 }
 async function fetchPhotoFromStorage(workOrderId, photoIndex){
   var r = await fetch("/.netlify/functions/photos", {
-    method: "POST", headers: { "Content-Type": "application/json" },
+    method: "POST", headers: await authHeaders(),
     body: JSON.stringify({ action: "get", workOrderId: workOrderId, photoIndex: photoIndex })
   });
   var out = null;
