@@ -1012,6 +1012,57 @@ function rmDeconflictLabels(items, svgW, svgH, obstacles){
     return Object.assign({}, it, { x: finalPos.x, y: finalPos.y, moved: moved });
   });
 }
+function rmOutlineMeasurementMethod(outline){
+  if (!outline) return { kind: "unknown", label: "Method: Unknown capture source" };
+  if (!outline.source && outline.measurementMethod && outline.measurementMethod.label){
+    return outline.measurementMethod;
+  }
+  if (outline.source === "geotiff_trace"){
+    return { kind: "geotiff", accuracyClass: "survey_grade_source",
+      label: "Method: RTK GeoTIFF trace (survey-grade source)" };
+  }
+  if (outline.source === "kml_groundoverlay_trace"){
+    var go = outline.groundOverlay || {};
+    var maxErr = go.maxQuadBBoxErrorFt || go.quadBBoxErrorFt || 0;
+    var errText = maxErr ? "; max quad approx. " + (Math.round(maxErr * 10) / 10) + " ft" : "";
+    var detailText = go.mobileTileCapApplied ? "; traced at reduced tile detail" : "";
+    var name = go.sourceType === "kmz_superoverlay" ? "KMZ super-overlay tile trace" : "KMZ/KML GroundOverlay trace";
+    return { kind: go.sourceType || "kml_groundoverlay", accuracyClass: "georeferenced_overlay_approx",
+      maxQuadBBoxErrorFt: maxErr,
+      label: "Method: " + name + " (approx. overlay; not RTK survey-grade" + errText + detailText + ")" };
+  }
+  if (outline.source === "ortho_trace"){
+    return { kind: "flat_ortho", accuracyClass: outline.calibration ? "field_calibrated" : "uncalibrated_image",
+      label: outline.calibration ? "Method: Flat image trace (field-calibrated)" : "Method: Flat image trace (requires field calibration)" };
+  }
+  if (outline.source === "walk_corners"){
+    return { kind: "walked_phone_gps", accuracyClass: "field_gps_approx",
+      label: "Method: Walked phone-GPS corners (approximate)" };
+  }
+  if (outline.source === "osm"){
+    return { kind: "osm", accuracyClass: "public_map_approx",
+      label: "Method: OSM footprint trace (approximate public map data)" };
+  }
+  return { kind: "manual_map", accuracyClass: "manual_map_approx",
+    label: "Method: Manual map trace (approximate)" };
+}
+function rmOutlineMeasurementMethodSummary(outlines){
+  var labels = [];
+  (outlines || []).forEach(function(outline){
+    var label = rmOutlineMeasurementMethod(outline).label.replace(/^Method:\s*/, "");
+    if (labels.indexOf(label) === -1) labels.push(label);
+  });
+  return labels.length ? "Methods: " + labels.join("; ") : "Method: Unknown capture source";
+}
+function rmCopyOutlineSourceMetadata(src, dest){
+  if (!src || !dest) return dest;
+  if (src.georeferencedSource) dest.georeferencedSource = true;
+  if (src.tracedOnOrtho) dest.tracedOnOrtho = true;
+  if (src.groundOverlay) dest.groundOverlay = Object.assign({}, src.groundOverlay);
+  if (src.measurementMethod) dest.measurementMethod = Object.assign({}, src.measurementMethod);
+  else dest.measurementMethod = rmOutlineMeasurementMethod(dest);
+  return dest;
+}
 function rmBuildOutlineSvg(outline, overlay){
   var origin = rmGeomRingCentroid(outline.ring);
   var pts = outline.ring.map(function(p){ return rmExportProjectPoint(p, origin); });
@@ -1042,7 +1093,7 @@ function rmBuildOutlineSvg(outline, overlay){
      at worst. Plain Math.min(MAX_SCALE, fitRatio) is the correct clamp. */
   var scale = Math.min(RM_EXPORT_MAX_SCALE, RM_EXPORT_MAX_CANVAS_DIM / Math.max(w, h));
   var hasBuildingInfo = !!(overlay && (overlay.buildingName || overlay.buildingAddress));
-  var headerH = hasBuildingInfo ? 76 : 60;
+  var headerH = hasBuildingInfo ? 94 : 78;
   var footerH = overlay ? 64 : 40; /* extra room for the legend line when features are included */
   var svgW = Math.max(240, w * scale), svgH = Math.max(240, h * scale) + headerH + footerH;
   function toSvg(p){
@@ -1156,6 +1207,8 @@ function rmBuildOutlineSvg(outline, overlay){
   headerSvg += '<text x="16" y="' + statsY + '" font-family="Arial, sans-serif" font-size="13" fill="#5B6770">Area: ' +
     outline.areaSqFt.toFixed(0) + ' sq ft &#183; Perimeter: ' + outline.perimeterFt.toFixed(0) + ' ft &#183; Generated ' +
     rmEscXml(new Date(outline.createdAt || Date.now()).toLocaleDateString()) + '</text>';
+  headerSvg += '<text x="16" y="' + (statsY + 18) + '" font-family="Arial, sans-serif" font-size="12" fill="#5B6770">' +
+    rmEscXml(rmOutlineMeasurementMethod(outline).label) + '</text>';
   var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + svgW + '" height="' + svgH + '" viewBox="0 0 ' + svgW + ' ' + svgH + '">' +
     '<rect width="100%" height="100%" fill="#ffffff"/>' +
     headerSvg + basemapSvg +
@@ -1259,7 +1312,7 @@ function rmBuildMultiRoofOutlineSvg(data){
   var w = (maxX - minX) + padFt * 2, h = (maxY - minY) + padFt * 2;
   var scale = Math.min(RM_EXPORT_MAX_SCALE, RM_EXPORT_MAX_CANVAS_DIM / Math.max(w, h)); /* see the same fix + explanation in rmBuildOutlineSvg() above */
   var hasBuildingInfo = !!(data.buildingName || data.buildingAddress);
-  var headerH = hasBuildingInfo ? 84 : 66;
+  var headerH = hasBuildingInfo ? 102 : 84;
   var footerH = 84; /* legend + disclaimer, taller than the single-roof footer */
   var svgW = Math.max(240, w * scale), svgH = Math.max(240, h * scale) + headerH + footerH;
   function toSvg(p){
@@ -1393,6 +1446,8 @@ function rmBuildMultiRoofOutlineSvg(data){
   }
   headerSvg += '<text x="16" y="' + statsY + '" font-family="Arial, sans-serif" font-size="13" fill="#5B6770">Total area: ' +
     Math.round(totalAreaSqFt) + ' sq ft &#183; Generated ' + rmEscXml(new Date().toLocaleDateString()) + '</text>';
+  headerSvg += '<text x="16" y="' + (statsY + 18) + '" font-family="Arial, sans-serif" font-size="12" fill="#5B6770">' +
+    rmEscXml(rmOutlineMeasurementMethodSummary(data.roofs.map(function(r){ return r.outline; }))) + '</text>';
   var scaleBarFt = 20, scaleBarPx = scaleBarFt * scale;
   /* North arrow -- this projection's "up" (toSvg's y flip) genuinely is
      geographic north (rmExportProjectPoint/rmGeomToLocalXY use a plain
@@ -1664,7 +1719,14 @@ var rmState = {
      the map -- no synthetic origin, no scale guess, no Calibrate step
      needed. See "GeoTIFF georeferenced ortho support" in DEV_NOTES.md. */
   geoTiffActive: false,
-  geoTiffLayer: null
+  geoTiffLayer: null,
+  /* KMZ/KML GroundOverlay tracing -- same georeferenced Leaflet-overlay
+     path as GeoTIFF, but the geodata comes from KML LatLonBox metadata and
+     the image is extracted from the KMZ ZIP or paired KML+image upload. */
+  kmlOverlayActive: false,
+  kmlOverlayLayer: null,
+  kmlOverlayDataUrl: null,
+  kmlOverlayMeta: null
 };
 var RM_LOCAL_KEY = "roofmapper-local-outlines-v1";
 /* A commercial building — especially a hospital/medical campus — can easily
@@ -1840,7 +1902,7 @@ function rmSetBaseLayer(type){
    DEV_NOTES.md. */
 function rmUpdateMapZoomCap(){
   if (!rmState.map) return;
-  rmState.map.setMaxZoom((rmState.orthoActive || rmState.geoTiffActive) ? RM_ORTHO_MAX_ZOOM : 22);
+  rmState.map.setMaxZoom((rmState.orthoActive || rmState.geoTiffActive || rmState.kmlOverlayActive) ? RM_ORTHO_MAX_ZOOM : 22);
 }
 function rmToggleBaseLayer(){
   rmSetBaseLayer(rmState.baseLayerType === "satellite" ? "osm" : "satellite");
@@ -2094,6 +2156,7 @@ function rmClearFootprintLayers(){
   if (!rmState.preserveOrthoOnClear){
     rmClearOrthoOverlay();
     rmClearGeoTiffLayer(); /* same "continuing the same building's already-uploaded base" exception as the ortho overlay above */
+    rmClearKmlOverlay();
   }
   var map = rmState.map;
   if (map){
@@ -2386,6 +2449,7 @@ function rmOnVertexDragEnd(vertexIndex, droppedLatLng, marker){
      hand-edited wouldn't mean what any of them used to. */
   delete outline.squared;
   delete outline.calibration;
+  outline.measurementMethod = rmOutlineMeasurementMethod(outline);
   rmState.preSquareRing = null;
   var undoBtn = document.getElementById("rm-undo-square-btn");
   if (undoBtn) undoBtn.style.display = "none";
@@ -2418,7 +2482,7 @@ async function rmPersistVertexEdit(){
     roof.roof_outlines = (roof.roof_outlines || []).map(function(o){
       return o.id === outline.id ? Object.assign({}, o, {
         ring: outline.ring, areaSqFt: outline.areaSqFt, perimeterFt: outline.perimeterFt,
-        center: outline.center, calibration: null, squared: null
+        center: outline.center, calibration: null, squared: null, measurementMethod: outline.measurementMethod
       }) : o;
     });
     var roofIdx = roofs.findIndex(function(r){ return r.id === roof.id; });
@@ -2495,6 +2559,7 @@ function rmCalibrateEdge(edgeIndex){
   outline.perimeterFt = rmGeomPolygonPerimeterMeters(newRing) * 3.28084;
   outline.center = centroid;
   outline.calibration = { edgeIndex: edgeIndex, measuredFt: measuredFt, calibratedAt: Date.now() };
+  outline.measurementMethod = rmOutlineMeasurementMethod(outline);
   /* Scale inheritance -- learn from this calibration so the NEXT roof
      traced on this same building (manual_trace/ortho_trace only --
      OSM footprints are independently georeferenced, walk_corners has no
@@ -2548,7 +2613,7 @@ async function rmPersistCalibration(rescaledAssets){
     roof.roof_outlines = (roof.roof_outlines || []).map(function(o){
       return o.id === outline.id ? Object.assign({}, o, {
         ring: outline.ring, areaSqFt: outline.areaSqFt, perimeterFt: outline.perimeterFt,
-        center: outline.center, calibration: outline.calibration
+        center: outline.center, calibration: outline.calibration, measurementMethod: outline.measurementMethod
       }) : o;
     });
     if (rescaledAssets) roof.roof_assets = rescaledAssets;
@@ -2622,6 +2687,8 @@ function rmUndoSquareUp(){
    computation differs. */
 async function rmPersistOutlineGeometryEdit(){
   var outline = rmState.outline;
+  if (!outline) return;
+  outline.measurementMethod = rmOutlineMeasurementMethod(outline);
   if (!rmState.linkedBuildingId || !rmState.linkedRoofId || !outline.id){
     toast("Will save with the outline.");
     return;
@@ -2636,7 +2703,7 @@ async function rmPersistOutlineGeometryEdit(){
     roof.roof_outlines = (roof.roof_outlines || []).map(function(o){
       return o.id === outline.id ? Object.assign({}, o, {
         ring: outline.ring, areaSqFt: outline.areaSqFt, perimeterFt: outline.perimeterFt,
-        center: outline.center, squared: outline.squared || null
+        center: outline.center, squared: outline.squared || null, measurementMethod: outline.measurementMethod
       }) : o;
     });
     var roofIdx = roofs.findIndex(function(r){ return r.id === roof.id; });
@@ -2935,6 +3002,7 @@ function rmExitAlignMode(persist){
        against a ring that's since moved wouldn't mean what it used to). */
     delete outline.squared;
     delete outline.calibration;
+    outline.measurementMethod = rmOutlineMeasurementMethod(outline);
     rmState.preSquareRing = null;
     document.getElementById("rm-undo-square-btn").style.display = "none";
     rmState.preResnapRing = null;
@@ -3098,6 +3166,8 @@ var RM_ORTHO_MAX_DIM = 3200; /* sharper than the 2000px cap used for hand-drawn
   DEV_NOTES.md. */
 var RM_ORTHO_QUALITY = 0.82;
 var RM_ORTHO_ORIGIN = { lat: 0, lng: 0 };
+var RM_KMZ_MOBILE_TILE_CAP = 40; /* Graceful mobile fallback: large Google
+   Earth tile pyramids can be valid on desktop but too heavy for a phone. */
 var RM_ORTHO_METERS_PER_PIXEL_GUESS = 0.05; /* arbitrary -- only affects the
   shape's initial on-screen size before Calibrate corrects it to a real
   measurement; never affects final accuracy. */
@@ -3187,6 +3257,14 @@ function rmClearGeoTiffLayer(){
   rmState.geoTiffActive = false;
   rmUpdateMapZoomCap();
 }
+function rmClearKmlOverlay(){
+  if (rmState.map && rmState.kmlOverlayLayer) rmState.map.removeLayer(rmState.kmlOverlayLayer);
+  rmState.kmlOverlayLayer = null;
+  rmState.kmlOverlayActive = false;
+  rmState.kmlOverlayDataUrl = null;
+  rmState.kmlOverlayMeta = null;
+  rmUpdateMapZoomCap();
+}
 /* Starts a trace session directly on a rendered, correctly-georeferenced
    GeoTIFF -- deliberately much simpler than rmStartOrthoTrace() (the
    flat-canvas/synthetic-origin path): the layer is already positioned at
@@ -3215,11 +3293,378 @@ function rmStartGeoTiffTrace(georaster){
   rmSetStatus("✅ Georeferenced (RTK) — scale set automatically, no calibration needed.");
   rmUpdateControlVisibility();
 }
+function rmFileToDataUrl(file){
+  return new Promise(function(res, rej){
+    var reader = new FileReader();
+    reader.onload = function(){ res(reader.result); };
+    reader.onerror = function(){ rej(new Error("Couldn't read the file")); };
+    reader.readAsDataURL(file);
+  });
+}
+function rmNormalizeKmlPath(path){
+  return String(path || "").replace(/^\.?\//, "").replace(/\\/g, "/");
+}
+function rmKmlChildText(parent, tagName){
+  var el = parent && parent.getElementsByTagName(tagName)[0];
+  return el && el.textContent ? el.textContent.trim() : "";
+}
+function rmKmlElementsByLocalName(parent, localName){
+  return Array.prototype.slice.call(parent ? parent.getElementsByTagName("*") : [])
+    .filter(function(el){ return el.localName === localName || el.nodeName === localName; });
+}
+function rmKmlFirstByLocalName(parent, localName){
+  return rmKmlElementsByLocalName(parent, localName)[0] || null;
+}
+function rmKmlParseBoundsFromBox(box){
+  if (!box) return null;
+  var north = parseFloat(rmKmlChildText(box, "north"));
+  var south = parseFloat(rmKmlChildText(box, "south"));
+  var east = parseFloat(rmKmlChildText(box, "east"));
+  var west = parseFloat(rmKmlChildText(box, "west"));
+  if (![north, south, east, west].every(isFinite) || north <= south || east === west) return null;
+  return { north: north, south: south, east: east, west: west };
+}
+function rmKmlParseLatLonQuad(overlay){
+  var quad = rmKmlFirstByLocalName(overlay, "LatLonQuad");
+  var coordsText = quad ? rmKmlChildText(quad, "coordinates") : "";
+  if (!coordsText) return null;
+  var points = coordsText.trim().split(/\s+/).map(function(part){
+    var bits = part.split(",");
+    return { lng: parseFloat(bits[0]), lat: parseFloat(bits[1]) };
+  }).filter(function(p){ return isFinite(p.lat) && isFinite(p.lng); });
+  if (points.length < 4) return null;
+  var lats = points.map(function(p){ return p.lat; });
+  var lngs = points.map(function(p){ return p.lng; });
+  return {
+    quad: points,
+    bounds: {
+      north: Math.max.apply(null, lats),
+      south: Math.min.apply(null, lats),
+      east: Math.max.apply(null, lngs),
+      west: Math.min.apply(null, lngs)
+    }
+  };
+}
+function rmKmlQuadBBoxErrorFt(quad){
+  if (!quad || quad.length < 4) return 0;
+  var lats = quad.map(function(p){ return p.lat; });
+  var lngs = quad.map(function(p){ return p.lng; });
+  var remaining = [
+    { lat: Math.max.apply(null, lats), lng: Math.min.apply(null, lngs) },
+    { lat: Math.max.apply(null, lats), lng: Math.max.apply(null, lngs) },
+    { lat: Math.min.apply(null, lats), lng: Math.max.apply(null, lngs) },
+    { lat: Math.min.apply(null, lats), lng: Math.min.apply(null, lngs) }
+  ];
+  var maxErrFt = 0;
+  quad.forEach(function(point){
+    var bestIdx = 0, bestFt = Infinity;
+    remaining.forEach(function(corner, idx){
+      var ft = rmGeomHaversineMeters(point, corner) * 3.28084;
+      if (ft < bestFt){ bestFt = ft; bestIdx = idx; }
+    });
+    if (isFinite(bestFt)) maxErrFt = Math.max(maxErrFt, bestFt);
+    remaining.splice(bestIdx, 1);
+  });
+  return maxErrFt;
+}
+function rmKmlBoundsUnion(boundsList){
+  var valid = (boundsList || []).filter(Boolean);
+  if (!valid.length) return null;
+  return valid.reduce(function(acc, b){
+    if (!acc) return Object.assign({}, b);
+    return {
+      north: Math.max(acc.north, b.north),
+      south: Math.min(acc.south, b.south),
+      east: Math.max(acc.east, b.east),
+      west: Math.min(acc.west, b.west)
+    };
+  }, null);
+}
+function rmResolveKmlHref(kmlPath, href){
+  var cleanHref = rmNormalizeKmlPath(href);
+  if (/^[a-z]+:\/\//i.test(cleanHref) || cleanHref.indexOf("data:") === 0) return cleanHref;
+  var base = rmNormalizeKmlPath(kmlPath || "").split("/");
+  base.pop();
+  cleanHref.split("/").forEach(function(part){
+    if (!part || part === ".") return;
+    if (part === "..") base.pop();
+    else base.push(part);
+  });
+  return base.join("/");
+}
+function rmParseKmlGroundOverlays(kmlText, sourceName, kmlPath){
+  var doc = new DOMParser().parseFromString(kmlText, "application/xml");
+  if (doc.getElementsByTagName("parsererror").length) throw new Error("KML is malformed");
+  return Array.prototype.slice.call(doc.getElementsByTagName("GroundOverlay")).map(function(overlay){
+    var href = rmNormalizeKmlPath(rmKmlChildText(overlay, "href"));
+    if (!href) return null;
+    var box = overlay.getElementsByTagName("LatLonBox")[0];
+    var bounds = rmKmlParseBoundsFromBox(box);
+    var quadInfo = rmKmlParseLatLonQuad(overlay);
+    if (!bounds && quadInfo) bounds = quadInfo.bounds;
+    if (!bounds) return null;
+    var rotationText = box ? rmKmlChildText(box, "rotation") : "";
+    var rotation = rotationText ? parseFloat(rotationText) : 0;
+    return {
+      sourceType: /\.kmz$/i.test(sourceName || "") ? "kmz_groundoverlay" : "kml_groundoverlay",
+      sourceFileName: sourceName || "",
+      imageHref: href,
+      resolvedImageHref: rmResolveKmlHref(kmlPath || "", href),
+      imageFileName: href.split("/").pop(),
+      name: rmKmlChildText(overlay, "name"),
+      bounds: bounds,
+      latLonQuad: quadInfo ? quadInfo.quad : null,
+      quadBBoxErrorFt: quadInfo ? rmKmlQuadBBoxErrorFt(quadInfo.quad) : 0,
+      rotation: isFinite(rotation) ? rotation : 0
+    };
+  }).filter(Boolean);
+}
+function rmParseKmlGroundOverlay(kmlText, sourceName){
+  var overlays = rmParseKmlGroundOverlays(kmlText, sourceName);
+  if (!overlays.length) throw new Error("No GroundOverlay found in the KML");
+  return overlays[0];
+}
+function rmImageFileLooksLike(path){
+  return /\.(png|jpe?g|webp|gif)$/i.test(path || "");
+}
+function rmIsTileConstrainedDevice(){
+  /* iPadOS can present a desktop-class Safari UA. Treat touch Macs/iPads as
+     mobile here so large KMZ imports use the graceful lower-detail path. */
+  var platform = navigator.platform || "";
+  return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || "") ||
+    (navigator.userAgentData && navigator.userAgentData.mobile) ||
+    (/Mac/i.test(platform) && navigator.maxTouchPoints > 1) ||
+    (window.matchMedia && window.matchMedia("(max-width: 760px)").matches && navigator.maxTouchPoints > 0);
+}
+function rmMimeForImagePath(path){
+  if (/\.png$/i.test(path || "")) return "image/png";
+  if (/\.webp$/i.test(path || "")) return "image/webp";
+  if (/\.gif$/i.test(path || "")) return "image/gif";
+  return "image/jpeg";
+}
+async function rmReadKmzImageDataUrl(zip, imageKey){
+  var bytes = await zip.files[imageKey].async("uint8array");
+  return await rmFileToDataUrl(new Blob([bytes], { type: rmMimeForImagePath(imageKey) }));
+}
+function rmFindKmzEntry(zip, wantedPath){
+  var normalized = rmNormalizeKmlPath(wantedPath);
+  var wantedLower = normalized.toLowerCase();
+  var wantedBase = wantedLower.split("/").pop();
+  var keys = Object.keys(zip.files || {});
+  return keys.find(function(k){ return !zip.files[k].dir && rmNormalizeKmlPath(k).toLowerCase() === wantedLower; }) ||
+    keys.find(function(k){ return !zip.files[k].dir && rmNormalizeKmlPath(k).toLowerCase().split("/").pop() === wantedBase; }) ||
+    keys.find(function(k){ return !zip.files[k].dir && rmImageFileLooksLike(k); });
+}
+function rmFindPairedImageFile(files, wantedPath){
+  var wanted = rmNormalizeKmlPath(wantedPath).toLowerCase();
+  var wantedBase = wanted.split("/").pop();
+  return files.find(function(f){ return rmNormalizeKmlPath(f.name).toLowerCase() === wanted; }) ||
+    files.find(function(f){ return rmNormalizeKmlPath(f.name).toLowerCase().split("/").pop() === wantedBase; }) ||
+    files.find(function(f){ return /^image\//i.test(f.type || "") || rmImageFileLooksLike(f.name); });
+}
+function rmStartKmlGroundOverlayTrace(dataUrl, meta){
+  var map = rmEnsureMap();
+  rmClearFootprintLayers();
+  var b = meta.bounds;
+  var bounds = L.latLngBounds([b.south, b.west], [b.north, b.east]);
+  rmState.kmlOverlayLayer = L.imageOverlay(dataUrl, bounds).addTo(map);
+  rmState.kmlOverlayActive = true;
+  rmState.kmlOverlayDataUrl = dataUrl;
+  rmState.kmlOverlayMeta = meta;
+  rmUpdateMapZoomCap();
+  map.fitBounds(bounds);
+  var center = bounds.getCenter();
+  rmState.lat = center.lat; rmState.lng = center.lng; rmState.accuracy = null;
+  rmTraceState.active = true;
+  rmTraceState.mode = "manual";
+  rmTraceState.points = [];
+  rmTraceClickHandler = function(e){ rmTraceAddPoint(e.latlng); };
+  map.on("click", rmTraceClickHandler);
+  rmShowTracePanel();
+  document.getElementById("rm-trace-mode-hint").textContent =
+    "Tap the roof's corners in order, right on the KMZ/KML orthomosaic above. The overlay's KML bounds set the " +
+    "starting position and scale; if Mark has a field measurement, calibrate the matching edge after tracing.";
+  var msg = "KML GroundOverlay loaded";
+  if (meta.imageFileName) msg += " (" + meta.imageFileName + ")";
+  msg += " -- trace the roof on the orthomosaic.";
+  var warns = [];
+  if (Math.abs(meta.rotation || 0) > 0.001){
+    warns.push("KML rotation " + meta.rotation + " degrees was detected");
+  }
+  if ((meta.quadBBoxErrorFt || 0) > 0.25){
+    warns.push("KML LatLonQuad is being approximated to a rectangular image overlay (max corner difference ~" +
+      Math.round(meta.quadBBoxErrorFt * 10) / 10 + " ft)");
+  }
+  if (warns.length){
+    msg += " Note: " + warns.join("; ") + ". Verify alignment before saving.";
+  }
+  rmSetStatus(msg, warns.length ? "warn" : null);
+  rmUpdateControlVisibility();
+}
+function rmStartKmlSuperOverlayTrace(tiles, meta){
+  var map = rmEnsureMap();
+  rmClearFootprintLayers();
+  var group = L.layerGroup().addTo(map);
+  tiles.forEach(function(tile){
+    var b = tile.meta.bounds;
+    L.imageOverlay(tile.dataUrl, [[b.south, b.west], [b.north, b.east]]).addTo(group);
+  });
+  rmState.kmlOverlayLayer = group;
+  rmState.kmlOverlayActive = true;
+  rmState.kmlOverlayDataUrl = meta.persistDataUrl || null;
+  delete meta.persistDataUrl;
+  rmState.kmlOverlayMeta = meta;
+  rmUpdateMapZoomCap();
+  var bAll = meta.bounds;
+  var bounds = L.latLngBounds([bAll.south, bAll.west], [bAll.north, bAll.east]);
+  map.fitBounds(bounds);
+  var center = bounds.getCenter();
+  rmState.lat = center.lat; rmState.lng = center.lng; rmState.accuracy = null;
+  rmTraceState.active = true;
+  rmTraceState.mode = "manual";
+  rmTraceState.points = [];
+  rmTraceClickHandler = function(e){ rmTraceAddPoint(e.latlng); };
+  map.on("click", rmTraceClickHandler);
+  rmShowTracePanel();
+  document.getElementById("rm-trace-mode-hint").textContent =
+    "Tap the roof's corners in order, right on the KMZ orthomosaic above. This KMZ is a tiled Google Earth " +
+    "overlay, so RoofMapper loaded the highest-detail tile set for tracing.";
+  var msg = "KMZ super-overlay loaded (" + tiles.length + " tiles) -- trace the roof on the orthomosaic.";
+  var warns = [];
+  if ((meta.maxQuadBBoxErrorFt || 0) > 0.25){
+    warns.push("KML tile quads are approximated to rectangular overlays (max corner difference ~" +
+      Math.round(meta.maxQuadBBoxErrorFt * 10) / 10 + " ft)");
+  }
+  if (meta.mobileTileCapApplied){
+    warns.push("mobile tile cap applied: loaded level " + meta.kmlLevel + " (" + tiles.length +
+      " tiles) instead of level " + meta.highestKmlLevel + " (" + meta.highestTileCount + " tiles)");
+  } else if (tiles.length > RM_KMZ_MOBILE_TILE_CAP){
+    warns.push("large tile set; it may load slowly on lower-powered machines");
+  }
+  if (warns.length){
+    msg += " Note: " + warns.join("; ") + ". Verify alignment before saving.";
+  }
+  rmSetStatus(msg, warns.length ? "warn" : null);
+  rmUpdateControlVisibility();
+}
+function rmKmzKmlLevel(path){
+  var m = rmNormalizeKmlPath(path).match(/^(\d+)\//);
+  return m ? parseInt(m[1], 10) : -1;
+}
+async function rmUploadKmzFile(file, allFiles){
+  if (!window.JSZip) throw new Error("KMZ support did not load yet. Refresh and try again.");
+  var zip = await JSZip.loadAsync(await file.arrayBuffer());
+  var keys = Object.keys(zip.files || {});
+  var kmlKey = keys.find(function(k){ return !zip.files[k].dir && /(^|\/)doc\.kml$/i.test(k); }) ||
+    keys.find(function(k){ return !zip.files[k].dir && /\.kml$/i.test(k); });
+  if (!kmlKey) throw new Error("KMZ has no KML file");
+  var kmlText = await zip.files[kmlKey].async("text");
+  var docBounds = null;
+  try{
+    var doc = new DOMParser().parseFromString(kmlText, "application/xml");
+    docBounds = rmKmlBoundsUnion(rmKmlElementsByLocalName(doc, "LatLonAltBox").map(rmKmlParseBoundsFromBox));
+  }catch(e){}
+  var docOverlays = rmParseKmlGroundOverlays(kmlText, file.name, kmlKey);
+  if (docOverlays.length){
+    var meta = docOverlays[0];
+    var imageKey = rmFindKmzEntry(zip, meta.resolvedImageHref || meta.imageHref);
+    if (!imageKey) throw new Error("KMZ GroundOverlay image was not found");
+    meta.kmlFileName = kmlKey;
+    meta.imageFileName = imageKey.split("/").pop();
+    var dataUrl = await rmReadKmzImageDataUrl(zip, imageKey);
+    var result = await rmResizeDataUrlToOrtho(dataUrl, RM_ORTHO_MAX_DIM, RM_ORTHO_QUALITY);
+    rmStartKmlGroundOverlayTrace(result.dataUrl, meta);
+    return;
+  }
+  var overlayKmlKeys = keys.filter(function(k){ return !zip.files[k].dir && /\.kml$/i.test(k); })
+    .filter(function(k){ return k !== kmlKey; });
+  var maxLevel = Math.max.apply(null, overlayKmlKeys.map(rmKmzKmlLevel));
+  if (!isFinite(maxLevel) || maxLevel < 0) throw new Error("KMZ has no GroundOverlay image tiles");
+  var levels = {};
+  overlayKmlKeys.forEach(function(k){
+    var lvl = rmKmzKmlLevel(k);
+    if (lvl >= 0) levels[lvl] = (levels[lvl] || 0) + 1;
+  });
+  var selectedLevel = maxLevel;
+  var mobileTileCapApplied = false;
+  if (rmIsTileConstrainedDevice() && (levels[maxLevel] || 0) > RM_KMZ_MOBILE_TILE_CAP){
+    var mobileLevels = Object.keys(levels).map(function(k){ return parseInt(k, 10); })
+      .filter(function(lvl){ return levels[lvl] <= RM_KMZ_MOBILE_TILE_CAP; })
+      .sort(function(a, b){ return a - b; });
+    selectedLevel = mobileLevels.length ? mobileLevels[mobileLevels.length - 1] :
+      Math.min.apply(null, Object.keys(levels).map(function(k){ return parseInt(k, 10); }));
+    mobileTileCapApplied = selectedLevel !== maxLevel;
+  }
+  var tileKmlKeys = overlayKmlKeys.filter(function(k){ return rmKmzKmlLevel(k) === selectedLevel; });
+  var tiles = [];
+  for (var i = 0; i < tileKmlKeys.length; i++){
+    var tileKmlKey = tileKmlKeys[i];
+    var tileKml = await zip.files[tileKmlKey].async("text");
+    var overlays = rmParseKmlGroundOverlays(tileKml, file.name, tileKmlKey);
+    if (!overlays.length) continue;
+    var tileMeta = overlays[0];
+    var tileImageKey = rmFindKmzEntry(zip, tileMeta.resolvedImageHref || tileMeta.imageHref);
+    if (!tileImageKey) continue;
+    tileMeta.kmlFileName = tileKmlKey;
+    tileMeta.imageFileName = tileImageKey.split("/").pop();
+    tiles.push({ meta: tileMeta, dataUrl: await rmReadKmzImageDataUrl(zip, tileImageKey) });
+  }
+  if (!tiles.length) throw new Error("KMZ GroundOverlay image tiles were not found");
+  var paired = rmFindPairedImageFile((allFiles || []).filter(function(f){ return f !== file; }), file.name.replace(/\.kmz$/i, ".jpg"));
+  var persistDataUrl = null;
+  var persistImageName = null;
+  if (paired){
+    var pairedResult = await rmLoadAndResizeOrtho(paired, RM_ORTHO_MAX_DIM, RM_ORTHO_QUALITY);
+    persistDataUrl = pairedResult.dataUrl;
+    persistImageName = paired.name;
+  }
+  var maxQuadBBoxErrorFt = Math.max.apply(null, tiles.map(function(t){ return t.meta.quadBBoxErrorFt || 0; }));
+  rmStartKmlSuperOverlayTrace(tiles, {
+    sourceType: "kmz_superoverlay",
+    sourceFileName: file.name,
+    imageFileName: persistImageName || (tiles.length + " KMZ tiles"),
+    tileCount: tiles.length,
+    kmlLevel: selectedLevel,
+    highestKmlLevel: maxLevel,
+    highestTileCount: levels[maxLevel] || tileKmlKeys.length,
+    mobileTileCapApplied: mobileTileCapApplied,
+    mobileTileCap: RM_KMZ_MOBILE_TILE_CAP,
+    bounds: docBounds || rmKmlBoundsUnion(tiles.map(function(t){ return t.meta.bounds; })),
+    maxQuadBBoxErrorFt: isFinite(maxQuadBBoxErrorFt) ? maxQuadBBoxErrorFt : 0,
+    tiles: tiles.map(function(t){ return { kmlFileName: t.meta.kmlFileName, imageFileName: t.meta.imageFileName,
+      bounds: t.meta.bounds, quadBBoxErrorFt: t.meta.quadBBoxErrorFt || 0 }; }),
+    persistDataUrl: persistDataUrl
+  });
+}
+async function rmUploadKmlFiles(files){
+  var kmlFile = files.find(function(f){ return /\.kml$/i.test(f.name || ""); });
+  if (!kmlFile) throw new Error("Choose a KML file");
+  var kmlText = await kmlFile.text();
+  var meta = rmParseKmlGroundOverlay(kmlText, kmlFile.name);
+  var imageFile = rmFindPairedImageFile(files.filter(function(f){ return f !== kmlFile; }), meta.imageHref);
+  if (!imageFile) throw new Error("Choose the image referenced by the KML too (" + meta.imageHref + ")");
+  meta.imageFileName = imageFile.name;
+  var result = await rmLoadAndResizeOrtho(imageFile, RM_ORTHO_MAX_DIM, RM_ORTHO_QUALITY);
+  rmStartKmlGroundOverlayTrace(result.dataUrl, meta);
+}
 async function rmUploadOrthoFile(input){
-  var file = input.files && input.files[0];
+  var files = Array.prototype.slice.call(input.files || []);
+  var file = files[0];
   input.value = "";
   if (!file) return;
   try{
+    var hasKmz = files.find(function(f){ return /\.kmz$/i.test(f.name || ""); });
+    var hasKml = files.find(function(f){ return /\.kml$/i.test(f.name || ""); });
+    if (hasKmz){
+      toast("Reading KMZ...");
+      await rmUploadKmzFile(hasKmz, files);
+      return;
+    }
+    if (hasKml){
+      toast("Reading KML GroundOverlay...");
+      await rmUploadKmlFiles(files);
+      return;
+    }
     /* Only bother attempting the (slower) GeoTIFF parse for files that
        look like a TIFF at all -- a plain JPG/PNG skips straight to the
        existing flat-canvas path without wasting time on a parse attempt
@@ -3445,6 +3890,43 @@ async function rmPersistOrthoBaseMap(buildingId, roofId){
     toast("Roof outline saved, but couldn't keep the drone image with it: " + e.message);
   }
 }
+async function rmPersistKmlGroundOverlayBaseMap(buildingId, roofId){
+  if (!isAdmin){
+    toast("Roof outline saved. Sign in as admin to also keep this KMZ/KML orthomosaic with the roof for reopening later.");
+    return;
+  }
+  if (!rmState.kmlOverlayMeta || !rmState.kmlOverlayMeta.bounds){
+    toast("Roof outline saved. KMZ/KML overlay metadata was incomplete, so the orthomosaic itself was not retained for reopening.");
+    return;
+  }
+  if (!rmState.kmlOverlayDataUrl){
+    toast("Roof outline saved. This KMZ is a tiled overlay and no paired JPG was selected, so the orthomosaic image itself " +
+      "was not retained for reopening (the traced outline and KMZ metadata were saved).");
+    return;
+  }
+  try{
+    var bldSnap = await fdb.collection("buildings").doc(buildingId).get();
+    var bld = bldSnap.exists ? bldSnap.data() : {};
+    if (!bld.companyCamProjectId){
+      toast("Roof outline saved. This building has no CompanyCam project linked, so the KMZ/KML image itself " +
+        "can't be retained (the traced outline and overlay metadata are saved either way).");
+      return;
+    }
+    toast("Saving the KMZ/KML orthomosaic with this roof...");
+    var base64 = rmState.kmlOverlayDataUrl.split("base64,")[1];
+    if (!base64) throw new Error("couldn't encode the image");
+    var safeName = (rmState.kmlOverlayMeta.imageFileName || rmState.kmlOverlayMeta.sourceFileName || "roof-kmz").replace(/[^\w.-]+/g, "-");
+    var out = await ccApiPost({ action: "upload_document", project_id: bld.companyCamProjectId,
+      name: "roof-groundoverlay-" + roofId + "-" + safeName + ".jpg", attachment: base64 });
+    var url = out.document && out.document.url;
+    if (!url) throw new Error("CompanyCam didn't return a URL for the uploaded file");
+    await callAdminApi({ action: "set_building_roof_map", buildingId: buildingId, roofId: roofId,
+      roof_base_map_type: "drone_ortho", roof_base_map_url: url, roof_base_map_bounds: rmState.kmlOverlayMeta.bounds });
+    toast("KMZ/KML orthomosaic saved with the roof -- reopen it any time from Building History.");
+  }catch(e){
+    toast("Roof outline saved, but couldn't keep the KMZ/KML image with it: " + e.message);
+  }
+}
 /* Walk-the-corners: no map-click handler -- points come from a GPS fix each
    time the tech taps Record, not from tapping the map (satellite imagery
    may be blank/wrong/unavailable here at all, which is exactly the case
@@ -3556,12 +4038,13 @@ function rmFinishTrace(){
   if (ring.length < 4){ toast("Those points are too close together — try " + (isWalk ? "spacing corners further apart" : "tracing wider corners") + "."); return; }
   var tracedOnOrtho = rmState.orthoActive;
   var tracedOnGeoTiff = rmState.geoTiffActive;
+  var tracedOnKmlOverlay = rmState.kmlOverlayActive;
   var outline = {
     ring: ring,
     center: rmGeomRingCentroid(ring),
     areaSqFt: rmGeomPolygonAreaSqMeters(ring) * 10.7639,
     perimeterFt: rmGeomPolygonPerimeterMeters(ring) * 3.28084,
-    source: isWalk ? "walk_corners" : (tracedOnGeoTiff ? "geotiff_trace" : (tracedOnOrtho ? "ortho_trace" : "manual_trace")),
+    source: isWalk ? "walk_corners" : (tracedOnKmlOverlay ? "kml_groundoverlay_trace" : (tracedOnGeoTiff ? "geotiff_trace" : (tracedOnOrtho ? "ortho_trace" : "manual_trace"))),
     osmId: null, osmType: null, tags: {},
     isSiteBoundary: false,
     createdAt: Date.now()
@@ -3575,7 +4058,10 @@ function rmFinishTrace(){
      source "manual_trace"/"ortho_trace", so geotiff_trace is naturally
      excluded without extra code). See "GeoTIFF georeferenced ortho
      support" in DEV_NOTES.md. */
-  if (tracedOnGeoTiff) outline.georeferencedSource = true;
+  if (tracedOnGeoTiff || tracedOnKmlOverlay) outline.georeferencedSource = true;
+  if (tracedOnKmlOverlay && rmState.kmlOverlayMeta){
+    outline.groundOverlay = Object.assign({}, rmState.kmlOverlayMeta);
+  }
   /* tracedOnOrtho'd outlines carry a synthetic (Null Island) origin, not a
      real-world position -- flagged explicitly rather than silently baked
      into `source` alone, so any future code inspecting an outline can
@@ -3585,6 +4071,7 @@ function rmFinishTrace(){
      it sits is a placeholder. See "Ortho upload + flat-canvas tracing" in
      DEV_NOTES.md. */
   if (tracedOnOrtho) outline.tracedOnOrtho = true;
+  outline.measurementMethod = rmOutlineMeasurementMethod(outline);
   /* Scale inheritance (Mark: "he should not have to re-calibrate for every
      roof... scale is a property of the building/base image, not of an
      individual roof") -- applies to manual_trace/ortho_trace only (OSM
@@ -3607,6 +4094,7 @@ function rmFinishTrace(){
     outline.areaSqFt = rmGeomPolygonAreaSqMeters(scaledRing) * 10.7639;
     outline.perimeterFt = rmGeomPolygonPerimeterMeters(scaledRing) * 3.28084;
     outline.calibration = { inherited: true, factor: rmState.inheritedScaleFactor, calibratedAt: Date.now() };
+    outline.measurementMethod = rmOutlineMeasurementMethod(outline);
   }
   rmCancelTrace();
   rmDrawFinalOutline(outline);
@@ -4237,6 +4725,7 @@ async function rmSaveSplitSectionsToBuilding(buildingId){
         center: sec.center, source: baseOutline.source, tags: baseOutline.tags || {},
         isSiteBoundary: false, calibration: baseOutline.calibration || null, createdAt: Date.now()
       };
+      rmCopyOutlineSourceMetadata(baseOutline, outlineEntry);
       var newRoof = {
         id: genId("roof"), label: label, roofSystem: "",
         roof_base_map_type: null, roof_base_map_url: null, roof_base_map_bounds: null,
@@ -4327,6 +4816,7 @@ async function rmSaveSplitSectionsToExistingRoof(buildingId, roofId){
       center: sections[0].center, source: baseOutline.source, tags: baseOutline.tags || {},
       isSiteBoundary: false, calibration: baseOutline.calibration || null, createdAt: Date.now()
     };
+    rmCopyOutlineSourceMetadata(baseOutline, primaryOutline);
     origRoof.roof_outlines = (origRoof.roof_outlines || []).concat([primaryOutline]);
     var renamed = [];
     if ((origRoof.label || "Roof").trim() !== sections[0].label.trim()){
@@ -4358,6 +4848,7 @@ async function rmSaveSplitSectionsToExistingRoof(buildingId, roofId){
         center: sec.center, source: baseOutline.source, tags: baseOutline.tags || {},
         isSiteBoundary: false, calibration: baseOutline.calibration || null, createdAt: Date.now()
       };
+      rmCopyOutlineSourceMetadata(baseOutline, outlineEntry);
       var newRoof = {
         id: genId("roof"), label: label, roofSystem: "",
         roof_base_map_type: null, roof_base_map_url: null, roof_base_map_bounds: null,
@@ -4489,6 +4980,7 @@ async function rmSaveOutlineToBuilding(buildingId, roofId){
        succeeds). See rmPersistOrthoBaseMap() and "Ortho upload: persist
        with the roof for reopening" in DEV_NOTES.md. */
     if (rmState.orthoActive) rmPersistOrthoBaseMap(buildingId, roof.id);
+    if (rmState.kmlOverlayActive) rmPersistKmlGroundOverlayBaseMap(buildingId, roof.id);
   }catch(e){ toast("Couldn't save: " + e.message); }
 }
 /* THE fix for "RoofMapper can't reopen a saved roof" -- Mark refreshed,
@@ -4983,7 +5475,7 @@ async function rmEnterMultiRoofCapture(buildingId){
      photo for every roof section on it, and it's what makes scale
      inheritance actually save him a step rather than just being a nice-
      to-know. See "Scale inheritance" in DEV_NOTES.md. */
-  var continuingOrtho = (rmState.orthoActive || rmState.geoTiffActive) && rmState.linkedBuildingId === buildingId;
+  var continuingOrtho = (rmState.orthoActive || rmState.geoTiffActive || rmState.kmlOverlayActive) && rmState.linkedBuildingId === buildingId;
   rmState.preserveOrthoOnClear = continuingOrtho;
   rmClearFootprintLayers(); /* wipes any in-progress trace/search/linked-roof state */
   rmState.preserveOrthoOnClear = false;
@@ -5006,7 +5498,7 @@ async function rmEnterMultiRoofCapture(buildingId){
       rmTraceClickHandler = function(e){ rmTraceAddPoint(e.latlng); };
       map2.on("click", rmTraceClickHandler);
       rmShowTracePanel();
-      rmSetStatus(rmState.geoTiffActive ?
+      rmSetStatus((rmState.geoTiffActive || rmState.kmlOverlayActive) ?
         "Tracing another roof on the same georeferenced image — existing roofs shown dimmed for reference. " +
           "✅ Scale set automatically, no calibration needed." :
         "Tracing another roof on the same drone image — existing roofs shown dimmed for reference." +

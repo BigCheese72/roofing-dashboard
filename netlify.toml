@@ -1,7 +1,26 @@
 [build]
-  command = "npm install"
+  # The rules-deploy step runs in EVERY context (Production, Deploy
+  # Previews, Branch deploys) and checks its own FIREBASE_SERVICE_ACCOUNT's
+  # project against the FIRESTORE_RULES_EXPECTED_PROJECT_ID set for that
+  # context below -- see scripts/deploy-firestore-rules.js's header comment
+  # for the incident that made a single credential-derived check
+  # insufficient (2026-07-12: a mis-scoped deploy-preview credential
+  # published rules to production). Chained with && so a failed rules
+  # deploy fails the WHOLE build -- a green build that silently skipped
+  # publishing rules (or published to the wrong project) is the exact
+  # failure this exists to prevent.
+  command = "npm install && node scripts/deploy-firestore-rules.js"
   publish = "."
   functions = "netlify/functions"
+
+[context.production.environment]
+  FIRESTORE_RULES_EXPECTED_PROJECT_ID = "watkins-service-orders"
+
+[context.deploy-preview.environment]
+  FIRESTORE_RULES_EXPECTED_PROJECT_ID = "watkins-service-orders-dev"
+
+[context.branch-deploy.environment]
+  FIRESTORE_RULES_EXPECTED_PROJECT_ID = "watkins-service-orders-dev"
 
 [build.environment]
   # Netlify's secrets scanner (correctly, in general) fails the build if an

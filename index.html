@@ -26,6 +26,9 @@
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<!-- KMZ/KML GroundOverlay import for RoofMapper. KMZ is a ZIP container, so
+     JSZip is the lightest browser-side fit for this static/no-build app. -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <!-- True GeoTIFF support (Mark's Mavic 3T / WebODM / RTK orthos are real
      georeferenced GeoTIFFs, not flattened images) -- parses embedded
      geodata and renders it at its TRUE geographic position/scale on the
@@ -420,13 +423,13 @@
         — whether or not it matches CompanyCam or an existing building.</p>
       <div class="btnrow" style="margin:0 0 6px">
         <button class="btn" id="rm-ortho-upload-btn" onclick="document.getElementById('rm-ortho-file-input').click()">📷 Trace on My Own Drone Image</button>
-        <input type="file" id="rm-ortho-file-input" accept="image/*" style="display:none" onchange="rmUploadOrthoFile(this)">
+        <input type="file" id="rm-ortho-file-input" accept=".kmz,.kml,.tif,.tiff,image/*" multiple style="display:none" onchange="rmUploadOrthoFile(this)">
         <button class="btn" onclick="rmOpenCcOrthoPicker()">☁️ Trace From CompanyCam Photo</button>
       </div>
       <p class="hint" id="rm-ortho-hint" style="margin:-6px 0 12px">Have a sharper drone orthomosaic than satellite
-        imagery? Upload it from this device and trace directly on it — no CompanyCam project needed first. Already
-        added it as a photo to this building's CompanyCam project instead? Pick it from there — needs a building
-        already linked (e.g. via Trace Another Roof), since that's where the CompanyCam project comes from.</p>
+        imagery? Upload a KMZ, KML+image, GeoTIFF, or plain PNG/JPG and trace directly on it — no CompanyCam project
+        needed first. Already added it as a photo to this building's CompanyCam project instead? Pick it from there —
+        needs a building already linked (e.g. via Trace Another Roof), since that's where the CompanyCam project comes from.</p>
       <p class="rm-status" id="rm-status"></p>
       <div id="rm-map-wrap" style="display:none;margin-bottom:12px">
         <div id="rm-map" style="height:min(70vh,640px);border-radius:6px;overflow:hidden"></div>

@@ -5600,6 +5600,67 @@ bounding-box plausibility check and, end-to-end through
 rather than silently failing. All test state cleared, page reloaded,
 console clean.
 
+## KMZ/KML GroundOverlay import (shipped 2026-07-12, dev only)
+
+North College Street supplied the orthomosaic as a KMZ plus mosaic image, and
+RoofMapper already had the right integrated editor surface (trace, vertex edit,
+calibrate, split, features, export, save/reopen) but not a direct KMZ/KML import.
+This pass extends the existing **Trace on My Own Drone Image** path rather than
+creating a separate map workspace.
+
+Implementation:
+
+- `index.html` loads JSZip from CDN and widens `#rm-ortho-file-input` to accept
+  `.kmz`, `.kml`, `.tif/.tiff`, and normal images, with `multiple` enabled for
+  the KML+paired-image case.
+- `rmUploadOrthoFile()` now routes `.kmz` to `rmUploadKmzFile()` and `.kml` to
+  `rmUploadKmlFiles()` before falling back to the existing GeoTIFF/plain-image
+  logic.
+- KMZ is treated as a ZIP: the importer finds `doc.kml` or the first KML file,
+  parses the first usable `GroundOverlay`, extracts `Icon/href`, `LatLonBox`
+  north/south/east/west, and optional `rotation`, then finds the referenced
+  image by exact path, basename, or first image fallback inside the archive.
+- Real North College KMZ check (2026-07-12): `doc.kml` is not a single-image
+  GroundOverlay; it is a Google Earth super-overlay with `NetworkLink`s into
+  tiled KML/image folders (`0/`, `1/`, `2/`, `3/`). The importer now detects
+  that shape, selects the highest numeric tile level, parses each tile's
+  `gx:LatLonQuad`, extracts its image relative to that tile KML, and renders
+  all highest-detail tiles as a Leaflet layer group. A separately selected
+  paired JPG with the same base name is used only for optional image retention
+  through the existing CompanyCam/base-map path; tracing uses the georeferenced
+  KMZ tiles. Because normal Leaflet image overlays cannot warp `gx:LatLonQuad`
+  rasters, the importer records `quadBBoxErrorFt`/`maxQuadBBoxErrorFt` and shows
+  a warning when tile quads are being approximated to rectangular bounds.
+  Large tiled KMZs (>40 overlay images; North College is 59 at level 3) are
+  intended for desktop/laptop tracing. On likely mobile devices, the importer
+  selects the highest tile level at or under `RM_KMZ_MOBILE_TILE_CAP` (40
+  overlays) rather than mounting the full high-detail level and risking a hang.
+- Exports now print a capture-method line. GeoTIFF traces can say
+  `RTK GeoTIFF trace (survey-grade source)`; KMZ/KML traces say they are an
+  approximate GroundOverlay/super-overlay source and explicitly not RTK
+  survey-grade, including the max quad approximation when known.
+- KML+image upload matches the local paired image the same way.
+- The image is resized through the same bounded `rmResizeDataUrlToOrtho()` path
+  used by flat orthos, then drawn as a Leaflet `imageOverlay` at the KML bounds.
+  A trace finished on it saves `source:"kml_groundoverlay_trace"`,
+  `georeferencedSource:true`, and a `groundOverlay` metadata object on the
+  outline.
+- "Trace Another Roof" preserves the KMZ/KML overlay just like it already
+  preserves uploaded flat orthos and GeoTIFFs for multi-roof tracing.
+- On save, an owner/admin on a building with a linked CompanyCam project also
+  persists the extracted image through the existing `upload_document` plus
+  `set_building_roof_map` path as `roof_base_map_type:"drone_ortho"` with the
+  KML bounds, so reopening from Building History can show the orthomosaic under
+  the outline.
+- Calibration is the normal tap-an-edge dimension flow for every building. No
+  building-specific filename/name match changes the prompt default or creates a
+  verified badge; field measurements remain user-entered calibration data.
+
+Known limitation: KML `rotation` is parsed and preserved, and the UI warns when
+it is non-zero, but Leaflet's normal `imageOverlay` does not rotate rasters. If
+Mark's KMZ relies on rotation, alignment must be checked before saving; true
+rotated overlay rendering would need a custom overlay transform.
+
 ## Rename a roof, discoverable from RoofMapper (shipped 2026-07-11, dev only)
 
 Mark hit a real-world dead end: he accidentally saved a second roof on the

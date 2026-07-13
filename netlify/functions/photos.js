@@ -34,25 +34,13 @@ function resp(code, obj) {
   return { statusCode: code, headers: { "Content-Type": "application/json" }, body: JSON.stringify(obj) };
 }
 
-// EMERGENCY HOTFIX 2026-07-12: getAdmin() (authGuard.js) does NOT configure
-// a default bucket at admin.initializeApp() time -- calling .bucket() with
-// no argument threw "Bucket name not specified or invalid" on every photo
-// get/upload/delete in production. Fixed here, self-contained, without
-// touching authGuard.js (which admin.js/auth.js/changeorders.js also
-// depend on) -- derives the bucket directly from the SAME
-// FIREBASE_SERVICE_ACCOUNT env var's project_id, so production and dev
-// each resolve to their own bucket automatically and can never cross,
-// with no hardcoded project name anywhere.
-function getBucketName() {
-  const raw = process.env.FIREBASE_SERVICE_ACCOUNT;
-  if (!raw) throw new Error("FIREBASE_SERVICE_ACCOUNT is not set. Add it in Netlify > Environment variables, then redeploy.");
-  let creds;
-  try { creds = JSON.parse(raw); }
-  catch (e) { throw new Error("FIREBASE_SERVICE_ACCOUNT is not valid JSON."); }
-  return creds.project_id + ".firebasestorage.app";
-}
+// No bucket name passed here -- getAdmin() (authGuard.js) configures the
+// correct default bucket for whichever project FIREBASE_SERVICE_ACCOUNT
+// belongs to at admin.initializeApp() time (Firebase split, 2026-07-11:
+// production/dev now resolve to genuinely separate projects, not just
+// separate credentials against one shared project).
 function getBucket() {
-  return getAdmin().storage().bucket(getBucketName());
+  return getAdmin().storage().bucket();
 }
 function getDb() {
   return getAdmin().firestore();

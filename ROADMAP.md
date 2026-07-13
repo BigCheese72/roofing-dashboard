@@ -587,6 +587,22 @@ Goal: turn each building into a long-term roof record.
   with the roof for reopening (same as Finding A's persistence piece) is
   a deliberate follow-up, not built this pass. See "GeoTIFF georeferenced
   ortho support" in `DEV_NOTES.md`.
+- ✅ **Shipped (dev only, 2026-07-12)**: KMZ/KML GroundOverlay import for
+  RoofMapper. The existing "Trace on My Own Drone Image" picker now accepts
+  `.kmz` and `.kml` files; KMZ is opened as a ZIP, KML GroundOverlay metadata
+  is parsed, the referenced orthomosaic image is extracted/matched, and the
+  overlay is drawn from its north/south/east/west bounds for tracing. The real
+  North College Street KMZ is a Google Earth super-overlay, so the importer also
+  follows tiled KML/image folders, selects the highest-detail level, and renders
+  those georeferenced tiles for tracing. Saved outlines use
+  `source:"kml_groundoverlay_trace"` and preserve the overlay metadata; when the
+  user is an owner/admin and the building has CompanyCam linked, the image is
+  also retained through the existing georeferenced `drone_ortho` base-map path.
+  KML rotation/quads are detected and warned about, but not rendered warped or
+  rotated yet. Exports label KMZ/KML as an approximate georeferenced overlay
+  source, not as RTK survey-grade. Desktop/laptop load testing on the real
+  North College KMZ remains a pre-merge gate; likely mobile devices degrade to
+  a capped lower tile level instead of trying to mount all 59 high-detail tiles.
 - 🐛 **Fixed (dev only, 2026-07-11)**: roof rename was undiscoverable from
   RoofMapper itself — Mark accidentally saved a second roof also named
   "Roof 1" and had no way to fix it. The rename function existed
