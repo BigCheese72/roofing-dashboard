@@ -601,6 +601,7 @@ function rmMakeSplitSection(ring, label){
 var RM_SQUARE_TOLERANCE_DEG = 12; /* requirement: ~10-15° */
 var RM_EDGE_MEASURE_SCALE_TOLERANCE = 0.01; /* +/-1% agreement for later measured edges */
 var RM_EDGE_MEASURE_LABEL_TOLERANCE_FT = 0.5; /* labels round to feet, so sub-foot drift can still render honestly */
+var RM_LEGACY_CALIBRATION_EDGE_TOLERANCE = 0.03; /* copied split calibrations fail; small square-up drift survives */
 var RM_SQUARE_CURVE_SINGLE_TURN_MAX = 35; /* a per-vertex turn under this reads as "not a sharp corner" */
 var RM_SQUARE_CURVE_CUMULATIVE_MIN = 40; /* but a RUN of small turns summing past this reads as an arc, not GPS/trace noise */
 function rmGeomComputeSquaredRing(ring){
@@ -1052,10 +1053,7 @@ function rmActiveEdgeMeasurements(outline){
     return m && !m.invalidatedAt;
   });
 }
-function rmLegacyCalibrationMeasurement(outline){
-  if (!outline || !outline.calibration || outline.calibration.inherited) return null;
-  var c = outline.calibration;
-  if (!rmIsFiniteNumber(c.edgeIndex) || !rmIsFiniteNumber(c.measuredFt) || c.measuredFt <= 0) return null;
+function rmLegacyCalibrationEntry(c){
   return {
     edgeIndex: c.edgeIndex,
     measuredFt: c.measuredFt,
@@ -1064,6 +1062,34 @@ function rmLegacyCalibrationMeasurement(outline){
     rawInput: c.rawInput || String(c.measuredFt),
     legacyCalibration: true
   };
+}
+function rmArchiveLegacyCalibrationMismatch(outline, c){
+  if (!outline || !c) return;
+  var list = outline.edgeMeasurements || [];
+  var exists = list.some(function(m){
+    return m && m.legacyCalibration && m.invalidatedReason === "legacy_calibration_ring_mismatch" &&
+      m.edgeIndex === c.edgeIndex && m.measuredFt === c.measuredFt;
+  });
+  if (exists) return;
+  outline.edgeMeasurements = list.concat([Object.assign(rmLegacyCalibrationEntry(c), {
+    invalidatedAt: Date.now(),
+    invalidatedReason: "legacy_calibration_ring_mismatch"
+  })]);
+}
+function rmLegacyCalibrationMeasurement(outline){
+  if (!outline || !outline.calibration || outline.calibration.inherited) return null;
+  var c = outline.calibration;
+  if (!rmIsFiniteNumber(c.edgeIndex) || !rmIsFiniteNumber(c.measuredFt) || c.measuredFt <= 0) return null;
+  var ring = outline.ring || [];
+  var a = ring[c.edgeIndex], b = ring[c.edgeIndex + 1];
+  var edgeFt = a && b ? rmGeomHaversineMeters(a, b) * 3.28084 : null;
+  var mismatch = !rmIsFiniteNumber(edgeFt) ||
+    Math.abs(edgeFt - c.measuredFt) / c.measuredFt > RM_LEGACY_CALIBRATION_EDGE_TOLERANCE;
+  if (mismatch){
+    rmArchiveLegacyCalibrationMismatch(outline, c);
+    return null;
+  }
+  return rmLegacyCalibrationEntry(c);
 }
 function rmMigrateLegacyCalibration(outline){
   var legacy = rmLegacyCalibrationMeasurement(outline);
@@ -1153,15 +1179,51 @@ function rmFormatEdgeFeet(ft){
 function rmHasInheritedScale(outline){
   return !!(outline && (outline.inheritedScale || (outline.calibration && outline.calibration.inherited)));
 }
-function rmAnnotateInheritedScaleMethod(method, outline){
-  if (!method || !rmHasInheritedScale(outline) || rmHasMeasuredEdges(outline)) return method;
-  var note = "scale carried over from a field-measured section; this roof's outline was not itself measured";
+function rmAppendMethodScaleNote(method, note, scaleProvenance){
+  if (!method || !scaleProvenance) return method;
   var label = method.label || "Method: Unknown capture source";
   if (label.indexOf(note) === -1){
     var appended = label.replace(/\)$/, "; " + note + ")");
     label = appended === label ? label + " (" + note + ")" : appended;
   }
-  return Object.assign({}, method, { accuracyClass: "inherited_scale_image", label: label });
+  return Object.assign({}, method, { label: label, scaleProvenance: scaleProvenance });
+}
+function rmMeasuredScaleProvenance(outline){
+  if (!outline || !outline.calibration || outline.calibration.inherited) return null;
+  var legacy = rmLegacyCalibrationMeasurement(outline);
+  if (!legacy) return null;
+  return {
+    source: "measured",
+    factor: rmIsFiniteNumber(outline.calibration.factor) ? outline.calibration.factor : null,
+    edgeIndex: legacy.edgeIndex,
+    measuredFt: legacy.measuredFt
+  };
+}
+function rmInheritedScaleProvenance(outline){
+  if (!rmHasInheritedScale(outline)) return null;
+  var inherited = outline.inheritedScale || null;
+  return {
+    source: "inherited",
+    fromOutlineId: inherited ? (inherited.fromOutlineId || null) : null,
+    factor: inherited && rmIsFiniteNumber(inherited.factor) ? inherited.factor :
+      (outline.calibration && rmIsFiniteNumber(outline.calibration.factor) ? outline.calibration.factor : null)
+  };
+}
+function rmAnnotateMeasuredScaleMethod(method, outline){
+  return rmAppendMethodScaleNote(method,
+    "scale field-calibrated from a tape-measured edge on this roof",
+    rmMeasuredScaleProvenance(outline));
+}
+function rmAnnotateInheritedScaleMethod(method, outline){
+  if (!method || !rmHasInheritedScale(outline) || rmHasMeasuredEdges(outline)) return method;
+  return rmAppendMethodScaleNote(method,
+    "scale carried over from a field-measured section; this roof's outline was not itself measured",
+    rmInheritedScaleProvenance(outline));
+}
+function rmAnnotateScaleMethod(method, outline){
+  var measured = rmAnnotateMeasuredScaleMethod(method, outline);
+  if (measured && measured.scaleProvenance) return measured;
+  return rmAnnotateInheritedScaleMethod(method, outline);
 }
 function rmBuildInheritedScaleRecord(src, factor){
   if (!src) return null;
@@ -1206,7 +1268,7 @@ function rmOutlineMeasurementMethod(outline){
     return outline.measurementMethod;
   }
   if (outline.source === "geotiff_trace"){
-    return rmAnnotateInheritedScaleMethod({ kind: "geotiff", accuracyClass: "survey_grade_source",
+    return rmAnnotateScaleMethod({ kind: "geotiff", accuracyClass: "survey_grade_source",
       label: "Method: RTK GeoTIFF trace (survey-grade source)" }, outline);
   }
   if (outline.source === "kml_groundoverlay_trace"){
@@ -1215,32 +1277,30 @@ function rmOutlineMeasurementMethod(outline){
     var errText = maxErr ? "; max quad approx. " + (Math.round(maxErr * 10) / 10) + " ft" : "";
     var detailText = go.mobileTileCapApplied ? "; traced at reduced tile detail" : "";
     var name = go.sourceType === "kmz_superoverlay" ? "KMZ super-overlay tile trace" : "KMZ/KML GroundOverlay trace";
-    return rmAnnotateInheritedScaleMethod({ kind: go.sourceType || "kml_groundoverlay", accuracyClass: "georeferenced_overlay_approx",
+    return rmAnnotateScaleMethod({ kind: go.sourceType || "kml_groundoverlay", accuracyClass: "georeferenced_overlay_approx",
       maxQuadBBoxErrorFt: maxErr,
       label: "Method: " + name + " (approx. overlay; not RTK survey-grade" + errText + detailText + ")" }, outline);
   }
   if ((outline.source === "manual_trace" || outline.source === "ortho_trace") && rmHasInheritedScale(outline) && !rmHasMeasuredEdges(outline)){
-    return { kind: "flat_ortho", accuracyClass: "inherited_scale_image",
-      label: "Method: Flat image trace (scale carried over from a field-measured section; this roof's outline was not itself measured)" };
+    return rmAnnotateInheritedScaleMethod({ kind: "flat_ortho", accuracyClass: "uncalibrated_image",
+      label: "Method: Flat image trace" }, outline);
   }
   if (outline.source === "ortho_trace"){
-    var hasFieldMeasure = rmHasMeasuredEdges(outline);
-    if (hasFieldMeasure){
-      return { kind: "flat_ortho", accuracyClass: "field_calibrated",
-        label: "Method: Flat image trace (field-calibrated)" };
-    }
+    var orthoMethod = rmAnnotateMeasuredScaleMethod({ kind: "flat_ortho", accuracyClass: "uncalibrated_image",
+      label: "Method: Flat image trace" }, outline);
+    if (orthoMethod.scaleProvenance) return orthoMethod;
     return { kind: "flat_ortho", accuracyClass: "uncalibrated_image",
       label: "Method: Flat image trace (requires field calibration)" };
   }
   if (outline.source === "walk_corners"){
-    return rmAnnotateInheritedScaleMethod({ kind: "walked_phone_gps", accuracyClass: "field_gps_approx",
+    return rmAnnotateScaleMethod({ kind: "walked_phone_gps", accuracyClass: "field_gps_approx",
       label: "Method: Walked phone-GPS corners (approximate)" }, outline);
   }
   if (outline.source === "osm"){
-    return rmAnnotateInheritedScaleMethod({ kind: "osm", accuracyClass: "public_map_approx",
+    return rmAnnotateScaleMethod({ kind: "osm", accuracyClass: "public_map_approx",
       label: "Method: OSM footprint trace (approximate public map data)" }, outline);
   }
-  return rmAnnotateInheritedScaleMethod({ kind: "manual_map", accuracyClass: "manual_map_approx",
+  return rmAnnotateScaleMethod({ kind: "manual_map", accuracyClass: "manual_map_approx",
     label: "Method: Manual map trace (approximate)" }, outline);
 }
 function rmOutlineMeasurementMethodSummary(outlines){
@@ -2924,7 +2984,6 @@ async function rmCalibrateEdge(edgeIndex){
      DEV_NOTES.md. */
   if ((outline.source === "manual_trace" || outline.source === "ortho_trace") && rmState.linkedBuildingId){
     var carryOver = rmState.inheritedScaleFactorBuildingId === rmState.linkedBuildingId ? rmState.inheritedScaleFactor : 1;
-    if (rmState.inheritedScaleFactorBuildingId !== rmState.linkedBuildingId) rmState.inheritedScaleFromOutlineId = null;
     rmState.inheritedScaleFactor = carryOver * appliedFactor;
     rmState.inheritedScaleFactorBuildingId = rmState.linkedBuildingId;
     rmState.inheritedScaleFromOutlineId = outline.id || null;
