@@ -1114,8 +1114,18 @@ function rmLegacyCalibrationMeasurement(outline){
   return rmLegacyCalibrationEntry(c);
 }
 function rmMigrateLegacyCalibration(outline){
-  if (!outline || !outline.calibration || outline.calibration.inherited) return false;
+  if (!outline || !outline.calibration) return false;
   var c = outline.calibration;
+  if (c.inherited){
+    if (!rmIsFiniteNumber(c.factor) || outline.inheritedScale) return false;
+    outline.inheritedScale = {
+      fromOutlineId: null,
+      factor: c.factor,
+      scaleSource: "measured",
+      derivedAt: c.calibratedAt || null
+    };
+    return true;
+  }
   if (!rmIsFiniteNumber(c.edgeIndex) || !rmIsFiniteNumber(c.measuredFt) || c.measuredFt <= 0) return false;
   var legacy = rmLegacyCalibrationMeasurement(outline);
   if (!legacy) return false;
@@ -1125,6 +1135,19 @@ function rmMigrateLegacyCalibration(outline){
   if (exists) return false;
   outline.edgeMeasurements = (outline.edgeMeasurements || []).concat([legacy]);
   return true;
+}
+function rmLegacyCalibrationIsMirrored(outline){
+  if (!outline || !outline.calibration) return true;
+  var c = outline.calibration;
+  if (c.inherited){
+    return !!(outline.inheritedScale && rmIsFiniteNumber(outline.inheritedScale.factor) &&
+      rmIsFiniteNumber(c.factor) && Math.abs(outline.inheritedScale.factor - c.factor) < 0.000001);
+  }
+  var legacy = rmLegacyCalibrationMeasurement(outline);
+  if (!legacy) return false;
+  return ((outline.edgeMeasurements) || []).some(function(m){
+    return m && m.legacyCalibration && m.edgeIndex === legacy.edgeIndex && m.measuredFt === legacy.measuredFt;
+  });
 }
 function rmActiveMeasuredEdges(outline){
   var active = rmActiveEdgeMeasurements(outline).filter(function(m){
@@ -1151,16 +1174,21 @@ function rmLatestActiveMeasuredEdge(outline){
   })[0];
 }
 function rmLatestAppliedMeasuredEdge(outline){
-  var list = rmActiveMeasuredEdges(outline).filter(function(m){
-    return m && m.rescaleApplied === true;
+  var list = rmAllMeasuredEdgeRecords(outline).filter(function(m){
+    return rmMeasurementScaleStillApplied(m) && m.rescaleApplied === true;
   });
   if (!list.length) return null;
   return list.slice().sort(function(a, b){
     return (b.measuredAt || 0) - (a.measuredAt || 0);
   })[0];
 }
+function rmMeasurementInvalidationKeepsScale(reason){
+  return reason === "superseded_by_remeasure" ||
+    reason === "vertex_edit" || reason === "square_up" ||
+    reason === "resnap_neighbors" || reason === "align_outline";
+}
 function rmMeasurementScaleStillApplied(m){
-  return !!(m && (!m.invalidatedAt || m.invalidatedReason === "superseded_by_remeasure"));
+  return !!(m && (!m.invalidatedAt || rmMeasurementInvalidationKeepsScale(m.invalidatedReason)));
 }
 function rmComposedAppliedScaleFactor(outline){
   var recorded = rmAllMeasuredEdgeRecords(outline).filter(function(m){
@@ -1213,14 +1241,16 @@ function rmInvalidateEdgeMeasurements(outline, reason){
     outline.edgeMeasurements = outline.edgeMeasurements.map(function(m){
       if (!m || m.invalidatedAt) return m;
       changed = true;
-      return Object.assign({}, m, { invalidatedAt: now, invalidatedReason: reason || "geometry_edit" });
+      return Object.assign({}, m, { invalidatedAt: now, invalidatedReason: reason || "unknown_edit" });
     });
   }
   if (outline.calibration){
-    /* Safe to clear this legacy mirror after migration; the tape record now
-       lives in edgeMeasurements[] and carries the invalidation audit trail. */
-    changed = true;
-    delete outline.calibration;
+    /* Drop legacy calibration only after its scale data is mirrored into the
+       normalized measurement model. Unknown legacy shapes stay intact. */
+    if (rmLegacyCalibrationIsMirrored(outline)){
+      changed = true;
+      delete outline.calibration;
+    }
   }
   rmRefreshOutlineMeasurementModel(outline);
   return changed;
@@ -1363,14 +1393,17 @@ function rmBuildCaptureSource(outline){
 function rmBuildScaleSource(outline, captureSource){
   var measured = rmLatestAppliedMeasuredEdge(outline);
   if (measured){
+    var measurementStale = !!measured.invalidatedAt;
     return {
       kind: "measured",
-      label: "tape-measured edge on this roof",
+      label: measurementStale ? "tape-measured scale on this roof; edge has since been edited" : "tape-measured edge on this roof",
       factor: rmIsFiniteNumber(measured.factor) ? measured.factor : null,
       appliedFactor: rmIsFiniteNumber(measured.appliedFactor) ? measured.appliedFactor : null,
-      edgeIndex: measured.edgeIndex,
-      measuredFt: measured.measuredFt,
-      measurementId: measured.id || null
+      edgeIndex: measurementStale ? null : measured.edgeIndex,
+      measuredFt: measurementStale ? null : measured.measuredFt,
+      measurementId: measurementStale ? null : (measured.id || null),
+      measurementStale: measurementStale,
+      measurementInvalidatedReason: measurementStale ? (measured.invalidatedReason || null) : null
     };
   }
   if (rmHasInheritedScale(outline)){
