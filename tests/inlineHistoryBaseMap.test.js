@@ -139,6 +139,23 @@ test("inline history does not borrow another roof's base map", async () => {
   assert.strictEqual(base.customBld, null);
   assert.strictEqual(base.orthoOverlay, null);
   assert.strictEqual(base.syntheticOrtho, false);
+  assert.strictEqual(
+    sandbox.inlineNoBaseMapNotice(roofs, "roof1"),
+    "No base map drawn for Roof 1. Roof 7 has one - switch roofs to view it."
+  );
+});
+
+test("inline history distinguishes buildings with no base map anywhere", () => {
+  const sandbox = makeSandbox();
+  const roofs = [
+    { id: "roof1", label: "Roof 1" },
+    { id: "roof2", label: "Roof 2" }
+  ];
+
+  assert.strictEqual(
+    sandbox.inlineNoBaseMapNotice(roofs, "roof1"),
+    "No base map has been drawn for this building yet."
+  );
 });
 
 test("synthetic RoofMapper orthos stay in the local image frame", async () => {
@@ -208,19 +225,46 @@ test("genuine drone orthos use their persisted real-world bounds", async () => {
       roof_base_map_bounds: { north: 41.1, south: 41.0, east: -87.9, west: -88.0 }
     },
     hasCustomBaseMap: false,
-    expectedPinIds: ["selected-gps"],
-    expectedAssetIds: ["asset-selected-gps"],
-    pinDisclosure: [/pinned to other roofs/, /legacy unassigned findings/, /image-placed finding/],
-    assetDisclosure: [/features from other roofs/, /image-placed feature/]
+    expectedPinIds: ["selected-gps", "other-gps", "legacy-gps"],
+    expectedAssetIds: ["asset-selected-gps", "asset-other-gps"],
+    pinDisclosure: [/image-placed finding/],
+    pinDisclosureAbsent: [/pinned to other roofs/, /legacy unassigned findings/],
+    assetDisclosure: [/image-placed feature/],
+    assetDisclosureAbsent: [/features from other roofs/]
   },
   {
     name: "plain satellite with no base map",
     baseFields: {},
     hasCustomBaseMap: false,
-    expectedPinIds: ["selected-gps"],
-    expectedAssetIds: ["asset-selected-gps"],
-    pinDisclosure: [/pinned to other roofs/, /legacy unassigned findings/, /image-placed finding/],
-    assetDisclosure: [/features from other roofs/, /image-placed feature/]
+    expectedPinIds: ["selected-gps", "other-gps", "legacy-gps"],
+    expectedAssetIds: ["asset-selected-gps", "asset-other-gps"],
+    pinDisclosure: [/image-placed finding/],
+    pinDisclosureAbsent: [/pinned to other roofs/, /legacy unassigned findings/],
+    assetDisclosure: [/image-placed feature/],
+    assetDisclosureAbsent: [/features from other roofs/]
+  },
+  {
+    name: "plain satellite when only a sibling roof has a base map",
+    baseFields: {},
+    roofs: function(){
+      return [
+        { id: "roof1", label: "Roof 1", roof_assets: [
+          { id: "asset-selected-gps", lat: 40, lng: -90 },
+          { id: "asset-selected-xy", x: 0.1, y: 0.2 }
+        ] },
+        { id: "roof7", label: "Roof 7", roof_base_map_type: "sketch", roof_base_map_url: "roof7.jpg", roof_assets: [
+          { id: "asset-other-gps", lat: 41, lng: -91 },
+          { id: "asset-other-xy", x: 0.6, y: 0.7 }
+        ] }
+      ];
+    },
+    hasCustomBaseMap: false,
+    expectedPinIds: ["selected-gps", "other-gps", "legacy-gps"],
+    expectedAssetIds: ["asset-selected-gps", "asset-other-gps"],
+    pinDisclosure: [/image-placed finding/],
+    pinDisclosureAbsent: [/pinned to other roofs/, /legacy unassigned findings/],
+    assetDisclosure: [/image-placed feature/],
+    assetDisclosureAbsent: [/features from other roofs/]
   },
   {
     name: "plain satellite with one named roof and legacy pins",
@@ -228,10 +272,10 @@ test("genuine drone orthos use their persisted real-world bounds", async () => {
     roofs: singleNamedRoof,
     events: singleNamedRoofLegacyEvents,
     hasCustomBaseMap: false,
-    expectedPinIds: ["selected-gps"],
+    expectedPinIds: ["selected-gps", "legacy-gps"],
     expectedAssetIds: ["asset-selected-gps"],
-    pinDisclosure: [/legacy unassigned findings/],
-    pinDisclosureAbsent: [/pinned to other roofs/],
+    pinDisclosure: [/image-placed finding/],
+    pinDisclosureAbsent: [/pinned to other roofs/, /legacy unassigned findings/],
     assetDisclosure: [/image-placed feature/]
   }
 ].forEach((mode) => {
@@ -254,6 +298,7 @@ test("genuine drone orthos use their persisted real-world bounds", async () => {
     mode.pinDisclosure.forEach((pattern) => assert.match(pinCoverage.disclosure, pattern));
     (mode.pinDisclosureAbsent || []).forEach((pattern) => assert.doesNotMatch(pinCoverage.disclosure, pattern));
     mode.assetDisclosure.forEach((pattern) => assert.match(assetCoverage.disclosure, pattern));
+    (mode.assetDisclosureAbsent || []).forEach((pattern) => assert.doesNotMatch(assetCoverage.disclosure, pattern));
   });
 });
 
