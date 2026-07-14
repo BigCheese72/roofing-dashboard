@@ -176,9 +176,64 @@ test("RoofMapper carries durable synthetic base maps through split outlines", ()
   assert.equal(display.ring.length, ring.length);
 
   const unsavedSplit = context.rmSplitOutlineStorageFields({ ring, center: { lat: 0, lng: 0 } }, null);
-  assert.equal(unsavedSplit.ring.length, ring.length);
-  assert.equal(unsavedSplit.imageRing, null);
-  assert.equal(unsavedSplit.imageFrame, null);
+  assert.equal(unsavedSplit, null);
+});
+
+test("RoofMapper refuses synthetic ortho upload persistence before unsafe geometry save", async () => {
+  const toasts = [];
+  const apiCalls = [];
+  const context = {
+    isAdmin: true,
+    rmState: {
+      orthoDataUrl: "data:image/jpeg;base64,abc123"
+    },
+    toast(message){
+      toasts.push(message);
+    },
+    fdb: {
+      collection(){
+        return {
+          doc(){
+            return {
+              async get(){
+                return {
+                  exists: true,
+                  data(){
+                    return { companyCamProjectId: "cc-1" };
+                  }
+                };
+              }
+            };
+          }
+        };
+      }
+    },
+    async ccApiPost(){
+      return { document: { url: "https://example.test/retained-ortho.jpg" } };
+    },
+    async callAdminApi(body){
+      apiCalls.push(body);
+    }
+  };
+  loadFunctionBlock(
+    "js/roofmapper.js",
+    "function rmApplySyntheticOrthoBaseMap",
+    "async function rmPersistKmlGroundOverlayBaseMap",
+    context
+  );
+
+  const url = await context.rmPersistOrthoBaseMap("building-1", "roof-1");
+  assert.equal(url, "https://example.test/retained-ortho.jpg");
+  assert.equal(apiCalls.length, 1);
+  assert.equal(apiCalls[0].action, "set_building_roof_map");
+  assert.equal(apiCalls[0].roof_base_map_type, "sketch");
+  assert.equal(apiCalls[0].roof_base_map_url, url);
+  assert.equal(apiCalls[0].roof_base_map_synthetic, true);
+
+  context.isAdmin = false;
+  const refused = await context.rmUploadSyntheticOrthoBaseMap("building-1", "roof-2");
+  assert.equal(refused, false);
+  assert.ok(toasts.some((message) => message.includes("can't be kept with it")));
 });
 
 test("building maps reject synthetic Null Island geometry without rejecting valid zero latitude", () => {

@@ -4604,23 +4604,43 @@ function rmSyntheticSplitBaseMapFields(sourceRoof){
     roof_base_map_synthetic: true
   };
 }
+function rmApplySyntheticOrthoBaseMap(roof, url){
+  if (!roof || !url) return roof;
+  roof.roof_base_map_type = "sketch";
+  roof.roof_base_map_url = url;
+  roof.roof_base_map_bounds = null;
+  roof.roof_base_map_synthetic = true;
+  return roof;
+}
 function rmHasDurableSyntheticSplitFrame(sourceRoof){
   return !!rmSyntheticSplitBaseMapFields(sourceRoof).roof_base_map_url;
 }
+function rmSyntheticOrthoSaveRequiresFrame(){
+  return !!(rmState.orthoActive && rmState.orthoSynthetic);
+}
+function rmRefuseSyntheticOrthoSave(detail){
+  toast("This roof was traced on an uploaded image and that image can't be kept with it, so the outline can't be saved accurately." +
+    (detail ? " " + detail : ""));
+}
+async function rmEnsureSyntheticOrthoFrameForSave(buildingId, roof, alreadySaved){
+  if (!rmSyntheticOrthoSaveRequiresFrame()) return true;
+  if (!rmSyntheticOrthoFrameActive()){
+    rmRefuseSyntheticOrthoSave("Reload the uploaded image and try again.");
+    return false;
+  }
+  if (rmHasDurableSyntheticSplitFrame(roof)) return roof.roof_base_map_url;
+  var url = alreadySaved ?
+    await rmPersistOrthoBaseMap(buildingId, roof.id) :
+    await rmUploadSyntheticOrthoBaseMap(buildingId, roof.id);
+  if (!url) return false;
+  rmApplySyntheticOrthoBaseMap(roof, url);
+  return url;
+}
 function rmSplitOutlineStorageFields(outline, sourceRoof){
   if (rmSyntheticOrthoFrameActive() && !rmHasDurableSyntheticSplitFrame(sourceRoof)){
-    /* A never-saved split has no durable image URL to carry with imageRing.
-       Keeping display geometry here avoids creating image-frame outlines
-       that cannot be reopened or rendered because their frame is missing. */
-    return {
-      ring: outline.ring || [],
-      center: outline.center || null,
-      imageRing: null,
-      imageCenter: null,
-      imageFrame: null,
-      tracedOnOrtho: outline.tracedOnOrtho || null,
-      georeferencedSource: outline.georeferencedSource === false ? false : (outline.georeferencedSource || null)
-    };
+    /* Never commit synthetic-image geometry unless the image itself has a
+       durable URL to reopen with it. Callers must upload/refuse before save. */
+    return null;
   }
   return rmOutlineStorageFields(outline, null);
 }
@@ -4738,19 +4758,21 @@ function rmStartOrthoTrace(dataUrl, pixelW, pixelH){
    future status/label can say "drone photo, not geo-referenced" instead
    of implying a hand sketch. See "Ortho upload: persist with the roof
    for reopening" in DEV_NOTES.md. */
-async function rmPersistOrthoBaseMap(buildingId, roofId){
+async function rmUploadSyntheticOrthoBaseMap(buildingId, roofId){
   if (!isAdmin){
-    toast("Roof outline saved. Sign in as admin to also keep this drone image with the roof for reopening later.");
-    return;
+    rmRefuseSyntheticOrthoSave("Sign in as admin first.");
+    return false;
   }
-  if (!rmState.orthoDataUrl) return;
+  if (!rmState.orthoDataUrl){
+    rmRefuseSyntheticOrthoSave("The uploaded image is no longer available in this session.");
+    return false;
+  }
   try{
     var bldSnap = await fdb.collection("buildings").doc(buildingId).get();
     var bld = bldSnap.exists ? bldSnap.data() : {};
     if (!bld.companyCamProjectId){
-      toast("Roof outline saved. This building has no CompanyCam project linked, so the drone image itself " +
-        "can't be retained (the traced outline is saved either way).");
-      return;
+      rmRefuseSyntheticOrthoSave("This building has no linked CompanyCam project to retain the image.");
+      return false;
     }
     toast("Saving the drone image with this roof…");
     var base64 = rmState.orthoDataUrl.split("base64,")[1];
@@ -4759,11 +4781,23 @@ async function rmPersistOrthoBaseMap(buildingId, roofId){
       name: "roof-ortho-" + roofId + ".jpg", attachment: base64 });
     var url = out.document && out.document.url;
     if (!url) throw new Error("CompanyCam didn't return a URL for the uploaded file");
+    return url;
+  }catch(e){
+    rmRefuseSyntheticOrthoSave("Upload failed: " + e.message);
+    return false;
+  }
+}
+async function rmPersistOrthoBaseMap(buildingId, roofId){
+  var url = await rmUploadSyntheticOrthoBaseMap(buildingId, roofId);
+  if (!url) return false;
+  try{
     await callAdminApi({ action: "set_building_roof_map", buildingId: buildingId, roofId: roofId,
       roof_base_map_type: "sketch", roof_base_map_url: url, roof_base_map_synthetic: true });
-    toast("Drone image saved with the roof — reopen it any time from Building History ✓");
+    toast("Drone image saved with the roof -- reopen it any time from Building History.");
+    return url;
   }catch(e){
-    toast("Roof outline saved, but couldn't keep the drone image with it: " + e.message);
+    rmRefuseSyntheticOrthoSave("Could not attach the uploaded image to this roof: " + e.message);
+    return false;
   }
 }
 async function rmPersistKmlGroundOverlayBaseMap(buildingId, roofId){
@@ -5596,6 +5630,11 @@ async function rmSaveSplitSectionsToBuilding(buildingId){
     var bld = snap.exists ? snap.data() : {};
     var roofs = getBuildingRoofs(bld);
     var baseOutline = rmState.outline || {};
+    var splitBaseMapRoof = null;
+    if (rmSyntheticOrthoSaveRequiresFrame()){
+      splitBaseMapRoof = { id: genId("roof") };
+      if (!await rmEnsureSyntheticOrthoFrameForSave(buildingId, splitBaseMapRoof, false)) return false;
+    }
     var renamed = [];
     var created = sections.map(function(sec){
       var check = rmSuggestUniqueRoofLabel(roofs, sec.label, null);
@@ -5608,12 +5647,14 @@ async function rmSaveSplitSectionsToBuilding(buildingId){
       };
       rmCopyOutlineSourceMetadata(baseOutline, outlineEntry);
       rmDropSplitMeasurementMetadata(outlineEntry, baseOutline);
-      var storedOutlineEntry = Object.assign({}, outlineEntry, rmSplitOutlineStorageFields(outlineEntry, null));
-      var newRoof = {
+      var storedFields = rmSplitOutlineStorageFields(outlineEntry, splitBaseMapRoof);
+      if (!storedFields) throw new Error("the uploaded image could not be retained with these split sections");
+      var storedOutlineEntry = Object.assign({}, outlineEntry, storedFields);
+      var newRoof = Object.assign({
         id: genId("roof"), label: label, roofSystem: "",
         roof_base_map_type: null, roof_base_map_url: null, roof_base_map_bounds: null, roof_base_map_synthetic: null,
         roof_assets: [], roof_outlines: [storedOutlineEntry], createdAt: Date.now(), updatedAt: Date.now()
-      };
+      }, splitBaseMapRoof ? rmSyntheticSplitBaseMapFields(splitBaseMapRoof) : {});
       roofs.push(newRoof); /* so later sections' dup-check sees earlier ones from THIS SAME batch too */
       return { roof: newRoof, outlineEntry: outlineEntry };
     });
@@ -5688,6 +5729,7 @@ async function rmSaveSplitSectionsToExistingRoof(buildingId, roofId){
     if (origIdx === -1) throw new Error("couldn't find the original roof");
     var origRoof = roofs[origIdx];
     var baseOutline = rmState.outline || {};
+    if (!await rmEnsureSyntheticOrthoFrameForSave(buildingId, origRoof, true)) return false;
 
     /* Section 0 -- update the EXISTING roof in place: new outline entry
        appended (never overwrites/removes the old one -- append-only, same
@@ -5701,8 +5743,10 @@ async function rmSaveSplitSectionsToExistingRoof(buildingId, roofId){
     };
     rmCopyOutlineSourceMetadata(baseOutline, primaryOutline);
     rmDropSplitMeasurementMetadata(primaryOutline, baseOutline);
+    var primaryStoredFields = rmSplitOutlineStorageFields(primaryOutline, origRoof);
+    if (!primaryStoredFields) throw new Error("the uploaded image could not be retained with these split sections");
     origRoof.roof_outlines = (origRoof.roof_outlines || []).concat([
-      Object.assign({}, primaryOutline, rmSplitOutlineStorageFields(primaryOutline, origRoof))
+      Object.assign({}, primaryOutline, primaryStoredFields)
     ]);
     var renamed = [];
     if ((origRoof.label || "Roof").trim() !== sections[0].label.trim()){
@@ -5736,7 +5780,9 @@ async function rmSaveSplitSectionsToExistingRoof(buildingId, roofId){
       };
       rmCopyOutlineSourceMetadata(baseOutline, outlineEntry);
       rmDropSplitMeasurementMetadata(outlineEntry, baseOutline);
-      var storedOutlineEntry = Object.assign({}, outlineEntry, rmSplitOutlineStorageFields(outlineEntry, origRoof));
+      var storedFields = rmSplitOutlineStorageFields(outlineEntry, origRoof);
+      if (!storedFields) throw new Error("the uploaded image could not be retained with these split sections");
+      var storedOutlineEntry = Object.assign({}, outlineEntry, storedFields);
       var newRoof = Object.assign({
         id: genId("roof"), label: label, roofSystem: "",
         roof_base_map_type: null, roof_base_map_url: null, roof_base_map_bounds: null, roof_base_map_synthetic: null,
@@ -5797,6 +5843,7 @@ async function rmSaveOutlineToBuilding(buildingId, roofId){
        first roof is unambiguous. */
     var roof = roofs.find(function(r){ return r.id === roofId; }) || roofs[0];
     rmRefreshOutlineMeasurementModel(rmState.outline);
+    if (!await rmEnsureSyntheticOrthoFrameForSave(buildingId, roof, true)) return false;
     var entry = Object.assign({}, rmState.outline, rmOutlineStorageFields(rmState.outline, null), { id: genId("rmo") });
     roof.roof_outlines = (roof.roof_outlines || []).concat([entry]);
     /* Record the saved id back onto the in-memory outline so a later
@@ -5863,14 +5910,11 @@ async function rmSaveOutlineToBuilding(buildingId, roofId){
        the map in the DOM, so it's the very next thing visible. */
     rmUpdateControlVisibility();
     /* Finding A, part 2: if this outline was traced on an uploaded drone
-       image, retain that image with the roof so it can be reopened later
-       -- deliberately AFTER the outline itself is confirmed saved (the
-       outline always saves regardless of whether this next step
-       succeeds). See rmPersistOrthoBaseMap() and "Ortho upload: persist
-       with the roof for reopening" in DEV_NOTES.md. */
-    if (rmState.orthoActive) rmPersistOrthoBaseMap(buildingId, roof.id);
+       image, rmEnsureSyntheticOrthoFrameForSave() already retained that
+       image before any image-frame geometry was committed. */
     if (rmState.kmlOverlayActive) rmPersistKmlGroundOverlayBaseMap(buildingId, roof.id);
-  }catch(e){ toast("Couldn't save: " + e.message); }
+    return true;
+  }catch(e){ toast("Couldn't save: " + e.message); return false; }
 }
 /* THE fix for "RoofMapper can't reopen a saved roof" -- Mark refreshed,
    went back into RoofMapper for a roof Building History shows intact and
