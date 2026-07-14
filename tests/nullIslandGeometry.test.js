@@ -745,14 +745,72 @@ test("building maps disclose image-frame records from a different base image", (
       y: 0.25,
       imageFrame: "roof_base_map"
     }
+  ], [
+    {
+      x: 0.5,
+      y: 0.5,
+      imageFrame: "roof_base_map",
+      imageFrameUrl: "https://example.test/old.jpg"
+    },
+    {
+      x: 0.25,
+      y: 0.25,
+      imageFrame: "roof_base_map"
+    }
   ], "https://example.test/current.jpg");
 
   assert.equal(disclosure.outlines, 1);
   assert.equal(disclosure.assets, 1);
-  assert.equal(disclosure.total, 2);
+  assert.equal(disclosure.pins, 1);
+  assert.equal(disclosure.total, 3);
   assert.equal(
     context.buildingMapFrameMismatchText(disclosure),
-    "1 outline and 1 feature were placed on a different base image and can't be shown here."
+    "1 outline, 1 feature, and 1 pin were placed on a different base image and can't be shown here."
   );
-  assert.equal(context.buildingMapFrameMismatchDisclosure([], [], "https://example.test/current.jpg").total, 0);
+  assert.equal(context.buildingMapFrameMismatchDisclosure([], [], [], "https://example.test/current.jpg").total, 0);
+});
+
+test("work order image-space pins persist their base image frame", () => {
+  const finding = { id: "finding-1", roofId: "roof-1" };
+  const context = {
+    pinMarker: { getLatLng(){ return { lat: 80, lng: 120 }; } },
+    pinModalFindingId: "finding-1",
+    pinMapMode: "xy",
+    pinXYSize: { w: 400, h: 200 },
+    pinDeviceGpsUsed: false,
+    pinInitialSource: "tech_placed",
+    pinInteracted: true,
+    currentRoofId: "roof-1",
+    lastLookupRoofInfo: {
+      buildingId: "bld-1",
+      roofs: [{
+        id: "roof-1",
+        roof_base_map_type: "sketch",
+        roof_base_map_url: "https://example.test/base.jpg"
+      }]
+    },
+    currentWorkOrderBuildingId(){ return "bld-1"; },
+    lookupRoofInfoMatchesBuilding(info, buildingId){
+      return !!(info && info.buildingId && buildingId && info.buildingId === buildingId);
+    },
+    findingById(id){ return id === "finding-1" ? finding : null; },
+    renderFindings(){},
+    closePinModal(){},
+    toast(){}
+  };
+  loadFunctionBlock(
+    "js/workorders.js",
+    "function pinImageFrameUrlForFinding",
+    "function clearPinFromModal",
+    context
+  );
+
+  context.savePinFromModal();
+
+  assert.equal(finding.pin.lat, null);
+  assert.equal(finding.pin.lng, null);
+  assert.equal(finding.pin.x, 0.3);
+  assert.equal(finding.pin.y, 0.4);
+  assert.equal(finding.pin.imageFrame, "roof_base_map");
+  assert.equal(finding.pin.imageFrameUrl, "https://example.test/base.jpg");
 });

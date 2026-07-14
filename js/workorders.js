@@ -719,13 +719,34 @@ function useMyLocationForPin(){
     toast("Couldn't get your location: " + (err.message || "permission denied"));
   }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
 }
+function pinImageFrameUrlForFinding(f){
+  if (pinXYSize && (pinXYSize.imageFrameUrl || pinXYSize.frameUrl)){
+    return pinXYSize.imageFrameUrl || pinXYSize.frameUrl;
+  }
+  if (!lookupRoofInfoMatchesBuilding(lastLookupRoofInfo, currentWorkOrderBuildingId())) return null;
+  var roofs = lastLookupRoofInfo.roofs || [];
+  var roofId = (f && f.roofId) || currentRoofId || "roof_default";
+  var roof = roofs.find(function(r){ return r && r.id === roofId; });
+  if (!roof && roofId === "roof_default") roof = roofs[0] || null;
+  if (!roof) return null;
+  return ((roof.roof_base_map_type === "roof_plan" || roof.roof_base_map_type === "sketch") &&
+    roof.roof_base_map_url) ? roof.roof_base_map_url : null;
+}
 function savePinFromModal(){
   if (!pinMarker || !pinModalFindingId) return;
   var f = findingById(pinModalFindingId);
   if (!f) return;
   var ll = pinMarker.getLatLng();
   if (pinMapMode === "xy" && pinXYSize){
-    f.pin = { lat: null, lng: null, x: ll.lng / pinXYSize.w, y: ll.lat / pinXYSize.h, source: "tech_placed" };
+    f.pin = {
+      lat: null,
+      lng: null,
+      x: ll.lng / pinXYSize.w,
+      y: ll.lat / pinXYSize.h,
+      source: "tech_placed",
+      imageFrame: "roof_base_map",
+      imageFrameUrl: pinImageFrameUrlForFinding(f)
+    };
   } else {
     var source = pinDeviceGpsUsed ? "device_gps" :
       (pinInitialSource === "photo_gps" ? (pinInteracted ? "gps_corrected" : "photo_gps") : pinInitialSource);
@@ -1529,7 +1550,7 @@ function buildingMapImageFrameMatches(item, frameUrl){
 function buildingMapHasWrongImageFrame(item, frameUrl){
   return !!(item && item.imageFrameUrl && !buildingMapImageFrameMatches(item, frameUrl));
 }
-function buildingMapFrameMismatchDisclosure(outlines, assets, frameUrl){
+function buildingMapFrameMismatchDisclosure(outlines, assets, pins, frameUrl){
   var outlineCount = (outlines || []).filter(function(o){
     return Array.isArray(o.imageRing) && o.imageRing.length >= 3 && buildingMapHasWrongImageFrame(o, frameUrl);
   }).length;
@@ -1537,15 +1558,26 @@ function buildingMapFrameMismatchDisclosure(outlines, assets, frameUrl){
     return buildingMapIsFiniteNumber(a && a.x) && buildingMapIsFiniteNumber(a && a.y) &&
       buildingMapHasWrongImageFrame(a, frameUrl);
   }).length;
-  return { outlines: outlineCount, assets: assetCount, total: outlineCount + assetCount };
+  var pinCount = (pins || []).filter(function(p){
+    return buildingMapIsFiniteNumber(p && p.x) && buildingMapIsFiniteNumber(p && p.y) &&
+      buildingMapHasWrongImageFrame(p, frameUrl);
+  }).length;
+  return { outlines: outlineCount, assets: assetCount, pins: pinCount, total: outlineCount + assetCount + pinCount };
+}
+function buildingMapFrameMismatchPartsText(parts){
+  if (!parts.length) return "";
+  if (parts.length === 1) return parts[0];
+  if (parts.length === 2) return parts[0] + " and " + parts[1];
+  return parts.slice(0, -1).join(", ") + ", and " + parts[parts.length - 1];
 }
 function buildingMapFrameMismatchText(disclosure){
   disclosure = disclosure || {};
   var parts = [];
   if (disclosure.outlines) parts.push(disclosure.outlines + " outline" + (disclosure.outlines === 1 ? "" : "s"));
   if (disclosure.assets) parts.push(disclosure.assets + " feature" + (disclosure.assets === 1 ? "" : "s"));
+  if (disclosure.pins) parts.push(disclosure.pins + " pin" + (disclosure.pins === 1 ? "" : "s"));
   if (!parts.length) return "";
-  return parts.join(" and ") + " were placed on a different base image and can't be shown here.";
+  return buildingMapFrameMismatchPartsText(parts) + " were placed on a different base image and can't be shown here.";
 }
 function buildingMapSetFrameMismatchDisclosure(el, disclosure){
   if (!el || !el.id || !el.parentNode) return;
@@ -1609,7 +1641,7 @@ function renderBuildingMap(pins, customBld, bldAddress, orthoOverlay, assets, bu
   buildingMapRenderSeqByElementId[mapElementId] = renderSeq;
   if (customBld){
     buildingMapSetFrameMismatchDisclosure(el,
-      buildingMapFrameMismatchDisclosure(outlines, assets, customBld.roof_base_map_url));
+      buildingMapFrameMismatchDisclosure(outlines, assets, pins, customBld.roof_base_map_url));
     var img = new Image();
     img.onload = function(){
       var w = img.naturalWidth, h = img.naturalHeight;
@@ -1628,6 +1660,7 @@ function renderBuildingMap(pins, customBld, bldAddress, orthoOverlay, assets, bu
           if (o._roofLabel) roofLabelMarker.apply(null, buildingMapImageOutlineCenter(ring).concat([o._roofLabel])).addTo(map);
         });
         pins.forEach(function(p){
+          if (!buildingMapImageFrameMatches(p, customBld.roof_base_map_url)) return;
           L.circleMarker([p.y * h, p.x * w], {
             radius: 9, color: "#fff", weight: 2, fillColor: warrantyColor(p.warranty), fillOpacity: 0.95
           }).addTo(map).bindPopup(pinPopupHtml(p, { readOnly: readOnly }));
