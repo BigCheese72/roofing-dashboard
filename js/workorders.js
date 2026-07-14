@@ -1193,7 +1193,7 @@ function inlineHistorySetCoverage(full, rendered, disclosureFn){
     disclosure: disclosureFn ? disclosureFn(disclosed) : ""
   };
 }
-function inlineHistoryPinCoverage(events, roofId, hasCustomBaseMap, roofs){
+function inlineHistoryPinCoverage(events, roofId, hasCustomBaseMap){
   var full = inlineAllHistoryPins(events);
   var rendered = full.filter(function(p){
     var pinRoofId = p.roofId || "roof_default";
@@ -1202,10 +1202,10 @@ function inlineHistoryPinCoverage(events, roofId, hasCustomBaseMap, roofs){
       (pinRoofId === roofId && typeof p.lat === "number" && typeof p.lng === "number");
   });
   return inlineHistorySetCoverage(full, rendered, function(disclosed){
-    return inlineHiddenPinDisclosure(disclosed, roofId, hasCustomBaseMap, roofs);
+    return inlineHiddenPinDisclosure(disclosed, roofId, hasCustomBaseMap);
   });
 }
-function inlineHiddenPinDisclosure(disclosedPins, roofId, hasCustomBaseMap, roofs){
+function inlineHiddenPinDisclosure(disclosedPins, roofId, hasCustomBaseMap){
   var hiddenGps = 0, hiddenOtherRoof = 0, hiddenUnassigned = 0, hiddenXY = 0;
   /* Pins are written in either x/y image space or lat/lng GPS space. These
      checks keep the disclosure tied to the stored coordinate frame. */
@@ -1253,9 +1253,9 @@ function inlineHistoryAssetCoverage(roofs, roof, hasCustomBaseMap){
   var selectedRoofId = roof.id || "roof_default";
   var full = inlineAllRoofAssets(roofs);
   var rendered = full.filter(function(a){
-    return hasCustomBaseMap ?
-      (a._roofId === selectedRoofId && typeof a.x === "number" && typeof a.y === "number") :
-      (typeof a.lat === "number" && typeof a.lng === "number");
+    return a._roofId === selectedRoofId && (hasCustomBaseMap ?
+      (typeof a.x === "number" && typeof a.y === "number") :
+      (typeof a.lat === "number" && typeof a.lng === "number"));
   });
   return inlineHistorySetCoverage(full, rendered, function(disclosed){
     return inlineHiddenAssetDisclosure(disclosed, selectedRoofId, hasCustomBaseMap);
@@ -1266,13 +1266,13 @@ function inlineHiddenAssetDisclosure(disclosedAssets, roofId, hasCustomBaseMap){
   (disclosedAssets || []).forEach(function(a){
     var hasXY = typeof a.x === "number" && typeof a.y === "number";
     var hasGps = typeof a.lat === "number" && typeof a.lng === "number";
-    if (hasCustomBaseMap && a._roofId !== roofId) hiddenOtherRoof++;
+    if (a._roofId !== roofId) hiddenOtherRoof++;
     else if (hasCustomBaseMap && hasGps) hiddenGps++;
     else if (!hasCustomBaseMap && hasXY) hiddenXY++;
   });
   var notes = [];
   if (hiddenOtherRoof) notes.push(hiddenOtherRoof + " feature" + (hiddenOtherRoof === 1 ? "" : "s") +
-    " from other roof drawings " + (hiddenOtherRoof === 1 ? "is" : "are") + " not shown here");
+    " from other roofs " + (hiddenOtherRoof === 1 ? "is" : "are") + " not shown here");
   if (hiddenGps) notes.push(hiddenGps + " GPS-placed feature" + (hiddenGps === 1 ? "" : "s") +
     " can't be shown on a non-georeferenced drawing");
   if (hiddenXY) notes.push(hiddenXY + " image-placed feature" + (hiddenXY === 1 ? "" : "s") +
@@ -1342,7 +1342,7 @@ async function refreshInlineBuildingHistory(){
     var mapRoofId = roofId;
     var hasCustomBaseMap = !!baseMap.customBld;
     var orthoOverlay = baseMap.orthoOverlay;
-    var pinCoverage = inlineHistoryPinCoverage(events, mapRoofId, hasCustomBaseMap, ctx.roofs);
+    var pinCoverage = inlineHistoryPinCoverage(events, mapRoofId, hasCustomBaseMap);
     var assetCoverage = inlineHistoryAssetCoverage(ctx.roofs, mapRoof, hasCustomBaseMap);
     var roofAssets = assetCoverage.rendered;
     var outlines = inlineHistoryOutlines(ctx.roofs, hasCustomBaseMap, mapRoof);
