@@ -410,6 +410,86 @@ test("RoofMapper refuses base-map clear or replacement when image-frame geometry
   assert.equal(context.rmRefuseImageFrameBaseMapChange({ roof_outlines: [], roof_assets: [] }, "Changing this base map"), false);
 });
 
+test("RoofMapper refuses KMZ/KML base-map replacement when image-frame geometry exists", async () => {
+  const toasts = [];
+  const apiCalls = [];
+  const uploads = [];
+  const roof = {
+    id: "roof-1",
+    roof_base_map_type: "sketch",
+    roof_base_map_url: "https://example.test/base-1.jpg",
+    roof_base_map_synthetic: true,
+    roof_outlines: [{
+      imageFrame: "roof_base_map",
+      imageFrameUrl: "https://example.test/base-1.jpg",
+      imageRing: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }]
+    }],
+    roof_assets: [{
+      x: 0.5,
+      y: 0.5,
+      imageFrame: "roof_base_map",
+      imageFrameUrl: "https://example.test/base-1.jpg"
+    }]
+  };
+  const context = {
+    isAdmin: true,
+    rmState: {
+      kmlOverlayMeta: {
+        bounds: { north: 41.51, south: 41.49, east: -81.59, west: -81.61 },
+        imageFileName: "ortho.jpg"
+      },
+      kmlOverlayDataUrl: "data:image/jpeg;base64,kml-image"
+    },
+    toast(message){ toasts.push(message); },
+    rmIsFiniteNumber(value){
+      return typeof value === "number" && Number.isFinite(value);
+    },
+    getRoofById(building, roofId){
+      return (building.roofs || []).find((r) => r.id === roofId) || null;
+    },
+    fdb: {
+      collection(){
+        return {
+          doc(){
+            return {
+              async get(){
+                return {
+                  exists: true,
+                  data(){
+                    return { companyCamProjectId: "cc-1", roofs: [roof] };
+                  }
+                };
+              }
+            };
+          }
+        };
+      }
+    },
+    async ccApiPost(body){
+      uploads.push(body);
+      return { document: { url: "https://example.test/kmz.jpg" } };
+    },
+    async callAdminApi(body){
+      apiCalls.push(body);
+    }
+  };
+  loadFunctionBlock(
+    "js/roofmapper.js",
+    "function rmValidOrthoBounds",
+    "function rmStartWalkCorners",
+    context
+  );
+
+  const result = await context.rmPersistKmlGroundOverlayBaseMap("building-1", "roof-1");
+
+  assert.equal(result, false);
+  assert.equal(apiCalls.length, 0);
+  assert.equal(uploads.length, 0);
+  assert.equal(roof.roof_base_map_url, "https://example.test/base-1.jpg");
+  assert.equal(context.rmAssetDisplayLatLng(roof.roof_assets[0]), null);
+  assert.ok(toasts.some((message) => message.includes("KMZ/KML orthomosaic") && message.includes("was refused")));
+});
+
 test("building maps reject synthetic Null Island geometry without rejecting valid zero latitude", () => {
   const context = { Number };
   loadFunctionBlock(
@@ -489,4 +569,47 @@ test("building maps render selected synthetic image outlines in custom image spa
   assert.equal(context.buildingMapImageFrameMatches({ imageFrameUrl: "https://example.test/base.jpg" }, "https://example.test/base.jpg"), true);
   assert.equal(context.buildingMapImageFrameMatches({ imageFrameUrl: "https://example.test/base.jpg" }, "https://example.test/other.jpg"), false);
   assert.equal(context.buildingMapImageOutlineRing({ imageRing: [{ x: 0, y: 0 }, { x: 1, y: 1 }] }, 400, 200), null);
+});
+
+test("building maps disclose image-frame records from a different base image", () => {
+  const context = { Number };
+  loadFunctionBlock(
+    "js/workorders.js",
+    "function buildingMapIsFiniteNumber",
+    "function renderBuildingMap",
+    context
+  );
+
+  const disclosure = context.buildingMapFrameMismatchDisclosure([
+    {
+      imageFrame: "roof_base_map",
+      imageFrameUrl: "https://example.test/old.jpg",
+      imageRing: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }]
+    },
+    {
+      imageFrame: "roof_base_map",
+      imageRing: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }]
+    }
+  ], [
+    {
+      x: 0.5,
+      y: 0.5,
+      imageFrame: "roof_base_map",
+      imageFrameUrl: "https://example.test/old.jpg"
+    },
+    {
+      x: 0.25,
+      y: 0.25,
+      imageFrame: "roof_base_map"
+    }
+  ], "https://example.test/current.jpg");
+
+  assert.equal(disclosure.outlines, 1);
+  assert.equal(disclosure.assets, 1);
+  assert.equal(disclosure.total, 2);
+  assert.equal(
+    context.buildingMapFrameMismatchText(disclosure),
+    "1 outline and 1 feature were placed on a different base image and can't be shown here."
+  );
+  assert.equal(context.buildingMapFrameMismatchDisclosure([], [], "https://example.test/current.jpg").total, 0);
 });

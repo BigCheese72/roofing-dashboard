@@ -1526,6 +1526,43 @@ function buildingMapImageFrameMatches(item, frameUrl){
   if (!item || !item.imageFrameUrl) return true;
   return !!frameUrl && item.imageFrameUrl === frameUrl;
 }
+function buildingMapHasWrongImageFrame(item, frameUrl){
+  return !!(item && item.imageFrameUrl && !buildingMapImageFrameMatches(item, frameUrl));
+}
+function buildingMapFrameMismatchDisclosure(outlines, assets, frameUrl){
+  var outlineCount = (outlines || []).filter(function(o){
+    return Array.isArray(o.imageRing) && o.imageRing.length >= 3 && buildingMapHasWrongImageFrame(o, frameUrl);
+  }).length;
+  var assetCount = (assets || []).filter(function(a){
+    return buildingMapIsFiniteNumber(a && a.x) && buildingMapIsFiniteNumber(a && a.y) &&
+      buildingMapHasWrongImageFrame(a, frameUrl);
+  }).length;
+  return { outlines: outlineCount, assets: assetCount, total: outlineCount + assetCount };
+}
+function buildingMapFrameMismatchText(disclosure){
+  disclosure = disclosure || {};
+  var parts = [];
+  if (disclosure.outlines) parts.push(disclosure.outlines + " outline" + (disclosure.outlines === 1 ? "" : "s"));
+  if (disclosure.assets) parts.push(disclosure.assets + " feature" + (disclosure.assets === 1 ? "" : "s"));
+  if (!parts.length) return "";
+  return parts.join(" and ") + " were placed on a different base image and can't be shown here.";
+}
+function buildingMapSetFrameMismatchDisclosure(el, disclosure){
+  if (!el || !el.id || !el.parentNode) return;
+  var id = el.id + "-frame-disclosure";
+  var existing = document.getElementById(id);
+  var text = buildingMapFrameMismatchText(disclosure);
+  if (!text){
+    if (existing) existing.remove();
+    return;
+  }
+  var node = existing || document.createElement("p");
+  node.id = id;
+  node.className = "hint";
+  node.style.margin = "6px 0 0";
+  node.textContent = text;
+  if (!existing) el.insertAdjacentElement("afterend", node);
+}
 function buildingMapShouldUseWorldPoint(point, owner){
   if (!buildingMapIsFiniteLatLng(point)) return false;
   return !(buildingMapIsSyntheticImageGeometry(owner) && buildingMapIsNearNullIsland(point));
@@ -1571,6 +1608,8 @@ function renderBuildingMap(pins, customBld, bldAddress, orthoOverlay, assets, bu
   var renderSeq = (buildingMapRenderSeqByElementId[mapElementId] || 0) + 1;
   buildingMapRenderSeqByElementId[mapElementId] = renderSeq;
   if (customBld){
+    buildingMapSetFrameMismatchDisclosure(el,
+      buildingMapFrameMismatchDisclosure(outlines, assets, customBld.roof_base_map_url));
     var img = new Image();
     img.onload = function(){
       var w = img.naturalWidth, h = img.naturalHeight;
@@ -1611,6 +1650,7 @@ function renderBuildingMap(pins, customBld, bldAddress, orthoOverlay, assets, bu
     img.src = customBld.roof_base_map_url;
     return;
   }
+  buildingMapSetFrameMismatchDisclosure(el, null);
   (async function(){
     var bounds = [];
     var renderableOutlines = outlines.filter(buildingMapRenderableOutline);

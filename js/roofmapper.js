@@ -4588,6 +4588,9 @@ function rmRefuseImageFrameBaseMapChange(roof, action){
   toast((action || "Changing this base map") + " was refused because this roof has outlines or features tied to its current base image. Remove or recreate those image-based records first so saved geometry is not re-anchored to the wrong picture.");
   return true;
 }
+function rmRefuseKmlGroundOverlayBaseMapChange(roof){
+  return rmRefuseImageFrameBaseMapChange(roof, "Saving this KMZ/KML orthomosaic with this roof");
+}
 function rmOutlineDisplayGeometry(outline, bounds, frameUrl){
   if (!outline) return null;
   if (Array.isArray(outline.ring) && outline.ring.length >= 3) return Object.assign({}, outline);
@@ -4872,10 +4875,12 @@ async function rmPersistKmlGroundOverlayBaseMap(buildingId, roofId){
   try{
     var bldSnap = await fdb.collection("buildings").doc(buildingId).get();
     var bld = bldSnap.exists ? bldSnap.data() : {};
+    var roof = getRoofById(bld, roofId);
+    if (rmRefuseKmlGroundOverlayBaseMapChange(roof)) return false;
     if (!bld.companyCamProjectId){
       toast("Roof outline saved. This building has no CompanyCam project linked, so the KMZ/KML image itself " +
         "can't be retained (the traced outline and overlay metadata are saved either way).");
-      return;
+      return false;
     }
     toast("Saving the KMZ/KML orthomosaic with this roof...");
     var base64 = rmState.kmlOverlayDataUrl.split("base64,")[1];
@@ -4888,8 +4893,10 @@ async function rmPersistKmlGroundOverlayBaseMap(buildingId, roofId){
     await callAdminApi({ action: "set_building_roof_map", buildingId: buildingId, roofId: roofId,
       roof_base_map_type: "drone_ortho", roof_base_map_url: url, roof_base_map_bounds: rmState.kmlOverlayMeta.bounds });
     toast("KMZ/KML orthomosaic saved with the roof -- reopen it any time from Building History.");
+    return true;
   }catch(e){
     toast("Roof outline saved, but couldn't keep the KMZ/KML image with it: " + e.message);
+    return false;
   }
 }
 /* Walk-the-corners: no map-click handler -- points come from a GPS fix each
@@ -5899,6 +5906,7 @@ async function rmSaveOutlineToBuilding(buildingId, roofId){
     var roof = roofs.find(function(r){ return r.id === roofId; }) || roofs[0];
     rmRefreshOutlineMeasurementModel(rmState.outline);
     if (!await rmEnsureSyntheticOrthoFrameForSave(buildingId, roof, true)) return false;
+    if (rmState.kmlOverlayActive && rmRefuseKmlGroundOverlayBaseMapChange(roof)) return false;
     var entry = Object.assign({}, rmState.outline, rmOutlineStorageFields(rmState.outline, null), { id: genId("rmo") });
     roof.roof_outlines = (roof.roof_outlines || []).concat([entry]);
     /* Record the saved id back onto the in-memory outline so a later
@@ -5967,7 +5975,7 @@ async function rmSaveOutlineToBuilding(buildingId, roofId){
     /* Finding A, part 2: if this outline was traced on an uploaded drone
        image, rmEnsureSyntheticOrthoFrameForSave() already retained that
        image before any image-frame geometry was committed. */
-    if (rmState.kmlOverlayActive) rmPersistKmlGroundOverlayBaseMap(buildingId, roof.id);
+    if (rmState.kmlOverlayActive) await rmPersistKmlGroundOverlayBaseMap(buildingId, roof.id);
     return true;
   }catch(e){ toast("Couldn't save: " + e.message); return false; }
 }
