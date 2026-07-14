@@ -5,18 +5,20 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Leak Work Order / Repair Documentation</title>
 
-<!-- Home-screen / PWA icon (DEV build — badged with a red "DEV" ribbon so
-     it's visually distinct from the production icon at a glance; see
-     "Home-screen app icon" in DEV_NOTES.md and icons/README.md. Production
-     will point these same tags at icons/prod/* with an unbadged manifest
-     when this is carried over to main. iOS caches the home-screen icon
-     aggressively — after this deploys, remove and re-add the home-screen
-     shortcut to see the new icon, a plain page reload won't do it. -->
+<!-- Home-screen / PWA icon (PRODUCTION build — the unbadged icon). The DEV
+     build points these same tags at icons/dev/*, which carry a red "DEV"
+     ribbon so the two are distinguishable on a home screen at a glance; see
+     "Home-screen app icon" in DEV_NOTES.md and icons/README.md. KEEP THIS ON
+     icons/prod/* ON MAIN — promoting dev's tags verbatim is exactly what
+     would put a DEV-badged icon and a "RoofOps DEV" title on the crew's
+     phones. iOS caches the home-screen icon aggressively — after this
+     deploys, remove and re-add the home-screen shortcut to see the new icon,
+     a plain page reload won't do it. -->
 <link rel="manifest" href="manifest.json">
-<link rel="apple-touch-icon" href="icons/dev/icon-180.png">
-<link rel="icon" type="image/png" sizes="192x192" href="icons/dev/icon-192.png">
+<link rel="apple-touch-icon" href="icons/prod/icon-180.png">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/prod/icon-192.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-title" content="RoofOps DEV">
+<meta name="apple-mobile-web-app-title" content="RoofOps">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#000000">
 <link rel="stylesheet" href="css/app.css">
