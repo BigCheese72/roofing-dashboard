@@ -57,6 +57,16 @@ function assertCoverage(coverage, label){
     [],
     label + " rendered and disclosed are disjoint"
   );
+  assert.strictEqual(
+    disclosureCount(coverage.disclosure),
+    coverage.disclosed.length,
+    label + " disclosure counts every disclosed item"
+  );
+}
+
+function disclosureCount(disclosure){
+  return Array.from(String(disclosure || "").matchAll(/(?:^|\. )(\d+) /g))
+    .reduce((sum, match) => sum + Number(match[1]), 0);
 }
 
 function mixedEvents(){
@@ -170,7 +180,7 @@ test("genuine drone orthos use their persisted real-world bounds", async () => {
     expectedPinIds: ["selected-xy"],
     expectedAssetIds: ["asset-selected-xy"],
     pinDisclosure: [/pinned to other roofs/, /legacy unassigned findings/, /GPS-placed finding/],
-    assetDisclosure: [/features from other roof drawings/, /GPS-placed feature/]
+    assetDisclosure: [/features from other roofs/, /GPS-placed feature/]
   },
   {
     name: "sketch custom base map",
@@ -179,7 +189,7 @@ test("genuine drone orthos use their persisted real-world bounds", async () => {
     expectedPinIds: ["selected-xy"],
     expectedAssetIds: ["asset-selected-xy"],
     pinDisclosure: [/pinned to other roofs/, /legacy unassigned findings/, /GPS-placed finding/],
-    assetDisclosure: [/features from other roof drawings/, /GPS-placed feature/]
+    assetDisclosure: [/features from other roofs/, /GPS-placed feature/]
   },
   {
     name: "synthetic RoofMapper ortho as custom base map",
@@ -188,7 +198,7 @@ test("genuine drone orthos use their persisted real-world bounds", async () => {
     expectedPinIds: ["selected-xy"],
     expectedAssetIds: ["asset-selected-xy"],
     pinDisclosure: [/pinned to other roofs/, /legacy unassigned findings/, /GPS-placed finding/],
-    assetDisclosure: [/features from other roof drawings/, /GPS-placed feature/]
+    assetDisclosure: [/features from other roofs/, /GPS-placed feature/]
   },
   {
     name: "genuine drone ortho satellite overlay",
@@ -199,18 +209,18 @@ test("genuine drone orthos use their persisted real-world bounds", async () => {
     },
     hasCustomBaseMap: false,
     expectedPinIds: ["selected-gps"],
-    expectedAssetIds: ["asset-selected-gps", "asset-other-gps"],
+    expectedAssetIds: ["asset-selected-gps"],
     pinDisclosure: [/pinned to other roofs/, /legacy unassigned findings/, /image-placed finding/],
-    assetDisclosure: [/image-placed features/]
+    assetDisclosure: [/features from other roofs/, /image-placed feature/]
   },
   {
     name: "plain satellite with no base map",
     baseFields: {},
     hasCustomBaseMap: false,
     expectedPinIds: ["selected-gps"],
-    expectedAssetIds: ["asset-selected-gps", "asset-other-gps"],
+    expectedAssetIds: ["asset-selected-gps"],
     pinDisclosure: [/pinned to other roofs/, /legacy unassigned findings/, /image-placed finding/],
-    assetDisclosure: [/image-placed features/]
+    assetDisclosure: [/features from other roofs/, /image-placed feature/]
   },
   {
     name: "plain satellite with one named roof and legacy pins",
@@ -234,7 +244,7 @@ test("genuine drone orthos use their persisted real-world bounds", async () => {
 
     assert.strictEqual(hasCustomBaseMap, mode.hasCustomBaseMap);
 
-    const pinCoverage = sandbox.inlineHistoryPinCoverage(events, "roof1", hasCustomBaseMap, roofs);
+    const pinCoverage = sandbox.inlineHistoryPinCoverage(events, "roof1", hasCustomBaseMap);
     const assetCoverage = sandbox.inlineHistoryAssetCoverage(roofs, roofs[0], hasCustomBaseMap);
 
     assertCoverage(pinCoverage, mode.name + " pins");
@@ -269,7 +279,7 @@ test("dual-coordinate pins on another roof disclose the roof mismatch first", ()
   ] }];
   const roofs = mixedRoofs({ roof_base_map_type: "roof_plan", roof_base_map_url: "plan.jpg" });
 
-  const coverage = sandbox.inlineHistoryPinCoverage(events, "roof1", true, roofs);
+  const coverage = sandbox.inlineHistoryPinCoverage(events, "roof1", true);
 
   assertCoverage(coverage, "dual-coordinate pins");
   assert.doesNotMatch(coverage.disclosure, /GPS-placed/);
