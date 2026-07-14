@@ -1487,16 +1487,16 @@ async function sendEmailNow(){
   toast("Sending email\u2026");
   var o = collect();
   var isCO = o.woType === "Change Order";
-  var subject = (isCO ? "Change Order \u2014 " : "Leak Work Order \u2014 ") + (o.jobName || "Job") +
+  var subject = emailTypeSubject(o.woType) + " \u2014 " + (o.jobName || "Job") +
     (o.jobNo ? " #" + o.jobNo : "") + (o.location ? " (" + o.location + ")" : "");
   var body = (isCO ?
       "Change order documentation for " + (o.jobName || "the job") +
       (o.jobNo ? " (Job No. " + o.jobNo + ")" : "") + " is attached as a PDF." :
-      "Leak work order documentation for " + (o.jobName || "the job") +
+      emailTypeNoun(o.woType) + " documentation for " + (o.jobName || "the job") +
       (o.jobNo ? " (Job No. " + o.jobNo + ")" : "") + " is attached as a PDF, including photo documentation.") +
     "\n\nDate of Service: " + (o.serviceDate || "") +
     "\nLocation: " + (o.location || "") +
-    "\n\nSent from the Watkins Roofing work order app.";
+    "\n\nSent from the RoofOps app.";
   var pdfBase64 = "";
   try{ pdfBase64 = d.output("datauristring").split("base64,")[1] || ""; }catch(e){}
   if (!pdfBase64){ toast("Couldn't prepare the PDF for sending \u2014 try Download PDF instead."); return; }
@@ -1534,9 +1534,9 @@ async function sharePdf(){
   if (!isMobile){
     /* Open the email app before building the PDF so desktop browsers do not block it. */
     var o = collect();
-    var subject = "Leak Work Order \u2014 " + (o.jobName || "Job") +
+    var subject = emailTypeSubject(o.woType) + " \u2014 " + (o.jobName || "Job") +
       (o.jobNo ? " #" + o.jobNo : "") + (o.location ? " (" + o.location + ")" : "");
-    var body = "Leak work order documentation for " + (o.jobName || "the job") +
+    var body = emailTypeNoun(o.woType) + " documentation for " + (o.jobName || "the job") +
       (o.jobNo ? " (Job No. " + o.jobNo + ")" : "") +
       " is attached as a PDF, including photo documentation." +
       "\n\nDate of Service: " + (o.serviceDate || "") +

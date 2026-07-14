@@ -74,6 +74,17 @@
      js/core.js, the only thing that ever shows/hides or fills this. -->
 <div class="card no-print" id="sync-status-bar" style="display:none;margin-bottom:12px;padding:8px 14px;background:#FFF4E5;border:1px solid #E8A33D;font-size:13px"></div>
 
+<!-- Roof-outline save fail-safe (Mark, 2026-07-14: a traced outline was LOST
+     when its save to the building failed on weak signal and the only notice
+     was a 3-second toast). Deliberately a SEPARATE bar from #sync-status-bar
+     above: that one is owned end-to-end by core.js's work-order sync queue,
+     and roof outlines retry through their own queue (see rmFlushPendingBuilding
+     Saves() in js/roofmapper.js -- and the comment there for why they are NOT
+     folded into the work-order queue). Sticky, not a toast: it stays on screen
+     until the outline is actually on the building. Filled/shown/hidden only by
+     rmRenderPendingSaveStatus() in js/roofmapper.js. -->
+<div class="card no-print" id="roof-sync-status-bar" style="display:none;position:sticky;top:0;z-index:600;margin-bottom:12px;padding:10px 14px;background:#FDECEA;border:2px solid #D64545;font-size:14px"></div>
+
 <!-- ================= Require-login gate (Auth Phase 5, dev only -- see
      docs/AUTH_DESIGN.md). Non-dismissible: no close button, no click-outside
      handler, unlike every other modal in this file. Hidden whenever fauth
@@ -250,6 +261,29 @@
         <input type="file" id="coLibInput" accept="image/*" multiple style="display:none"
           onchange="addPhotosFromFiles(this.files); this.value='';">
         <div id="co-photos-host"></div>
+      </div>
+      <!-- CompanyCam on a Change Order. The global Photo Documentation card
+           (#wo-globalphotos-card) — which used to be the ONLY place the
+           CompanyCam link banner (#cc-link-info) and the "Import from
+           CompanyCam" button lived — is hidden for Change Orders, which
+           silently removed every CompanyCam entry point from this form (a
+           regression from cac0f84/88dded9). This is that entry point, scoped
+           to the Change Order and reading the exact same ccLinkedProjectId as
+           everywhere else: same banner (#cc-link-info-co, rendered by
+           renderCCLinkInfo()), same modal (openCC()), same durable link on
+           buildings/{id}.companyCamProjectId. Nothing else from the global
+           card is un-hidden. A project is NEVER auto-created from the field —
+           linking only ever picks an EXISTING CompanyCam project. See
+           "Change Order CompanyCam link" in DEV_NOTES.md. -->
+      <div class="fld">
+        <label>CompanyCam</label>
+        <p class="hint" style="margin:0 0 8px">Link this change order to the building's CompanyCam project — the
+          signed Change Order PDF is then saved into that project automatically. If the building is already linked,
+          this fills in on its own.</p>
+        <div class="btnrow" style="margin:0">
+          <button class="btn" onclick="openCC()">🔗 Link / Import from CompanyCam</button>
+        </div>
+        <div id="cc-link-info-co"></div>
       </div>
       <div class="fld">
         <label>Signature</label>
