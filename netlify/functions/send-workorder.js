@@ -65,7 +65,7 @@ exports.handler = async function (event) {
     from: from,
     to: to,
     reply_to: replyTo,
-    subject: String(data.subject || "Leak Work Order").slice(0, 200),
+    subject: String(data.subject || "Service Work Order").slice(0, 200),
     text: String(data.body || "Work order attached.").slice(0, 10000),
     attachments: [{
       filename: String(data.filename || "WorkOrder.pdf").slice(0, 100),
