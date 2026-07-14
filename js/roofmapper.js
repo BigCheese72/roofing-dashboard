@@ -2154,6 +2154,7 @@ var rmState = {
      a fresh location-based search knows to tear the overlay down. See
      "Ortho upload + flat-canvas tracing" in DEV_NOTES.md. */
   orthoActive: false,
+  orthoSynthetic: false,
   orthoOverlayLayer: null,
   orthoDataUrl: null,
   orthoBounds: null,
@@ -4492,6 +4493,7 @@ function rmClearOrthoOverlay(){
   rmState.orthoDataUrl = null;
   rmState.orthoBounds = null;
   rmState.orthoActive = false;
+  rmState.orthoSynthetic = false;
   rmUpdateMapZoomCap();
 }
 /* Image pixel (0,0) is the top-left / north-west corner; local XY here
@@ -4521,6 +4523,9 @@ function rmValidOrthoBounds(bounds){
     rmIsFiniteNumber(bounds.east) && rmIsFiniteNumber(bounds.west) &&
     bounds.north !== bounds.south && bounds.east !== bounds.west;
 }
+function rmSyntheticOrthoFrameActive(){
+  return !!(rmState.orthoActive && rmState.orthoSynthetic && rmValidOrthoBounds(rmState.orthoBounds));
+}
 function rmOrthoLatLngToImageXY(point, bounds){
   if (!point || !rmValidOrthoBounds(bounds) || !rmIsFiniteNumber(point.lat) || !rmIsFiniteNumber(point.lng)) return null;
   return {
@@ -4538,16 +4543,16 @@ function rmOrthoImageXYToLatLng(point, bounds){
 function rmImageRingToDisplayRing(imageRing, bounds){
   if (!Array.isArray(imageRing)) return null;
   var ring = imageRing.map(function(p){ return rmOrthoImageXYToLatLng(p, bounds); }).filter(Boolean);
-  return ring.length >= 4 ? ring : null;
+  return ring.length >= 3 ? ring : null;
 }
 function rmDisplayRingToImageRing(ring, bounds){
   if (!Array.isArray(ring)) return null;
   var imageRing = ring.map(function(p){ return rmOrthoLatLngToImageXY(p, bounds); }).filter(Boolean);
-  return imageRing.length === ring.length && imageRing.length >= 4 ? imageRing : null;
+  return imageRing.length === ring.length && imageRing.length >= 3 ? imageRing : null;
 }
 function rmOutlineDisplayGeometry(outline, bounds){
   if (!outline) return null;
-  if (Array.isArray(outline.ring) && outline.ring.length >= 4) return Object.assign({}, outline);
+  if (Array.isArray(outline.ring) && outline.ring.length >= 3) return Object.assign({}, outline);
   var displayRing = rmImageRingToDisplayRing(outline.imageRing, bounds);
   if (!displayRing) return null;
   var displayCenter = rmOrthoImageXYToLatLng(outline.imageCenter, bounds) || rmGeomRingCentroid(displayRing);
@@ -4568,7 +4573,7 @@ function rmOutlineImageFramePersistence(outline, bounds){
   };
 }
 function rmOutlinePersistenceFields(outline){
-  if (rmState.orthoActive && rmValidOrthoBounds(rmState.orthoBounds)){
+  if (rmSyntheticOrthoFrameActive()){
     var imageFields = rmOutlineImageFramePersistence(outline, rmState.orthoBounds);
     if (imageFields) return imageFields;
   }
@@ -4589,14 +4594,44 @@ function rmOutlineStorageFields(outline, existing){
     georeferencedSource: geometryFields.georeferencedSource === false ? false : ((existing && existing.georeferencedSource) || null)
   };
 }
+function rmSyntheticSplitBaseMapFields(sourceRoof){
+  if (!rmState.orthoSynthetic || !sourceRoof || sourceRoof.roof_base_map_type !== "sketch" ||
+    !sourceRoof.roof_base_map_synthetic || !sourceRoof.roof_base_map_url) return {};
+  return {
+    roof_base_map_type: "sketch",
+    roof_base_map_url: sourceRoof.roof_base_map_url,
+    roof_base_map_bounds: null,
+    roof_base_map_synthetic: true
+  };
+}
+function rmHasDurableSyntheticSplitFrame(sourceRoof){
+  return !!rmSyntheticSplitBaseMapFields(sourceRoof).roof_base_map_url;
+}
+function rmSplitOutlineStorageFields(outline, sourceRoof){
+  if (rmSyntheticOrthoFrameActive() && !rmHasDurableSyntheticSplitFrame(sourceRoof)){
+    /* A never-saved split has no durable image URL to carry with imageRing.
+       Keeping display geometry here avoids creating image-frame outlines
+       that cannot be reopened or rendered because their frame is missing. */
+    return {
+      ring: outline.ring || [],
+      center: outline.center || null,
+      imageRing: null,
+      imageCenter: null,
+      imageFrame: null,
+      tracedOnOrtho: outline.tracedOnOrtho || null,
+      georeferencedSource: outline.georeferencedSource === false ? false : (outline.georeferencedSource || null)
+    };
+  }
+  return rmOutlineStorageFields(outline, null);
+}
 function rmAssetDisplayLatLng(asset){
   if (!asset) return null;
   if (rmIsFiniteNumber(asset.lat) && rmIsFiniteNumber(asset.lng)) return { lat: asset.lat, lng: asset.lng };
-  if (rmState.orthoActive && rmValidOrthoBounds(rmState.orthoBounds)) return rmOrthoImageXYToLatLng(asset, rmState.orthoBounds);
+  if (rmSyntheticOrthoFrameActive()) return rmOrthoImageXYToLatLng(asset, rmState.orthoBounds);
   return null;
 }
 function rmAssetPersistenceFields(asset){
-  if (rmState.orthoActive && rmValidOrthoBounds(rmState.orthoBounds)){
+  if (rmSyntheticOrthoFrameActive()){
     var xy = rmOrthoLatLngToImageXY(asset, rmState.orthoBounds);
     if (xy) return {
       lat: null,
@@ -4642,7 +4677,7 @@ function rmShouldDrawWorldAsset(asset, roof){
   return !(rmIsSyntheticImageGeometry(asset, roof) && rmIsNearNullIslandPoint(asset));
 }
 function rmShouldDrawWorldOutline(outline, roof){
-  if (!outline || !Array.isArray(outline.ring) || outline.ring.length < 4) return false;
+  if (!outline || !Array.isArray(outline.ring) || outline.ring.length < 3) return false;
   var validRing = outline.ring.every(function(p){ return p && rmIsFiniteNumber(p.lat) && rmIsFiniteNumber(p.lng); });
   if (!validRing) return false;
   if (rmIsSyntheticImageGeometry(outline, roof) && outline.ring.some(rmIsNearNullIslandPoint)) return false;
@@ -4657,6 +4692,7 @@ function rmStartOrthoTrace(dataUrl, pixelW, pixelH){
   var computed = rmComputeOrthoBounds(pixelW, pixelH);
   rmState.orthoOverlayLayer = L.imageOverlay(dataUrl, computed.latLngBounds).addTo(map);
   rmState.orthoActive = true;
+  rmState.orthoSynthetic = true;
   rmUpdateMapZoomCap();
   rmState.orthoDataUrl = dataUrl;
   rmState.orthoBounds = computed.orthoBounds;
@@ -5572,10 +5608,10 @@ async function rmSaveSplitSectionsToBuilding(buildingId){
       };
       rmCopyOutlineSourceMetadata(baseOutline, outlineEntry);
       rmDropSplitMeasurementMetadata(outlineEntry, baseOutline);
-      var storedOutlineEntry = Object.assign({}, outlineEntry, rmOutlineStorageFields(outlineEntry, null));
+      var storedOutlineEntry = Object.assign({}, outlineEntry, rmSplitOutlineStorageFields(outlineEntry, null));
       var newRoof = {
         id: genId("roof"), label: label, roofSystem: "",
-        roof_base_map_type: null, roof_base_map_url: null, roof_base_map_bounds: null,
+        roof_base_map_type: null, roof_base_map_url: null, roof_base_map_bounds: null, roof_base_map_synthetic: null,
         roof_assets: [], roof_outlines: [storedOutlineEntry], createdAt: Date.now(), updatedAt: Date.now()
       };
       roofs.push(newRoof); /* so later sections' dup-check sees earlier ones from THIS SAME batch too */
@@ -5666,7 +5702,7 @@ async function rmSaveSplitSectionsToExistingRoof(buildingId, roofId){
     rmCopyOutlineSourceMetadata(baseOutline, primaryOutline);
     rmDropSplitMeasurementMetadata(primaryOutline, baseOutline);
     origRoof.roof_outlines = (origRoof.roof_outlines || []).concat([
-      Object.assign({}, primaryOutline, rmOutlineStorageFields(primaryOutline, null))
+      Object.assign({}, primaryOutline, rmSplitOutlineStorageFields(primaryOutline, origRoof))
     ]);
     var renamed = [];
     if ((origRoof.label || "Roof").trim() !== sections[0].label.trim()){
@@ -5700,12 +5736,12 @@ async function rmSaveSplitSectionsToExistingRoof(buildingId, roofId){
       };
       rmCopyOutlineSourceMetadata(baseOutline, outlineEntry);
       rmDropSplitMeasurementMetadata(outlineEntry, baseOutline);
-      var storedOutlineEntry = Object.assign({}, outlineEntry, rmOutlineStorageFields(outlineEntry, null));
-      var newRoof = {
+      var storedOutlineEntry = Object.assign({}, outlineEntry, rmSplitOutlineStorageFields(outlineEntry, origRoof));
+      var newRoof = Object.assign({
         id: genId("roof"), label: label, roofSystem: "",
-        roof_base_map_type: null, roof_base_map_url: null, roof_base_map_bounds: null,
+        roof_base_map_type: null, roof_base_map_url: null, roof_base_map_bounds: null, roof_base_map_synthetic: null,
         roof_assets: [], roof_outlines: [storedOutlineEntry], createdAt: Date.now(), updatedAt: Date.now()
-      };
+      }, rmSyntheticSplitBaseMapFields(origRoof));
       roofs.push(newRoof);
       return newRoof;
     });
@@ -5878,6 +5914,7 @@ async function rmOpenRoofInMapper(buildingId, roofId){
       var b = roof.roof_base_map_bounds;
       rmState.orthoOverlayLayer = L.imageOverlay(roof.roof_base_map_url, [[b.south, b.west], [b.north, b.east]]).addTo(map);
       rmState.orthoActive = true;
+      rmState.orthoSynthetic = false;
       rmState.orthoBounds = b;
     } else if (roof.roof_base_map_type === "sketch" && roof.roof_base_map_synthetic && roof.roof_base_map_url){
       /* RoofMapper's own persisted flat-canvas ortho (Finding A, part 2) --
@@ -5898,6 +5935,7 @@ async function rmOpenRoofInMapper(buildingId, roofId){
         var computed = rmComputeOrthoBounds(dims.w, dims.h);
         rmState.orthoOverlayLayer = L.imageOverlay(roof.roof_base_map_url, computed.latLngBounds).addTo(map);
         rmState.orthoActive = true;
+        rmState.orthoSynthetic = true;
         rmState.orthoDataUrl = roof.roof_base_map_url;
         rmState.orthoBounds = computed.orthoBounds;
       }catch(e){

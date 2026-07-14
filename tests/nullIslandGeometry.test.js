@@ -20,6 +20,7 @@ test("RoofMapper persists synthetic ortho outline and assets as image coordinate
   const context = {
     rmState: {
       orthoActive: true,
+      orthoSynthetic: true,
       orthoBounds: { north: 0.001, south: -0.001, east: 0.002, west: -0.002 }
     },
     rmIsFiniteNumber(value){
@@ -71,6 +72,115 @@ test("RoofMapper persists synthetic ortho outline and assets as image coordinate
   assert.ok(Number.isFinite(storedAsset.y));
 });
 
+test("RoofMapper keeps real georeferenced ortho outline and assets in lat/lng", () => {
+  const context = {
+    rmState: {
+      orthoActive: true,
+      orthoSynthetic: false,
+      orthoBounds: { north: 41.51, south: 41.49, east: -81.59, west: -81.61 }
+    },
+    rmIsFiniteNumber(value){
+      return typeof value === "number" && Number.isFinite(value);
+    },
+    rmGeomRingCentroid(){
+      throw new Error("test outlines provide an explicit center");
+    }
+  };
+  loadFunctionBlock(
+    "js/roofmapper.js",
+    "function rmValidOrthoBounds",
+    "function rmStartOrthoTrace",
+    context
+  );
+
+  const ring = [
+    { lat: 41.505, lng: -81.605 },
+    { lat: 41.505, lng: -81.595 },
+    { lat: 41.495, lng: -81.595 },
+    { lat: 41.495, lng: -81.605 },
+    { lat: 41.505, lng: -81.605 }
+  ];
+  const stored = context.rmOutlineStorageFields(
+    { ring, center: { lat: 41.5, lng: -81.6 } },
+    { georeferencedSource: true }
+  );
+
+  assert.equal(stored.ring.length, ring.length);
+  assert.deepEqual(stored.center, { lat: 41.5, lng: -81.6 });
+  assert.equal(stored.imageRing, null);
+  assert.equal(stored.imageCenter, null);
+  assert.equal(stored.imageFrame, null);
+  assert.equal(stored.tracedOnOrtho, null);
+  assert.equal(stored.georeferencedSource, true);
+
+  const storedAsset = context.rmAssetPersistenceFields({ lat: 41.5, lng: -81.6 });
+  assert.equal(storedAsset.lat, 41.5);
+  assert.equal(storedAsset.lng, -81.6);
+  assert.equal(storedAsset.x, null);
+  assert.equal(storedAsset.y, null);
+  assert.equal(storedAsset.imageFrame, undefined);
+  assert.equal(storedAsset.tracedOnOrtho, undefined);
+});
+
+test("RoofMapper carries durable synthetic base maps through split outlines", () => {
+  const context = {
+    rmState: {
+      orthoActive: true,
+      orthoSynthetic: true,
+      orthoBounds: { north: 0.001, south: -0.001, east: 0.002, west: -0.002 }
+    },
+    rmIsFiniteNumber(value){
+      return typeof value === "number" && Number.isFinite(value);
+    },
+    rmGeomRingCentroid(){
+      throw new Error("test outlines provide an explicit center");
+    }
+  };
+  loadFunctionBlock(
+    "js/roofmapper.js",
+    "function rmValidOrthoBounds",
+    "function rmStartOrthoTrace",
+    context
+  );
+
+  const sourceRoof = {
+    roof_base_map_type: "sketch",
+    roof_base_map_url: "https://example.test/ortho.jpg",
+    roof_base_map_synthetic: true
+  };
+  const ring = [
+    { lat: 0.0005, lng: -0.001 },
+    { lat: 0.0005, lng: 0.001 },
+    { lat: -0.0005, lng: 0.001 },
+    { lat: -0.0005, lng: -0.001 },
+    { lat: 0.0005, lng: -0.001 }
+  ];
+  const splitFields = context.rmSyntheticSplitBaseMapFields(sourceRoof);
+  const stored = context.rmSplitOutlineStorageFields({ ring, center: { lat: 0, lng: 0 } }, sourceRoof);
+  const splitRoof = Object.assign({
+    roof_base_map_type: null,
+    roof_base_map_url: null,
+    roof_base_map_bounds: null,
+    roof_base_map_synthetic: null,
+    roof_outlines: [stored]
+  }, splitFields);
+
+  assert.equal(splitRoof.roof_base_map_type, "sketch");
+  assert.equal(splitRoof.roof_base_map_url, sourceRoof.roof_base_map_url);
+  assert.equal(splitRoof.roof_base_map_synthetic, true);
+  assert.equal(stored.ring.length, 0);
+  assert.equal(stored.imageFrame, "roof_base_map");
+  assert.equal(stored.imageRing.length, ring.length);
+
+  const display = context.rmOutlineDisplayGeometry(stored, context.rmState.orthoBounds);
+  assert.equal(display.ring.length, ring.length);
+
+  const unsavedSplit = context.rmSplitOutlineStorageFields({ ring, center: { lat: 0, lng: 0 } }, null);
+  assert.equal(unsavedSplit.ring.length, ring.length);
+  assert.equal(unsavedSplit.imageRing, null);
+  assert.equal(unsavedSplit.imageFrame, null);
+});
+
 test("building maps reject synthetic Null Island geometry without rejecting valid zero latitude", () => {
   const context = { Number };
   loadFunctionBlock(
@@ -93,8 +203,7 @@ test("building maps reject synthetic Null Island geometry without rejecting vali
     ring: [
       { lat: 0, lng: 10 },
       { lat: 0, lng: 10.001 },
-      { lat: 0.001, lng: 10.001 },
-      { lat: 0, lng: 10 }
+      { lat: 0.001, lng: 10.001 }
     ]
   };
 

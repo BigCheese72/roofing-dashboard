@@ -1518,7 +1518,7 @@ function buildingMapShouldUseWorldPoint(point, owner){
   return !(buildingMapIsSyntheticImageGeometry(owner) && buildingMapIsNearNullIsland(point));
 }
 function buildingMapRenderableOutline(outline){
-  if (!outline || !Array.isArray(outline.ring) || outline.ring.length < 4) return false;
+  if (!outline || !Array.isArray(outline.ring) || outline.ring.length < 3) return false;
   return outline.ring.every(function(p){ return buildingMapShouldUseWorldPoint(p, outline); });
 }
 function renderBuildingMap(pins, customBld, bldAddress, orthoOverlay, assets, buildingId, outlines, mapOptions){
