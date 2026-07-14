@@ -177,6 +177,7 @@ function bpSelectBuilding(buildingId){
   }
   closeBuildingPicker();
   toast("Loaded “" + b.name + "” — review the fields below before saving");
+  scheduleInlineBuildingHistoryRefresh();
 }
 
 /* ---- Move/reassign a roof to a different building ----
@@ -851,6 +852,7 @@ function fill(o){
      PREVIOUSLY open order instead of this one. Cheap, harmless if run
      twice. */
   if (val("woType") === "Inspection"){ ensureInspectionChecklist(); renderInspectionChecklist(); }
+  scheduleInlineBuildingHistoryRefresh();
 }
 function todayStr(){
   var d = new Date();
@@ -909,7 +911,192 @@ function renderHomeTiles(){
 function startNewWorkOrder(type){
   fill({ id: "wo_" + Date.now(), serviceDate: todayStr(), woType: type });
   showView("edit");
+  scheduleInlineBuildingHistoryRefresh();
   toast("New " + (WORK_ORDER_TYPE_LABELS[type] || type) + " started");
+}
+
+/* ================= inline building history on work orders =================
+   Read-only companion to the full Building History page. It uses the same
+   building id derivation and the same building_history_events query shape,
+   but stays inside the current Leak / Inspection / Repair work order so a
+   tech can review prior leaks, inspections, repairs, pins, and the base roof
+   map without navigating away from the job they are writing. */
+var woInlineHistorySeq = 0, woInlineHistoryTimer = null, woInlineHistoryListenersInstalled = false,
+  woInlineHistoryBoundListeners = {};
+function woInlineHistorySupportedType(){
+  var t = val("woType") || WORK_ORDER_TYPES[0];
+  return t === WORK_ORDER_TYPES[0] || t === "Inspection" || t === "Repair";
+}
+function ensureInlineBuildingHistoryCard(){
+  var existing = document.getElementById("wo-inline-history-card");
+  if (existing){
+    installInlineBuildingHistoryListeners();
+    return existing;
+  }
+  var editView = document.getElementById("view-edit");
+  if (!editView) return null;
+  var card = document.createElement("div");
+  card.className = "card";
+  card.id = "wo-inline-history-card";
+  card.style.display = "none";
+  card.innerHTML =
+    '<h2 class="cond">Building History</h2>' +
+    '<div id="wo-inline-history-body"><p class="hint">Loading building history...</p></div>';
+  var ref = document.getElementById("wo-inspection-card") || document.getElementById("wo-findings-card");
+  editView.insertBefore(card, ref || editView.children[1] || null);
+  installInlineBuildingHistoryListeners();
+  return card;
+}
+function installInlineBuildingHistoryListeners(){
+  if (woInlineHistoryListenersInstalled) return;
+  var ids = ["jobName", "billTo", "woType", "roofSystem"];
+  ids.forEach(function(id){
+    if (woInlineHistoryBoundListeners[id]) return;
+    var el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener(id === "woType" ? "change" : "blur", scheduleInlineBuildingHistoryRefresh);
+    woInlineHistoryBoundListeners[id] = true;
+  });
+  woInlineHistoryListenersInstalled = ids.every(function(id){ return woInlineHistoryBoundListeners[id]; });
+}
+function scheduleInlineBuildingHistoryRefresh(){
+  ensureInlineBuildingHistoryCard();
+  if (woInlineHistoryTimer) clearTimeout(woInlineHistoryTimer);
+  woInlineHistoryTimer = setTimeout(refreshInlineBuildingHistory, 80);
+}
+function inlineBuildingIdFromCurrentFields(){
+  var o = collect();
+  var custName = (o.billTo || "").trim();
+  var bldName = (o.jobName || "").trim();
+  if (!bldName) return null;
+  var custId = custName ? ("cust_" + slugify(custName)) : null;
+  return "bld_" + slugify((custId || "nocust") + "_" + bldName);
+}
+async function lookupInlineBuildingContext(){
+  if (!fdb) return null;
+  var buildingId = inlineBuildingIdFromCurrentFields();
+  if (!buildingId) return null;
+  var snap = await fdb.collection("buildings").doc(buildingId).get();
+  var bld = snap.exists ? snap.data() : {};
+  return {
+    buildingId: buildingId,
+    exists: snap.exists,
+    building: bld,
+    roofs: getBuildingRoofs(bld)
+  };
+}
+function inlineSelectedRoofId(roofs){
+  roofs = roofs || [];
+  if (currentRoofId && roofs.some(function(r){ return r.id === currentRoofId; })) return currentRoofId;
+  if (currentRoofIds && currentRoofIds.length){
+    var selected = roofs.find(function(r){ return currentRoofIds.indexOf(r.id) !== -1; });
+    if (selected) return selected.id;
+  }
+  return roofs[0] ? roofs[0].id : "roof_default";
+}
+function inlineRoofById(ctx, roofId){
+  return (ctx.roofs || []).find(function(r){ return r.id === roofId; }) ||
+    (ctx.roofs && ctx.roofs[0]) || getRoofById(ctx.building || {}, roofId);
+}
+function inlineHistoryPinsForMap(events, roofId, hasCustomBaseMap){
+  var allPins = [];
+  events.forEach(function(e){ (e.pins || []).forEach(function(p){
+    allPins.push(Object.assign({ eventDate: e.date }, p));
+  }); });
+  return hasCustomBaseMap ?
+    allPins.filter(function(p){ return (p.roofId || "roof_default") === roofId &&
+      typeof p.x === "number" && typeof p.y === "number"; }) :
+    allPins.filter(function(p){ return typeof p.lat === "number" && typeof p.lng === "number"; });
+}
+function inlineHistoryAssetsForMap(roofs, roof, hasCustomBaseMap){
+  roof = roof || {};
+  if (hasCustomBaseMap) return roof.roof_assets || [];
+  return (roofs || []).reduce(function(acc, r){
+    (r.roof_assets || []).forEach(function(a){ acc.push(a); });
+    return acc;
+  }, []);
+}
+function inlineHistoryOutlines(roofs, hasCustomBaseMap){
+  if (hasCustomBaseMap) return [];
+  return (roofs || []).reduce(function(acc, r){
+    var ol = r.roof_outlines || [];
+    var latest = ol[ol.length - 1];
+    if (latest) acc.push(Object.assign({}, latest, { _roofLabel: r.label || "Roof", _roofLabelPos: r.labelPos || null }));
+    return acc;
+  }, []);
+}
+async function refreshInlineBuildingHistory(){
+  var card = ensureInlineBuildingHistoryCard();
+  if (!card) return;
+  if (!woInlineHistorySupportedType()){
+    card.style.display = "none";
+    return;
+  }
+  var body = document.getElementById("wo-inline-history-body");
+  var jobName = (val("jobName") || "").trim();
+  if (!jobName){
+    card.style.display = "none";
+    return;
+  }
+  card.style.display = "";
+  if (!fdb){
+    body.innerHTML = '<p class="hint">Building history needs cloud sync to load prior reports and roof maps.</p>';
+    return;
+  }
+  var seq = ++woInlineHistorySeq;
+  body.innerHTML = '<p class="hint">Loading building history...</p>';
+  try{
+    var ctx = await lookupInlineBuildingContext();
+    if (seq !== woInlineHistorySeq) return;
+    if (!ctx){
+      card.style.display = "none";
+      return;
+    }
+    var events = (typeof loadBuildingHistoryEvents === "function") ?
+      await loadBuildingHistoryEvents(ctx.buildingId, 50) : [];
+    if (seq !== woInlineHistorySeq) return;
+    var roofId = inlineSelectedRoofId(ctx.roofs);
+    var roof = inlineRoofById(ctx, roofId);
+    var hasCustomBaseMap = !!((roof.roof_base_map_type === "roof_plan" || roof.roof_base_map_type === "sketch") && roof.roof_base_map_url);
+    var orthoOverlay = (roof.roof_base_map_type === "drone_ortho" && roof.roof_base_map_url && roof.roof_base_map_bounds) ?
+      { url: roof.roof_base_map_url, bounds: roof.roof_base_map_bounds } : null;
+    var roofAssets = inlineHistoryAssetsForMap(ctx.roofs, roof, hasCustomBaseMap);
+    var outlines = inlineHistoryOutlines(ctx.roofs, hasCustomBaseMap);
+    /* Inline Building History is building-wide: outlines, pins, and the
+       timeline all describe the same building-level history. The selected
+       roof only chooses a roof-specific base image when one is set. */
+    var mapPins = inlineHistoryPinsForMap(events, roofId, hasCustomBaseMap);
+    var latestEvents = events.slice(0, 8);
+    var roofLabel = roof.label || "Roof";
+    var hasMapBase = hasCustomBaseMap || orthoOverlay || outlines.length || mapPins.length || roofAssets.length;
+    var mapLabel = hasCustomBaseMap ?
+      'Roof map using <b>' + esc(roofLabel) + '</b>\'s saved base image.' :
+      'Building-wide roof map' + (orthoOverlay ? ' using the saved drone orthophoto.' : '.');
+    var eventCountLabel = latestEvents.length && latestEvents.length < events.length ?
+      'Showing ' + latestEvents.length + ' of ' + events.length + ' prior events' :
+      (events.length ? events.length + ' prior event' + (events.length === 1 ? '' : 's') : '');
+    var mapHtml = hasMapBase ?
+      '<div style="margin:8px 0 12px">' +
+        '<p class="hint" style="margin:0 0 6px">' + mapLabel + '</p>' +
+        '<div id="wo-inline-building-map" style="height:min(38vh,320px);border-radius:6px;overflow:hidden;border:1px solid var(--line)"></div>' +
+      '</div>' :
+      '<p class="hint">No saved roof base map, outline, feature, or pin is available for this building yet.</p>';
+    var eventsHtml = latestEvents.length ?
+      latestEvents.map(function(e){ return timelineEventHtml(e, ctx.buildingId, { readOnly: true }); }).join("") :
+      '<div class="empty">No prior leak, inspection, or repair history is logged for this building yet.</div>';
+    body.innerHTML = mapHtml +
+      '<div class="evt-head" style="margin:0 0 6px"><span class="evt-tag">Read-only</span>' +
+      (eventCountLabel ? '<span class="evt-tag">' + eventCountLabel + '</span>' : '') +
+      '</div>' +
+      '<div>' + eventsHtml + '</div>';
+    if (hasMapBase){
+      renderBuildingMap(mapPins, hasCustomBaseMap ? roof : null, (ctx.building && ctx.building.location) || val("location"),
+        orthoOverlay, roofAssets, ctx.buildingId, outlines, { mapElementId: "wo-inline-building-map", readOnly: true });
+    }
+  }catch(e){
+    if (seq !== woInlineHistorySeq) return;
+    body.innerHTML = '<div class="empty">Couldn\'t load building history: ' + esc(e.message) + '</div>';
+  }
 }
 
 /* ================= duplicate building detection =================
@@ -1230,18 +1417,42 @@ function warrantyColor(w){
   return "#F9A825"; /* Undetermined, Mixed, anything else */
 }
 var buildingMap = null;
-function pinPopupHtml(p){
+var buildingMapByElementId = {};
+var buildingMapRenderSeqByElementId = {};
+function getBuildingMapHandle(mapElementId){
+  return mapElementId === "building-map" ? buildingMap : buildingMapByElementId[mapElementId];
+}
+function setBuildingMapHandle(mapElementId, map){
+  if (mapElementId === "building-map") buildingMap = map;
+  else buildingMapByElementId[mapElementId] = map;
+}
+function removeBuildingMapHandle(mapElementId){
+  var m = getBuildingMapHandle(mapElementId);
+  if (m) m.remove();
+  if (mapElementId === "building-map") buildingMap = null;
+  else delete buildingMapByElementId[mapElementId];
+}
+function pinPopupHtml(p, opts){
+  opts = opts || {};
   var photoNote = p.photo_ids && p.photo_ids.length ?
     "📷 " + p.photo_ids.length + " photo" + (p.photo_ids.length === 1 ? "" : "s") + " — open the work order to view" : "";
-  return "<b>" + esc(p.eventDate || p.service_date || "") + "</b>" +
+  var html = "<b>" + esc(p.eventDate || p.service_date || "") + "</b>" +
     (p.work_order_no ? " — Job No. " + esc(p.work_order_no) : "") + "<br>" +
     (p.condition ? esc(p.condition) + "<br>" : "") +
     "<span style='color:" + warrantyColor(p.warranty) + ";font-weight:600'>" + esc(p.warranty || "") + "</span><br>" +
-    (photoNote ? photoNote + "<br>" : "") +
+    (photoNote ? photoNote + "<br>" : "");
+  if (opts.readOnly) return html + "<span style='color:var(--muted);font-size:12px'>Read-only history pin</span>";
+  return html +
     "<div style=\"display:flex;gap:6px;margin-top:6px;flex-wrap:wrap\">" +
     "<button class=\"btn\" onclick=\"loadOrder('" + p.work_order_id + "')\">View Work Order</button>" +
     (p.finding_id ? "<button class=\"btn\" onclick=\"jumpToAdjustPin('" + p.work_order_id + "','" + p.finding_id + "')\">Adjust Pin</button>" : "") +
     "</div>";
+}
+function assetPopupReadonlyHtml(a){
+  var t = ROOF_ASSET_TYPES[a.type] || ROOF_ASSET_TYPES.other;
+  return "<b>" + t.emoji + " " + esc(t.label) + "</b>" + (a.label ? " - " + esc(a.label) : "") + "<br>" +
+    (a.notes ? esc(a.notes) + "<br>" : "") +
+    "<span style='color:var(--muted);font-size:12px'>Read-only roof feature</span>";
 }
 function outlinePopupHtml(o, roofLabel){
   return "<b>🗺️ " + esc(rmOutlineTitle(o)) + "</b><br>" +
@@ -1257,8 +1468,11 @@ function outlinePopupHtml(o, roofLabel){
    thing you can look at, not something that only appears once a pin
    exists. bldAddress centers satellite mode when there's nothing else
    to derive a center from. */
-function renderBuildingMap(pins, customBld, bldAddress, orthoOverlay, assets, buildingId, outlines){
+function renderBuildingMap(pins, customBld, bldAddress, orthoOverlay, assets, buildingId, outlines, mapOptions){
   assets = assets || [];
+  var opts = (typeof mapOptions === "string") ? { mapElementId: mapOptions } : (mapOptions || {});
+  var mapElementId = opts.mapElementId || "building-map";
+  var readOnly = !!opts.readOnly;
   /* outlines (roof_outlines[] from RoofMapper) are always real lat/lng —
      only drawn in satellite/drone_ortho mode, same tradeoff already
      documented above for pins/assets vs. a custom roof_plan/sketch base
@@ -1270,32 +1484,40 @@ function renderBuildingMap(pins, customBld, bldAddress, orthoOverlay, assets, bu
      glance, not switched one-at-a-time. See "Individual-roof tracing +
      labels" in DEV_NOTES.md. */
   outlines = outlines || [];
-  var el = document.getElementById("building-map");
+  var el = document.getElementById(mapElementId);
   if (!el) return;
-  if (buildingMap){ buildingMap.remove(); buildingMap = null; }
+  removeBuildingMapHandle(mapElementId);
+  var renderSeq = (buildingMapRenderSeqByElementId[mapElementId] || 0) + 1;
+  buildingMapRenderSeqByElementId[mapElementId] = renderSeq;
   if (customBld){
     var img = new Image();
     img.onload = function(){
       var w = img.naturalWidth, h = img.naturalHeight;
       var bounds = [[0,0],[h,w]];
       setTimeout(function(){
-        buildingMap = L.map("building-map", { crs: L.CRS.Simple, minZoom: -5 });
-        L.imageOverlay(customBld.roof_base_map_url, bounds).addTo(buildingMap);
+        if (buildingMapRenderSeqByElementId[mapElementId] !== renderSeq) return;
+        var map = L.map(mapElementId, { crs: L.CRS.Simple, minZoom: -5 });
+        setBuildingMapHandle(mapElementId, map);
+        L.imageOverlay(customBld.roof_base_map_url, bounds).addTo(map);
         pins.forEach(function(p){
           L.circleMarker([p.y * h, p.x * w], {
             radius: 9, color: "#fff", weight: 2, fillColor: warrantyColor(p.warranty), fillOpacity: 0.95
-          }).addTo(buildingMap).bindPopup(pinPopupHtml(p));
+          }).addTo(map).bindPopup(pinPopupHtml(p, { readOnly: readOnly }));
         });
         assets.forEach(function(a){
           if (typeof a.x !== "number") return;
-          L.marker([a.y * h, a.x * w], { icon: assetIcon(a.type) }).addTo(buildingMap).bindPopup(assetPopupHtml(buildingId, a));
+          L.marker([a.y * h, a.x * w], { icon: assetIcon(a.type) }).addTo(map)
+            .bindPopup(readOnly ? assetPopupReadonlyHtml(a) : assetPopupHtml(buildingId, a));
         });
-        buildingMap.fitBounds(bounds);
-        buildingMap.invalidateSize();
-        setTimeout(function(){ if (buildingMap) buildingMap.invalidateSize(); }, 300);
+        map.fitBounds(bounds);
+        map.invalidateSize();
+        setTimeout(function(){ var latest = getBuildingMapHandle(mapElementId); if (latest) latest.invalidateSize(); }, 300);
       }, 50);
     };
-    img.onerror = function(){ el.innerHTML = '<p class="hint">Couldn’t load the custom base map image.</p>'; };
+    img.onerror = function(){
+      if (buildingMapRenderSeqByElementId[mapElementId] !== renderSeq) return;
+      el.innerHTML = '<p class="hint">Couldn’t load the custom base map image.</p>';
+    };
     img.src = customBld.roof_base_map_url;
     return;
   }
@@ -1315,16 +1537,18 @@ function renderBuildingMap(pins, customBld, bldAddress, orthoOverlay, assets, bu
       }
     }
     setTimeout(function(){
-      buildingMap = center ? L.map("building-map").setView([center.lat, center.lng], zoom) : L.map("building-map");
+      if (buildingMapRenderSeqByElementId[mapElementId] !== renderSeq) return;
+      var map = center ? L.map(mapElementId).setView([center.lat, center.lng], zoom) : L.map(mapElementId);
+      setBuildingMapHandle(mapElementId, map);
       L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
         maxZoom: 22, maxNativeZoom: SAT_MAX_NATIVE_ZOOM, attribution: "Tiles &copy; Esri"
-      }).addTo(buildingMap);
-      if (orthoOverlay) L.imageOverlay(orthoOverlay.url, boundsToLatLngBounds(orthoOverlay.bounds)).addTo(buildingMap);
+      }).addTo(map);
+      if (orthoOverlay) L.imageOverlay(orthoOverlay.url, boundsToLatLngBounds(orthoOverlay.bounds)).addTo(map);
       outlines.forEach(function(o){
         if (!o.ring || o.ring.length < 3) return;
         L.polygon(o.ring.map(function(p){ return [p.lat, p.lng]; }), {
           color: "#E8600A", weight: 2, fillColor: "#E8600A", fillOpacity: 0.1
-        }).addTo(buildingMap).bindPopup(outlinePopupHtml(o, o._roofLabel));
+        }).addTo(map).bindPopup(outlinePopupHtml(o, o._roofLabel));
         if (o._roofLabel){
           /* Respects wherever the roof's label was dragged to in
              RoofMapper (o._roofLabelPos, set alongside _roofLabel below)
@@ -1332,23 +1556,24 @@ function renderBuildingMap(pins, customBld, bldAddress, orthoOverlay, assets, bu
              positioned correctly instead of always the recomputed
              centroid. See "Draggable roof labels" in DEV_NOTES.md. */
           var labelCenter = o._roofLabelPos || o.center || rmGeomRingCentroid(o.ring);
-          roofLabelMarker(labelCenter.lat, labelCenter.lng, o._roofLabel).addTo(buildingMap);
+          roofLabelMarker(labelCenter.lat, labelCenter.lng, o._roofLabel).addTo(map);
         }
       });
       pins.forEach(function(p){
         L.circleMarker([p.lat, p.lng], {
           radius: 9, color: "#fff", weight: 2, fillColor: warrantyColor(p.warranty), fillOpacity: 0.95
-        }).addTo(buildingMap).bindPopup(pinPopupHtml(p));
+        }).addTo(map).bindPopup(pinPopupHtml(p, { readOnly: readOnly }));
       });
       assets.forEach(function(a){
         if (typeof a.lat !== "number") return;
-        L.marker([a.lat, a.lng], { icon: assetIcon(a.type) }).addTo(buildingMap).bindPopup(assetPopupHtml(buildingId, a));
+        L.marker([a.lat, a.lng], { icon: assetIcon(a.type) }).addTo(map)
+          .bindPopup(readOnly ? assetPopupReadonlyHtml(a) : assetPopupHtml(buildingId, a));
       });
-      if (bounds.length === 1) buildingMap.setView(bounds[0], 19);
-      else if (bounds.length > 1) buildingMap.fitBounds(bounds, { padding: [30, 30] });
-      else if (orthoOverlay) buildingMap.fitBounds(boundsToLatLngBounds(orthoOverlay.bounds));
-      buildingMap.invalidateSize();
-      setTimeout(function(){ if (buildingMap) buildingMap.invalidateSize(); }, 300);
+      if (bounds.length === 1) map.setView(bounds[0], 19);
+      else if (bounds.length > 1) map.fitBounds(bounds, { padding: [30, 30] });
+      else if (orthoOverlay) map.fitBounds(boundsToLatLngBounds(orthoOverlay.bounds));
+      map.invalidateSize();
+      setTimeout(function(){ var latest = getBuildingMapHandle(mapElementId); if (latest) latest.invalidateSize(); }, 300);
     }, 50);
   })();
 }
