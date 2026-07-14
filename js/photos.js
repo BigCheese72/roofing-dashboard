@@ -182,20 +182,50 @@ async function lookupProspectiveBuildingRoofInfo(){
     return result;
   }catch(e){ return null; }
 }
-/* Checks the CURRENT work order's selected roof (currentRoofId, defaulting
-   to the building's first roof) for a custom (non-georeferenced) base map. */
+/* roof_base_map_* are PER-ROOF fields (js/core.js, DATA_MODEL.md §roofs[]),
+   but a base map -- a drone orthomosaic especially -- is one image of the
+   whole BUILDING. The old resolver asked a single roof (the selected one,
+   else roofs[0]) whether it had a base map and silently fell back to plain
+   satellite when it didn't. Tri-Delta has 11 roofs: attach the ortho to
+   roof 7, don't select a roof, and the saved base map simply never showed.
+   Resolve at the building level instead, and when the map we use does NOT
+   belong to the selected roof, SAY WHOSE IT IS. An honest label beats a
+   silent substitution. See issue #39. */
+function photosRoofHasBaseMap(r){
+  return !!(r && r.roof_base_map_url && (
+    r.roof_base_map_type === "roof_plan" || r.roof_base_map_type === "sketch" ||
+    (r.roof_base_map_type === "drone_ortho" && r.roof_base_map_bounds)));
+}
+/* A pin the tech can't be shown on a non-georeferenced drawing: it lives in
+   real lat/lng and the drawing has no coordinate system to convert into. */
+function photosPinIsGpsOnly(pin){
+  return !!(pin && typeof pin.lat === "number" && typeof pin.lng === "number" &&
+    !(typeof pin.x === "number" && typeof pin.y === "number"));
+}
+function photosResolveBuildingBaseMap(roofs, selectedRoofId){
+  roofs = roofs || [];
+  var selected = roofs.find(function(r){ return r.id === selectedRoofId; }) || roofs[0] || null;
+  var source = photosRoofHasBaseMap(selected) ? selected :
+    (roofs.find(function(r){
+      return r && photosRoofHasBaseMap(r) && !(selected && r.id === selected.id);
+    }) || null);
+  if (!source) return null;
+  var georeferenced = source.roof_base_map_type === "drone_ortho" && !!source.roof_base_map_bounds;
+  return {
+    url: source.roof_base_map_url,
+    type: source.roof_base_map_type,
+    georeferenced: georeferenced,
+    bounds: georeferenced ? source.roof_base_map_bounds : null,
+    sourceRoofId: source.id || null,
+    sourceRoofLabel: source.label || "Roof",
+    fromSelectedRoof: !!(selected && source.id === selected.id)
+  };
+}
 async function lookupProspectiveBuildingBaseMap(){
   try{
     var info = await lookupProspectiveBuildingRoofInfo();
     if (!info || !info.roofs.length) return null;
-    var bld = info.roofs.find(function(r){ return r.id === currentRoofId; }) || info.roofs[0];
-    if ((bld.roof_base_map_type === "roof_plan" || bld.roof_base_map_type === "sketch") && bld.roof_base_map_url){
-      return { url: bld.roof_base_map_url, type: bld.roof_base_map_type, georeferenced: false };
-    }
-    if (bld.roof_base_map_type === "drone_ortho" && bld.roof_base_map_url && bld.roof_base_map_bounds){
-      return { url: bld.roof_base_map_url, type: "drone_ortho", georeferenced: true, bounds: bld.roof_base_map_bounds };
-    }
-    return null;
+    return photosResolveBuildingBaseMap(info.roofs, currentRoofId);
   }catch(e){ return null; }
 }
 function boundsToLatLngBounds(b){
@@ -276,8 +306,26 @@ async function openPinModal(findingId){
     // Drone orthomosaic: real coordinates, so it's just a higher-detail
     // image layer on top of the normal lat/lng satellite map — pins still
     // save as lat/lng like any other satellite pin, no separate x/y mode.
+    // Safe to use building-wide: a georeferenced ortho plots correctly no
+    // matter which roof it happens to be attached to.
     pinMapMode = "latlng";
     await openPinModalSatellite(f, findingId, customBaseMap);
+    return;
+  }
+  /* A non-georeferenced drawing (roof plan / sketch) has no coordinate system,
+     so a finding whose existing pin is a real GPS location CANNOT be plotted on
+     it. The old code switched to x/y mode anyway, dropped the marker at the
+     image centre, and told the tech "Existing pin on the roof plan — drag to
+     move" — which was a lie: that marker was the middle of the drawing, not the
+     finding. savePinFromModal() then overwrote the real coordinate with the
+     centre as {source:"tech_placed"}, fabricating a provenance for a placement
+     no tech ever made. Mark's call: keep these findings on satellite, where
+     their pin is real and visible, rather than show a drawing that can only
+     destroy them. Findings with no pin, or an existing x/y pin, still get the
+     drawing. See issue #39. */
+  if (customBaseMap && photosPinIsGpsOnly(f.pin)){
+    pinMapMode = "latlng";
+    await openPinModalSatellite(f, findingId, null, { gpsPinKeptOffBaseMap: customBaseMap });
     return;
   }
   if (customBaseMap){
@@ -299,9 +347,14 @@ async function openPinModal(findingId){
         pinMap.invalidateSize();
         setTimeout(function(){ if (pinMap) pinMap.invalidateSize(); }, 300);
       }, 50);
-      document.getElementById("pin-hint").textContent = f.pin ?
+      /* Name the roof the drawing actually came from whenever it isn't the
+         selected roof's own -- never present another roof's image as this
+         roof's without saying so (issue #39). */
+      var whose = customBaseMap.fromSelectedRoof ? "" :
+        " (from " + customBaseMap.sourceRoofLabel + " — building-wide)";
+      document.getElementById("pin-hint").textContent = (f.pin ?
         "Existing pin on the " + customBaseMap.type.replace("_"," ") + " — drag to move." :
-        "Tap the " + customBaseMap.type.replace("_"," ") + " to place the pin.";
+        "Tap the " + customBaseMap.type.replace("_"," ") + " to place the pin.") + whose;
     };
     img.onerror = function(){
       toast("Couldn't load the custom base map — using satellite instead.");
@@ -323,7 +376,8 @@ async function openPinModal(findingId){
    already fetches (renderPinRoofPicker(), lookupProspectiveBuildingRoofInfo())
    so this map can actually show what that dropdown is choosing between.
    See "Pin placement map roof rendering" in DEV_NOTES.md. */
-async function openPinModalSatellite(f, findingId, orthoOverlay){
+async function openPinModalSatellite(f, findingId, orthoOverlay, opts){
+  opts = opts || {};
   document.getElementById("pin-mylocation-btn").style.display = navigator.geolocation ? "" : "none";
   var warnEl = document.getElementById("pin-roof-mismatch-warning");
   if (warnEl) warnEl.style.display = "none";
@@ -415,6 +469,16 @@ async function openPinModalSatellite(f, findingId, orthoOverlay){
     }
   }
   if (orthoOverlay && !fitOrthoBounds) hint += " (drone orthomosaic loaded for extra detail)";
+  /* This finding has a real GPS pin and the building's only base map is a
+     non-georeferenced drawing, so we deliberately stayed on satellite (issue
+     #39). Say that plainly -- a tech who knows a roof plan exists must not be
+     left wondering why they aren't looking at it. */
+  if (opts.gpsPinKeptOffBaseMap){
+    var skipped = opts.gpsPinKeptOffBaseMap;
+    hint += " Showing satellite: this finding's pin is a GPS location, which can't be plotted on " +
+      (skipped.fromSelectedRoof ? "this roof's" : (skipped.sourceRoofLabel + "'s")) + " " +
+      String(skipped.type || "drawing").replace("_", " ") + ". Clear the pin to place it on the drawing instead.";
+  }
   document.getElementById("pin-hint").textContent = hint;
 
   setTimeout(function(){
