@@ -487,7 +487,150 @@ test("RoofMapper refuses KMZ/KML base-map replacement when image-frame geometry 
   assert.equal(uploads.length, 0);
   assert.equal(roof.roof_base_map_url, "https://example.test/base-1.jpg");
   assert.equal(context.rmAssetDisplayLatLng(roof.roof_assets[0]), null);
-  assert.ok(toasts.some((message) => message.includes("KMZ/KML orthomosaic") && message.includes("was refused")));
+  assert.ok(toasts.some((message) => message.includes("Roof outline saved") && message.includes("KMZ/KML image was not attached")));
+});
+
+test("RoofMapper saves KML outline while refusing unsafe image-frame map replacement", async () => {
+  const toasts = [];
+  const apiCalls = [];
+  const uploads = [];
+  const outlineRing = [
+    { lat: 41.505, lng: -81.605 },
+    { lat: 41.505, lng: -81.595 },
+    { lat: 41.495, lng: -81.595 },
+    { lat: 41.505, lng: -81.605 }
+  ];
+  const roof = {
+    id: "roof-1",
+    label: "Roof 1",
+    roof_base_map_type: "sketch",
+    roof_base_map_url: "https://example.test/base-1.jpg",
+    roof_base_map_synthetic: true,
+    roof_outlines: [{
+      imageFrame: "roof_base_map",
+      imageFrameUrl: "https://example.test/base-1.jpg",
+      imageRing: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }]
+    }]
+  };
+  const building = { companyCamProjectId: "cc-1", roofs: [roof] };
+  let savedRoofs = null;
+  const context = {
+    isAdmin: true,
+    rmState: {
+      outline: { ring: outlineRing, center: { lat: 41.5, lng: -81.6 } },
+      kmlOverlayActive: true,
+      kmlOverlayMeta: {
+        bounds: { north: 41.51, south: 41.49, east: -81.59, west: -81.61 },
+        imageFileName: "ortho.jpg"
+      },
+      kmlOverlayDataUrl: "data:image/jpeg;base64,kml-image"
+    },
+    document: {
+      getElementById(){
+        return {
+          style: {},
+          classList: { add(){}, remove(){}, toggle(){} },
+          addEventListener(){},
+          appendChild(){},
+          querySelector(){ return null; },
+          innerHTML: "",
+          textContent: "",
+          value: ""
+        };
+      },
+      querySelector(){ return null; },
+      createElement(){
+        return {
+          style: {},
+          classList: { add(){}, remove(){}, toggle(){} },
+          addEventListener(){},
+          appendChild(){},
+          querySelector(){ return null; },
+          innerHTML: "",
+          textContent: "",
+          value: ""
+        };
+      }
+    },
+    toast(message){ toasts.push(message); },
+    confirm(){ return true; },
+    rmIsFiniteNumber(value){
+      return typeof value === "number" && Number.isFinite(value);
+    },
+    rmGeomRingCentroid(){
+      throw new Error("test outline provides an explicit center");
+    },
+    rmRefreshOutlineMeasurementModel(){},
+    rmSetPrecisionMode(){},
+    genId(prefix){ return prefix + "-new"; },
+    getBuildingRoofs(buildingData){
+      return buildingData.roofs || [];
+    },
+    getRoofById(buildingData, roofId){
+      return (buildingData.roofs || []).find((r) => r.id === roofId) || null;
+    },
+    async saveBuildingRoofs(buildingId, roofs){
+      savedRoofs = roofs;
+      building.roofs = roofs;
+    },
+    closeRmSaveModal(){},
+    rmClearSplitState(){},
+    rmRenderRoofSwitcher(){},
+    rmRenderExportRoofSelect(){},
+    rmShowFeaturePanel(){},
+    async rmLoadLinkedAssets(){},
+    rmUpdateExportHint(){},
+    rmUpdateControlVisibility(){},
+    fdb: {
+      collection(){
+        return {
+          doc(){
+            return {
+              async get(){
+                return {
+                  exists: true,
+                  data(){
+                    return building;
+                  }
+                };
+              }
+            };
+          }
+        };
+      }
+    },
+    async ccApiPost(body){
+      uploads.push(body);
+      return { document: { url: "https://example.test/kmz.jpg" } };
+    },
+    async callAdminApi(body){
+      apiCalls.push(body);
+    }
+  };
+  loadFunctionBlock(
+    "js/roofmapper.js",
+    "function rmValidOrthoBounds",
+    "async function rmOpenRoofInMapper",
+    context
+  );
+  context.closeRmSaveModal = () => {};
+  context.rmRenderRoofSwitcher = () => {};
+  context.rmRenderExportRoofSelect = () => {};
+  context.rmShowFeaturePanel = () => {};
+  context.rmLoadLinkedAssets = async () => {};
+  context.rmUpdateExportHint = () => {};
+  context.rmUpdateControlVisibility = () => {};
+
+  const result = await context.rmSaveOutlineToBuilding("building-1", "roof-1");
+
+  assert.equal(result, true, toasts.join("\n"));
+  assert.equal(apiCalls.length, 0);
+  assert.equal(uploads.length, 0);
+  assert.equal(savedRoofs[0].roof_outlines.length, 2);
+  assert.equal(savedRoofs[0].roof_outlines[1].ring.length, outlineRing.length);
+  assert.equal(savedRoofs[0].roof_outlines[1].imageFrame, null);
+  assert.equal(savedRoofs[0].roof_base_map_url, "https://example.test/base-1.jpg");
+  assert.ok(toasts.some((message) => message.includes("Roof outline saved") && message.includes("KMZ/KML image was not attached")));
 });
 
 test("building maps reject synthetic Null Island geometry without rejecting valid zero latitude", () => {

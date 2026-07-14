@@ -4589,7 +4589,9 @@ function rmRefuseImageFrameBaseMapChange(roof, action){
   return true;
 }
 function rmRefuseKmlGroundOverlayBaseMapChange(roof){
-  return rmRefuseImageFrameBaseMapChange(roof, "Saving this KMZ/KML orthomosaic with this roof");
+  if (!rmRoofHasImageFrameGeometry(roof)) return false;
+  toast("Roof outline saved. The KMZ/KML image was not attached because this roof already has outlines or features tied to its current base image. Attaching this orthomosaic would re-anchor those image-based records to the wrong picture.");
+  return true;
 }
 function rmOutlineDisplayGeometry(outline, bounds, frameUrl){
   if (!outline) return null;
@@ -5906,7 +5908,6 @@ async function rmSaveOutlineToBuilding(buildingId, roofId){
     var roof = roofs.find(function(r){ return r.id === roofId; }) || roofs[0];
     rmRefreshOutlineMeasurementModel(rmState.outline);
     if (!await rmEnsureSyntheticOrthoFrameForSave(buildingId, roof, true)) return false;
-    if (rmState.kmlOverlayActive && rmRefuseKmlGroundOverlayBaseMapChange(roof)) return false;
     var entry = Object.assign({}, rmState.outline, rmOutlineStorageFields(rmState.outline, null), { id: genId("rmo") });
     roof.roof_outlines = (roof.roof_outlines || []).concat([entry]);
     /* Record the saved id back onto the in-memory outline so a later
