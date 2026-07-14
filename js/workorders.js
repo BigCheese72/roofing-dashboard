@@ -355,6 +355,25 @@ var currentRoofIds = null;
 var lastLookupRoofInfo = null;
 var toastTimer = null;
 
+function buildingIdFor(billTo, jobName){
+  var custName = (billTo || "").trim();
+  var bldName = (jobName || "").trim();
+  if (!bldName) return null;
+  var custId = custName ? ("cust_" + slugify(custName)) : null;
+  return "bld_" + slugify((custId || "nocust") + "_" + bldName);
+}
+function lookupRoofInfoMatchesBuilding(info, buildingId){
+  return !!(info && info.buildingId && buildingId && info.buildingId === buildingId);
+}
+function currentWorkOrderBuildingId(){
+  return buildingIdFor(val("billTo"), val("jobName"));
+}
+function clearStaleLookupRoofInfoForCurrentOrder(){
+  if (!lookupRoofInfoMatchesBuilding(lastLookupRoofInfo, currentWorkOrderBuildingId())){
+    lastLookupRoofInfo = null;
+  }
+}
+
 /* ================= dynamic rows ================= */
 function genId(prefix){
   return prefix + "_" + Date.now().toString(36) + Math.random().toString(36).slice(2,7);
@@ -473,12 +492,14 @@ function inspectionItemPhotoGalleryHtml(item){
    async, and a GPS auto-assigned roofId needs to be VISIBLE right on the
    finding row per Mark's "SHOW which roof was auto-assigned... clearly"
    ask, not buried inside the pin modal -- this is the cheapest way to
-   show a real name instead of a raw id without a second fetch. Returns
-   null (badge just doesn't render) if the cache is empty/stale -- a
-   graceful degradation, not a wrong answer. See "GPS auto-assign photos
+   show a real name instead of a raw id without a second fetch. The cached
+   lookup is only trusted when it belongs to the building currently loaded
+   in the form; otherwise null makes the badge disappear instead of showing
+   another building's roof name. See "GPS auto-assign photos
    to roofs" in DEV_NOTES.md. */
 function rmRoofLabelFromCache(roofId){
-  if (!roofId || !lastLookupRoofInfo || !lastLookupRoofInfo.roofs) return null;
+  if (!roofId || !lastLookupRoofInfo || !lastLookupRoofInfo.roofs ||
+      !lookupRoofInfoMatchesBuilding(lastLookupRoofInfo, currentWorkOrderBuildingId())) return null;
   var r = lastLookupRoofInfo.roofs.find(function(x){ return x.id === roofId; });
   return r ? (r.label || "Roof") : null;
 }
@@ -811,7 +832,8 @@ function collect(){
      individual findings different roofIds on ANY work order type, and the
      report needs real names for those too. See "GPS auto-assign photos to
      roofs" in DEV_NOTES.md. */
-  o.roofLabels = (lastLookupRoofInfo && lastLookupRoofInfo.roofs) ?
+  var buildingId = buildingIdFor(o.billTo, o.jobName);
+  o.roofLabels = (lookupRoofInfoMatchesBuilding(lastLookupRoofInfo, buildingId) && lastLookupRoofInfo.roofs) ?
     lastLookupRoofInfo.roofs.reduce(function(m, r){ m[r.id] = r.label || "Roof"; return m; }, {}) : null;
   o.changeOrderSignature = changeOrderSignature || null;
   return o;
@@ -845,6 +867,7 @@ function fill(o){
   ccLinkedProjectId = o.companyCamProjectId || null;
   ccLinkedProjectName = o.companyCamProjectName || "";
   changeOrderSignature = o.changeOrderSignature || null;
+  clearStaleLookupRoofInfoForCurrentOrder();
   renderFindings(); renderRepairs(); renderRepairItems(); renderPhotos(); renderCCLinkInfo(); renderChangeOrderSignature();
   /* Re-render the checklist now that photos[]/findings[] are the truly
      loaded values, not whatever onWoTypeChange() saw mid-load above --
@@ -965,12 +988,7 @@ function scheduleInlineBuildingHistoryRefresh(){
   woInlineHistoryTimer = setTimeout(refreshInlineBuildingHistory, 80);
 }
 function inlineBuildingIdFromCurrentFields(){
-  var o = collect();
-  var custName = (o.billTo || "").trim();
-  var bldName = (o.jobName || "").trim();
-  if (!bldName) return null;
-  var custId = custName ? ("cust_" + slugify(custName)) : null;
-  return "bld_" + slugify((custId || "nocust") + "_" + bldName);
+  return currentWorkOrderBuildingId();
 }
 async function lookupInlineBuildingContext(){
   if (!fdb) return null;
