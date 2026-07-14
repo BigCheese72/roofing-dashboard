@@ -171,6 +171,8 @@ async function uploadRoofBaseMap(buildingId, files, roofId){
     var bldSnap = await fdb.collection("buildings").doc(buildingId).get();
     var bld = bldSnap.exists ? bldSnap.data() : {};
     if (!bld.companyCamProjectId) throw new Error("no CompanyCam project linked to this building");
+    var roof = roofId ? getRoofById(bld, roofId) : null;
+    if (rmRefuseImageFrameBaseMapChange(roof, "Changing this base map")) return;
     var dataUrl = await resizeImageFile(f, 2000, 0.85);
     var base64 = dataUrl.split("base64,")[1];
     if (!base64) throw new Error("couldn't encode the image");
@@ -190,6 +192,15 @@ async function uploadRoofBaseMap(buildingId, files, roofId){
 }
 async function clearRoofBaseMap(buildingId, roofId){
   if (!isAdmin){ toast("Admin mode required."); return; }
+  try{
+    var bldSnap = await fdb.collection("buildings").doc(buildingId).get();
+    var bld = bldSnap.exists ? bldSnap.data() : {};
+    var roof = roofId ? getRoofById(bld, roofId) : null;
+    if (rmRefuseImageFrameBaseMapChange(roof, "Clearing this base map")) return;
+  }catch(e){
+    toast("Failed: " + e.message);
+    return;
+  }
   if (!confirm("Clear this building's custom base map? Pins will fall back to satellite.")) return;
   toast("Clearing…");
   try{
@@ -2157,6 +2168,7 @@ var rmState = {
   orthoSynthetic: false,
   orthoOverlayLayer: null,
   orthoDataUrl: null,
+  orthoFrameUrl: null,
   orthoBounds: null,
   /* Multi-roof workflow (Mark, live on a roof: "I should be able to save,
      label, add another trace outline on the same page. I shouldn't have
@@ -2982,7 +2994,8 @@ async function rmPersistVertexEdit(){
       return Object.assign({}, o, {
         ring: storageFields.ring, center: storageFields.center,
         imageRing: storageFields.imageRing, imageCenter: storageFields.imageCenter,
-        imageFrame: storageFields.imageFrame, tracedOnOrtho: storageFields.tracedOnOrtho,
+        imageFrame: storageFields.imageFrame, imageFrameUrl: storageFields.imageFrameUrl,
+        tracedOnOrtho: storageFields.tracedOnOrtho,
         georeferencedSource: storageFields.georeferencedSource,
         areaSqFt: outline.areaSqFt, perimeterFt: outline.perimeterFt,
         calibration: outline.calibration || null, squared: null,
@@ -3290,7 +3303,8 @@ async function rmPersistCalibration(rescaledAssets){
       return Object.assign({}, o, {
         ring: storageFields.ring, center: storageFields.center,
         imageRing: storageFields.imageRing, imageCenter: storageFields.imageCenter,
-        imageFrame: storageFields.imageFrame, tracedOnOrtho: storageFields.tracedOnOrtho,
+        imageFrame: storageFields.imageFrame, imageFrameUrl: storageFields.imageFrameUrl,
+        tracedOnOrtho: storageFields.tracedOnOrtho,
         georeferencedSource: storageFields.georeferencedSource,
         areaSqFt: outline.areaSqFt, perimeterFt: outline.perimeterFt, calibration: outline.calibration || null,
         edgeMeasurements: measurementFields.edgeMeasurements, inheritedScale: measurementFields.inheritedScale,
@@ -3395,7 +3409,8 @@ async function rmPersistOutlineGeometryEdit(){
       return Object.assign({}, o, {
         ring: storageFields.ring, center: storageFields.center,
         imageRing: storageFields.imageRing, imageCenter: storageFields.imageCenter,
-        imageFrame: storageFields.imageFrame, tracedOnOrtho: storageFields.tracedOnOrtho,
+        imageFrame: storageFields.imageFrame, imageFrameUrl: storageFields.imageFrameUrl,
+        tracedOnOrtho: storageFields.tracedOnOrtho,
         georeferencedSource: storageFields.georeferencedSource,
         areaSqFt: outline.areaSqFt, perimeterFt: outline.perimeterFt,
         calibration: outline.calibration || null, squared: outline.squared || null,
@@ -4491,6 +4506,7 @@ function rmClearOrthoOverlay(){
   if (rmState.map && rmState.orthoOverlayLayer) rmState.map.removeLayer(rmState.orthoOverlayLayer);
   rmState.orthoOverlayLayer = null;
   rmState.orthoDataUrl = null;
+  rmState.orthoFrameUrl = null;
   rmState.orthoBounds = null;
   rmState.orthoActive = false;
   rmState.orthoSynthetic = false;
@@ -4550,9 +4566,32 @@ function rmDisplayRingToImageRing(ring, bounds){
   var imageRing = ring.map(function(p){ return rmOrthoLatLngToImageXY(p, bounds); }).filter(Boolean);
   return imageRing.length === ring.length && imageRing.length >= 3 ? imageRing : null;
 }
-function rmOutlineDisplayGeometry(outline, bounds){
+function rmCurrentImageFrameUrl(){
+  return rmState.orthoFrameUrl || (/^https?:\/\//i.test(rmState.orthoDataUrl || "") ? rmState.orthoDataUrl : null);
+}
+function rmImageFrameUrlMatches(item, frameUrl){
+  if (!item || !item.imageFrameUrl) return true;
+  return !!frameUrl && item.imageFrameUrl === frameUrl;
+}
+function rmRoofHasImageFrameGeometry(roof){
+  roof = roof || {};
+  return (roof.roof_outlines || []).some(function(o){
+    return !!(o && (o.imageFrameUrl || o.imageFrame === "roof_base_map" ||
+      (Array.isArray(o.imageRing) && o.imageRing.length >= 3)));
+  }) || (roof.roof_assets || []).some(function(a){
+    return !!(a && (a.imageFrameUrl || a.imageFrame === "roof_base_map" ||
+      (rmIsFiniteNumber(a.x) && rmIsFiniteNumber(a.y) && !rmIsFiniteNumber(a.lat) && !rmIsFiniteNumber(a.lng))));
+  });
+}
+function rmRefuseImageFrameBaseMapChange(roof, action){
+  if (!rmRoofHasImageFrameGeometry(roof)) return false;
+  toast((action || "Changing this base map") + " was refused because this roof has outlines or features tied to its current base image. Remove or recreate those image-based records first so saved geometry is not re-anchored to the wrong picture.");
+  return true;
+}
+function rmOutlineDisplayGeometry(outline, bounds, frameUrl){
   if (!outline) return null;
   if (Array.isArray(outline.ring) && outline.ring.length >= 3) return Object.assign({}, outline);
+  if (!rmImageFrameUrlMatches(outline, frameUrl || rmCurrentImageFrameUrl())) return null;
   var displayRing = rmImageRingToDisplayRing(outline.imageRing, bounds);
   if (!displayRing) return null;
   var displayCenter = rmOrthoImageXYToLatLng(outline.imageCenter, bounds) || rmGeomRingCentroid(displayRing);
@@ -4568,6 +4607,7 @@ function rmOutlineImageFramePersistence(outline, bounds){
     imageRing: imageRing,
     imageCenter: imageCenter,
     imageFrame: "roof_base_map",
+    imageFrameUrl: rmCurrentImageFrameUrl(),
     tracedOnOrtho: true,
     georeferencedSource: false
   };
@@ -4590,6 +4630,7 @@ function rmOutlineStorageFields(outline, existing){
     imageRing: geometryFields.imageRing || null,
     imageCenter: geometryFields.imageCenter || null,
     imageFrame: geometryFields.imageFrame || null,
+    imageFrameUrl: geometryFields.imageFrame ? (geometryFields.imageFrameUrl || (existing && existing.imageFrameUrl) || null) : null,
     tracedOnOrtho: geometryFields.tracedOnOrtho || (existing && existing.tracedOnOrtho) || null,
     georeferencedSource: geometryFields.georeferencedSource === false ? false : ((existing && existing.georeferencedSource) || null)
   };
@@ -4610,6 +4651,7 @@ function rmApplySyntheticOrthoBaseMap(roof, url){
   roof.roof_base_map_url = url;
   roof.roof_base_map_bounds = null;
   roof.roof_base_map_synthetic = true;
+  rmState.orthoFrameUrl = url;
   return roof;
 }
 function rmHasDurableSyntheticSplitFrame(sourceRoof){
@@ -4628,7 +4670,15 @@ async function rmEnsureSyntheticOrthoFrameForSave(buildingId, roof, alreadySaved
     rmRefuseSyntheticOrthoSave("Reload the uploaded image and try again.");
     return false;
   }
-  if (rmHasDurableSyntheticSplitFrame(roof) && roof.roof_base_map_url === rmState.orthoDataUrl) return roof.roof_base_map_url;
+  if (rmHasDurableSyntheticSplitFrame(roof) && roof.roof_base_map_url === rmState.orthoDataUrl){
+    rmState.orthoFrameUrl = roof.roof_base_map_url;
+    return roof.roof_base_map_url;
+  }
+  if (rmHasDurableSyntheticSplitFrame(roof) && roof.roof_base_map_url !== rmState.orthoDataUrl &&
+      rmRoofHasImageFrameGeometry(roof)){
+    rmRefuseSyntheticOrthoSave("This roof already has saved outlines or features tied to a different uploaded image, so saving would re-anchor them to the wrong picture.");
+    return false;
+  }
   var url = alreadySaved ?
     await rmPersistOrthoBaseMap(buildingId, roof.id) :
     await rmUploadSyntheticOrthoBaseMap(buildingId, roof.id);
@@ -4647,7 +4697,9 @@ function rmSplitOutlineStorageFields(outline, sourceRoof){
 function rmAssetDisplayLatLng(asset){
   if (!asset) return null;
   if (rmIsFiniteNumber(asset.lat) && rmIsFiniteNumber(asset.lng)) return { lat: asset.lat, lng: asset.lng };
-  if (rmSyntheticOrthoFrameActive()) return rmOrthoImageXYToLatLng(asset, rmState.orthoBounds);
+  if (rmSyntheticOrthoFrameActive() && rmImageFrameUrlMatches(asset, rmCurrentImageFrameUrl())){
+    return rmOrthoImageXYToLatLng(asset, rmState.orthoBounds);
+  }
   return null;
 }
 function rmAssetPersistenceFields(asset){
@@ -4659,6 +4711,7 @@ function rmAssetPersistenceFields(asset){
       x: xy.x,
       y: xy.y,
       imageFrame: "roof_base_map",
+      imageFrameUrl: rmCurrentImageFrameUrl(),
       tracedOnOrtho: true,
       georeferencedSource: false
     };
@@ -4669,6 +4722,7 @@ function rmAssetPersistenceFields(asset){
     x: asset.x,
     y: asset.y,
     imageFrame: asset.imageFrame || null,
+    imageFrameUrl: asset.imageFrame ? (asset.imageFrameUrl || null) : null,
     tracedOnOrtho: asset.tracedOnOrtho || null,
     georeferencedSource: asset.georeferencedSource === false ? false : (asset.georeferencedSource || null)
   };
@@ -4715,6 +4769,7 @@ function rmStartOrthoTrace(dataUrl, pixelW, pixelH){
   rmState.orthoSynthetic = true;
   rmUpdateMapZoomCap();
   rmState.orthoDataUrl = dataUrl;
+  rmState.orthoFrameUrl = /^https?:\/\//i.test(dataUrl || "") ? dataUrl : null;
   rmState.orthoBounds = computed.orthoBounds;
   rmState.lat = RM_ORTHO_ORIGIN.lat; rmState.lng = RM_ORTHO_ORIGIN.lng; rmState.accuracy = null;
   map.fitBounds(computed.latLngBounds);
@@ -5959,6 +6014,7 @@ async function rmOpenRoofInMapper(buildingId, roofId){
       rmState.orthoOverlayLayer = L.imageOverlay(roof.roof_base_map_url, [[b.south, b.west], [b.north, b.east]]).addTo(map);
       rmState.orthoActive = true;
       rmState.orthoSynthetic = false;
+      rmState.orthoFrameUrl = null;
       rmState.orthoBounds = b;
     } else if (roof.roof_base_map_type === "sketch" && roof.roof_base_map_synthetic && roof.roof_base_map_url){
       /* RoofMapper's own persisted flat-canvas ortho (Finding A, part 2) --
@@ -5981,6 +6037,7 @@ async function rmOpenRoofInMapper(buildingId, roofId){
         rmState.orthoActive = true;
         rmState.orthoSynthetic = true;
         rmState.orthoDataUrl = roof.roof_base_map_url;
+        rmState.orthoFrameUrl = roof.roof_base_map_url;
         rmState.orthoBounds = computed.orthoBounds;
       }catch(e){
         toast("Roof opened, but couldn't reload its saved drone image: " + e.message);
@@ -6001,7 +6058,7 @@ async function rmOpenRoofInMapper(buildingId, roofId){
        georeferenced ortho support" in DEV_NOTES.md) -- same result: outline
        loads on plain satellite, no photo underneath. */
 
-    outline = rmOutlineDisplayGeometry(outline, rmState.orthoBounds) || outline;
+    outline = rmOutlineDisplayGeometry(outline, rmState.orthoBounds, roof.roof_base_map_url) || outline;
     if (!outline.ring || outline.ring.length < 3){
       toast((roof.label || "This roof") + " was saved in image coordinates, but its base image could not be loaded.");
       return;

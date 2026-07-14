@@ -1522,6 +1522,10 @@ function buildingMapIsSyntheticImageGeometry(item){
     item._roofBaseMapSynthetic || capture.mechanism === "ortho_image" ||
     methodCapture.mechanism === "ortho_image");
 }
+function buildingMapImageFrameMatches(item, frameUrl){
+  if (!item || !item.imageFrameUrl) return true;
+  return !!frameUrl && item.imageFrameUrl === frameUrl;
+}
 function buildingMapShouldUseWorldPoint(point, owner){
   if (!buildingMapIsFiniteLatLng(point)) return false;
   return !(buildingMapIsSyntheticImageGeometry(owner) && buildingMapIsNearNullIsland(point));
@@ -1530,8 +1534,9 @@ function buildingMapRenderableOutline(outline){
   if (!outline || !Array.isArray(outline.ring) || outline.ring.length < 3) return false;
   return outline.ring.every(function(p){ return buildingMapShouldUseWorldPoint(p, outline); });
 }
-function buildingMapImageOutlineRing(outline, width, height){
+function buildingMapImageOutlineRing(outline, width, height, frameUrl){
   if (!outline || !Array.isArray(outline.imageRing) || outline.imageRing.length < 3) return null;
+  if (!buildingMapImageFrameMatches(outline, frameUrl)) return null;
   var ring = outline.imageRing.map(function(p){
     if (!p || !buildingMapIsFiniteNumber(p.x) || !buildingMapIsFiniteNumber(p.y)) return null;
     return [p.y * height, p.x * width];
@@ -1576,7 +1581,7 @@ function renderBuildingMap(pins, customBld, bldAddress, orthoOverlay, assets, bu
         setBuildingMapHandle(mapElementId, map);
         L.imageOverlay(customBld.roof_base_map_url, bounds).addTo(map);
         outlines.forEach(function(o){
-          var ring = buildingMapImageOutlineRing(o, w, h);
+          var ring = buildingMapImageOutlineRing(o, w, h, customBld.roof_base_map_url);
           if (!ring) return;
           L.polygon(ring, {
             color: "#E8600A", weight: 2, fillColor: "#E8600A", fillOpacity: 0.1
@@ -1590,6 +1595,7 @@ function renderBuildingMap(pins, customBld, bldAddress, orthoOverlay, assets, bu
         });
         assets.forEach(function(a){
           if (typeof a.x !== "number") return;
+          if (!buildingMapImageFrameMatches(a, customBld.roof_base_map_url)) return;
           L.marker([a.y * h, a.x * w], { icon: assetIcon(a.type) }).addTo(map)
             .bindPopup(readOnly ? assetPopupReadonlyHtml(a) : assetPopupHtml(buildingId, a));
         });

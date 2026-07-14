@@ -21,6 +21,7 @@ test("RoofMapper persists synthetic ortho outline and assets as image coordinate
     rmState: {
       orthoActive: true,
       orthoSynthetic: true,
+      orthoFrameUrl: "https://example.test/ortho.jpg",
       orthoBounds: { north: 0.001, south: -0.001, east: 0.002, west: -0.002 }
     },
     rmIsFiniteNumber(value){
@@ -50,6 +51,7 @@ test("RoofMapper persists synthetic ortho outline and assets as image coordinate
   assert.equal(stored.ring.length, 0);
   assert.equal(stored.center, null);
   assert.equal(stored.imageFrame, "roof_base_map");
+  assert.equal(stored.imageFrameUrl, "https://example.test/ortho.jpg");
   assert.equal(stored.tracedOnOrtho, true);
   assert.equal(stored.georeferencedSource, false);
   assert.equal(stored.imageRing.length, ring.length);
@@ -67,6 +69,7 @@ test("RoofMapper persists synthetic ortho outline and assets as image coordinate
   assert.equal(storedAsset.lat, null);
   assert.equal(storedAsset.lng, null);
   assert.equal(storedAsset.imageFrame, "roof_base_map");
+  assert.equal(storedAsset.imageFrameUrl, "https://example.test/ortho.jpg");
   assert.equal(storedAsset.tracedOnOrtho, true);
   assert.ok(Number.isFinite(storedAsset.x));
   assert.ok(Number.isFinite(storedAsset.y));
@@ -127,6 +130,7 @@ test("RoofMapper carries durable synthetic base maps through split outlines", ()
     rmState: {
       orthoActive: true,
       orthoSynthetic: true,
+      orthoFrameUrl: "https://example.test/ortho.jpg",
       orthoBounds: { north: 0.001, south: -0.001, east: 0.002, west: -0.002 }
     },
     rmIsFiniteNumber(value){
@@ -170,10 +174,12 @@ test("RoofMapper carries durable synthetic base maps through split outlines", ()
   assert.equal(splitRoof.roof_base_map_synthetic, true);
   assert.equal(stored.ring.length, 0);
   assert.equal(stored.imageFrame, "roof_base_map");
+  assert.equal(stored.imageFrameUrl, sourceRoof.roof_base_map_url);
   assert.equal(stored.imageRing.length, ring.length);
 
   const display = context.rmOutlineDisplayGeometry(stored, context.rmState.orthoBounds);
   assert.equal(display.ring.length, ring.length);
+  assert.equal(context.rmOutlineDisplayGeometry(stored, context.rmState.orthoBounds, "https://example.test/other.jpg"), null);
 
   const unsavedSplit = context.rmSplitOutlineStorageFields({ ring, center: { lat: 0, lng: 0 } }, null);
   assert.equal(unsavedSplit, null);
@@ -303,6 +309,107 @@ test("RoofMapper does not reuse a different synthetic base-map image for new ima
   assert.equal(uploads, 1);
 });
 
+test("RoofMapper refuses to re-anchor existing image-frame geometry to a different base map", async () => {
+  let uploads = 0;
+  const toasts = [];
+  const context = {
+    isAdmin: true,
+    rmState: {
+      orthoActive: true,
+      orthoSynthetic: true,
+      orthoDataUrl: "data:image/jpeg;base64,new-image",
+      orthoBounds: { north: 0.001, south: -0.001, east: 0.002, west: -0.002 }
+    },
+    toast(message){ toasts.push(message); },
+    rmIsFiniteNumber(value){
+      return typeof value === "number" && Number.isFinite(value);
+    },
+    fdb: {
+      collection(){
+        return {
+          doc(){
+            return {
+              async get(){
+                return {
+                  exists: true,
+                  data(){
+                    return { companyCamProjectId: "cc-1" };
+                  }
+                };
+              }
+            };
+          }
+        };
+      }
+    },
+    async ccApiPost(){
+      uploads++;
+      return { document: { url: "https://example.test/new-image.jpg" } };
+    },
+    async callAdminApi(){}
+  };
+  loadFunctionBlock(
+    "js/roofmapper.js",
+    "function rmValidOrthoBounds",
+    "async function rmPersistKmlGroundOverlayBaseMap",
+    context
+  );
+
+  const roof = {
+    id: "roof-1",
+    roof_base_map_type: "sketch",
+    roof_base_map_url: "https://example.test/old-image.jpg",
+    roof_base_map_synthetic: true,
+    roof_outlines: [{
+      imageFrame: "roof_base_map",
+      imageFrameUrl: "https://example.test/old-image.jpg",
+      imageRing: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }]
+    }],
+    roof_assets: [{
+      x: 0.5,
+      y: 0.5,
+      imageFrame: "roof_base_map",
+      imageFrameUrl: "https://example.test/old-image.jpg"
+    }]
+  };
+
+  const refused = await context.rmEnsureSyntheticOrthoFrameForSave("building-1", roof, false);
+
+  assert.equal(refused, false);
+  assert.equal(roof.roof_base_map_url, "https://example.test/old-image.jpg");
+  assert.equal(uploads, 0);
+  assert.ok(toasts.some((message) => message.includes("different uploaded image")));
+});
+
+test("RoofMapper refuses base-map clear or replacement when image-frame geometry exists", () => {
+  const toasts = [];
+  const context = {
+    toast(message){ toasts.push(message); },
+    rmIsFiniteNumber(value){
+      return typeof value === "number" && Number.isFinite(value);
+    }
+  };
+  loadFunctionBlock(
+    "js/roofmapper.js",
+    "function rmValidOrthoBounds",
+    "function rmStartOrthoTrace",
+    context
+  );
+
+  const roof = {
+    roof_base_map_url: "https://example.test/base-1.jpg",
+    roof_outlines: [{
+      imageFrame: "roof_base_map",
+      imageFrameUrl: "https://example.test/base-1.jpg",
+      imageRing: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }]
+    }]
+  };
+
+  assert.equal(context.rmRefuseImageFrameBaseMapChange(roof, "Clearing this base map"), true);
+  assert.ok(toasts[0].includes("was refused"));
+  assert.equal(context.rmRefuseImageFrameBaseMapChange({ roof_outlines: [], roof_assets: [] }, "Changing this base map"), false);
+});
+
 test("building maps reject synthetic Null Island geometry without rejecting valid zero latitude", () => {
   const context = { Number };
   loadFunctionBlock(
@@ -365,11 +472,12 @@ test("building maps render selected synthetic image outlines in custom image spa
         { x: 0.75, y: 0.75 },
         { x: 0.25, y: 0.25 }
       ],
-      imageFrame: "roof_base_map"
+      imageFrame: "roof_base_map",
+      imageFrameUrl: "https://example.test/base.jpg"
     }]
   };
   const outlines = context.inlineHistoryOutlines([selectedRoof], true, selectedRoof);
-  const imageRing = context.buildingMapImageOutlineRing(outlines[0], 400, 200);
+  const imageRing = context.buildingMapImageOutlineRing(outlines[0], 400, 200, selectedRoof.roof_base_map_url);
 
   assert.equal(outlines.length, 1);
   assert.equal(outlines[0]._roofLabel, "Roof 1");
@@ -377,5 +485,8 @@ test("building maps render selected synthetic image outlines in custom image spa
   assert.equal(imageRing[0][1], 100);
   assert.equal(imageRing[1][0], 50);
   assert.equal(imageRing[1][1], 300);
+  assert.equal(context.buildingMapImageOutlineRing(outlines[0], 400, 200, "https://example.test/other.jpg"), null);
+  assert.equal(context.buildingMapImageFrameMatches({ imageFrameUrl: "https://example.test/base.jpg" }, "https://example.test/base.jpg"), true);
+  assert.equal(context.buildingMapImageFrameMatches({ imageFrameUrl: "https://example.test/base.jpg" }, "https://example.test/other.jpg"), false);
   assert.equal(context.buildingMapImageOutlineRing({ imageRing: [{ x: 0, y: 0 }, { x: 1, y: 1 }] }, 400, 200), null);
 });
