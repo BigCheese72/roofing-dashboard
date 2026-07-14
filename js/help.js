@@ -30,7 +30,7 @@ var HELP_ARTICLES = [
   { id: "gs-new-wo", title: "How do I start a new work order?", screens: ["home"], roles: "all",
     keywords: "new create start leak change order repair inspection warranty tile",
     body: [
-      "From Home, tap the tile for the type of work order you're starting (💧 Leak Work Order, 📝 Change Order, 🔍 Inspection, 🔧 Repair, 🛡️ Warranty).",
+      "From Home, tap the tile for the type of work order you're starting (💧 Leak Work Order, 📝 Change Order, 🔍 Inspection, 🔧 Work Order, 🛡️ Warranty).",
       "From anywhere else in the app, tap ➕ New in the header -- it takes you back to Home instead of blanking your current screen.",
       "You can change the Work Order Type any time from the dropdown at the top of Job Information, if you picked the wrong tile."
     ] },
@@ -51,10 +51,10 @@ var HELP_ARTICLES = [
     ] },
 
   // ---- Work order types ----
-  { id: "wo-leak", title: "How do I fill out a Leak / Service work order?", screens: ["edit"], roles: "all",
-    keywords: "leak service report finding warranty determination",
+  { id: "wo-leak", title: "How do I fill out a Leak Work Order?", screens: ["edit"], roles: "all",
+    keywords: "leak service report finding warranty determination investigation",
     body: [
-      "This is the default type -- job info, findings, photos, repairs, and a Warranty Determination.",
+      "This is the default type, and it's a pure leak investigation -- job info, findings, the roof map and pins, photos, a Warranty Determination, and a Summary. There's no Work Performed section on it: work you actually carry out belongs on a Work Order (the type that executes scope already sold on a proposal).",
       "Each finding you add gets its own \"📷 Take Photo\" / \"+ Add Photos\" / \"Import from CompanyCam\" buttons right in its card -- capture the photo right there and it's automatically linked to that finding.",
       "A collapsible \"Warranty Guidelines (reference for techs)\" section sits above the Warrantable/Non-Warrantable Repairs boxes -- tap it open for a quick reminder of what's typically covered."
     ] },
@@ -73,11 +73,11 @@ var HELP_ARTICLES = [
       "Save it. It now shows \"✅ Signed by [name] on [date]\" with a thumbnail. Tap \"Re-sign\" to redo it, or \"Clear Signature\" to remove it.",
       "The signature prints directly into the Change Order PDF as a real signature block."
     ] },
-  { id: "wo-repair", title: "How do I do a Repair work order?", screens: ["edit"], roles: "all",
-    keywords: "repair project scope curb boot flashing",
+  { id: "wo-repair", title: "How do I do a Work Order?", screens: ["edit"], roles: "all",
+    keywords: "work order repair project scope curb boot flashing proposal",
     body: [
-      "Pick 🔧 Repair from Home. There's no findings section -- instead you get a Repair Scope card with a Description of Work Performed and an itemized Repair Items list (Type, Quantity, Notes/Location).",
-      "Photos work the old way here -- the Photo Documentation section at the bottom keeps its own Take Photo / Add Photos / Import from CompanyCam buttons, since Repair has no findings to capture into."
+      "A Work Order is for executing work that's already been sold on a proposal. Pick 🔧 Work Order from Home. There's no findings section -- instead you get a Repair Scope card with a Description of Work Performed and an itemized Repair Items list (Type, Quantity, Notes/Location).",
+      "Photos work the old way here -- the Photo Documentation section at the bottom keeps its own Take Photo / Add Photos / Import from CompanyCam buttons, since a Work Order has no findings to capture into."
     ] },
   { id: "wo-inspection", title: "How do I do a Roof Inspection?", screens: ["edit"], roles: "all",
     keywords: "inspection checklist component rating good fair poor critical",
@@ -571,7 +571,7 @@ function helpToggleTipBubble(anchor, text) {
    wired inside core.js and this file deliberately never edits that. */
 var HELP_WALKTHROUGH_STEPS = [
   { title: "Welcome to RoofOps", body: "A few quick things before your first job. Tap Next — this takes about 20 seconds, and you can skip it any time." },
-  { title: "Start a work order", body: "From Home, tap the tile for the type of work you're doing (Leak, Change Order, Inspection, Repair, Warranty). ➕ New in the header always brings you back here." },
+  { title: "Start a work order", body: "From Home, tap the tile for the type of work you're doing (Leak Work Order, Change Order, Inspection, Work Order, Warranty). ➕ New in the header always brings you back here." },
   { title: "Reopen a saved job", body: "Tap 💾 Saved in the header any time to find and reopen a work order you already started — nothing is ever locked once saved." },
   { title: "Map a roof", body: "The 🗺️ RoofMapper tab traces a roof outline and lets you drop pins, add features, and mark it up. To reopen a roof you already traced, go through 🏢 Building History instead." },
   { title: "Get help any time", body: "Tap the ❓ button (bottom-right, every screen) for searchable how-tos, or 💬 to send feedback straight to Mark. You won't see this walkthrough again — find it later from ❓ Help." }

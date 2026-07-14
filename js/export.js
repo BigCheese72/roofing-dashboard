@@ -21,11 +21,13 @@ function buildLeakReportText(o){
   var isRepair = o.woType === "Repair";
   var isInspection = o.woType === "Inspection";
   var L = [];
-  L.push(isRepair ? "REPAIR / PROJECT REPORT" : (isInspection ? "ROOFING INSPECTION REPORT" : "LEAK WORK ORDER / REPAIR DOCUMENTATION"));
+  L.push(isRepair ? "WORK ORDER REPORT" : (isInspection ? "ROOFING INSPECTION REPORT" : "LEAK WORK ORDER / REPAIR DOCUMENTATION"));
   L.push(o.jobName + (o.location ? " - " + o.location : ""));
   L.push("");
   L.push("JOB INFORMATION");
-  L.push("Work Order Type: " + o.woType);
+  /* woTypeLabel(), never the raw o.woType — an existing record still stores
+     "Repair" and must print as "Work Order". See WORK_ORDER_TYPE_LABELS. */
+  L.push("Work Order Type: " + woTypeLabel(o.woType));
   L.push("Job Name: " + o.jobName);
   L.push("Location: " + o.location);
   L.push("Date of Service: " + o.serviceDate);
@@ -61,12 +63,25 @@ function buildLeakReportText(o){
       L.push((i+1) + ". " + f.condition + (f.location ? " — " + f.location : "") + " [" + f.warranty + "]");
     });
   }
-  L.push("");
-  L.push("WORK PERFORMED");
-  filledRepairs().forEach(function(r,i){
-    L.push((i+1) + ". " + r.repair + (r.location ? " — " + r.location : ""));
-  });
-  L.push("");
+  /* Print-if-present, NOT gated by type. The Leak form no longer offers a
+     "Work Performed" card (a leak work order is a pure investigation now —
+     see onWoTypeChange()), so a NEW leak simply has no repairs[] rows and
+     this section never appears. But a LEGACY leak record saved before that
+     change may genuinely contain repair rows, and its report must still
+     print what it actually contains — hard-gating this by type would
+     silently drop real data out of old reports. Matches renderLeakReportDoc()
+     and generateLeakReportPdf(), which already gate on filledRepairs().length.
+     Previously this header printed unconditionally for every non-Change-Order
+     type, even with zero rows. */
+  var fr = filledRepairs();
+  if (fr.length){
+    L.push("");
+    L.push("WORK PERFORMED");
+    fr.forEach(function(r,i){
+      L.push((i+1) + ". " + r.repair + (r.location ? " — " + r.location : ""));
+    });
+    L.push("");
+  }
   if (!isInspection){
     L.push("WARRANTY DETERMINATION");
     if (o.warrantable) L.push("Warrantable Repairs: " + o.warrantable);
@@ -834,11 +849,12 @@ function renderLeakReportDoc(o){
   var h = "";
   h += "<div class='dochead' style='display:flex;align-items:center;gap:16px'>" +
        "<img src='" + LOGO + "' alt='Watkins Roofing' style='height:72px;flex:none'>" +
-       "<div><div class='t1 cond' style='color:#B4223F'>" + (isRepair ? "Repair / Project Report" : (isInspection ? "Roofing Inspection Report" : "Leak Work Order / Repair Documentation")) + "</div>" +
+       "<div><div class='t1 cond' style='color:#B4223F'>" + (isRepair ? "Work Order Report" : (isInspection ? "Roofing Inspection Report" : "Leak Work Order / Repair Documentation")) + "</div>" +
        "<div class='t2'>" + esc(o.jobName) + (o.location ? " — " + esc(o.location) : "") + "</div></div></div>";
 
   h += "<h3 class='cond'>Job Information</h3>" + kvTable([
-    ["Work Order Type",o.woType],
+    /* Display label, never the raw stored value — see WORK_ORDER_TYPE_LABELS. */
+    ["Work Order Type",woTypeLabel(o.woType)],
     ["Job Name",o.jobName],["Location",o.location],["Date of Service",o.serviceDate],
     ["Job No.",o.jobNo],["Bill To",o.billTo],["Billing Contact",o.billContact],
     ["Contact Phone",o.billPhone],["Site Contact",o.siteContact],["Technician",o.technician]]
@@ -1110,7 +1126,10 @@ function ensureDims(p){
 }
 function pdfFileName(){
   var o = collect();
-  var prefix = o.woType === "Change Order" ? "ChangeOrder" : (o.woType === "Repair" ? "Repair" : "WorkOrder");
+  /* Stored "Repair" now DISPLAYS as "Work Order" everywhere, so its PDF
+     filename follows the label too — the same prefix every other
+     leak-report-template type already used. */
+  var prefix = o.woType === "Change Order" ? "ChangeOrder" : "WorkOrder";
   var base = (prefix + "_" + (o.jobName || "") + "_" + (o.jobNo || ""))
     .replace(/[^A-Za-z0-9_-]+/g, "_").replace(/_+/g, "_").replace(/^_|_$/g, "");
   return (base || prefix) + ".pdf";
@@ -1233,7 +1252,7 @@ async function generateLeakReportPdf(o, roofPlanData){
   doc.setFont("helvetica", "bold");
   doc.setFontSize(15);
   doc.setTextColor(180, 34, 63);
-  doc.text(isRepair ? "REPAIR / PROJECT REPORT" : (isInspection ? "ROOFING INSPECTION REPORT" : "LEAK WORK ORDER / REPAIR DOCUMENTATION"), M + 112, y + 20, { maxWidth: W - M * 2 - 112 });
+  doc.text(isRepair ? "WORK ORDER REPORT" : (isInspection ? "ROOFING INSPECTION REPORT" : "LEAK WORK ORDER / REPAIR DOCUMENTATION"), M + 112, y + 20, { maxWidth: W - M * 2 - 112 });
   doc.setFontSize(11);
   doc.setTextColor(30, 39, 46);
   doc.text(String((o.jobName || "") + (o.location ? " \u2014 " + o.location : "")), M + 112, y + 42, { maxWidth: W - M * 2 - 112 });
@@ -1278,7 +1297,8 @@ async function generateLeakReportPdf(o, roofPlanData){
 
   heading("Job Information");
   kvTablePdf([
-    ["Work Order Type", o.woType],
+    /* Display label, never the raw stored value — see WORK_ORDER_TYPE_LABELS. */
+    ["Work Order Type", woTypeLabel(o.woType)],
     ["Job Name", o.jobName], ["Location", o.location], ["Date of Service", o.serviceDate],
     ["Job No.", o.jobNo], ["Bill To", o.billTo], ["Billing Contact", o.billContact],
     ["Contact Phone", o.billPhone], ["Site Contact", o.siteContact], ["Technician", o.technician]
