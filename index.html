@@ -249,6 +249,29 @@
           onchange="addPhotosFromFiles(this.files); this.value='';">
         <div id="co-photos-host"></div>
       </div>
+      <!-- CompanyCam on a Change Order. The global Photo Documentation card
+           (#wo-globalphotos-card) — which used to be the ONLY place the
+           CompanyCam link banner (#cc-link-info) and the "Import from
+           CompanyCam" button lived — is hidden for Change Orders, which
+           silently removed every CompanyCam entry point from this form (a
+           regression from cac0f84/88dded9). This is that entry point, scoped
+           to the Change Order and reading the exact same ccLinkedProjectId as
+           everywhere else: same banner (#cc-link-info-co, rendered by
+           renderCCLinkInfo()), same modal (openCC()), same durable link on
+           buildings/{id}.companyCamProjectId. Nothing else from the global
+           card is un-hidden. A project is NEVER auto-created from the field —
+           linking only ever picks an EXISTING CompanyCam project. See
+           "Change Order CompanyCam link" in DEV_NOTES.md. -->
+      <div class="fld">
+        <label>CompanyCam</label>
+        <p class="hint" style="margin:0 0 8px">Link this change order to the building's CompanyCam project — the
+          signed Change Order PDF is then saved into that project automatically. If the building is already linked,
+          this fills in on its own.</p>
+        <div class="btnrow" style="margin:0">
+          <button class="btn" onclick="openCC()">🔗 Link / Import from CompanyCam</button>
+        </div>
+        <div id="cc-link-info-co"></div>
+      </div>
       <div class="fld">
         <label>Signature</label>
         <p class="hint" style="margin:0 0 8px">Capture the customer's signature right on the device — it prints
