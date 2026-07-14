@@ -1039,8 +1039,17 @@ function inlineHistoryAssetsForMap(roofs, roof, hasCustomBaseMap){
     return acc;
   }, []);
 }
-function inlineHistoryOutlines(roofs, hasCustomBaseMap){
-  if (hasCustomBaseMap) return [];
+function inlineHistoryOutlines(roofs, hasCustomBaseMap, selectedRoof){
+  if (hasCustomBaseMap){
+    var selectedOutlines = (selectedRoof && selectedRoof.roof_outlines) || [];
+    var selectedLatest = selectedOutlines[selectedOutlines.length - 1];
+    return selectedLatest ? [Object.assign({}, selectedLatest, {
+      _roofLabel: selectedRoof.label || "Roof",
+      _roofLabelPos: selectedRoof.labelPos || null,
+      _roofBaseMapSynthetic: !!selectedRoof.roof_base_map_synthetic,
+      _roofBaseMapType: selectedRoof.roof_base_map_type || null
+    })] : [];
+  }
   return (roofs || []).reduce(function(acc, r){
     var ol = r.roof_outlines || [];
     var latest = ol[ol.length - 1];
@@ -1089,7 +1098,7 @@ async function refreshInlineBuildingHistory(){
     var orthoOverlay = (roof.roof_base_map_type === "drone_ortho" && roof.roof_base_map_url && roof.roof_base_map_bounds) ?
       { url: roof.roof_base_map_url, bounds: roof.roof_base_map_bounds } : null;
     var roofAssets = inlineHistoryAssetsForMap(ctx.roofs, roof, hasCustomBaseMap);
-    var outlines = inlineHistoryOutlines(ctx.roofs, hasCustomBaseMap);
+    var outlines = inlineHistoryOutlines(ctx.roofs, hasCustomBaseMap, roof);
     /* Inline Building History is building-wide: outlines, pins, and the
        timeline all describe the same building-level history. The selected
        roof only chooses a roof-specific base image when one is set. */
@@ -1521,6 +1530,20 @@ function buildingMapRenderableOutline(outline){
   if (!outline || !Array.isArray(outline.ring) || outline.ring.length < 3) return false;
   return outline.ring.every(function(p){ return buildingMapShouldUseWorldPoint(p, outline); });
 }
+function buildingMapImageOutlineRing(outline, width, height){
+  if (!outline || !Array.isArray(outline.imageRing) || outline.imageRing.length < 3) return null;
+  var ring = outline.imageRing.map(function(p){
+    if (!p || !buildingMapIsFiniteNumber(p.x) || !buildingMapIsFiniteNumber(p.y)) return null;
+    return [p.y * height, p.x * width];
+  }).filter(Boolean);
+  return ring.length >= 3 ? ring : null;
+}
+function buildingMapImageOutlineCenter(ring){
+  if (!Array.isArray(ring) || !ring.length) return null;
+  var sumY = 0, sumX = 0;
+  ring.forEach(function(p){ sumY += p[0]; sumX += p[1]; });
+  return [sumY / ring.length, sumX / ring.length];
+}
 function renderBuildingMap(pins, customBld, bldAddress, orthoOverlay, assets, buildingId, outlines, mapOptions){
   assets = assets || [];
   var opts = (typeof mapOptions === "string") ? { mapElementId: mapOptions } : (mapOptions || {});
@@ -1552,6 +1575,14 @@ function renderBuildingMap(pins, customBld, bldAddress, orthoOverlay, assets, bu
         var map = L.map(mapElementId, { crs: L.CRS.Simple, minZoom: -5 });
         setBuildingMapHandle(mapElementId, map);
         L.imageOverlay(customBld.roof_base_map_url, bounds).addTo(map);
+        outlines.forEach(function(o){
+          var ring = buildingMapImageOutlineRing(o, w, h);
+          if (!ring) return;
+          L.polygon(ring, {
+            color: "#E8600A", weight: 2, fillColor: "#E8600A", fillOpacity: 0.1
+          }).addTo(map).bindPopup(outlinePopupHtml(o, o._roofLabel));
+          if (o._roofLabel) roofLabelMarker.apply(null, buildingMapImageOutlineCenter(ring).concat([o._roofLabel])).addTo(map);
+        });
         pins.forEach(function(p){
           L.circleMarker([p.y * h, p.x * w], {
             radius: 9, color: "#fff", weight: 2, fillColor: warrantyColor(p.warranty), fillOpacity: 0.95

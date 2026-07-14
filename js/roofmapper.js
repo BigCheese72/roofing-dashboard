@@ -4628,7 +4628,7 @@ async function rmEnsureSyntheticOrthoFrameForSave(buildingId, roof, alreadySaved
     rmRefuseSyntheticOrthoSave("Reload the uploaded image and try again.");
     return false;
   }
-  if (rmHasDurableSyntheticSplitFrame(roof)) return roof.roof_base_map_url;
+  if (rmHasDurableSyntheticSplitFrame(roof) && roof.roof_base_map_url === rmState.orthoDataUrl) return roof.roof_base_map_url;
   var url = alreadySaved ?
     await rmPersistOrthoBaseMap(buildingId, roof.id) :
     await rmUploadSyntheticOrthoBaseMap(buildingId, roof.id);

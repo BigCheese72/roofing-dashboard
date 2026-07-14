@@ -217,7 +217,16 @@ async function openBuildingHistory(buildingId){
        be drawn onto at all -- same coordinate-system constraint already
        documented for pins/assets above). See "Individual-roof tracing +
        labels" in DEV_NOTES.md. */
-    var allRoofOutlinesForMap = hasCustomBaseMap ? [] : roofs.reduce(function(acc, r){
+    var allRoofOutlinesForMap = hasCustomBaseMap ? (function(){
+      var ol = roof.roof_outlines || [];
+      var latest = ol[ol.length - 1];
+      return latest ? [Object.assign({}, latest, {
+        _roofLabel: roof.label || "Roof",
+        _roofLabelPos: roof.labelPos || null,
+        _roofBaseMapSynthetic: !!roof.roof_base_map_synthetic,
+        _roofBaseMapType: roof.roof_base_map_type || null
+      })] : [];
+    })() : roofs.reduce(function(acc, r){
       var ol = r.roof_outlines || [];
       var latest = ol[ol.length - 1];
       if (latest) acc.push(Object.assign({}, latest, {

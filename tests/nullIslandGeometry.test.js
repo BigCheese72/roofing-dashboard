@@ -208,6 +208,9 @@ test("RoofMapper refuses synthetic ortho upload persistence before unsafe geomet
         };
       }
     },
+    rmIsFiniteNumber(value){
+      return typeof value === "number" && Number.isFinite(value);
+    },
     async ccApiPost(){
       return { document: { url: "https://example.test/retained-ortho.jpg" } };
     },
@@ -234,6 +237,70 @@ test("RoofMapper refuses synthetic ortho upload persistence before unsafe geomet
   const refused = await context.rmUploadSyntheticOrthoBaseMap("building-1", "roof-2");
   assert.equal(refused, false);
   assert.ok(toasts.some((message) => message.includes("can't be kept with it")));
+});
+
+test("RoofMapper does not reuse a different synthetic base-map image for new image geometry", async () => {
+  let uploads = 0;
+  const context = {
+    isAdmin: true,
+    rmState: {
+      orthoActive: true,
+      orthoSynthetic: true,
+      orthoDataUrl: "data:image/jpeg;base64,new-image",
+      orthoBounds: { north: 0.001, south: -0.001, east: 0.002, west: -0.002 }
+    },
+    toast(){},
+    rmIsFiniteNumber(value){
+      return typeof value === "number" && Number.isFinite(value);
+    },
+    fdb: {
+      collection(){
+        return {
+          doc(){
+            return {
+              async get(){
+                return {
+                  exists: true,
+                  data(){
+                    return { companyCamProjectId: "cc-1" };
+                  }
+                };
+              }
+            };
+          }
+        };
+      }
+    },
+    async ccApiPost(){
+      uploads++;
+      return { document: { url: "https://example.test/new-image.jpg" } };
+    },
+    async callAdminApi(){}
+  };
+  loadFunctionBlock(
+    "js/roofmapper.js",
+    "function rmValidOrthoBounds",
+    "async function rmPersistKmlGroundOverlayBaseMap",
+    context
+  );
+
+  const roof = {
+    id: "roof-1",
+    roof_base_map_type: "sketch",
+    roof_base_map_url: "https://example.test/old-image.jpg",
+    roof_base_map_synthetic: true
+  };
+  const retainedUrl = await context.rmEnsureSyntheticOrthoFrameForSave("building-1", roof, false);
+
+  assert.equal(retainedUrl, "https://example.test/new-image.jpg");
+  assert.equal(roof.roof_base_map_url, "https://example.test/new-image.jpg");
+  assert.equal(uploads, 1);
+
+  context.rmState.orthoDataUrl = roof.roof_base_map_url;
+  const reusedUrl = await context.rmEnsureSyntheticOrthoFrameForSave("building-1", roof, false);
+
+  assert.equal(reusedUrl, "https://example.test/new-image.jpg");
+  assert.equal(uploads, 1);
 });
 
 test("building maps reject synthetic Null Island geometry without rejecting valid zero latitude", () => {
@@ -267,4 +334,48 @@ test("building maps reject synthetic Null Island geometry without rejecting vali
   assert.equal(context.buildingMapShouldUseWorldPoint({ lat: 0, lng: 10 }, {}), true);
   assert.equal(context.buildingMapShouldUseWorldPoint({ lat: 0, lng: 0 }, { tracedOnOrtho: true }), false);
   assert.equal(context.buildingMapShouldUseWorldPoint({ lat: null, lng: 0 }, {}), false);
+});
+
+test("building maps render selected synthetic image outlines in custom image space", () => {
+  const context = { Number };
+  loadFunctionBlock(
+    "js/workorders.js",
+    "function inlineHistoryPinsForMap",
+    "async function refreshInlineBuildingHistory",
+    context
+  );
+  loadFunctionBlock(
+    "js/workorders.js",
+    "function buildingMapIsFiniteNumber",
+    "function renderBuildingMap",
+    context
+  );
+
+  const selectedRoof = {
+    id: "roof-1",
+    label: "Roof 1",
+    roof_base_map_type: "sketch",
+    roof_base_map_url: "https://example.test/base.jpg",
+    roof_base_map_synthetic: true,
+    roof_outlines: [{
+      ring: [],
+      imageRing: [
+        { x: 0.25, y: 0.25 },
+        { x: 0.75, y: 0.25 },
+        { x: 0.75, y: 0.75 },
+        { x: 0.25, y: 0.25 }
+      ],
+      imageFrame: "roof_base_map"
+    }]
+  };
+  const outlines = context.inlineHistoryOutlines([selectedRoof], true, selectedRoof);
+  const imageRing = context.buildingMapImageOutlineRing(outlines[0], 400, 200);
+
+  assert.equal(outlines.length, 1);
+  assert.equal(outlines[0]._roofLabel, "Roof 1");
+  assert.equal(imageRing[0][0], 50);
+  assert.equal(imageRing[0][1], 100);
+  assert.equal(imageRing[1][0], 50);
+  assert.equal(imageRing[1][1], 300);
+  assert.equal(context.buildingMapImageOutlineRing({ imageRing: [{ x: 0, y: 0 }, { x: 1, y: 1 }] }, 400, 200), null);
 });
