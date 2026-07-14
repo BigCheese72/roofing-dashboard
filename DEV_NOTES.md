@@ -816,7 +816,79 @@ reason, the toast will say why. Verified against a live invalid-project-id reque
 (real CompanyCam 403): `{"error":"CompanyCam said: 403 {\"errors\":[\"Forbidden\"]}"}` —
 confirmed the body now comes through.
 
-### Push app-added photos to CompanyCam — DECIDED: not doing this (2026-07-09)
+### Photo feed push — BUILT (2026-07-14)
+
+Work-order photos now land in the linked CompanyCam project's **photo feed** as real,
+map-pinned CompanyCam photos — in ADDITION to the existing PDF-as-document push. Both
+happen on the same action; neither replaces the other. The PDF is the record; the feed
+is what a CompanyCam user actually browses.
+
+**The API contract** (verified against CompanyCam's live OpenAPI spec, not from memory):
+
+```
+POST /v2/projects/{project_id}/photos
+{ "photo": { "uri": <REQUIRED>, "captured_at": <REQUIRED, unix SECONDS>,
+             "coordinates": { "lat": .., "lon": .. },   // optional
+             "description": ".." } }                      // optional
+```
+
+Two things that are easy to get wrong and expensive to get wrong quietly:
+- There is **no base64/binary variant**. Unlike `/documents` (which takes a base64
+  `attachment` — that's why the PDF push was easy), CompanyCam **fetches the `uri`**
+  itself. That's the whole reason this was ever thought impossible.
+- The field is **`lon`, not `lng`**. RoofOps speaks `lng` everywhere (Leaflet). A
+  straight pass-through silently drops every pin.
+
+**How the "needs a public URL" blocker was actually cleared — read before "simplifying":**
+the Storage bucket is **deny-all and stays that way** (an open bucket would make every
+customer's roof photos world-readable to anyone who guessed a URL). So "the photos are
+in Storage now" does NOT hand us a public URL, and we must not create one. Instead the
+server mints a **short-lived V4 signed URL** per photo, per push: unguessable, expiring,
+read-only, scoped to exactly one object. CompanyCam fetches the bytes once and stores its
+own copy; the link then rots harmlessly. This is the only thing in the app that hands out
+a Storage-readable URL, and it hands it to CompanyCam — never to a browser.
+
+**Coordinate priority** (`ccBestPhotoCoordinate()`, js/history.js):
+`photo.pin` → **finding pin** → `photo.gps` → job/site location → *(none — pushed unpinned)*.
+
+The finding pin deliberately outranks the photo's own GPS: this codebase already treats
+photo GPS as an initial *guess* for pin placement, "never trusted as final without a tech
+confirming"; consumer GPS is ~10-30ft off; and on the real Tri-Delta report **11 of 12
+photos had no GPS at all**. The finding pin is the tech's confirmed answer. If a photo has
+no coordinate at all, the server falls back to the **linked project's own coordinates**
+(CompanyCam already knows where the job is — no geocoding needed). If even that is absent,
+the photo is pushed **unpinned** rather than pinned to a fabricated location. `(0,0)` is
+rejected as a coordinate everywhere (see `tools/audit_null_island.js` for why).
+
+**Idempotency**: a pushed photo is stamped with `ccFeedPhotoId` (merge-written to its
+Firestore photo doc, and carried through `cloudSaveOrder`/`cloudFetchOrder` — omitting it
+there would erase the record on the next save and duplicate the entire photo set into the
+feed on the next send). Re-sending, re-downloading or re-sharing a work order pushes
+**nothing** a second time. Photos IMPORTED from CompanyCam (`ccPhotoId`) are never pushed
+back. A photo not yet in Storage is skipped, not failed — the next send picks it up.
+
+**Still true, still binding**: pushes only to an **already-LINKED** project, and **never**
+creates one.
+
+**Non-fatal by design**: the photo push runs after the PDF and cannot fail the user's
+action. The email is already sent by the time it runs; a photo failure is reported in a
+toast and retried on the next send.
+
+### Push app-added photos to CompanyCam — SHIPPED 2026-07-14 (this section is HISTORY; see "Photo feed push — BUILT" below)
+
+> **⚠️ SUPERSEDED. Do not act on the decision recorded in this section.** The blocker
+> described below ("no photo hosting that produces a public URL") was dissolved by the
+> **Photo storage migration** (photos now live in Firebase Storage), which happened
+> *after* this was written. The push was built on 2026-07-14. The reasoning below is
+> preserved because the *matching-strategy* decisions in it are still binding — but the
+> "not doing this / requires paying for hosting" conclusion is **stale and wrong now**.
+>
+> **What actually cleared it:** CompanyCam's photo endpoint does require a fetchable
+> `uri` (that part was right). But it does **not** require a *public* one — and the
+> bucket stays **deny-all**, which was never negotiable. The server mints a short-lived
+> **V4 signed URL** for one object, hands it to CompanyCam for the duration of one
+> fetch, and it expires. No hosting layer, no new cost, no open bucket. See
+> `netlify/functions/lib/companyCamPhotos.js`.
 
 **Closed, not just parked.** Mark's call: not willing to pay for photo hosting at this
 time. The integration stays **pull-only** — import photos FROM CompanyCam, as it works
