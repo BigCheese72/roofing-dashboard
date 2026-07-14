@@ -1839,6 +1839,15 @@ function onWoTypeChange(){
   var el = document.getElementById("wo-changeorder-card");
   if (el) el.style.display = isCO ? "" : "none";
   if (isCO) renderChangeOrderPhotos();
+  /* Change Order-only autofill: adopt the building's existing CompanyCam
+     link (so the signed CO PDF actually pushes -- see
+     resolveChangeOrderCompanyCamLink() in js/companycam.js) and default the
+     Job No. to the parent job's number + " CO" (see
+     maybeApplyChangeOrderJobNo() in js/workorders.js). Both are no-ops for
+     every other type, both are pure defaults the tech can override, and
+     neither ever creates a CompanyCam project. typeof-guarded because
+     js/workorders.js loads after this file. */
+  if (isCO && typeof scheduleChangeOrderAutofill === "function") scheduleChangeOrderAutofill();
   var isRepair = val("woType") === "Repair";
   var rc = document.getElementById("wo-repair-card");
   if (rc) rc.style.display = isRepair ? "" : "none";

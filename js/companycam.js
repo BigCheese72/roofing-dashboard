@@ -325,15 +325,73 @@ async function ccImport(){
     toast("No CompanyCam photos were imported" + (fail ? " (" + fail + " failed)" : "") + ".");
   }
 }
+/* The CompanyCam link banner now has TWO possible hosts, not one:
+   #cc-link-info (inside the global Photo Documentation card, where it has
+   always lived -- visible for every type EXCEPT Change Order) and
+   #cc-link-info-co (inside the Change Order Details card). onWoTypeChange()
+   hides the whole global photos card for a Change Order, which took the
+   banner AND the "Import from CompanyCam" button down with it -- that card
+   was the ONLY CompanyCam entry point a Change Order had (regression from
+   cac0f84/88dded9). Rendering into every host that exists, rather than
+   moving the element, keeps ONE link and ONE source of truth
+   (ccLinkedProjectId) while showing it wherever the current form actually
+   displays it. Whichever host sits inside a hidden card simply isn't seen.
+   See "Change Order CompanyCam link" in DEV_NOTES.md. */
+var CC_LINK_INFO_HOST_IDS = ["cc-link-info", "cc-link-info-co"];
 function renderCCLinkInfo(){
-  var host = document.getElementById("cc-link-info");
-  if (!host) return;
-  if (!ccLinkedProjectId){ host.innerHTML = ""; return; }
-  host.innerHTML =
+  var linkedHtml = !ccLinkedProjectId ? "" :
     '<div class="cc-link">\ud83d\udd17 Locked to CompanyCam project: <b>' + esc(ccLinkedProjectName || ccLinkedProjectId) + '</b>' +
     '<span class="sp"></span><span class="hint" style="margin:0">Photos and history sync automatically.</span>' +
     (isAdmin ? '<button class="btn danger" onclick="unlinkCC()">Unlink (admin)</button>' : '') +
     '</div>';
+  CC_LINK_INFO_HOST_IDS.forEach(function(id){
+    var host = document.getElementById(id);
+    if (!host) return;
+    if (ccLinkedProjectId){ host.innerHTML = linkedHtml; return; }
+    /* Unlinked: the global host stays empty exactly as before (it sits
+       directly under an "Import from CompanyCam" button that already says
+       what to do). The Change Order host says it out loud instead, because
+       "not linked" is precisely the state that silently skips the PDF push
+       -- uploadLinkedPdfToCompanyCam() returns { skipped:true } with no
+       linked project, which is exactly the failure Mark could never see. */
+    host.innerHTML = (id === "cc-link-info-co") ?
+      '<p class="hint" style="margin:8px 0 0">No CompanyCam project linked yet \u2014 the signed PDF will not be saved to CompanyCam until one is.</p>' : "";
+  });
+}
+/* Inherits the building's durable CompanyCam link onto the work order that's
+   currently open -- exactly what bpSelectBuilding() already does when a
+   building is picked, but WITHOUT requiring the picker at all (a Change Order
+   started from the Home tile and typed straight into never touches it).
+   buildings/{id}.companyCamProjectId is the durable link; this only ever
+   READS it.
+
+   Change Order only, deliberately: every other type still shows the global
+   card's own banner and Import button, so nothing about their behavior
+   changes. NEVER creates a CompanyCam project -- it can only adopt one that
+   already exists on the building (the established rule: link and push only,
+   never auto-create from the field). Never clobbers an explicit link made in
+   this session either: the !ccLinkedProjectId guard is re-checked after the
+   await, so a link made mid-flight still wins. */
+async function resolveChangeOrderCompanyCamLink(){
+  if (typeof val !== "function" || val("woType") !== "Change Order") return { skipped: true, reason: "not-a-change-order" };
+  if (ccLinkedProjectId) return { ok: true, alreadyLinked: true, projectId: ccLinkedProjectId };
+  if (!fdb) return { skipped: true, reason: "offline" };
+  var buildingId = (typeof currentWorkOrderBuildingId === "function") ? currentWorkOrderBuildingId() : null;
+  if (!buildingId) return { skipped: true, reason: "no-building" };
+  try{
+    var snap = await fdb.collection("buildings").doc(buildingId).get();
+    if (!snap.exists) return { skipped: true, reason: "no-building-record" };
+    var b = snap.data() || {};
+    if (!b.companyCamProjectId) return { skipped: true, reason: "building-not-linked" };
+    if (ccLinkedProjectId) return { ok: true, alreadyLinked: true, projectId: ccLinkedProjectId };
+    ccLinkedProjectId = b.companyCamProjectId;
+    ccLinkedProjectName = b.companyCamProjectName || b.name || "";
+    renderCCLinkInfo();
+    return { ok: true, linked: true, projectId: ccLinkedProjectId };
+  }catch(e){
+    console.warn("CompanyCam link resolve from building failed", e);
+    return { ok: false, error: e.message };
+  }
 }
 function unlinkCC(){
   if (!isAdmin){ toast("Admin mode required to unlink."); return; }

@@ -153,6 +153,7 @@ async function bpSelectCompanyCamProject(i){
       roofSystem: val("roofSystem") || "", companyCamProjectId: p.id
     });
   }catch(e){ console.warn("Couldn't create/link building from CompanyCam project", e); }
+  scheduleChangeOrderAutofill(); /* Change Order only -- see runChangeOrderAutofill() */
 }
 function bpSelectBuilding(buildingId){
   var b = (bpCache || []).find(function(x){ return x.id === buildingId; });
@@ -178,6 +179,10 @@ function bpSelectBuilding(buildingId){
   closeBuildingPicker();
   toast("Loaded “" + b.name + "” — review the fields below before saving");
   scheduleInlineBuildingHistoryRefresh();
+  /* Change Order only (no-op otherwise): now that this work order is for a
+     real building, default its Job No. from that building's parent job and
+     adopt the building's CompanyCam link if it has one. */
+  scheduleChangeOrderAutofill();
 }
 
 /* ---- Move/reassign a roof to a different building ----
@@ -866,6 +871,11 @@ function fill(o){
   photos.forEach(function(p){ if (p.finding_id === undefined) p.finding_id = null; });
   ccLinkedProjectId = o.companyCamProjectId || null;
   ccLinkedProjectName = o.companyCamProjectName || "";
+  /* Whatever Job No. this order carries is now the LOADED order's number, not
+     something this session auto-filled -- so the Change Order autofill below
+     must treat it as a human's value and never overwrite it. Reset on every
+     load/new. */
+  coJobNoAutoValue = null;
   changeOrderSignature = o.changeOrderSignature || null;
   clearStaleLookupRoofInfoForCurrentOrder();
   renderFindings(); renderRepairs(); renderRepairItems(); renderPhotos(); renderCCLinkInfo(); renderChangeOrderSignature();
@@ -876,6 +886,101 @@ function fill(o){
      twice. */
   if (val("woType") === "Inspection"){ ensureInspectionChecklist(); renderInspectionChecklist(); }
   scheduleInlineBuildingHistoryRefresh();
+}
+/* ================= Change Order autofill =================
+   Two Change-Order-only defaults, both derived from the building the work
+   order is already for, both overridable, neither of which touches any other
+   work order type:
+
+   1. Job No. = the parent job's number with " CO" appended (Mark: parent
+      16153 -> "16153 CO"). A change order is a change to an EXISTING job, so
+      its number is that job's number, marked as the change order. The parent
+      number comes from the building's own timeline (building_history_events,
+      the same query the inline Building History card already runs), newest
+      first, preferring a non-Change-Order entry -- a CO on a building whose
+      most recent entry is itself a CO ("16153 CO") still resolves to base
+      "16153", never "16153 CO CO" (changeOrderJobNo() is idempotent).
+
+   2. The building's CompanyCam link (resolveChangeOrderCompanyCamLink(), in
+      js/companycam.js) -- so a CO on an already-linked building pushes its
+      signed PDF with no manual step.
+
+   NEVER overwrites a number the tech typed: coJobNoAutoValue remembers the
+   exact string THIS code last auto-filled, and autofill only writes when the
+   field is empty or still holds that remembered value. Anything else in the
+   field is a human's, and is left alone. */
+var coJobNoAutoValue = null;
+var coAutofillTimer = null, coAutofillSeq = 0, coAutofillListenersInstalled = false;
+function changeOrderJobNo(baseJobNo){
+  var base = String(baseJobNo == null ? "" : baseJobNo).trim();
+  if (!base) return "";
+  return base.replace(/\s*CO\s*$/i, "").trim() + " CO";
+}
+/* Newest-first events (loadBuildingHistoryEvents() already sorts them that
+   way). A Change Order's own number ("16153 CO") is stripped back to its
+   base, so the parent number is recovered whether the newest entry is the
+   original work order or a previous change order against it. */
+function parentJobNoFromHistoryEvents(events){
+  var numbered = (events || []).filter(function(e){ return e && String(e.workOrderNo || "").trim(); });
+  var parent = numbered.find(function(e){ return e.workOrderType !== "Change Order"; }) || numbered[0];
+  if (!parent) return "";
+  return String(parent.workOrderNo).replace(/\s*CO\s*$/i, "").trim();
+}
+function coJobNoIsAutoOrEmpty(){
+  var cur = (val("jobNo") || "").trim();
+  return !cur || cur === coJobNoAutoValue;
+}
+async function maybeApplyChangeOrderJobNo(){
+  if (val("woType") !== "Change Order") return { skipped: true, reason: "not-a-change-order" };
+  if (!coJobNoIsAutoOrEmpty()) return { skipped: true, reason: "user-entered" };
+  if (!fdb) return { skipped: true, reason: "offline" };
+  var buildingId = currentWorkOrderBuildingId();
+  if (!buildingId) return { skipped: true, reason: "no-building" };
+  var seq = ++coAutofillSeq;
+  try{
+    var events = await loadBuildingHistoryEvents(buildingId, 50);
+    if (seq !== coAutofillSeq) return { skipped: true, reason: "superseded" };
+    var base = parentJobNoFromHistoryEvents(events);
+    if (!base) return { skipped: true, reason: "no-parent-job-no" };
+    var next = changeOrderJobNo(base);
+    /* Re-check after the await: the tech may have typed a number while the
+       building's timeline was loading. Theirs wins, always. */
+    if (!coJobNoIsAutoOrEmpty()) return { skipped: true, reason: "user-entered" };
+    if ((val("jobNo") || "").trim() === next){ coJobNoAutoValue = next; return { ok: true, jobNo: next, unchanged: true }; }
+    setVal("jobNo", next);
+    coJobNoAutoValue = next;
+    toast("Job No. set to “" + next + "” from this building’s last work order — edit it if that’s not right.");
+    return { ok: true, jobNo: next };
+  }catch(e){
+    console.warn("Change Order job number autofill failed", e);
+    return { ok: false, error: e.message };
+  }
+}
+async function runChangeOrderAutofill(){
+  if (val("woType") !== "Change Order") return;
+  if (typeof resolveChangeOrderCompanyCamLink === "function") await resolveChangeOrderCompanyCamLink();
+  await maybeApplyChangeOrderJobNo();
+}
+/* Debounced, and re-run whenever the fields that DERIVE the building change
+   (buildingIdFor() is billTo + jobName) -- typing a job name by hand is the
+   path the building picker doesn't cover. Listeners are installed lazily,
+   once, the first time a Change Order form is shown. */
+function installChangeOrderAutofillListeners(){
+  if (coAutofillListenersInstalled) return;
+  var ids = ["jobName", "billTo"];
+  var bound = 0;
+  ids.forEach(function(id){
+    var el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener("blur", scheduleChangeOrderAutofill);
+    bound++;
+  });
+  coAutofillListenersInstalled = (bound === ids.length);
+}
+function scheduleChangeOrderAutofill(){
+  installChangeOrderAutofillListeners();
+  if (coAutofillTimer) clearTimeout(coAutofillTimer);
+  coAutofillTimer = setTimeout(function(){ runChangeOrderAutofill(); }, 120);
 }
 function todayStr(){
   var d = new Date();

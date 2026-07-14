@@ -7809,6 +7809,73 @@ building fallback (empty array, no crash, roof plan section cleanly
 omitted, rest of the report unaffected); and a Change Order regression
 check (entirely unaffected, still 1 page, still generates cleanly).
 
+## Change Order CompanyCam link + Job No. default (Phase 1, dev only)
+
+Two small, high-value Change Order fixes. Both are Change-Order-scoped: every
+other work order type behaves byte-for-byte as before.
+
+**1. The CompanyCam link came back (regression fix).** `onWoTypeChange()`
+(`js/core.js`) hides `#wo-globalphotos-card` for a Change Order — correct in
+itself (a CO has its own photo box, `#co-photos-host`), except that card was
+also the home of the CompanyCam link banner (`#cc-link-info`) and the "Import
+from CompanyCam" button. Hiding it removed the ONLY CompanyCam entry point a
+Change Order had (regression from cac0f84/88dded9, 2026-07-10): no way to link
+a project, no way to SEE that one was linked, and therefore no signal that
+`uploadLinkedPdfToCompanyCam()` was silently returning `{ skipped: true }` and
+never pushing the signed CO PDF.
+
+The banner now renders into EVERY host that exists rather than living in one
+place: `CC_LINK_INFO_HOST_IDS = ["cc-link-info", "cc-link-info-co"]`
+(`renderCCLinkInfo()`, `js/companycam.js`). `#cc-link-info-co` sits in the
+Change Order Details card next to a "🔗 Link / Import from CompanyCam" button
+(`openCC()`, the same modal every other type uses). One link, one source of
+truth (`ccLinkedProjectId`), shown wherever the current form actually displays
+it; whichever host is inside a hidden card simply isn't seen. Nothing else from
+the global photos card is un-hidden. Unlinked, the CO host says so out loud
+("the signed PDF will not be saved to CompanyCam until one is") — that state is
+exactly the silent failure, so it gets a visible label instead of an empty div.
+
+**2. Resolve-from-building fallback.** `resolveChangeOrderCompanyCamLink()`
+(`js/companycam.js`) reads `buildings/{id}.companyCamProjectId` — the durable
+link — and adopts it onto the open work order, which is what `bpSelectBuilding()`
+already did but only via the picker. A CO started from the Home tile and typed
+into never touches the picker, so it never inherited the link. It now resolves
+on woType→Change Order, on a building pick, on jobName/billTo blur (the fields
+`buildingIdFor()` derives the building from), and — the guarantee — inside
+`generatePdf()` (`js/export.js`), the single chokepoint every PDF-producing
+action funnels through (`downloadPdf` / `sendEmailNow` / `sharePdf`), all of
+which call `collect()` afterwards. So `o.companyCamProjectId` is populated and
+`uploadLinkedPdfToCompanyCam()` genuinely pushes instead of skipping.
+
+**The rule is unchanged: link and push only, NEVER auto-create.** The resolver
+can only adopt a project that already exists on the building; a building with
+no CompanyCam project stays unlinked and nothing is invented. An explicit link
+made in this session is never clobbered (the `!ccLinkedProjectId` guard is
+re-checked after the await).
+
+**3. Change Order Job No. = parent job number + " CO"** (Mark: parent 16153 →
+`16153 CO`). A change order is a change to an existing job, so it carries that
+job's number. `maybeApplyChangeOrderJobNo()` (`js/workorders.js`) derives the
+parent number from the building's own timeline (`loadBuildingHistoryEvents()` —
+the same indexed `building_history_events` query the inline Building History
+card already runs, newest first), preferring a non-Change-Order entry.
+`changeOrderJobNo()` is idempotent, so a CO on a building whose latest entry is
+itself `16153 CO` still resolves to base `16153`, never `16153 CO CO`.
+
+It is a DEFAULT, not a rule: `coJobNoAutoValue` remembers the exact string this
+code last auto-filled, and autofill only ever writes when the field is empty or
+still holds that remembered value (re-checked after the await, so a number typed
+while the timeline was loading still wins). A number the tech typed is never
+overwritten, and `fill()` resets the marker on every load so a saved order's own
+number is always treated as a human's. Offline, or on a building with no prior
+numbered work order, nothing is filled — no number is ever invented.
+
+Covered by `tests/changeOrderAutofill.test.js` and
+`tests/changeOrderCompanyCamLink.test.js` (17 tests: the " CO" derivation and
+its idempotence, parent-number recovery from a prior CO, the never-overwrite
+rule, offline/no-parent no-ops, every other type untouched, both banner hosts,
+the building inheritance, and "never auto-create").
+
 ## Roadmap (not built yet, foundation only)
 
 - **RoofOps Dashboard**: cross-building reporting, search, filters — reads from

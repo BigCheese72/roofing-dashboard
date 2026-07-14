@@ -1215,6 +1215,17 @@ async function generatePdf(){
     alert(photosMissingWarning(photoCheck.missingCount));
     return null;
   }
+  /* Last chance to inherit the building's CompanyCam link before collect()
+     snapshots it. generatePdf() is the single chokepoint every PDF-producing
+     action funnels through (downloadPdf / sendEmailNow / sharePdf), and each
+     of them calls collect() AFTER this returns -- so resolving here is what
+     guarantees o.companyCamProjectId is set, and therefore that
+     uploadLinkedPdfToCompanyCam() actually pushes the signed Change Order PDF
+     instead of returning { skipped:true }. No-op for every non-Change-Order
+     type and for a CO whose building has no CompanyCam project (it never
+     creates one) -- see resolveChangeOrderCompanyCamLink() in
+     js/companycam.js. */
+  if (typeof resolveChangeOrderCompanyCamLink === "function") await resolveChangeOrderCompanyCamLink();
   var o = collect();
   if (o.woType === "Change Order") return generateChangeOrderPdf(o);
   /* PDF generation doesn't necessarily pass through Preview first (a
