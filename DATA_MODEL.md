@@ -482,7 +482,10 @@ as a roof's custom base map); the third — an uploaded drawing/PDF — is block
                   // tapped points on an uploaded, TRUE georeferenced
                   // GeoTIFF, real lat/lng straight from the map, no
                   // synthetic origin and no calibration needed — see
-                  // "GeoTIFF georeferenced ortho support" in DEV_NOTES.md)
+                  // "GeoTIFF georeferenced ortho support" in DEV_NOTES.md) |
+                  // "kml_groundoverlay_trace" (shipped 2026-07-12 -
+                  // tapped points on a KMZ/KML GroundOverlay image placed
+                  // from its KML north/south/east/west bounds)
   osmId,          // e.g. "way/12345" — only set when source is "osm"
   osmType,        // "way" | "relation" — only set when source is "osm"
   tags,           // raw OSM tags at capture time — only set when source is "osm"
@@ -493,29 +496,148 @@ as a roof's custom base map); the third — an uploaded drawing/PDF — is block
                   // not a real-world position, until manual alignment (not
                   // built) happens — shape/area/perimeter are exact once
                   // calibrated, only WHERE on Earth it sits is a placeholder.
-  georeferencedSource, // optional — true only when source is "geotiff_trace".
+  georeferencedSource, // optional - true when source is "geotiff_trace" or
+                  // "kml_groundoverlay_trace".
                   // The OPPOSITE meaning of tracedOnOrtho above: the ring is
-                  // already a real, accurate, RTK-grade position straight
-                  // from the uploaded GeoTIFF's own embedded geodata, not a
-                  // placeholder — no manual alignment or calibration needed.
+                  // already a real-world lat/lng position, not a placeholder.
+                  // GeoTIFF traces are RTK/survey-grade source material;
+                  // KMZ/KML GroundOverlay traces are approximate georeferenced
+                  // overlays and must not be reported as RTK survey-grade.
+  measurementMethod, // optional - persisted audit label for exports/reports:
+                  // { kind, accuracyClass, label, maxQuadBBoxErrorFt? }.
+                  // Examples: RTK GeoTIFF trace, KMZ super-overlay tile trace
+                  // (approximate; not RTK survey-grade), flat image trace,
+                  // walked phone-GPS corners, OSM footprint trace.
+  groundOverlay,  // optional - only when source is "kml_groundoverlay_trace":
+                  // Single-image shape: { sourceType:"kml_groundoverlay" |
+                  // "kmz_groundoverlay", sourceFileName, kmlFileName,
+                  // imageHref, imageFileName, bounds:{north,south,east,west},
+                  // rotation }. Google Earth super-overlay shape:
+                  // { sourceType:"kmz_superoverlay", sourceFileName,
+                  // imageFileName, tileCount, kmlLevel, highestKmlLevel,
+                  // highestTileCount, mobileTileCapApplied, mobileTileCap,
+                  // bounds, maxQuadBBoxErrorFt, tiles:[...] }.
+                  // Rotation/quads are preserved as metadata; current Leaflet
+                  // display warns but does not warp or rotate rasters.
   createdAt,
-  calibration     // optional — TWO possible shapes. Manual: set once a tech taps
-                  // an edge dimension label and enters a real tape-measured
-                  // length (calibrate-by-known-edge) — { edgeIndex, measuredFt,
-                  // calibratedAt }. edgeIndex identifies which edge (ring[i] to
+  calibration     // LEGACY -- superseded by edgeMeasurements[]/captureSource/
+                  // scaleSource below (Codex's field-measured-dimensions work,
+                  // merged to dev via PR #7), kept only as the migration
+                  // source for outlines calibrated before that model existed
+                  // (Mark's real Tri-Delta roofs among them). Two possible
+                  // shapes. Manual: set once a tech taps an edge dimension
+                  // label and enters a real tape-measured length
+                  // (calibrate-by-known-edge) — { edgeIndex, measuredFt,
+                  // calibratedAt, factor? }. `factor` may be ABSENT on an
+                  // older record -- absence does NOT mean no rescale
+                  // happened; it means the exact factor wasn't captured at
+                  // the time. edgeIndex identifies which edge (ring[i] to
                   // ring[i+1]) was the calibration reference — also drives the
                   // checkmark highlight on that edge's label on the map.
-                  // Inherited (shipped 2026-07-11): auto-applied by
-                  // rmFinishTrace() when a manual_trace/ortho_trace outline is
-                  // finished on a building that already taught a scale factor
-                  // via an earlier roof's manual calibration — no edge tap
+                  // Inherited: auto-applied by rmFinishTrace() when a
+                  // manual_trace/ortho_trace outline is finished on a
+                  // building that already taught a scale factor via an
+                  // earlier roof's manual calibration — no edge tap
                   // involved, so no edgeIndex — { inherited: true, factor,
                   // calibratedAt } instead. Either shape scales the entire
-                  // ring/areaSqFt/perimeterFt/center by one uniform factor about
-                  // the ring's centroid — see "Self-scaling dimension
+                  // ring/areaSqFt/perimeterFt/center by one uniform factor
+                  // about the ring's centroid — see "Self-scaling dimension
                   // calibration" and "Multi-roof accuracy: scale inheritance,
                   // vertex snapping, precision cursor" in DEV_NOTES.md. Absent/
                   // undefined for an outline never calibrated either way.
+                  // rmMigrateLegacyCalibration() (js/roofmapper.js) folds a
+                  // legacy entry into edgeMeasurements[] the first time the
+                  // outline is touched by anything measurement-related; new
+                  // writes go straight to edgeMeasurements[] and this field
+                  // is left null/absent going forward.
+  edgeMeasurements // array, shipped with Codex's field-measured-dimensions
+                  // work (PR #7) -- per-edge tape readings, append-only
+                  // (never hard-deleted; superseded/invalidated instead, see
+                  // invalidatedAt below). Each entry:
+                  //   { id, edgeIndex, measuredFt, factor, appliedFactor,
+                  //     composedAppliedFactor, rescaleApplied, decision,
+                  //     source: "measured", measuredAt, measuredBy, rawInput,
+                  //     conflictResolution?, invalidatedAt?, invalidatedReason?,
+                  //     legacyCalibration? }
+                  // `factor` is the raw measuredFt/currentEdgeFt ratio at
+                  // measurement time; `appliedFactor` is what ACTUALLY got
+                  // applied to the ring's geometry -- these differ whenever
+                  // `decision` isn't "use" (see below). NEVER re-derive
+                  // `factor` yourself from live ring geometry -- on a
+                  // "keep_existing" decision, ring-length vs. measuredFt is
+                  // the residual DISAGREEMENT between tape and drawing, not
+                  // a factor that was ever applied; treating that quotient
+                  // as provenance is a derived number wearing a badge.
+                  // `decision` (only meaningfully distinct from "use" when a
+                  // conflict was shown, tracked separately as
+                  // conflictResolution on that same entry): "use" (rescale
+                  // applied in full) | "keep_existing" (recorded, geometry
+                  // NOT rescaled, appliedFactor forced to 1) | "average"
+                  // (geometric-mean blend applied) | "record_only" (logged
+                  // with no active conflict, tech chose not to rescale).
+                  // `invalidatedAt`/`invalidatedReason` mark a superseded
+                  // entry (e.g. "superseded_by_remeasure",
+                  // "legacy_calibration_ring_mismatch", "geometry_edit") --
+                  // still present in the array, just no longer active; a
+                  // report or the live map's field-measurement history
+                  // should surface these, not just the active ones. Read via
+                  // rmActiveEdgeMeasurements()/rmActiveMeasuredEdges()/
+                  // rmAllMeasuredEdgeRecords()/rmGetMeasuredEdge()
+                  // (js/roofmapper.js) -- these already fold in the legacy
+                  // `calibration` migration and the tolerance/conflict
+                  // logic; don't re-derive that classification elsewhere.
+  captureSource   // object, shipped with PR #7 -- HOW the geometry was
+                  // traced. Immutable once set; a field measurement never
+                  // changes it. { mechanism, rank, kind, accuracyClass,
+                  // label, maxQuadBBoxErrorFt? }. `mechanism` is the
+                  // reliable machine key ("geotiff" | "kmz_overlay" |
+                  // "ortho_image" | "walk_corners" | "osm" | "manual_map" |
+                  // "unknown"); `rank` is a coarser 4-value bucket
+                  // ("survey" | "approximate" | "estimated" | "unknown") --
+                  // note this does NOT 1:1 match any 5-value vocabulary a
+                  // consumer might expect (OSM and walk_corners both map to
+                  // existing `rank` buckets rather than getting their own).
+                  // Computed by rmBuildCaptureSource(), persisted via
+                  // rmRefreshOutlineMeasurementModel()/
+                  // rmOutlineMeasurementPersistence() so a report can read
+                  // it directly off the outline without recomputing.
+  scaleSource     // object, shipped with PR #7 -- HOW the scale factor was
+                  // determined. Independent of captureSource -- NOT a rung
+                  // on the same confidence ladder; an inherited-scale
+                  // satellite trace does not outrank a georeferenced GeoTIFF
+                  // capture, and the two are never compared against each
+                  // other. { kind, label, factor?, appliedFactor?,
+                  // edgeIndex?, measuredFt?, measurementId?, fromOutlineId? }.
+                  // `kind`: "measured" (a human taped/wheeled an edge of
+                  // THIS roof -- edgeIndex/measuredFt/measurementId
+                  // present) | "inherited" (scale carried from an
+                  // adjoining/parent roof via inheritedScale below --
+                  // fromOutlineId present) | "image" (scale derived from
+                  // the georeferenced source image itself, no human
+                  // measurement) | "none" (no field scale recorded at all).
+                  // `factor`/`appliedFactor` may be null even when
+                  // kind==="measured" -- see the back-compat note on
+                  // `calibration` above; null means unknown, NOT "not
+                  // measured." Computed by rmBuildScaleSource(); read this,
+                  // don't recompute it.
+  measurementMethod // object, persisted audit label combining the two above
+                  // for convenience/back-compat: { kind, accuracyClass,
+                  // label, captureSource, scaleSource, scaleProvenance,
+                  // maxQuadBBoxErrorFt? }. `label` is a TERSE INTERNAL
+                  // string ("Method: Capture: X. Scale: Y.") meant for the
+                  // live map's own status line -- a customer-facing report
+                  // should build its own two-sentence prose from
+                  // captureSource.label/scaleSource.kind directly (see
+                  // "Report provenance rendering" in DEV_NOTES.md) rather
+                  // than surfacing this internal string verbatim.
+  inheritedScale  // optional object -- present when scaleSource.kind is
+                  // "inherited". { fromOutlineId, factor, scaleSource:
+                  // "measured", derivedAt }. Built by
+                  // rmBuildInheritedScaleRecord() when a new manual_trace/
+                  // ortho_trace outline is finished on a building that
+                  // already taught a scale factor from an earlier roof's
+                  // field measurement -- see "Scale inheritance" in
+                  // DEV_NOTES.md.
   squared         // optional — set once "🟦 Square Up" has been applied (shipped
                   // 2026-07-10). Shape: { at, tolerance, snappedEdges }. Snaps
                   // near-90°/axis-aligned edges clean (within `tolerance` degrees

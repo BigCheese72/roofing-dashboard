@@ -297,7 +297,7 @@ at a glance. Tap an existing feature's marker to edit or remove it.
 
 **Custom base maps** (admin-only): a building can use something other than satellite.
 Requires the building to already have a CompanyCam project linked. Set from the
-Building History tab, in admin mode.
+Building History tab, visible to a signed-in owner/admin.
 
 - **Roof plan or sketch** — useful when satellite imagery isn't detailed enough
   (heavy rooftop equipment, complex multi-section roofs). Just an image upload.
@@ -457,11 +457,25 @@ works.
 
 **Have a sharper drone orthomosaic than satellite imagery gives you?** Tap
 **"📷 Trace on My Own Drone Image"** right at the start, before any location search —
-pick an image straight from your device (phone or laptop) and trace directly on it,
-no CompanyCam project or GPS fix needed first. This is different from the "Drone
+pick a KMZ, KML+image, GeoTIFF, PNG, or JPG straight from your device (phone or
+laptop) and trace directly on it, no CompanyCam project or GPS fix needed first.
+This is different from the "Drone
 orthomosaic" base-map upload above (which needs the companion script and real GPS
 corner coordinates for a whole building's base map): this is a quick, no-prep way to
 trace a roof outline on your own image right now.
+
+**Uploading a KMZ or KML GroundOverlay** (common drone-map export format)? The app
+opens the KMZ as a ZIP, reads the KML GroundOverlay, extracts the referenced image,
+and uses the KML north/south/east/west bounds to place it on the map. Google Earth
+super-overlay KMZs work too: the app loads the highest-detail tile set and traces
+right on those georeferenced tiles. If the KML declares rotation, the app warns you
+to verify alignment before saving because the current Leaflet overlay does not rotate
+the image. KMZ/KML traces are labeled as approximate georeferenced overlays in
+exports; they do not use the same survey-grade method label as RTK GeoTIFF traces.
+
+For large tiled KMZs, desktop/laptop tracing is the intended workflow. On likely
+mobile devices, the app automatically steps down to a lower-detail tile level rather
+than trying to mount a large overlay set that could hang the browser.
 
 **Uploading a real GeoTIFF** (the actual output of a georeferenced RTK drone survey,
 e.g. WebODM's `odm_orthophoto.tif`)? The app reads its built-in GPS data automatically
@@ -471,7 +485,7 @@ calibrate: every corner you tap is already accurate. A plain JPG/PNG (or a TIFF 
 no GPS data in it) works the same way as before — the shape starts at an arbitrary
 size, and you Calibrate an edge after tracing to fix the true scale. Either way, Square
 Up and Edit Shape work exactly the same. Once you
-save the outline, the image itself is kept with the roof too (needs admin mode and a
+save the outline, the image itself is kept with the roof too (needs owner/admin and a
 CompanyCam project linked to the building — the outline still saves fine either way,
 just the image-retention part needs those). Already added the drone photo to this
 building's CompanyCam project instead of having it on your device? Tap
@@ -531,7 +545,7 @@ system, install date, estimated age, health score, condition, manufacturer, deck
 insulation type, warranty provider/expiration/status, drainage notes, customer
 contacts, internal notes, replacement history, and estimated remaining life. Anyone can
 view it — a field with nothing entered just shows "Not set" rather than a blank or an
-error. Only **Admin mode** can edit it (**"Edit Profile"**), the same PIN-gated
+error. Only a signed-in **owner or admin** can edit it (**"Edit Profile"**), the same
 protection as the custom base map, since these are shared, building-wide facts rather
 than something a tech should casually overwrite mid-job. On a building with more than
 one roof, the roof picker's dropdown also shows each roof's condition right in the
@@ -650,11 +664,12 @@ knows: which screen you were on, your technician name (if set), and which work o
 was open (if any) all go along automatically. Every submission is emailed straight to
 Mark and also saved to an in-app backlog he can review (see Admin Mode below).
 
-## Admin Mode
+## Admin Controls
 
 Field techs should not be able to unlink a CompanyCam project or delete building
-history. A small "Admin" button in the header prompts for a PIN, which is verified
-server-side (not just checked in the browser — see DEV_NOTES.md); once unlocked it
+history. There is no PIN or mode toggle — privileged controls simply appear for a
+signed-in owner or admin, based on their real Firebase Auth role/claims, verified
+server-side on every action (see docs/AUTH_DESIGN.md). Signed in as owner or admin
 reveals:
 
 - **Unlink** on the CompanyCam banner.
@@ -665,7 +680,7 @@ reveals:
   rest of that roof's permanent facts.
 - Uploading/clearing a roof's custom base map.
 - An **app-wide Photo Size setting** (small/medium/large) — a small bar at the top of
-  every screen while admin mode is on, since it's a global setting rather than
+  every screen for a signed-in owner/admin, since it's a global setting rather than
   something tied to whatever work order happens to be open. Setting it applies to
   every user's *new* photos from that point on; it doesn't reprocess anything already
   saved. Defaults to small (email-friendly) if never set.

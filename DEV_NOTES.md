@@ -2698,6 +2698,59 @@ environment variables, never in the browser or the repo.
   change needed — re-run the same check later (it can take up to ~30 minutes
   after the mailbox was added to the group).
 
+### Warranty-report matching: token alignment (and the wrong-roof bug it fixed)
+
+The inspection-report matcher (`netlify/functions/lib/textMatch.js`, plus the
+new `lib/buildingMatch.js`) originally compared addresses and building names
+with a **raw substring test** (`String.indexOf`). Substrings don't respect token
+boundaries, so it silently auto-filed warranty reports onto the **wrong roof**:
+
+| report for | auto-filed onto | why |
+| --- | --- | --- |
+| 1234 Oak Ave | **234 Oak Ave** | `"1234 oak".indexOf("234 oak") !== -1` |
+| 12 Elm St | **112 Elm St** | `"112 elm".indexOf("12 elm") !== -1` |
+| 500 Park Way | **1500 Park Way** | `"1500 park".indexOf("500 park") !== -1` |
+| "Ridgewood Elementary" | building named **"Ridge"** | name substring |
+| "Oakstone Industrial" | building named **"Oaks"** | name substring |
+
+All five bypassed the review queue entirely. Found by *executing* the old
+matcher, not by reading it — the address cases only reproduce when a building's
+stored `location` is a bare street address with no city (ordinary data entry),
+so reading the code alone made them look safe.
+
+**The fix is token alignment, not a tighter substring:**
+
+- **Addresses** — the leading street **number must match exactly**, and the
+  street-name tokens must align from the first token onward (`isTokenPrefix`).
+  `100 N Main` therefore no longer matches `100 Main`: they diverge at token 0
+  and are, in fact, different roofs.
+- **Names** — whole-token (word-boundary) runs only, *plus* a distinctiveness
+  gate: a single-token name that is short or generic ("Shop", "Warehouse",
+  "Main") is not evidence and will never auto-file. It queues instead.
+- **Address extraction** stops at the street suffix instead of greedily
+  swallowing up to 40 trailing characters, so matching no longer depends on
+  incidental subject wording (`"12 Elm St.pdf"` used to normalize to
+  `"12 elm pdf"`, which masked collisions in some subjects and caused spurious
+  misses in others).
+
+**The bias is toward the review queue, always.** A false trip to the queue costs
+Mark ten seconds; a silent misfile costs a warranty claim and a customer's
+trust. Anything short of exactly one confident, unambiguous match is queued for
+a human to assign.
+
+**Every ingestion decision is audit-logged**, filed *or* queued, via a
+`matchDecision` record on the audit entry (and on the review-queue item): what
+it matched, which buildings it **rejected**, and why — including near-misses
+(same street, wrong house number) and a `rejectedByNewRule` flag marking cases
+the old substring rule would have misfiled. When something does go wrong, the
+decision that produced it is recoverable.
+
+**Regression tests: `tests/buildingMatch.test.js`, run with `npm test`** — no new
+dependencies, `node:test` is built into Node. All five collisions above are
+covered, and were confirmed to FAIL against the old code before the fix landed.
+If a future change reintroduces substring matching, the suite goes red.
+
+
 ### Field-value memory / autocomplete (shipped 2026-07-10, dev only)
 
 **Goal (from Mark)**: an actual build, following up on the earlier "did we address
@@ -5600,6 +5653,67 @@ bounding-box plausibility check and, end-to-end through
 rather than silently failing. All test state cleared, page reloaded,
 console clean.
 
+## KMZ/KML GroundOverlay import (shipped 2026-07-12, dev only)
+
+North College Street supplied the orthomosaic as a KMZ plus mosaic image, and
+RoofMapper already had the right integrated editor surface (trace, vertex edit,
+calibrate, split, features, export, save/reopen) but not a direct KMZ/KML import.
+This pass extends the existing **Trace on My Own Drone Image** path rather than
+creating a separate map workspace.
+
+Implementation:
+
+- `index.html` loads JSZip from CDN and widens `#rm-ortho-file-input` to accept
+  `.kmz`, `.kml`, `.tif/.tiff`, and normal images, with `multiple` enabled for
+  the KML+paired-image case.
+- `rmUploadOrthoFile()` now routes `.kmz` to `rmUploadKmzFile()` and `.kml` to
+  `rmUploadKmlFiles()` before falling back to the existing GeoTIFF/plain-image
+  logic.
+- KMZ is treated as a ZIP: the importer finds `doc.kml` or the first KML file,
+  parses the first usable `GroundOverlay`, extracts `Icon/href`, `LatLonBox`
+  north/south/east/west, and optional `rotation`, then finds the referenced
+  image by exact path, basename, or first image fallback inside the archive.
+- Real North College KMZ check (2026-07-12): `doc.kml` is not a single-image
+  GroundOverlay; it is a Google Earth super-overlay with `NetworkLink`s into
+  tiled KML/image folders (`0/`, `1/`, `2/`, `3/`). The importer now detects
+  that shape, selects the highest numeric tile level, parses each tile's
+  `gx:LatLonQuad`, extracts its image relative to that tile KML, and renders
+  all highest-detail tiles as a Leaflet layer group. A separately selected
+  paired JPG with the same base name is used only for optional image retention
+  through the existing CompanyCam/base-map path; tracing uses the georeferenced
+  KMZ tiles. Because normal Leaflet image overlays cannot warp `gx:LatLonQuad`
+  rasters, the importer records `quadBBoxErrorFt`/`maxQuadBBoxErrorFt` and shows
+  a warning when tile quads are being approximated to rectangular bounds.
+  Large tiled KMZs (>40 overlay images; North College is 59 at level 3) are
+  intended for desktop/laptop tracing. On likely mobile devices, the importer
+  selects the highest tile level at or under `RM_KMZ_MOBILE_TILE_CAP` (40
+  overlays) rather than mounting the full high-detail level and risking a hang.
+- Exports now print a capture-method line. GeoTIFF traces can say
+  `RTK GeoTIFF trace (survey-grade source)`; KMZ/KML traces say they are an
+  approximate GroundOverlay/super-overlay source and explicitly not RTK
+  survey-grade, including the max quad approximation when known.
+- KML+image upload matches the local paired image the same way.
+- The image is resized through the same bounded `rmResizeDataUrlToOrtho()` path
+  used by flat orthos, then drawn as a Leaflet `imageOverlay` at the KML bounds.
+  A trace finished on it saves `source:"kml_groundoverlay_trace"`,
+  `georeferencedSource:true`, and a `groundOverlay` metadata object on the
+  outline.
+- "Trace Another Roof" preserves the KMZ/KML overlay just like it already
+  preserves uploaded flat orthos and GeoTIFFs for multi-roof tracing.
+- On save, an owner/admin on a building with a linked CompanyCam project also
+  persists the extracted image through the existing `upload_document` plus
+  `set_building_roof_map` path as `roof_base_map_type:"drone_ortho"` with the
+  KML bounds, so reopening from Building History can show the orthomosaic under
+  the outline.
+- Calibration is the normal tap-an-edge dimension flow for every building. No
+  building-specific filename/name match changes the prompt default or creates a
+  verified badge; field measurements remain user-entered calibration data.
+
+Known limitation: KML `rotation` is parsed and preserved, and the UI warns when
+it is non-zero, but Leaflet's normal `imageOverlay` does not rotate rasters. If
+Mark's KMZ relies on rotation, alignment must be checked before saving; true
+rotated overlay rendering would need a custom overlay transform.
+
 ## Rename a roof, discoverable from RoofMapper (shipped 2026-07-11, dev only)
 
 Mark hit a real-world dead end: he accidentally saved a second roof on the
@@ -7224,6 +7338,476 @@ records ONLY with Mark's explicit go-ahead, non-destructive (base64 stays
 in Firestore until the Storage copy is verified readable), idempotent/
 resumable. (d) removing `pruneCachedPhotoDrafts()`/`stripPhotoBytes()`/
 the "storage is full" toast entirely — only after (c) is verified.
+
+## Firebase dev/prod project split (shipped 2026-07-12, dev only)
+
+Production (`leak-work-orders.netlify.app`, deployed from `main`) and dev
+(`dev--leak-work-orders.netlify.app` branch deploys, plus localhost/deploy
+previews) now point at two entirely separate Firebase projects —
+`watkins-service-orders` (prod, untouched) and `watkins-service-orders-dev`
+(new, empty sandbox Mark created himself: Firestore Native/us-central1,
+rules mirroring prod, Email/Password auth enabled, both dev hostnames
+authorized). Selection is pure runtime `window.location.hostname` detection
+in `js/core.js` (`isDevEnvironment()`/`FIREBASE_CONFIG`) — the app is static
+with no build step, so there's no other lever to pick a config client-side.
+`netlify/functions/lib/authGuard.js`'s `getAdmin()` derives the Admin SDK's
+Storage bucket from the service account's own `project_id` instead of a
+hardcoded bucket name, so `photos.js` automatically targets the right
+bucket per deploy context too — no code difference between environments,
+only the `FIREBASE_SERVICE_ACCOUNT` env var's value (Netlify branch-deploy
+vs. production scoping, set by Mark directly, never seen by Claude).
+
+**Fail-closed guard**: `devFirebaseConfigIsReal()` shape-validates every
+field of `FIREBASE_CONFIG_DEV` (apiKey matches `/^AIza.../`, messagingSenderId
+is all-digits, appId contains `:`, nothing is empty or `"REPLACE_ME"`) before
+letting a dev-like hostname use it — any missing/placeholder/malformed value
+falls back to the production config plus a `console.warn()`, rather than
+initializing Firebase with garbage and locking dev sign-in out the way an
+earlier, less-strict version of this guard once did for real (see the
+`auth/api-key-not-valid` incident in docs/AUTH_DESIGN.md).
+
+**Dev Cloud Storage is NOT yet enabled** — `watkins-service-orders-dev` is
+still on Spark, and Storage requires Blaze (pay-as-you-go) billing, which is
+Mark's decision to make, not something built or triggered automatically.
+Until he attaches billing, any dev-environment photo upload will hit a
+missing/unconfigured Storage bucket on that project. `photos.js`'s existing
+error handling already returns a normal `{statusCode: 5xx, error}` response
+rather than crashing, and the client's existing `cloudSaveOrder()` failure
+path (built during the earlier photo-storage migration, see above) already
+surfaces that as a visible error rather than silently losing the photo — so
+no NEW code was needed for graceful failure, only confirmation that the
+existing chain covers this specific cause too. Once Mark attaches Blaze
+billing, dev photo upload starts working with zero code changes.
+
+### Report provenance rendering: capture/scale/edge-measurement transparency (shipped)
+
+Codex's field-measured-dimensions work (`js/roofmapper.js`, merged to `dev`
+via PR #7) gave every `roof_outlines[]` entry two independent, persisted
+fields — `captureSource` (how the geometry was traced; immutable) and
+`scaleSource` (how the scale factor was determined; independent, NOT a rung
+on the capture confidence ladder) — plus `edgeMeasurements[]` (per-edge tape
+readings, archived not deleted, each carrying the tech's conflict-resolution
+decision). None of it was visible on the customer-facing work order report
+until now — this section is the render side, entirely in `js/export.js`
+(the file this repo's ownership split assigns to reports/exports, as
+opposed to `js/roofmapper.js`'s live-map capture side).
+
+**Two sentences, never merged** (`rmReportMethodSentences()`): capture and
+scale are stated as two separate sentences, e.g. "Traced from an RTK
+orthomosaic (survey-grade). Scale set by field measurement (180 ft on edge
+1)." The scale sentence never upgrades the capture sentence's confidence —
+a satellite trace with a taped edge still says "estimated" for capture, it
+just also says "measured" for scale. Reads `outline.captureSource`/
+`.scaleSource` via `rmOutlineMeasurementMethod()` (`js/roofmapper.js`,
+confirmed read-only — doesn't mutate the outline or touch Firestore) rather
+than re-deriving the source-code-to-label mapping here, so a future change
+to Codex's classification logic shows up automatically instead of a second,
+drifting copy.
+
+**PR #17 review — the scale sentence went through three branch-based
+patches before landing on a real compositional model, and the lesson is
+worth keeping precisely because branch-picking kept looking locally
+correct while being globally wrong.** REQUIRED 3: `rmBuildScaleSource()`
+only classifies `scaleSource.kind` as `"measured"` via
+`rmLatestAppliedMeasuredEdge()` (filters `rescaleApplied === true`), so a
+real `edgeMeasurements[]` entry recorded as `"keep_existing"`/
+`"record_only"` fell through to `"image"`/`"none"`, printing "not
+verified against a physical measurement" on a roof that WAS taped.
+REQUIRED 4: the fix for that added an `unapplied`-measurement check
+ABOVE the `image`/`inherited` branches, so it PREEMPTED them — an
+inherited- or image-scale roof that ALSO carried an unapplied tape lost
+its inherited/image disclosure entirely the moment MORE provenance
+existed. REQUIRED 6/7/8 (this pass): that fix was still a single optional
+"supplemental" SLOT that refused to fire whenever `ss.kind==="measured"`
+— which had no way to disclose a THIRD fact once PR #25/#26 landed
+`measurementStale` (a geometry edit like a re-snap invalidates a tape's
+specific edge/length while the SCALE it set stays in force —
+`rmMeasurementInvalidationKeepsScale()`/`rmMeasurementScaleStillApplied()`
+in `js/roofmapper.js`). Mark's real Tri-Delta flow — tape, re-snap,
+re-tape — produces exactly three facts on record (an applied-but-now-
+edge-stale reading, what superseded it, and the fresh one), and a
+one-slot model can only ever surface one of them. Also caught in this
+pass: the `"none"` wording could print ALONGSIDE a real measurement
+disclosure (REQUIRED 6) and `.edgeIndex + 1` was unguarded in the new
+slot (REQUIRED 5's `null + 1 === 1` lesson, recurring).
+
+**The actual fix: the scale sentence is TWO independent clauses, computed
+separately from independent facts, and concatenated — never selected
+between.** If a change to this code ever needs another
+`if (...) return someSentence` branch sitting above/instead-of another,
+that's this exact bug reappearing.
+
+- **Clause 2 (applied scale)** — `rmReportAppliedScaleClause(ss)` —
+  answers "how was the drawing's CURRENTLY-APPLIED scale determined":
+  measured / inherited / image, or **absent** (empty string, not a
+  sentence) when `ss.kind` is `"none"`/unknown. When measured and NOT
+  stale, names the real edge/length and returns that record's `id` as
+  `disclosedId` (so clause 3 doesn't repeat it verbatim). When measured
+  AND `ss.measurementStale` (roofmapper deliberately nulls the specific
+  edge/length in this case, since the original edge no longer
+  corresponds to current geometry post-edit), states that plainly
+  without inventing a number, and returns `disclosedId: null` — the real
+  historical number still has to reach the reader, and clause 3 is where
+  it does.
+- **Clause 3 (additional measurements on record)** —
+  `rmReportAdditionalMeasurementsClause(outline, disclosedId)` — every
+  record from `rmAllMeasuredEdgeRecords()` (the SAME source of truth the
+  Field Measurements table renders from — the sentence and the table can
+  never disagree about which measurements exist) except the one exact id
+  clause 2 already fully named. Each item gets its own status via
+  `rmReportMeasurementStatusLabel()`: `"applied"` (a genuinely separate,
+  still-active, still-applied reading — compounding recalibrations),
+  the plain decision label (`"kept existing scale"`/`"recorded only"`)
+  for an active-but-not-applied entry, or `"superseded by <reason>"` for
+  anything invalidated — explicitly naming the reason (e.g. "superseded
+  by resnap neighbors") rather than silently dropping it or presenting it
+  as current.
+- `rmReportScaleSentence()` joins `[clause2, clause3]` filtering out
+  whichever is empty; the `"No field scale recorded... not verified
+  against a physical measurement"` fallback fires ONLY when BOTH come
+  back empty — by construction it can never appear next to a real
+  measurement, because if any measurement of any status exists, clause 3
+  is non-empty.
+
+Guarded `.edgeIndex` with `typeof … === "number"` everywhere an edge
+number gets printed (`rmReportMeasuredScaleSentence()`, the new clause-3
+item builder, and `rmReportMeasurementRows()`'s edge label) — `null + 1
+=== 1` in JS, so an unguarded add fabricates "edge 1" for a record with
+no known edge index rather than showing nothing.
+
+**Six cases executed and shown as rendered method lines**, including the
+exact multi-measurement scenario the earlier one-slot model couldn't
+represent:
+```
+1. survey_grade + applied measured 42.5 ft:
+   "Traced from an RTK orthomosaic (survey-grade). Scale set by field
+    measurement (42.5 ft on edge 1)."
+2. estimated + applied measured:
+   "Traced from satellite/flat imagery (estimated). Scale set by field
+    measurement (31.3 ft on edge 3)." -- capture stays "estimated".
+3. inherited + a DECLINED (keep_existing) tape:
+   "Traced from satellite/flat imagery (estimated). Scale carried from a
+    field-measured section on this building. Also on record: 42.5 ft on
+    edge 1 (kept existing scale) — see Field Measurements."
+    -- inherited disclosure survives; this is the case REQUIRED 4 broke.
+4. Mark's Tri-Delta flow -- tape 42.5 (applied) -> re-snap (invalidates
+   it with a "keeps scale" reason -> stale) -> fresh tape 61.25 (applied):
+   "Traced from an RTK orthomosaic (survey-grade). Scale set by field
+    measurement (61.3 ft on edge 2). Also on record: 42.5 ft on edge 1
+    (superseded by resnap neighbors) — see Field Measurements."
+    -- ALL THREE facts present: capture, the currently-applied 61.25 ft
+    reading, AND the superseded 42.5 ft reading with its real number and
+    why it no longer applies. Also verified the INVERSE ordering (the
+    stale entry wins the "latest applied" slot because the fresh one's
+    decision was "record_only", exercising the measurementStale/redacted-
+    number path in clause 2): "Scale set by a field measurement on this
+    roof (edge since edited — see Field Measurements for the original
+    reading). Additional field measurements on record: 61.3 ft on edge 2
+    (recorded only); 42.5 ft on edge 1 (superseded by resnap neighbors)
+    — see Field Measurements." -- still loses nothing; both real numbers
+    reach the reader via clause 3 even when clause 2 can't cite one.
+5. legacy Tri-Delta: inherited, no factor key:
+   "...Scale carried from a field-measured section on this building
+    (exact factor not on record)." -- never "unmeasured".
+6. genuinely no measurement: "No field scale recorded — dimensions are
+    as-drawn, not verified against a physical measurement." -- and
+    confirmed this text NEVER co-occurs with a measurement disclosure in
+    any of cases 1-5 (REQUIRED 6) -- by construction, not by an added
+    check, since the fallback only fires when both clauses are empty.
+```
+
+Also re-confirmed the `rmFetchReportRoofOutlines()` zero-write property,
+the REQUIRED 2 badge/precision fix, the REQUIRED 5 guard fallback, and
+the QUESTION 1 stale-roof-plan-across-reports fix all still hold after
+this restructure, and re-ran the no-linked-building fallback and Change
+Order regression clean. Also re-synced this branch's `js/roofmapper.js`
+with `origin/dev` before starting this pass (a merge, not a rebase --
+PR #25/#26 had landed `measurementStale` since this branch was created,
+and building against a stale copy of Codex's file would have meant
+verifying against a schema that no longer matched production).
+
+**Issue #29 — clause 2's stale-scale wording fabricated a claim, and
+contradicted clause 3 about the exact same record.** The stale branch of
+`rmReportAppliedScaleClause()` hardcoded "the edge it was taken on has
+since been edited" for EVERY `measurementStale` case — but
+`measurementStale` is also set when `invalidatedReason ===
+"superseded_by_remeasure"`, which means the SAME edge was taped again,
+not that any geometry moved. Re-taping an edge and picking "Record only"
+produced a customer PDF that asserted the edge "has since been edited"
+(false — nothing moved) while clause 3, a few lines later, correctly
+described the identical record as "superseded by a later re-measurement."
+Self-contradicting, on a customer-facing document, about one fact.
+
+Fixed by no longer maintaining a second, independent copy of "what does
+this invalidation reason mean" in clause 2 at all: it now looks up the
+real record (`rmLatestAppliedMeasuredEdge(outline)` — the same one
+`rmBuildScaleSource()` used to decide `ss.measurementStale` in the first
+place) and calls `rmReportMeasurementStatusLabel()` — the exact function
+clause 3 already used — to build its wording. Clause 2 and clause 3 now
+describe the same record identically because they're generated by the
+same function; they cannot drift apart into a self-contradiction again.
+Defense-in-depth alongside Codex's issue #28 (fixing `measurementStale`
+itself, roofmapper-side, so the flag only means "a geometry edit moved
+this edge") — this reads the real `invalidatedReason` regardless of what
+the flag claims, so the render stays honest even if the flag is ever
+imprecise again.
+
+Verified all three cases: (1) a genuine geometry edit (resnap) with no
+re-tape → "Scale set by a field measurement on this roof (still applied;
+edge since edited by resnap neighbors)." — correct, edited claim is true
+here; (2) re-tape the SAME edge, pick "Record only" → (see the PR #30
+review follow-up below for the final wording); (3) a clean, never-stale
+tape → unchanged, "Scale set by field measurement (42.5 ft on edge 1)."
+with no staleness caveat at all. Confirmed zero occurrences of "has since
+been edited" anywhere `js/export.js` renders — **scoped to this file**;
+`js/roofmapper.js` independently carries the same fabricated string in
+`rmBuildMeasurementMethodFromSources()`'s `method.label` (composed into
+the roof-map SVG header at `rmOutlineMeasurementMethod(outline).label`,
+line ~1701) and is out of scope here — `js/roofmapper.js` is Codex's
+file; tracked as REQUIRED 2 on issue #28, not fixed by this PR. Re-
+confirmed zero-write property, REQUIRED 2/5 fixes, QUESTION 1's
+staleness keying, and the Change Order regression all still hold.
+
+**PR #30 review, REQUIRED 20 + 21 — the fix above stopped short: it
+removed the lie but didn't restore the truth it had in hand.** Two
+follow-up bugs, both in the same stale branch: (REQUIRED 20) the code
+called `rmReportMeasurementStatusLabel(staleRecord)` without first
+confirming `staleRecord.invalidatedAt` was actually set — if a re-derived
+`staleRecord` ever disagreed with `ss.measurementStale` (a snapshot `ss`
+vs. live `outline`), that function's own first line
+(`if (!m.invalidatedAt) return m.rescaleApplied ? "applied" :
+decisionLabel;`) would render a confident, contentless `"(applied)"`,
+dropping both the measured length and the staleness. (REQUIRED 21) for
+`superseded_by_remeasure` specifically, clause 2 described the record's
+STATUS but never NAMED its real edge/length (which are still true
+statements about the drawing — geometry never moved on a supersede) and
+left `disclosedId: null`, so clause 3 re-printed the IDENTICAL status
+string for the IDENTICAL record one line later under "Additional" —
+word-for-word duplication, and the record wasn't additional to anything.
+
+Fixed by reason-gating explicitly: a genuine `superseded_by_remeasure`
+now calls `rmReportMeasuredScaleSentence(staleRecord.measuredFt,
+staleRecord.edgeIndex)` (the same namer the non-stale "measured" path
+already uses) and sets `disclosedId: staleRecord.id` so clause 3 doesn't
+repeat it; a genuine geometry-edit reason still stays non-specific about
+the edge number (correctly — the original edge no longer corresponds to
+current geometry after those) with `disclosedId: null` so clause 3
+supplies the historical number instead. Both branches now require
+`staleRecord.invalidatedAt` to be truthy before touching the record at
+all, which also subsumes REQUIRED 20 from the prior review pass — the
+`"(applied)"` leak can no longer be reached from inside the stale branch.
+Verified: `"(applied)"` leak test (a `measurementStale: true` ss paired
+with an outline whose `rmLatestAppliedMeasuredEdge()` returns null)
+correctly falls back to `"Scale set by a field measurement on this
+roof."` with no parenthetical, not `"(applied)"`. The exact repro (42.5
+ft applied, re-taped 40 ft "Record only") now renders: "Scale set by
+field measurement (42.5 ft on edge 1). Also on record: 40 ft on edge 1
+(recorded only) — see Field Measurements." — the applied tape is named,
+the record-only tape is genuinely additional (not a duplicate), zero
+verbatim repetition.
+
+**Per-edge visual distinction** (`rmReportEdgeMeta()`, wraps roofmapper's
+own `rmEdgeDimensionMeta()`): a measured edge renders as a bordered green
+pill with a ✓ prefix when it matches the drawing's geometry, or orange with
+"!" when it disagrees beyond tolerance; a derived (unmeasured) edge is
+always plain dark, no border, no prefix — the same logic that drives the
+live map's own edge labels, reused rather than reimplemented, so the report
+can never show a measured edge differently than RoofMapper itself does.
+
+**PR #17 review, REQUIRED 2 — a real bug: a derived number wearing a
+measured badge.** The roof-plan SVG's dimension label used to do
+`meta.prefix + Math.round(meta.labelFt) + " ft"` — unconditionally
+rounding regardless of whether the edge was measured. A tech tapes 42' 6"
+and the customer PDF printed "✓ 43 ft": the ✓ asserts a human measurement
+while the number is one the tape never produced, and it directly
+contradicted the SAME report's own Field Measurements table and the live
+map, both of which correctly showed 42.5 ft. Fixed by calling
+`js/roofmapper.js`'s own `rmFormatEdgeFeet(ft, measured)` (confirmed
+exposed globally, called directly rather than re-derived — file boundary
+respected) instead of a bare `Math.round()`: a derived edge still rounds
+to whole feet; a measured edge keeps 0.1 ft precision unless it's within
+0.05 ft of a whole number. Verified directly: a measured 42.5 ft edge
+renders `"✓ 42.5 ft"` (not `"✓ 43 ft"`); a derived 55.4 ft edge still
+renders `"55 ft"` (no badge, correctly rounded); re-verified in the actual
+rendered SVG output of a full report, including under the conflict
+(orange `"!"`) path — the measured value itself must stay precise even
+when it disagrees with the drawing's geometry.
+
+**PR #17 review, REQUIRED 5 — the `rmFormatEdgeFeet` call above was
+unguarded, which killed the deliberate fallback.** Every OTHER roofmapper
+accessor call in this file is guarded (`typeof … === "function"`) except
+this one — and `rmFormatEdgeFeet` isn't defined in `js/export.js` at all
+(its only other appearances here were inside comments). A page where
+`js/roofmapper.js` failed to load would hit a `ReferenceError` on this
+line BEFORE `rmReportEdgeMeta()`'s own deliberate fallback (a few lines
+earlier in the same function) ever got a chance to matter — killing the
+entire roof plan SVG instead of degrading gracefully, exactly the
+opposite of what that fallback exists for. Fixed the same way every other
+call in this file is guarded, falling back to `rmReportFeetLabel()`
+(which already handles measured precision correctly) rather than bare
+`Math.round()`. Also suppresses the ✓/! prefix whenever the formatted
+value comes out empty (a non-finite `labelFt`) — a checkmark with no
+number behind it is still a fabricated claim, even if it's better than
+the old `"✓ 0 ft"`. Verified by deleting `window.rmFormatEdgeFeet`
+entirely and confirming `rmBuildReportRoofPlanSvg()` no longer throws and
+still produces a plan (via the fallback), where before this fix it threw
+a `ReferenceError` and killed the whole roof plan section.
+
+**Legend** (`RM_REPORT_LEGEND_ITEMS`): three swatches (measured-matching,
+measured-conflict, derived) drawn directly on the roof plan SVG so a
+customer can read the confidence levels without a separate key elsewhere in
+the document.
+
+**Archived measurements + the tech's decision** (`rmReportMeasurementRows()`,
+wraps roofmapper's `rmAllMeasuredEdgeRecords()`/`rmMeasurementDecisionLabel()`):
+a "Field Measurements" table (HTML: below the roof plan; PDF: its own
+`autoTable`) lists every measurement on the roof, active AND archived/
+superseded, each with what actually happened — "used to rescale," "kept
+existing scale," "averaged with existing scale," or "recorded only" — plus
+when and (for an archived entry) why it was superseded. Provenance the
+reader never sees isn't provenance.
+
+**Back-compat, verified against a synthetic legacy record matching Mark's
+real Tri-Delta roofs exactly** (a `calibration` object with `edgeIndex`/
+`measuredFt`/`calibratedAt` but genuinely no `factor` key): confirmed the
+scale sentence still reads "Scale set by field measurement (47 ft on edge
+3)" — `scaleSource.kind` stays `"measured"` and `rescaleApplied: true` even
+though `factor`/`appliedFactor` come back `null`. Never renders a legacy
+roof as unmeasured or unscaled just because the exact factor wasn't
+recorded at the time — `rmOutlineMeasurementMethod()`'s own legacy-migration
+logic (`rmLegacyCalibrationEntry()`) already handles this correctly; this
+render layer just never gates the sentence on `factor` being present, only
+on `measuredFt`, which every legacy entry carries.
+
+**Roof plan on the report** (`rmBuildReportRoofPlanSvg()`): one shared SVG
+render path for both the HTML report (embedded inline, `<svg>` directly in
+`renderLeakReportDoc()`'s output) and the PDF (rasterized via
+`rmRasterizeSvgToCanvas()` and embedded as a PNG in `generateLeakReportPdf()`)
+so the two never drift apart into two different drawings. Multi-roof
+support projects every roof into one shared coordinate space (same
+technique RoofMapper's own multi-roof export uses) with roof-name labels
+placed via a ported/rebuilt `rmDeconflictLabels()` (the original attempt at
+this lived on `fix/finish-firebase-split@8e70823`, built against the
+pre-modularization monolith and never merged — this is a clean
+re-implementation against the real `js/export.js`, not a copy-paste of
+that commit). A real bug caught in testing and worth calling out
+precisely: embedding the roof plan's ~2200px PNG without `compress: true`
+on the `jsPDF` constructor turned a 2-page report into a 14.3MB PDF (jsPDF
+stores image XObject streams RAW/undeflated by default) — the exact same
+bug already fixed once before in the RoofMapper export path (see "single
+shared render path" above). Fixed the same way: `compress: true`, bringing
+the same report down to 91KB.
+
+**Data fetch, and a real bug caught in PR review** (`rmFetchReportRoofOutlines()`):
+the first version of this function derived the linked building by calling
+`ensureCustomerAndBuilding()` (`js/core.js`) -- which, despite its name,
+WRITES: `customers.set()`, `buildings.set()` (creates the doc if it
+doesn't exist), and `saveBuildingRoofs()` (rewrites the entire `roofs[]`
+array). Called from two entry points a user reasonably expects to be
+read-only -- opening Preview, tapping Download PDF -- that meant just
+LOOKING at a report mutated production data: could conjure a phantom
+`buildings/` doc from a typo'd job name, and rewrote the `roofs[]` array
+(the very array carrying `edgeMeasurements`/`captureSource`/`scaleSource`)
+on every single preview. Both write paths swallowed their own errors, so
+it failed silently in both directions. Caught in PR #17 review before
+merge, not after.
+
+Fixed to be **strictly read-only**: derives the same deterministic
+`bld_`/`cust_` id by calling `slugify()` directly (a pure string utility,
+safe on its own -- this is the literal id-formation formula, not a
+re-derivation of `ensureCustomerAndBuilding()`'s business logic) and does
+exactly one `fdb.collection("buildings").doc(bldId).get()` -- no
+`.set()`, no `.update()`, no `saveBuildingRoofs()`, verified with a
+mocked `fdb` that logs every write call and asserting the log stays empty
+across both `goToPreview()` and `generatePdf()`, plus that the building
+doc's own bytes are unchanged before/after (a sentinel field). If the
+building genuinely doesn't exist (or the work order was never linked to
+one -- still most jobs, historically), returns `{roofEntries: [], error:
+null}` and the report renders from the work order's own data alone,
+exactly like before this feature existed -- it does NOT create the
+building to make the roof plan render (verified: building count
+unchanged after a run with a deliberately made-up job name). Errors are
+NOT swallowed: a genuine lookup failure (network, permissions) returns
+`{roofEntries: [], error: message}`, and both callers
+(`goToPreview()`/`generatePdf()`) `toast()` it rather than silently
+rendering as if there were simply no linked building -- those are
+different states and the reader deserves to know which one happened
+(verified with a mocked `fdb` whose `.get()` rejects).
+
+Falls back to "the building's only roof" when `reportDistinctRoofIds()`
+comes back empty (a plain single-roof job's findings usually carry no
+`roofId` at all — GPS auto-assign only starts stamping one once a
+building has more than one roof) — without this fallback the
+overwhelmingly common single-roof case would never show a roof plan at
+all. Hooked in at `goToPreview()` (populates a module-level
+`rmReportRoofPlanData` BEFORE `showView("preview")` triggers `js/core.js`'s
+synchronous `renderDoc()` -- `js/core.js` is out of scope for this change,
+so the fetch has to complete entirely on this side of that call) and
+separately in `generatePdf()` (fetches fresh, since a direct PDF download
+doesn't necessarily pass through Preview first).
+
+**PR #17 review, QUESTION 1 — a stale roof plan could render on the
+wrong report.** `rmReportRoofPlanData` was a bare array with no identity
+check. If `renderDoc()` ever fired for a DIFFERENT work order before a
+fresh `goToPreview()` completed for it, the previous order's roof plan
+and field-measurement table would render on the new order's
+customer-facing document — a wrong-roof provenance block. Fixed by
+keying it: `rmReportRoofPlanData` is now `{ woId, entries }`, and
+`rmReportRoofPlanEntriesFor()` (the sole read path — nothing reads
+`rmReportRoofPlanData` directly anymore) returns `[]` whenever
+`woId !== currentId`. Keyed to `currentId` (`js/workorders.js`'s own
+"which order is currently loaded" var), deliberately NOT `collect().id`
+-- `collect()` fabricates a fresh id (`"wo_" + Date.now()`) on every
+single call for a not-yet-saved order (`currentId` still `null`), so
+comparing against `collect().id` would treat the SAME unsaved order as
+stale on every render, which is worse than not checking at all. Verified
+by previewing order A (real roof plan, `currentId` forced to a stable
+value), then switching `currentId` to a different value WITHOUT calling
+`goToPreview()` again (simulating `renderDoc()` firing for a different
+order mid-flight) and confirming `rmReportRoofPlanEntriesFor()` returns
+`[]` and the rendered HTML has no "Roof Plan" section at all for the
+second order — rather than silently showing order A's data.
+
+**Findings numbered and cross-referenced to photos** (`rmReportPhotoFindingRefs()`):
+uses the existing `photo.finding_id` field (already set whenever a photo
+is captured from a specific finding's own camera button, `js/photos.js` —
+not a new field) to add a "Photos" column to the findings table (`#1, #2`)
+and a "(Finding #N)" back-reference on each photo's caption, in both the
+HTML report and the PDF. Fixed a numbering-consistency risk while building
+this: the PDF's photo grid re-filters its own local `fp` (drops photos
+missing usable `w`/`h` dimensions) before numbering, which would silently
+shift every later photo's number out of sync with the findings table's
+cross-reference; fixed by numbering off `refs.fp` (the same unfiltered
+list the findings table itself was built from) instead of the locally
+re-filtered array.
+
+**Watkins branding**: the real logo (`LOGO`) and brand red (`#B4223F` /
+`rgb(180,34,63)`, confirmed against the actual brand color already defined
+in `css/app.css`'s banner comment) were already correct on the Change
+Order PDF; extended the same brand red to the Leak/Repair/Inspection
+report's title (previously plain dark gray) for consistency across every
+document type, both HTML (`.t1` inline style) and PDF (`doc.setTextColor`).
+
+**Tested** end-to-end with a mocked `fdb` (no real writes; a fresh worktree
+checkout, `feature/report-provenance`, cut from `origin/dev` — see the git
+housekeeping note in this session's handoff for why a clean branch mattered
+here): seeded a building+roof matching `ensureCustomerAndBuilding()`'s
+real id derivation, with a survey-grade capture, one active field
+measurement, one archived/superseded one, and a linked photo. Verified:
+the two-sentence method text matches the spec's own example format
+almost verbatim; measured-vs-derived-vs-conflict edge coloring, confirmed
+against BOTH a direct function call and the actual rendered SVG's edge
+labels (the synthetic test ring's real geometric length legitimately
+disagreed with the fabricated measurement, correctly triggering the
+conflict/orange path — not a bug, a correct tolerance check firing on
+mismatched test data); the legacy-no-factor-key back-compat case;
+full HTML render (roof plan SVG present, method text present, legend
+present, measurement history present, archived badge present, photo
+cross-reference present); full PDF generation (2 pages, 91KB after the
+compress fix, no exceptions) including the same checks; the no-linked-
+building fallback (empty array, no crash, roof plan section cleanly
+omitted, rest of the report unaffected); and a Change Order regression
+check (entirely unaffected, still 1 page, still generates cleanly).
 
 ## Roadmap (not built yet, foundation only)
 

@@ -5,16 +5,18 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Leak Work Order / Repair Documentation</title>
 
-<!-- Home-screen / PWA icon (production — clean, unbadged; see "Home-screen
-     app icon" in DEV_NOTES.md and icons/README.md. iOS caches the
-     home-screen icon aggressively — after this deploys, remove and re-add
-     the home-screen shortcut to see the new icon, a plain page reload
-     won't do it. -->
+<!-- Home-screen / PWA icon (DEV build — badged with a red "DEV" ribbon so
+     it's visually distinct from the production icon at a glance; see
+     "Home-screen app icon" in DEV_NOTES.md and icons/README.md. Production
+     will point these same tags at icons/prod/* with an unbadged manifest
+     when this is carried over to main. iOS caches the home-screen icon
+     aggressively — after this deploys, remove and re-add the home-screen
+     shortcut to see the new icon, a plain page reload won't do it. -->
 <link rel="manifest" href="manifest.json">
-<link rel="apple-touch-icon" href="icons/icon-180.png">
-<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/dev/icon-180.png">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/dev/icon-192.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-title" content="RoofOps">
+<meta name="apple-mobile-web-app-title" content="RoofOps DEV">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#000000">
 <link rel="stylesheet" href="css/app.css">
@@ -26,6 +28,9 @@
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<!-- KMZ/KML GroundOverlay import for RoofMapper. KMZ is a ZIP container, so
+     JSZip is the lightest browser-side fit for this static/no-build app. -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <!-- True GeoTIFF support (Mark's Mavic 3T / WebODM / RTK orthos are real
      georeferenced GeoTIFFs, not flattened images) -- parses embedded
      geodata and renders it at its TRUE geographic position/scale on the
@@ -53,9 +58,19 @@
   <button class="tab cond" id="tab-history" onclick="showView('history')" title="Building History">🏢<span class="tab-label"> Building History</span></button>
   <button class="tab cond" id="tab-reports" onclick="showView('reports')" title="Reports">📋<span class="tab-label"> Reports</span></button>
   <button class="tab cond" id="tab-roofmapper" onclick="showView('roofmapper')" title="RoofMapper">🗺️<span class="tab-label"> RoofMapper</span></button>
-  <button class="tab cond" id="admin-toggle" onclick="toggleAdminMode()" style="font-size:11px" title="Admin">🛠️<span class="tab-label"> Admin</span></button>
+  <!-- No admin toggle here on purpose (removed 2026-07-12) -- privileged
+       controls throughout this app are shown or hidden based on the
+       signed-in user's real role/claims (isAdmin, recomputed automatically
+       on every auth-state change in js/core.js), never a mode you switch
+       on. See "admin mode" comment block in js/core.js. -->
   <button class="tab cond" id="account-toggle" onclick="openAccountModal()" style="font-size:11px" title="Account">🔐<span class="tab-label"> Account</span></button>
 </header>
+
+<!-- Offline-first sync status (Mark, 2026-07-12: "the tech must always
+     know where he stands... never a silent failure"). Hidden (display:none)
+     whenever the local sync queue is empty -- see renderSyncStatus() in
+     js/core.js, the only thing that ever shows/hides or fills this. -->
+<div class="card no-print" id="sync-status-bar" style="display:none;margin-bottom:12px;padding:8px 14px;background:#FFF4E5;border:1px solid #E8A33D;font-size:13px"></div>
 
 <!-- ================= Require-login gate (Auth Phase 5, dev only -- see
      docs/AUTH_DESIGN.md). Non-dismissible: no close button, no click-outside
@@ -97,6 +112,30 @@
       <button class="btn" onclick="runPhotoStorageMigration()">☁️ Scan &amp; Migrate Photos</button>
       <p class="hint" style="margin:4px 0 0">One-time cleanup — moves already-saved photos out of Firestore
         into Firebase Storage. Non-destructive: nothing is deleted, safe to run more than once.</p>
+    </div>
+    <!-- Thumbnail backfill (see "captions but no photos" in DEV_NOTES.md) --
+         every already-migrated photo falls back to its full-size backup
+         today (js/core.js's imgFallback), this just makes the gallery
+         cheaper to load by generating a real small thumbnail. Additive-only
+         server-side, safe to run more than once. -->
+    <div class="fld" style="max-width:400px;margin:10px 0 0">
+      <label style="font-size:12px">Admin: Backfill Missing Photo Thumbnails</label>
+      <button class="btn" onclick="runThumbnailBackfill()">🖼️ Scan &amp; Backfill Thumbnails</button>
+      <p class="hint" style="margin:4px 0 0">One-time cleanup — generates a real thumbnail for photos migrated
+        to Storage before thumbnails existed. Doesn't touch the photo itself, safe to run more than once.</p>
+    </div>
+    <!-- Inspection-report ingestion (CCM Inspect emails -> Warranty
+         section, see netlify/functions/inspection-reports.js). A scheduled
+         function already polls automatically every 30 min; this button is
+         the on-demand "don't make me wait" path, same idempotency either
+         way (safe to tap even right after an automatic run). -->
+    <div class="fld" style="max-width:400px;margin:10px 0 0">
+      <label style="font-size:12px">Admin: Inspection Reports (from CCM Inspect email)</label>
+      <div class="btnrow" style="margin:0">
+        <button class="btn" onclick="checkForNewInspectionReports()">🔄 Check for New Inspection Reports</button>
+        <button class="btn" onclick="openWarrantyReviewModal()" id="warranty-review-btn">📋 Review Queue</button>
+      </div>
+      <p class="hint" style="margin:4px 0 0" id="warranty-check-status">Auto-checks every 30 minutes. Unmatched reports land in the Review Queue for manual assignment — never silently guessed.</p>
     </div>
   </div>
 
@@ -338,9 +377,8 @@
     </div>
     <div class="card" id="audit-log-card" style="display:none">
       <h2 class="cond">🔒 Audit Log (admin)</h2>
-      <p class="hint">Every destructive or privileged admin.js action, newest first — who (when signed in) or
-        "PIN only" (when not), what changed, before/after. Append-only; nothing here can be edited or deleted, not
-        even by the owner.</p>
+      <p class="hint">Every destructive or privileged admin.js action, newest first — who, what changed, before/after.
+        Append-only; nothing here can be edited or deleted, not even by the owner.</p>
       <div class="btnrow" style="margin:0 0 10px">
         <button class="btn" onclick="loadAuditLogBacklog()">Refresh</button>
       </div>
@@ -387,13 +425,13 @@
         — whether or not it matches CompanyCam or an existing building.</p>
       <div class="btnrow" style="margin:0 0 6px">
         <button class="btn" id="rm-ortho-upload-btn" onclick="document.getElementById('rm-ortho-file-input').click()">📷 Trace on My Own Drone Image</button>
-        <input type="file" id="rm-ortho-file-input" accept="image/*" style="display:none" onchange="rmUploadOrthoFile(this)">
+        <input type="file" id="rm-ortho-file-input" accept=".kmz,.kml,.tif,.tiff,image/*" multiple style="display:none" onchange="rmUploadOrthoFile(this)">
         <button class="btn" onclick="rmOpenCcOrthoPicker()">☁️ Trace From CompanyCam Photo</button>
       </div>
       <p class="hint" id="rm-ortho-hint" style="margin:-6px 0 12px">Have a sharper drone orthomosaic than satellite
-        imagery? Upload it from this device and trace directly on it — no CompanyCam project needed first. Already
-        added it as a photo to this building's CompanyCam project instead? Pick it from there — needs a building
-        already linked (e.g. via Trace Another Roof), since that's where the CompanyCam project comes from.</p>
+        imagery? Upload a KMZ, KML+image, GeoTIFF, or plain PNG/JPG and trace directly on it — no CompanyCam project
+        needed first. Already added it as a photo to this building's CompanyCam project instead? Pick it from there —
+        needs a building already linked (e.g. via Trace Another Roof), since that's where the CompanyCam project comes from.</p>
       <p class="rm-status" id="rm-status"></p>
       <div id="rm-map-wrap" style="display:none;margin-bottom:12px">
         <div id="rm-map" style="height:min(70vh,640px);border-radius:6px;overflow:hidden"></div>
@@ -983,6 +1021,40 @@
   </div>
 </div>
 
+<div id="warranty-upload-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)closeWarrantyUploadModal()">
+  <div style="background:#fff;max-width:520px;margin:8vh auto;border-radius:8px;max-height:88vh;display:flex;flex-direction:column;overflow:hidden;width:94%">
+    <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
+      <b class="cond" style="font-size:17px">Upload Inspection Report</b>
+      <span style="flex:1"></span>
+      <button class="btn" onclick="closeWarrantyUploadModal()">Close</button>
+    </div>
+    <div style="padding:14px 16px;overflow:auto">
+      <p class="hint" style="margin:0 0 10px">Uploads a warranty/inspection PDF directly onto this building — files the same way an emailed report does (Warranty section + the linked CompanyCam project, if one exists).</p>
+      <div class="fld"><label>PDF file</label><input type="file" id="warranty-upload-file" accept="application/pdf,.pdf"></div>
+      <div class="fld" id="warranty-upload-supersede-fld" style="display:none">
+        <label>This replaces an existing report (optional)</label>
+        <select id="warranty-upload-supersede"><option value="">— New report, don't replace anything —</option></select>
+      </div>
+      <p class="hint" id="warranty-upload-status" style="margin:8px 0"></p>
+      <div class="btnrow" style="margin:10px 0 0"><button class="btn primary" onclick="submitWarrantyUpload()">Upload</button></div>
+    </div>
+  </div>
+</div>
+
+<div id="warranty-review-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)closeWarrantyReviewModal()">
+  <div style="background:#fff;max-width:720px;margin:4vh auto;border-radius:8px;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;width:94%">
+    <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
+      <b class="cond" style="font-size:17px">Inspection Report Review Queue</b>
+      <span style="flex:1"></span>
+      <button class="btn" onclick="closeWarrantyReviewModal()">Close</button>
+    </div>
+    <div style="padding:14px 16px;overflow:auto">
+      <p class="hint" style="margin:0 0 10px">Reports that couldn't be confidently matched to a building — assign each to the correct one, or dismiss it if it's not a real inspection report.</p>
+      <div id="warranty-review-list" class="hint">Loading…</div>
+    </div>
+  </div>
+</div>
+
 <div id="profile-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)closeRoofProfileModal()">
   <div style="background:#fff;max-width:640px;margin:4vh auto;border-radius:8px;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;width:94%">
     <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
@@ -1097,6 +1169,11 @@
 <script src="js/history.js"></script>
 <script src="js/workorders.js"></script>
 <script src="js/roofmapper.js"></script>
+<!-- Help Center / tooltips / first-run walkthrough (see js/help.js). Loaded
+     last among the modules since it wraps showView() from the outside and
+     needs that + every other global already defined; builds its own DOM at
+     runtime, so no other markup in this file belongs to it. -->
+<script src="js/help.js"></script>
 <script>
 "use strict";
 /* ================= init ================= */
@@ -1115,6 +1192,7 @@ populateWarrantyGuidelines();
 showView("home");
 renderSaved();
 updateAdminUI();
+registerServiceWorker();
 </script>
 </body>
 </html>

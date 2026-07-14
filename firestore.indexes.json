@@ -1,0 +1,46 @@
+{
+  "//": [
+    "Composite Firestore indexes, deployed per-context by",
+    "scripts/deploy-firestore-rules.js on every Netlify build -- same",
+    "mechanism, and the same reason, as firestore.rules: an index that only",
+    "exists because somebody once clicked a link in a Firestore error message",
+    "is an index that does not exist in the next project you deploy to.",
+    "",
+    "Both indexes below are REQUIRED by netlify/functions/inspection-reports.js.",
+    "Without them Firestore returns 9 FAILED_PRECONDITION and the warranty",
+    "inspection pipeline breaks in the two places it can least afford to:",
+    "",
+    "  warranty_review_queue (status + createdAt)",
+    "    list_review_queue() -- the REVIEW QUEUE itself. This is the safety net",
+    "    for 'never silently attach a report to the wrong building': ambiguous",
+    "    reports get staged here for Mark to assign by hand. Without the index",
+    "    the queue write still succeeds but the LIST 500s -- so reports would be",
+    "    parked in Firestore, invisible, and nobody would know to go get them.",
+    "    Confirmed live on watkins-service-orders-dev, 2026-07-13.",
+    "",
+    "  warranty_reports (status + uploadedAt)",
+    "    resolveSupersedes() -- called on EVERY filing, before the report doc is",
+    "    written. Without the index this throws, so the attachment is neither",
+    "    filed nor queued: it just lands in summary.errors and is retried",
+    "    forever. Filing would have been broken outright."
+  ],
+  "indexes": [
+    {
+      "collectionGroup": "warranty_review_queue",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "warranty_reports",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "uploadedAt", "order": "DESCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}

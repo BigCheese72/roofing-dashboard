@@ -3,7 +3,11 @@
   "private": true,
   "version": "1.0.0",
   "description": "RoofOps Field (Watkins Roofing work order app) — Netlify Functions dependencies.",
+  "scripts": {
+    "test": "node --test \"tests/**/*.test.js\""
+  },
   "dependencies": {
-    "firebase-admin": "^12.6.0"
+    "firebase-admin": "^12.6.0",
+    "jimp": "^0.22.12"
   }
 }

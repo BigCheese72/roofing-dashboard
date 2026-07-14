@@ -1,20 +1,57 @@
 [build]
-  command = "npm install"
+  # The rules-deploy step runs in EVERY context (Production, Deploy
+  # Previews, Branch deploys) and checks its own FIREBASE_SERVICE_ACCOUNT's
+  # project against the FIRESTORE_RULES_EXPECTED_PROJECT_ID set for that
+  # context below -- see scripts/deploy-firestore-rules.js's header comment
+  # for the incident that made a single credential-derived check
+  # insufficient (2026-07-12: a mis-scoped deploy-preview credential
+  # published rules to production). Chained with && so a failed rules
+  # deploy fails the WHOLE build -- a green build that silently skipped
+  # publishing rules (or published to the wrong project) is the exact
+  # failure this exists to prevent.
+  command = "npm install && node scripts/deploy-firestore-rules.js"
   publish = "."
   functions = "netlify/functions"
 
+[context.production.environment]
+  FIRESTORE_RULES_EXPECTED_PROJECT_ID = "watkins-service-orders"
+
+[context.deploy-preview.environment]
+  FIRESTORE_RULES_EXPECTED_PROJECT_ID = "watkins-service-orders-dev"
+
+[context.branch-deploy.environment]
+  FIRESTORE_RULES_EXPECTED_PROJECT_ID = "watkins-service-orders-dev"
+
 [build.environment]
   # Netlify's secrets scanner (correctly, in general) fails the build if an
-  # env var's value turns up anywhere in the build output. Two false
-  # positives here: (1) ADMIN_PIN's value happens to coincidentally match
-  # unrelated text inside third-party files vendored by firebase-admin's
-  # own dependencies (not our code, nothing actually leaked) — so we skip
-  # scanning node_modules entirely; (2) the Firebase Web API key baked
-  # into index.html is intentionally public (Firebase's own design —
-  # access is controlled by Firestore rules, not by hiding this value),
-  # but its "AIza..." shape trips the scanner's pattern heuristic anyway.
+  # env var's value turns up anywhere in the build output. False positive
+  # here: ADMIN_PIN's value (now removed from the app entirely, but still
+  # present in old git history) happens to coincidentally match unrelated
+  # text inside third-party files vendored by firebase-admin's own
+  # dependencies (not our code, nothing actually leaked) — so we skip
+  # scanning node_modules entirely.
+  #
+  # SECRETS_SCAN_SMART_DETECTION_OMIT_VALUES lists both Firebase Web
+  # apiKeys (production + dev) -- both intentionally public (Firebase's
+  # own design: this key identifies the project to Google's servers, it
+  # does not grant access; Firestore/Storage rules and Firebase Auth are
+  # what actually gate access), already committed in plaintext in
+  # js/core.js where the app needs them, already shipped to every
+  # visitor's browser. Real incident, 2026-07-12: this line was removed
+  # from here (after a GitHub secret-scanning alert on the same two public
+  # keys) in favor of setting it as a Netlify UI env var instead -- that
+  # left three consecutive dev deploys silently failing to build at all
+  # ("Exposed secrets detected", exit code 2) because Netlify's OWN build
+  # scanner had nothing telling it to skip these values anymore, and the
+  # UI env var was never confirmed live. A broken build blocks every
+  # future deploy; a GitHub false-positive alert on a value that's
+  # deliberately public and already committed elsewhere in the repo is
+  # cosmetic. Restored here, committed, self-contained -- doesn't depend
+  # on a separate dashboard step being done correctly. If the GitHub alert
+  # needs addressing again, dismiss it there as a false positive rather
+  # than removing this line.
   SECRETS_SCAN_OMIT_PATHS = "node_modules/**"
-  SECRETS_SCAN_SMART_DETECTION_OMIT_VALUES = "AIzaSyBZRMpIWde-6DPpg7yAvNOqJAQF5ZBxlAg"
+  SECRETS_SCAN_SMART_DETECTION_OMIT_VALUES = "AIzaSyBZRMpIWde-6DPpg7yAvNOqJAQF5ZBxlAg,AIzaSyCuL04xUkChHjtQe4ros6SG_AOIXLyspTw"
 
 [functions]
   # firebase-admin pulls in Google Cloud SDK packages with dynamic requires
@@ -23,3 +60,34 @@
   # resolve it at runtime instead of trying to inline it — the documented
   # fix for this exact class of build failure.
   external_node_modules = ["firebase-admin"]
+
+# NOTE: the Netlify Scheduled Function that used to live here has been REMOVED
+# (2026-07-13). It ran inspection-reports.js every 30 minutes, and the function
+# recognized "this is Netlify's own scheduler" by the presence of a `next_run`
+# field in the POST body -- because Netlify's cron cannot attach custom headers,
+# so there was nothing else to key off.
+#
+# But a caller-supplied body field is not authentication. Anyone on the internet
+# could POST {"next_run":"x"} to the function URL and drive the poller: read
+# Mark's mailbox through Graph, pull attachments, write to Firestore/Storage/
+# CompanyCam, and read attachment filenames and building ids out of the response.
+# Confirmed reachable in production -- an anonymous POST reached the handler.
+#
+# A Netlify scheduled invocation carries NO forgery-proof signal, so there is no
+# way to keep this schedule and also authenticate it. The automated trigger
+# therefore moved to a caller that CAN authenticate:
+#
+#     .github/workflows/poll-inspection-reports.yml
+#
+# which POSTs {"action":"poll"} with an x-roofops-poll-key header holding
+# POLLER_SHARED_SECRET (compared with timingSafeEqual server-side).
+#
+# TO RE-ENABLE AUTOMATIC POLLING, two matching values must be set:
+#   1. Netlify  > Site configuration > Environment variables:  POLLER_SHARED_SECRET
+#   2. GitHub   > repo Settings > Secrets and variables > Actions:  POLLER_SHARED_SECRET
+# Use a long random value (>= 32 chars; the function refuses anything shorter).
+#
+# Until both are set, automatic polling stays OFF and the poll path is closed to
+# everyone except a signed-in user with warranty.manage_reports clicking
+# "Check for New Inspection Reports" in the app. That is a deliberate, fail-closed
+# default: no polling is strictly better than public polling.
