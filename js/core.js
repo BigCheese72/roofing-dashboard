@@ -1804,13 +1804,33 @@ var WORK_ORDER_TYPE_ICONS = {
   "Leak / Service": "💧", "Change Order": "📝", "Inspection": "🔍",
   "Repair": "🔧", "Warranty": "🛡️"
 };
-var WORK_ORDER_TYPE_LABELS = { "Leak / Service": "Leak Work Order" };
+/* DISPLAY-ONLY label overrides. The STORED value on a work order is still
+   the raw WORK_ORDER_TYPES string ("Repair", "Leak / Service", ...) — this
+   map only changes what a human sees. "Repair" now renders as "Work Order"
+   (Mark: a Work Order executes predetermined work already sold on a
+   proposal). Every already-saved repair work order keeps woType "Repair"
+   in Firestore and in building_history_events.workOrderType — it still
+   loads, still matches, still filters, and simply DISPLAYS as "Work
+   Order". No migration, no rewrite of stored values. WORK_ORDER_TYPES
+   above is deliberately unchanged. Route EVERY user-visible rendering of a
+   type through woTypeLabel() — form dropdown, report/PDF, timeline and
+   reports chips, type filters. See "Repair -> Work Order rename" in
+   DEV_NOTES.md. */
+var WORK_ORDER_TYPE_LABELS = { "Leak / Service": "Leak Work Order", "Repair": "Work Order" };
+function woTypeLabel(t){
+  var raw = t || WORK_ORDER_TYPES[0];
+  return WORK_ORDER_TYPE_LABELS[raw] || raw;
+}
 function populateWoTypeSelect(){
   var sel = document.getElementById("woType");
   if (sel.options.length) return;
   WORK_ORDER_TYPES.forEach(function(t){
     var opt = document.createElement("option");
-    opt.value = t; opt.textContent = t;
+    /* value = the raw stored enum (unchanged, what collect() saves);
+       textContent = the display label. Keeping these two apart is the
+       whole point — setVal("woType", "Repair") on an existing record still
+       matches an option, it just reads "Work Order" on screen. */
+    opt.value = t; opt.textContent = woTypeLabel(t);
     sel.appendChild(opt);
   });
 }
@@ -1829,11 +1849,21 @@ function onWoTypeChange(){
   if (fc) fc.style.display = (isRepair || isCO) ? "none" : "";
   /* Change Order has no repairs-made concept (it IS the work being
      authorized, described in its own Description field) — hide the
-     generic "Work Performed" section for it. Repair keeps this card
-     (per "Repair work order type" in DEV_NOTES.md — carries most of the
-     same info as Leak/Service). */
+     generic "Work Performed" section for it. A Leak Work Order is now a
+     PURE leak investigation (Mark): findings, roof map + pins, photos,
+     warranty determination, summary — and nothing about repair scope.
+     Work actually performed belongs on a Work Order (stored value
+     "Repair"), the type that executes predetermined scope already sold on
+     a proposal. Repair/Inspection/Warranty keep this card exactly as
+     before. DISPLAY GATING ONLY — collect() still writes repairs[] and
+     fill() still loads it for EVERY type, so an existing leak record that
+     already has repair rows keeps them byte-for-byte; they're simply no
+     longer editable on the leak form (and its report still prints them —
+     see buildLeakReportText()). No field removed, no data dropped, no
+     migration. See "Leak form = pure leak investigation" in DEV_NOTES.md. */
+  var isLeakType = val("woType") === WORK_ORDER_TYPES[0];
   var rpc = document.getElementById("wo-repairsperformed-card");
-  if (rpc) rpc.style.display = isCO ? "none" : "";
+  if (rpc) rpc.style.display = (isCO || isLeakType) ? "none" : "";
   /* Change Order has its own in-scope photo box (#co-photos-host, inside
      wo-changeorder-card) — the global Photo Documentation section would
      just be a second, redundant place to add the exact same photos[]

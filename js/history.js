@@ -27,8 +27,15 @@ function populateTimelineFilterOptions(){
       var sel = document.getElementById(spec[0]);
       if (!sel) return;
       var current = sel.value;
+      /* The Work Order Type filter is built from the RAW stored values found
+         in the data ("Repair", "Leak / Service", ...) — the option's value
+         must stay raw, because filterTimelineEvents() compares it straight
+         against e.workOrderType. Only the visible text gets the display
+         label, so the tech picks "Work Order" and it still matches every
+         record stored as "Repair". */
+      var isWoType = spec[1] === "workOrderType";
       sel.innerHTML = '<option value="">All</option>' + tlDistinctSorted(spec[1]).map(function(v){
-        return '<option value="' + esc(v) + '">' + esc(v) + '</option>';
+        return '<option value="' + esc(v) + '">' + esc(isWoType ? woTypeLabel(v) : v) + '</option>';
       }).join("");
       sel.value = Array.prototype.some.call(sel.options, function(o){ return o.value === current; }) ? current : "";
     });
@@ -104,7 +111,7 @@ function timelineEventHtml(e, buildingId, opts){
     '<span class="evt-date">' + esc(e.date || fmtTs(e.createdAt)) + '</span>' +
     '<span class="evt-tag">' + esc(e.reportType || "") + '</span>' +
     (e.workOrderType && e.workOrderType !== WORK_ORDER_TYPES[0] ?
-      '<span class="evt-tag" style="background:#FFF3E0;color:#8A5A00">' + esc(e.workOrderType) + '</span>' : '') +
+      '<span class="evt-tag" style="background:#FFF3E0;color:#8A5A00">' + esc(woTypeLabel(e.workOrderType)) + '</span>' : '') +
     (e.warrantyStatus ? '<span class="evt-tag">' + esc(e.warrantyStatus) + '</span>' : '') +
     (e.emailSent ? '<span class="evt-tag">Emailed ✓</span>' : '') +
     ccUploadBadgeHtml(e.companyCamUploadStatus) +
@@ -975,8 +982,12 @@ function populateReportsFilterOptions(){
       var sel = document.getElementById(spec[0]);
       if (!sel) return;
       var current = sel.value;
+      /* Same raw-value / display-label split as populateTimelineFilterOptions()
+         above — filterReports() compares the option value against the raw
+         stored r.workOrderType. */
+      var isWoType = spec[1] === "workOrderType";
       sel.innerHTML = '<option value="">All</option>' + rpDistinctSorted(spec[1]).map(function(v){
-        return '<option value="' + esc(v) + '">' + esc(v) + '</option>';
+        return '<option value="' + esc(v) + '">' + esc(isWoType ? woTypeLabel(v) : v) + '</option>';
       }).join("");
       sel.value = Array.prototype.some.call(sel.options, function(o){ return o.value === current; }) ? current : "";
     });
@@ -1014,7 +1025,7 @@ function rpReportItemHtml(r){
     '<span class="evt-date">' + esc(r.date || fmtTs(r.createdAt)) + '</span>' +
     '<span class="evt-tag">' + esc(r.reportType || "") + '</span>' +
     (r.workOrderType && r.workOrderType !== WORK_ORDER_TYPES[0] ?
-      '<span class="evt-tag" style="background:#FFF3E0;color:#8A5A00">' + esc(r.workOrderType) + '</span>' : '') +
+      '<span class="evt-tag" style="background:#FFF3E0;color:#8A5A00">' + esc(woTypeLabel(r.workOrderType)) + '</span>' : '') +
     (r.warrantyStatus ? '<span class="evt-tag">' + esc(r.warrantyStatus) + '</span>' : '') +
     (r.emailSent ? '<span class="evt-tag">Emailed ✓</span>' : '') +
     ccUploadBadgeHtml(r.companyCamUploadStatus) +
