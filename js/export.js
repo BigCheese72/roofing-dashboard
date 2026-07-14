@@ -1084,7 +1084,7 @@ async function emailDoc(){
   toast("Saving work order\u2026");
   if (!(await autoSaveBeforeReport("opening email"))) return;
   var o = collect();
-  var subject = (o.woType === "Change Order" ? "Change Order — " : "Leak Work Order — ") + (o.jobName || "Job") +
+  var subject = emailTypeSubject(o.woType) + " — " + (o.jobName || "Job") +
     (o.jobNo ? " #" + o.jobNo : "") + (o.location ? " (" + o.location + ")" : "");
   var addrList = parseEmailRecipients(val("emailTo"));
   var alreadyHasBcc = addrList.some(function(a){ return a.toLowerCase() === EMAIL_ALWAYS_BCC.toLowerCase(); });

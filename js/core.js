@@ -1821,6 +1821,27 @@ function woTypeLabel(t){
   var raw = t || WORK_ORDER_TYPES[0];
   return WORK_ORDER_TYPE_LABELS[raw] || raw;
 }
+
+/* EMAIL COPY ONLY — the wording used in the outgoing email subject/body.
+   Deliberately separate from woTypeLabel(): in the app a leak job is still a
+   "Leak Work Order" on the form, but the customer-facing EMAIL must never say
+   "Leak". Both the leak type ("Leak / Service") and the plain work order
+   ("Repair", displayed as "Work Order") send as "Service Work Order"; Change
+   Order, Inspection and Warranty keep their own wording. Stored woType values
+   are untouched. */
+var EMAIL_TYPE_COPY = {
+  "Change Order": { subject: "Change Order", noun: "Change order" },
+  "Inspection":   { subject: "Inspection",   noun: "Inspection" },
+  "Warranty":     { subject: "Warranty",     noun: "Warranty" }
+};
+function emailTypeSubject(t){
+  var e = EMAIL_TYPE_COPY[t || ""];
+  return e ? e.subject : "Service Work Order";
+}
+function emailTypeNoun(t){
+  var e = EMAIL_TYPE_COPY[t || ""];
+  return e ? e.noun : "Service work order";
+}
 function populateWoTypeSelect(){
   var sel = document.getElementById("woType");
   if (sel.options.length) return;
