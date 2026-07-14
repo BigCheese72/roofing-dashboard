@@ -2976,13 +2976,19 @@ async function rmPersistVertexEdit(){
     if (!roof){ toast("Couldn't find the linked roof to save."); return; }
     var measurementFields = rmOutlineMeasurementPersistence(outline);
     roof.roof_outlines = (roof.roof_outlines || []).map(function(o){
-      return o.id === outline.id ? Object.assign({}, o, {
-        ring: outline.ring, areaSqFt: outline.areaSqFt, perimeterFt: outline.perimeterFt,
-        center: outline.center, calibration: outline.calibration || null, squared: null,
+      if (o.id !== outline.id) return o;
+      var storageFields = rmOutlineStorageFields(outline, o);
+      return Object.assign({}, o, {
+        ring: storageFields.ring, center: storageFields.center,
+        imageRing: storageFields.imageRing, imageCenter: storageFields.imageCenter,
+        imageFrame: storageFields.imageFrame, tracedOnOrtho: storageFields.tracedOnOrtho,
+        georeferencedSource: storageFields.georeferencedSource,
+        areaSqFt: outline.areaSqFt, perimeterFt: outline.perimeterFt,
+        calibration: outline.calibration || null, squared: null,
         edgeMeasurements: measurementFields.edgeMeasurements, inheritedScale: measurementFields.inheritedScale,
         captureSource: measurementFields.captureSource, scaleSource: measurementFields.scaleSource,
         measurementMethod: measurementFields.measurementMethod
-      }) : o;
+      });
     });
     var roofIdx = roofs.findIndex(function(r){ return r.id === roof.id; });
     roofs[roofIdx] = roof;
@@ -3244,7 +3250,9 @@ async function rmCalibrateEdge(edgeIndex){
   var rescaledAssets = null;
   if (rmState.linkedAssetsCache && rmState.linkedAssetsCache.length){
     rescaledAssets = rmState.linkedAssetsCache.map(function(asset){
-      var p = rmGeomScalePoint({ lat: asset.lat, lng: asset.lng }, centroid, appliedFactor);
+      var displayPoint = rmAssetDisplayLatLng(asset);
+      if (!displayPoint) return asset;
+      var p = rmGeomScalePoint(displayPoint, centroid, appliedFactor);
       return Object.assign({}, asset, { lat: p.lat, lng: p.lng });
     });
     rmState.linkedAssetsCache = rescaledAssets;
@@ -3276,15 +3284,22 @@ async function rmPersistCalibration(rescaledAssets){
     if (!roof){ toast("Couldn't find the linked roof to save calibration."); return; }
     var measurementFields = rmOutlineMeasurementPersistence(outline);
     roof.roof_outlines = (roof.roof_outlines || []).map(function(o){
-      return o.id === outline.id ? Object.assign({}, o, {
-        ring: outline.ring, areaSqFt: outline.areaSqFt, perimeterFt: outline.perimeterFt,
-        center: outline.center, calibration: outline.calibration || null,
+      if (o.id !== outline.id) return o;
+      var storageFields = rmOutlineStorageFields(outline, o);
+      return Object.assign({}, o, {
+        ring: storageFields.ring, center: storageFields.center,
+        imageRing: storageFields.imageRing, imageCenter: storageFields.imageCenter,
+        imageFrame: storageFields.imageFrame, tracedOnOrtho: storageFields.tracedOnOrtho,
+        georeferencedSource: storageFields.georeferencedSource,
+        areaSqFt: outline.areaSqFt, perimeterFt: outline.perimeterFt, calibration: outline.calibration || null,
         edgeMeasurements: measurementFields.edgeMeasurements, inheritedScale: measurementFields.inheritedScale,
         captureSource: measurementFields.captureSource, scaleSource: measurementFields.scaleSource,
         measurementMethod: measurementFields.measurementMethod
-      }) : o;
+      });
     });
-    if (rescaledAssets) roof.roof_assets = rescaledAssets;
+    if (rescaledAssets) roof.roof_assets = rescaledAssets.map(function(a){
+      return Object.assign({}, a, rmAssetPersistenceFields(a));
+    });
     var roofIdx = roofs.findIndex(function(r){ return r.id === roof.id; });
     roofs[roofIdx] = roof;
     await saveBuildingRoofs(rmState.linkedBuildingId, roofs);
@@ -3374,13 +3389,19 @@ async function rmPersistOutlineGeometryEdit(){
     if (!roof){ toast("Couldn't find the linked roof to save."); return; }
     var measurementFields = rmOutlineMeasurementPersistence(outline);
     roof.roof_outlines = (roof.roof_outlines || []).map(function(o){
-      return o.id === outline.id ? Object.assign({}, o, {
-        ring: outline.ring, areaSqFt: outline.areaSqFt, perimeterFt: outline.perimeterFt,
-        center: outline.center, calibration: outline.calibration || null, squared: outline.squared || null,
+      if (o.id !== outline.id) return o;
+      var storageFields = rmOutlineStorageFields(outline, o);
+      return Object.assign({}, o, {
+        ring: storageFields.ring, center: storageFields.center,
+        imageRing: storageFields.imageRing, imageCenter: storageFields.imageCenter,
+        imageFrame: storageFields.imageFrame, tracedOnOrtho: storageFields.tracedOnOrtho,
+        georeferencedSource: storageFields.georeferencedSource,
+        areaSqFt: outline.areaSqFt, perimeterFt: outline.perimeterFt,
+        calibration: outline.calibration || null, squared: outline.squared || null,
         edgeMeasurements: measurementFields.edgeMeasurements, inheritedScale: measurementFields.inheritedScale,
         captureSource: measurementFields.captureSource, scaleSource: measurementFields.scaleSource,
         measurementMethod: measurementFields.measurementMethod
-      }) : o;
+      });
     });
     var roofIdx = roofs.findIndex(function(r){ return r.id === roof.id; });
     roofs[roofIdx] = roof;
@@ -4494,6 +4515,139 @@ function rmComputeOrthoBounds(pixelW, pixelH){
     orthoBounds: { north: nw.lat, south: se.lat, east: se.lng, west: nw.lng }
   };
 }
+function rmValidOrthoBounds(bounds){
+  return !!bounds &&
+    rmIsFiniteNumber(bounds.north) && rmIsFiniteNumber(bounds.south) &&
+    rmIsFiniteNumber(bounds.east) && rmIsFiniteNumber(bounds.west) &&
+    bounds.north !== bounds.south && bounds.east !== bounds.west;
+}
+function rmOrthoLatLngToImageXY(point, bounds){
+  if (!point || !rmValidOrthoBounds(bounds) || !rmIsFiniteNumber(point.lat) || !rmIsFiniteNumber(point.lng)) return null;
+  return {
+    x: (point.lng - bounds.west) / (bounds.east - bounds.west),
+    y: (bounds.north - point.lat) / (bounds.north - bounds.south)
+  };
+}
+function rmOrthoImageXYToLatLng(point, bounds){
+  if (!point || !rmValidOrthoBounds(bounds) || !rmIsFiniteNumber(point.x) || !rmIsFiniteNumber(point.y)) return null;
+  return {
+    lat: bounds.north - point.y * (bounds.north - bounds.south),
+    lng: bounds.west + point.x * (bounds.east - bounds.west)
+  };
+}
+function rmImageRingToDisplayRing(imageRing, bounds){
+  if (!Array.isArray(imageRing)) return null;
+  var ring = imageRing.map(function(p){ return rmOrthoImageXYToLatLng(p, bounds); }).filter(Boolean);
+  return ring.length >= 4 ? ring : null;
+}
+function rmDisplayRingToImageRing(ring, bounds){
+  if (!Array.isArray(ring)) return null;
+  var imageRing = ring.map(function(p){ return rmOrthoLatLngToImageXY(p, bounds); }).filter(Boolean);
+  return imageRing.length === ring.length && imageRing.length >= 4 ? imageRing : null;
+}
+function rmOutlineDisplayGeometry(outline, bounds){
+  if (!outline) return null;
+  if (Array.isArray(outline.ring) && outline.ring.length >= 4) return Object.assign({}, outline);
+  var displayRing = rmImageRingToDisplayRing(outline.imageRing, bounds);
+  if (!displayRing) return null;
+  var displayCenter = rmOrthoImageXYToLatLng(outline.imageCenter, bounds) || rmGeomRingCentroid(displayRing);
+  return Object.assign({}, outline, { ring: displayRing, center: displayCenter });
+}
+function rmOutlineImageFramePersistence(outline, bounds){
+  var imageRing = rmDisplayRingToImageRing(outline && outline.ring, bounds);
+  if (!imageRing) return null;
+  var imageCenter = rmOrthoLatLngToImageXY(outline.center || rmGeomRingCentroid(outline.ring), bounds);
+  return {
+    ring: [],
+    center: null,
+    imageRing: imageRing,
+    imageCenter: imageCenter,
+    imageFrame: "roof_base_map",
+    tracedOnOrtho: true,
+    georeferencedSource: false
+  };
+}
+function rmOutlinePersistenceFields(outline){
+  if (rmState.orthoActive && rmValidOrthoBounds(rmState.orthoBounds)){
+    var imageFields = rmOutlineImageFramePersistence(outline, rmState.orthoBounds);
+    if (imageFields) return imageFields;
+  }
+  return {
+    ring: outline.ring,
+    center: outline.center
+  };
+}
+function rmOutlineStorageFields(outline, existing){
+  var geometryFields = rmOutlinePersistenceFields(outline);
+  return {
+    ring: geometryFields.ring || [],
+    center: geometryFields.center || null,
+    imageRing: geometryFields.imageRing || null,
+    imageCenter: geometryFields.imageCenter || null,
+    imageFrame: geometryFields.imageFrame || null,
+    tracedOnOrtho: geometryFields.tracedOnOrtho || (existing && existing.tracedOnOrtho) || null,
+    georeferencedSource: geometryFields.georeferencedSource === false ? false : ((existing && existing.georeferencedSource) || null)
+  };
+}
+function rmAssetDisplayLatLng(asset){
+  if (!asset) return null;
+  if (rmIsFiniteNumber(asset.lat) && rmIsFiniteNumber(asset.lng)) return { lat: asset.lat, lng: asset.lng };
+  if (rmState.orthoActive && rmValidOrthoBounds(rmState.orthoBounds)) return rmOrthoImageXYToLatLng(asset, rmState.orthoBounds);
+  return null;
+}
+function rmAssetPersistenceFields(asset){
+  if (rmState.orthoActive && rmValidOrthoBounds(rmState.orthoBounds)){
+    var xy = rmOrthoLatLngToImageXY(asset, rmState.orthoBounds);
+    if (xy) return {
+      lat: null,
+      lng: null,
+      x: xy.x,
+      y: xy.y,
+      imageFrame: "roof_base_map",
+      tracedOnOrtho: true,
+      georeferencedSource: false
+    };
+  }
+  if (rmIsFiniteNumber(asset.x) && rmIsFiniteNumber(asset.y)) return {
+    lat: null,
+    lng: null,
+    x: asset.x,
+    y: asset.y,
+    imageFrame: asset.imageFrame || null,
+    tracedOnOrtho: asset.tracedOnOrtho || null,
+    georeferencedSource: asset.georeferencedSource === false ? false : (asset.georeferencedSource || null)
+  };
+  return {
+    lat: asset.lat,
+    lng: asset.lng,
+    x: null,
+    y: null
+  };
+}
+function rmIsNearNullIslandPoint(point){
+  return !!point && rmIsFiniteNumber(point.lat) && rmIsFiniteNumber(point.lng) &&
+    Math.abs(point.lat) < 0.05 && Math.abs(point.lng) < 0.05;
+}
+function rmIsSyntheticImageGeometry(item, roof){
+  item = item || {};
+  roof = roof || {};
+  var capture = item.captureSource || {};
+  var methodCapture = item.measurementMethod && item.measurementMethod.captureSource || {};
+  return !!(item.tracedOnOrtho || item.imageFrame === "roof_base_map" ||
+    capture.mechanism === "ortho_image" || methodCapture.mechanism === "ortho_image" ||
+    roof.roof_base_map_synthetic);
+}
+function rmShouldDrawWorldAsset(asset, roof){
+  if (!asset || !rmIsFiniteNumber(asset.lat) || !rmIsFiniteNumber(asset.lng)) return false;
+  return !(rmIsSyntheticImageGeometry(asset, roof) && rmIsNearNullIslandPoint(asset));
+}
+function rmShouldDrawWorldOutline(outline, roof){
+  if (!outline || !Array.isArray(outline.ring) || outline.ring.length < 4) return false;
+  var validRing = outline.ring.every(function(p){ return p && rmIsFiniteNumber(p.lat) && rmIsFiniteNumber(p.lng); });
+  if (!validRing) return false;
+  if (rmIsSyntheticImageGeometry(outline, roof) && outline.ring.some(rmIsNearNullIslandPoint)) return false;
+  return true;
+}
 function rmStartOrthoTrace(dataUrl, pixelW, pixelH){
   var map = rmEnsureMap();
   rmClearFootprintLayers(); /* same clean-slate as any other fresh capture start --
@@ -5418,10 +5572,11 @@ async function rmSaveSplitSectionsToBuilding(buildingId){
       };
       rmCopyOutlineSourceMetadata(baseOutline, outlineEntry);
       rmDropSplitMeasurementMetadata(outlineEntry, baseOutline);
+      var storedOutlineEntry = Object.assign({}, outlineEntry, rmOutlineStorageFields(outlineEntry, null));
       var newRoof = {
         id: genId("roof"), label: label, roofSystem: "",
         roof_base_map_type: null, roof_base_map_url: null, roof_base_map_bounds: null,
-        roof_assets: [], roof_outlines: [outlineEntry], createdAt: Date.now(), updatedAt: Date.now()
+        roof_assets: [], roof_outlines: [storedOutlineEntry], createdAt: Date.now(), updatedAt: Date.now()
       };
       roofs.push(newRoof); /* so later sections' dup-check sees earlier ones from THIS SAME batch too */
       return { roof: newRoof, outlineEntry: outlineEntry };
@@ -5510,7 +5665,9 @@ async function rmSaveSplitSectionsToExistingRoof(buildingId, roofId){
     };
     rmCopyOutlineSourceMetadata(baseOutline, primaryOutline);
     rmDropSplitMeasurementMetadata(primaryOutline, baseOutline);
-    origRoof.roof_outlines = (origRoof.roof_outlines || []).concat([primaryOutline]);
+    origRoof.roof_outlines = (origRoof.roof_outlines || []).concat([
+      Object.assign({}, primaryOutline, rmOutlineStorageFields(primaryOutline, null))
+    ]);
     var renamed = [];
     if ((origRoof.label || "Roof").trim() !== sections[0].label.trim()){
       var otherRoofs = roofs.filter(function(r){ return r.id !== roofId; });
@@ -5543,10 +5700,11 @@ async function rmSaveSplitSectionsToExistingRoof(buildingId, roofId){
       };
       rmCopyOutlineSourceMetadata(baseOutline, outlineEntry);
       rmDropSplitMeasurementMetadata(outlineEntry, baseOutline);
+      var storedOutlineEntry = Object.assign({}, outlineEntry, rmOutlineStorageFields(outlineEntry, null));
       var newRoof = {
         id: genId("roof"), label: label, roofSystem: "",
         roof_base_map_type: null, roof_base_map_url: null, roof_base_map_bounds: null,
-        roof_assets: [], roof_outlines: [outlineEntry], createdAt: Date.now(), updatedAt: Date.now()
+        roof_assets: [], roof_outlines: [storedOutlineEntry], createdAt: Date.now(), updatedAt: Date.now()
       };
       roofs.push(newRoof);
       return newRoof;
@@ -5603,7 +5761,7 @@ async function rmSaveOutlineToBuilding(buildingId, roofId){
        first roof is unambiguous. */
     var roof = roofs.find(function(r){ return r.id === roofId; }) || roofs[0];
     rmRefreshOutlineMeasurementModel(rmState.outline);
-    var entry = Object.assign({}, rmState.outline, { id: genId("rmo") });
+    var entry = Object.assign({}, rmState.outline, rmOutlineStorageFields(rmState.outline, null), { id: genId("rmo") });
     roof.roof_outlines = (roof.roof_outlines || []).concat([entry]);
     /* Record the saved id back onto the in-memory outline so a later
        rmCalibrateEdge() call can find+update this exact saved entry
@@ -5703,14 +5861,14 @@ async function rmOpenRoofInMapper(buildingId, roofId){
     if (!roof){ toast("Couldn't find that roof."); return; }
     var outlines = roof.roof_outlines || [];
     var outline = outlines[outlines.length - 1]; /* newest is current, same convention as everywhere else */
-    if (!outline || !outline.ring || outline.ring.length < 3){
+    if (!outline || ((!outline.ring || outline.ring.length < 3) && (!outline.imageRing || outline.imageRing.length < 3))){
       toast((roof.label || "This roof") + " has no traced outline yet — use Trace Another Roof to add one.");
       return;
     }
     var map = rmEnsureMap();
     rmState.preserveOrthoOnClear = false; /* opening a roof always rebuilds its OWN base image below, never inherits whatever was on screen before */
     rmClearFootprintLayers(); /* full reset -- footprints/outline/linked state/ortho/geotiff, same clean slate rmEnterMultiRoofCapture() uses */
-    var center = outline.center || rmGeomRingCentroid(outline.ring);
+    var center = outline.center || (outline.ring && outline.ring.length >= 3 ? rmGeomRingCentroid(outline.ring) : RM_ORTHO_ORIGIN);
     rmState.lat = center.lat; rmState.lng = center.lng; rmState.accuracy = null;
 
     /* Base image, if this roof has one persisted -- BEFORE rmDrawFinalOutline()
@@ -5761,6 +5919,11 @@ async function rmOpenRoofInMapper(buildingId, roofId){
        georeferenced ortho support" in DEV_NOTES.md) -- same result: outline
        loads on plain satellite, no photo underneath. */
 
+    outline = rmOutlineDisplayGeometry(outline, rmState.orthoBounds) || outline;
+    if (!outline.ring || outline.ring.length < 3){
+      toast((roof.label || "This roof") + " was saved in image coordinates, but its base image could not be loaded.");
+      return;
+    }
     rmDrawFinalOutline(outline); /* draws the polygon, edge dims, zooms to it, renders stats -- also resets linked state, restored right after */
     rmState.linkedBuildingId = buildingId;
     rmState.linkedRoofId = roof.id;
@@ -5904,8 +6067,9 @@ function rmDrawLinkedAssets(assets){
        spot to show here. They're still saved correctly and still show on
        Building History's own roof map (which supports both coordinate
        systems) -- just not inline on this screen. */
-    if (typeof a.lat !== "number" || typeof a.lng !== "number") return;
-    var m = L.marker([a.lat, a.lng], { icon: assetIcon(a.type) }).addTo(rmState.assetLayerGroup);
+    var ll = rmAssetDisplayLatLng(a);
+    if (!ll) return;
+    var m = L.marker([ll.lat, ll.lng], { icon: assetIcon(a.type) }).addTo(rmState.assetLayerGroup);
     m._rmAssetId = a.id; /* so rmOpenFeatureForm can hide this exact marker while it's being edited */
     m.on("click", function(){ rmEditFeature(a.id); });
     /* Fast duplicate path (Mark: "point is speed when a roof has several of
@@ -6006,7 +6170,7 @@ async function rmDrawReferenceRoofs(buildingId, bld, excludeRoofId){
   roofs.forEach(function(roof){
     var outlines = roof.roof_outlines || [];
     var outline = outlines[outlines.length - 1]; /* newest is current, same convention as everywhere else */
-    if (outline && outline.ring && outline.ring.length >= 3){
+    if (rmShouldDrawWorldOutline(outline, roof)){
       L.polygon(outline.ring.map(function(p){ return [p.lat, p.lng]; }), {
         color: "#607D8B", weight: 2, dashArray: "6,4", fillColor: "#607D8B", fillOpacity: 0.08
       }).addTo(rmState.referenceLayerGroup);
@@ -6016,7 +6180,7 @@ async function rmDrawReferenceRoofs(buildingId, bld, excludeRoofId){
       rmState.referenceRings.push(outline.ring); /* snap targets -- see rmFindSnapTarget() */
     }
     (roof.roof_assets || []).forEach(function(a){
-      if (typeof a.lat !== "number" || typeof a.lng !== "number") return;
+      if (!rmShouldDrawWorldAsset(a, roof)) return;
       L.marker([a.lat, a.lng], { icon: rmRefAssetIcon(a.type) }).addTo(rmState.referenceLayerGroup);
       bounds.push([a.lat, a.lng]);
     });
@@ -6289,8 +6453,9 @@ function rmOpenFeatureForm(existingAsset){
     });
   }
   var start;
-  if (existingAsset && typeof existingAsset.lat === "number"){
-    start = [existingAsset.lat, existingAsset.lng];
+  var existingAssetLatLng = rmAssetDisplayLatLng(existingAsset);
+  if (existingAssetLatLng){
+    start = [existingAssetLatLng.lat, existingAssetLatLng.lng];
   } else if (rmState.outline){
     var c = rmGeomRingCentroid(rmState.outline.ring);
     start = [c.lat, c.lng];
@@ -6338,9 +6503,9 @@ async function rmSaveFeature(){
     type: document.getElementById("rm-feature-type").value,
     label: document.getElementById("rm-feature-label").value.trim(),
     notes: document.getElementById("rm-feature-notes").value.trim(),
-    lat: ll.lat, lng: ll.lng, x: null, y: null,
     updatedAt: Date.now()
   };
+  Object.assign(asset, rmAssetPersistenceFields({ lat: ll.lat, lng: ll.lng }));
   try{
     await persistRoofAsset(rmState.linkedBuildingId, rmState.linkedRoofId, asset);
     toast("Roof feature saved ✓");

@@ -203,7 +203,12 @@ async function openBuildingHistory(buildingId){
     var hasCustomBaseMap = !!((roof.roof_base_map_type === "roof_plan" || roof.roof_base_map_type === "sketch") && roof.roof_base_map_url);
     var orthoOverlay = (roof.roof_base_map_type === "drone_ortho" && roof.roof_base_map_url && roof.roof_base_map_bounds) ?
       { url: roof.roof_base_map_url, bounds: roof.roof_base_map_bounds } : null;
-    var roofAssets = roof.roof_assets || [];
+    var roofAssets = (roof.roof_assets || []).map(function(a){
+      return Object.assign({}, a, {
+        _roofBaseMapSynthetic: !!roof.roof_base_map_synthetic,
+        _roofBaseMapType: roof.roof_base_map_type || null
+      });
+    });
     /* Every roof's most recent outline, each tagged with its own roof's
        label -- lets Mark see every roof on this building at once, labeled,
        instead of switching one-at-a-time via the picker below. Only
@@ -215,7 +220,12 @@ async function openBuildingHistory(buildingId){
     var allRoofOutlinesForMap = hasCustomBaseMap ? [] : roofs.reduce(function(acc, r){
       var ol = r.roof_outlines || [];
       var latest = ol[ol.length - 1];
-      if (latest) acc.push(Object.assign({}, latest, { _roofLabel: r.label || "Roof", _roofLabelPos: r.labelPos || null }));
+      if (latest) acc.push(Object.assign({}, latest, {
+        _roofLabel: r.label || "Roof",
+        _roofLabelPos: r.labelPos || null,
+        _roofBaseMapSynthetic: !!r.roof_base_map_synthetic,
+        _roofBaseMapType: r.roof_base_map_type || null
+      }));
       return acc;
     }, []);
     /* Roof selector only renders for a building with more than one real

@@ -1030,7 +1030,12 @@ function inlineHistoryAssetsForMap(roofs, roof, hasCustomBaseMap){
   roof = roof || {};
   if (hasCustomBaseMap) return roof.roof_assets || [];
   return (roofs || []).reduce(function(acc, r){
-    (r.roof_assets || []).forEach(function(a){ acc.push(a); });
+    (r.roof_assets || []).forEach(function(a){
+      acc.push(Object.assign({}, a, {
+        _roofBaseMapSynthetic: !!r.roof_base_map_synthetic,
+        _roofBaseMapType: r.roof_base_map_type || null
+      }));
+    });
     return acc;
   }, []);
 }
@@ -1039,7 +1044,12 @@ function inlineHistoryOutlines(roofs, hasCustomBaseMap){
   return (roofs || []).reduce(function(acc, r){
     var ol = r.roof_outlines || [];
     var latest = ol[ol.length - 1];
-    if (latest) acc.push(Object.assign({}, latest, { _roofLabel: r.label || "Roof", _roofLabelPos: r.labelPos || null }));
+    if (latest) acc.push(Object.assign({}, latest, {
+      _roofLabel: r.label || "Roof",
+      _roofLabelPos: r.labelPos || null,
+      _roofBaseMapSynthetic: !!r.roof_base_map_synthetic,
+      _roofBaseMapType: r.roof_base_map_type || null
+    }));
     return acc;
   }, []);
 }
@@ -1486,6 +1496,31 @@ function outlinePopupHtml(o, roofLabel){
    thing you can look at, not something that only appears once a pin
    exists. bldAddress centers satellite mode when there's nothing else
    to derive a center from. */
+function buildingMapIsFiniteNumber(value){
+  return typeof value === "number" && Number.isFinite(value);
+}
+function buildingMapIsFiniteLatLng(point){
+  return !!point && buildingMapIsFiniteNumber(point.lat) && buildingMapIsFiniteNumber(point.lng);
+}
+function buildingMapIsNearNullIsland(point){
+  return buildingMapIsFiniteLatLng(point) && Math.abs(point.lat) < 0.05 && Math.abs(point.lng) < 0.05;
+}
+function buildingMapIsSyntheticImageGeometry(item){
+  item = item || {};
+  var capture = item.captureSource || {};
+  var methodCapture = item.measurementMethod && item.measurementMethod.captureSource || {};
+  return !!(item.tracedOnOrtho || item.imageFrame === "roof_base_map" ||
+    item._roofBaseMapSynthetic || capture.mechanism === "ortho_image" ||
+    methodCapture.mechanism === "ortho_image");
+}
+function buildingMapShouldUseWorldPoint(point, owner){
+  if (!buildingMapIsFiniteLatLng(point)) return false;
+  return !(buildingMapIsSyntheticImageGeometry(owner) && buildingMapIsNearNullIsland(point));
+}
+function buildingMapRenderableOutline(outline){
+  if (!outline || !Array.isArray(outline.ring) || outline.ring.length < 4) return false;
+  return outline.ring.every(function(p){ return buildingMapShouldUseWorldPoint(p, outline); });
+}
 function renderBuildingMap(pins, customBld, bldAddress, orthoOverlay, assets, buildingId, outlines, mapOptions){
   assets = assets || [];
   var opts = (typeof mapOptions === "string") ? { mapElementId: mapOptions } : (mapOptions || {});
@@ -1541,9 +1576,10 @@ function renderBuildingMap(pins, customBld, bldAddress, orthoOverlay, assets, bu
   }
   (async function(){
     var bounds = [];
-    pins.forEach(function(p){ bounds.push([p.lat, p.lng]); });
-    assets.forEach(function(a){ if (typeof a.lat === "number") bounds.push([a.lat, a.lng]); });
-    outlines.forEach(function(o){ (o.ring || []).forEach(function(p){ bounds.push([p.lat, p.lng]); }); });
+    var renderableOutlines = outlines.filter(buildingMapRenderableOutline);
+    pins.forEach(function(p){ if (buildingMapIsFiniteLatLng(p)) bounds.push([p.lat, p.lng]); });
+    assets.forEach(function(a){ if (buildingMapShouldUseWorldPoint(a, a)) bounds.push([a.lat, a.lng]); });
+    renderableOutlines.forEach(function(o){ (o.ring || []).forEach(function(p){ bounds.push([p.lat, p.lng]); }); });
     var center = null, zoom = 18;
     if (!bounds.length){
       if (orthoOverlay){
@@ -1562,8 +1598,7 @@ function renderBuildingMap(pins, customBld, bldAddress, orthoOverlay, assets, bu
         maxZoom: 22, maxNativeZoom: SAT_MAX_NATIVE_ZOOM, attribution: "Tiles &copy; Esri"
       }).addTo(map);
       if (orthoOverlay) L.imageOverlay(orthoOverlay.url, boundsToLatLngBounds(orthoOverlay.bounds)).addTo(map);
-      outlines.forEach(function(o){
-        if (!o.ring || o.ring.length < 3) return;
+      renderableOutlines.forEach(function(o){
         L.polygon(o.ring.map(function(p){ return [p.lat, p.lng]; }), {
           color: "#E8600A", weight: 2, fillColor: "#E8600A", fillOpacity: 0.1
         }).addTo(map).bindPopup(outlinePopupHtml(o, o._roofLabel));
@@ -1578,12 +1613,13 @@ function renderBuildingMap(pins, customBld, bldAddress, orthoOverlay, assets, bu
         }
       });
       pins.forEach(function(p){
+        if (!buildingMapIsFiniteLatLng(p)) return;
         L.circleMarker([p.lat, p.lng], {
           radius: 9, color: "#fff", weight: 2, fillColor: warrantyColor(p.warranty), fillOpacity: 0.95
         }).addTo(map).bindPopup(pinPopupHtml(p, { readOnly: readOnly }));
       });
       assets.forEach(function(a){
-        if (typeof a.lat !== "number") return;
+        if (!buildingMapShouldUseWorldPoint(a, a)) return;
         L.marker([a.lat, a.lng], { icon: assetIcon(a.type) }).addTo(map)
           .bindPopup(readOnly ? assetPopupReadonlyHtml(a) : assetPopupHtml(buildingId, a));
       });
