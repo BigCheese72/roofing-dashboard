@@ -16,6 +16,15 @@ function between(start, end){
 
 function makeSandbox(){
   const sandbox = {
+    esc(value){
+      return String(value == null ? "" : value).replace(/[&<>"']/g, (ch) => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;"
+      }[ch]));
+    },
     getRoofById(building, roofId){
       return ((building && building.roofs) || []).find((r) => r.id === roofId) || null;
     }
@@ -124,7 +133,7 @@ function singleNamedRoofLegacyEvents(){
   ] }];
 }
 
-test("inline history does not borrow another roof's base map", async () => {
+test("inline history does not borrow another roof's sketch base map", async () => {
   const sandbox = makeSandbox();
   const roofs = [
     { id: "roof1", label: "Roof 1" },
@@ -142,6 +151,32 @@ test("inline history does not borrow another roof's base map", async () => {
   assert.strictEqual(
     sandbox.inlineNoBaseMapNotice(roofs, "roof1"),
     "No base map drawn for Roof 1. Roof 7 has one - switch roofs to view it."
+  );
+});
+
+test("inline history falls back to a sibling drone ortho with real bounds", async () => {
+  const sandbox = makeSandbox();
+  const bounds = { north: 41.1, south: 41.0, east: -87.9, west: -88.0 };
+  const roofs = [
+    { id: "roof1", label: "Roof 1" },
+    { id: "roof7", label: "Roof 7", roof_base_map_type: "drone_ortho", roof_base_map_url: "roof7-ortho.jpg", roof_base_map_bounds: bounds }
+  ];
+
+  const base = await sandbox.inlineResolveBuildingBaseMap(roofs, "roof1");
+
+  assert.strictEqual(base.selectedRoof.id, "roof1");
+  assert.strictEqual(base.sourceRoof.id, "roof7");
+  assert.strictEqual(base.fromSelectedRoof, false);
+  assert.strictEqual(base.customBld, null);
+  assert.strictEqual(base.orthoOverlay.url, "roof7-ortho.jpg");
+  assert.strictEqual(base.orthoOverlay.bounds.north, bounds.north);
+  assert.strictEqual(base.orthoOverlay.bounds.south, bounds.south);
+  assert.strictEqual(base.orthoOverlay.bounds.east, bounds.east);
+  assert.strictEqual(base.orthoOverlay.bounds.west, bounds.west);
+  assert.strictEqual(sandbox.inlineNoBaseMapNotice(roofs, "roof1", base.selectedRoof), "No base map drawn for Roof 1. Roof 7 has one - switch roofs to view it.");
+  assert.strictEqual(
+    sandbox.inlineHistoryMapLabel(false, base.orthoOverlay, base, base.selectedRoof),
+    "Base map from <b>Roof 7</b> (building-wide)."
   );
 });
 
@@ -171,6 +206,10 @@ test("synthetic RoofMapper orthos stay in the local image frame", async () => {
   assert.strictEqual(base.customBld.id, "roof1");
   assert.strictEqual(base.syntheticOrtho, true);
   assert.strictEqual(base.orthoOverlay, null);
+  assert.strictEqual(
+    sandbox.inlineHistoryMapLabel(true, null, base, roofs[0]),
+    "Roof map using <b>Roof 1</b>'s saved base image (RoofMapper image, not georeferenced)."
+  );
 });
 
 test("genuine drone orthos use their persisted real-world bounds", async () => {
@@ -187,6 +226,19 @@ test("genuine drone orthos use their persisted real-world bounds", async () => {
   assert.deepStrictEqual(base.orthoOverlay.bounds, roofs[0].roof_base_map_bounds);
   assert.ok(Math.abs(base.orthoOverlay.bounds.north) > 1);
   assert.ok(Math.abs(base.orthoOverlay.bounds.east) > 1);
+  assert.strictEqual(
+    sandbox.inlineHistoryMapLabel(false, base.orthoOverlay, base, roofs[0]),
+    "Building-wide roof map on the saved drone orthophoto."
+  );
+});
+
+test("plain satellite label does not attribute building-wide GPS pins to one roof", () => {
+  const sandbox = makeSandbox();
+
+  assert.strictEqual(
+    sandbox.inlineHistoryMapLabel(false, null, { sourceRoof: null, fromSelectedRoof: false }, { id: "roof3", label: "Roof 3" }),
+    "Building-wide roof map."
+  );
 });
 
 [

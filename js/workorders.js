@@ -1147,6 +1147,10 @@ function inlineRoofHasBaseMap(roof){
     (roof.roof_base_map_type === "roof_plan" || roof.roof_base_map_type === "sketch" ||
      (roof.roof_base_map_type === "drone_ortho" && roof.roof_base_map_bounds)));
 }
+function inlineRoofHasGeoreferencedBaseMap(roof){
+  return !!(roof && roof.roof_base_map_url &&
+    roof.roof_base_map_type === "drone_ortho" && roof.roof_base_map_bounds);
+}
 function inlineResolveBuildingBaseMap(roofs, selectedRoofId){
   roofs = roofs || [];
   var selectedRoof = roofs.find(function(r){ return r.id === selectedRoofId; }) || roofs[0] || null;
@@ -1158,7 +1162,13 @@ function inlineResolveBuildingBaseMap(roofs, selectedRoofId){
     orthoOverlay: null,
     syntheticOrtho: false
   };
-  if (!inlineRoofHasBaseMap(selectedRoof)) return base;
+  if (!inlineRoofHasBaseMap(selectedRoof)){
+    var siblingOrtho = inlineFirstOtherRoofWithGeoreferencedBaseMap(roofs, selectedRoofId);
+    if (!siblingOrtho) return base;
+    base.sourceRoof = siblingOrtho;
+    base.orthoOverlay = { url: siblingOrtho.roof_base_map_url, bounds: siblingOrtho.roof_base_map_bounds };
+    return base;
+  }
   base.sourceRoof = selectedRoof;
   base.fromSelectedRoof = true;
   if (selectedRoof.roof_base_map_type === "drone_ortho" && selectedRoof.roof_base_map_bounds){
@@ -1174,13 +1184,30 @@ function inlineFirstOtherRoofWithBaseMap(roofs, selectedRoofId){
     return r && r.id !== selectedRoofId && inlineRoofHasBaseMap(r);
   }) || null;
 }
-function inlineNoBaseMapNotice(roofs, selectedRoofId){
-  var selectedRoof = (roofs || []).find(function(r){ return r.id === selectedRoofId; }) || (roofs && roofs[0]) || null;
+function inlineFirstOtherRoofWithGeoreferencedBaseMap(roofs, selectedRoofId){
+  return (roofs || []).find(function(r){
+    return r && r.id !== selectedRoofId && inlineRoofHasGeoreferencedBaseMap(r);
+  }) || null;
+}
+function inlineNoBaseMapNotice(roofs, selectedRoofId, selectedRoof){
+  selectedRoof = selectedRoof || (roofs || []).find(function(r){ return r.id === selectedRoofId; }) || (roofs && roofs[0]) || null;
   if (inlineRoofHasBaseMap(selectedRoof)) return "";
   var siblingRoof = inlineFirstOtherRoofWithBaseMap(roofs, selectedRoofId);
   if (!siblingRoof) return "No base map has been drawn for this building yet.";
   return "No base map drawn for " + ((selectedRoof && selectedRoof.label) || "this roof") + ". " +
     ((siblingRoof && siblingRoof.label) || "Another roof") + " has one - switch roofs to view it.";
+}
+function inlineHistoryMapLabel(hasCustomBaseMap, orthoOverlay, baseMap, mapRoof){
+  baseMap = baseMap || {};
+  var sourceRoofLabel = (baseMap.sourceRoof && baseMap.sourceRoof.label) || (mapRoof && mapRoof.label) || "Roof";
+  if (hasCustomBaseMap){
+    return 'Roof map using <b>' + esc(sourceRoofLabel) + '</b>\'s saved base image' +
+      (baseMap.syntheticOrtho ? ' (RoofMapper image, not georeferenced).' : '.');
+  }
+  if (orthoOverlay && baseMap.sourceRoof && !baseMap.fromSelectedRoof){
+    return 'Base map from <b>' + esc(sourceRoofLabel) + '</b> (building-wide).';
+  }
+  return 'Building-wide roof map' + (orthoOverlay ? ' on the saved drone orthophoto.' : '.');
 }
 function inlineAllHistoryPins(events){
   var allPins = [];
@@ -1366,13 +1393,8 @@ async function refreshInlineBuildingHistory(){
     var hiddenDisclosure = [pinCoverage.disclosure, assetCoverage.disclosure].filter(Boolean).join(" ");
     var hasMapBase = hasCustomBaseMap || orthoOverlay || outlines.length || mapPins.length ||
       roofAssets.length || pinCoverage.disclosed.length || assetCoverage.disclosed.length;
-    var sourceRoofLabel = (mapRoof && mapRoof.label) || "Roof";
-    var mapLabel = hasCustomBaseMap ?
-      'Roof map using <b>' + esc(sourceRoofLabel) + '</b>\'s saved base image' +
-        (baseMap.syntheticOrtho ? ' (RoofMapper image, not georeferenced).' : '.') :
-      'Building-wide roof map showing <b>' + esc(sourceRoofLabel) + '</b>\'s GPS findings' +
-        (orthoOverlay ? ' on the saved drone orthophoto.' : '.');
-    var noBaseMapNotice = !hasCustomBaseMap && !orthoOverlay ? inlineNoBaseMapNotice(ctx.roofs, roofId) : "";
+    var mapLabel = inlineHistoryMapLabel(hasCustomBaseMap, orthoOverlay, baseMap, mapRoof);
+    var noBaseMapNotice = !hasCustomBaseMap && !orthoOverlay ? inlineNoBaseMapNotice(ctx.roofs, roofId, baseMap.selectedRoof) : "";
     var eventCountLabel = latestEvents.length && latestEvents.length < events.length ?
       'Showing ' + latestEvents.length + ' of ' + events.length + ' prior events' :
       (events.length ? events.length + ' prior event' + (events.length === 1 ? '' : 's') : '');
