@@ -1168,13 +1168,14 @@ function pdfFileName(){
   return (base || prefix) + ".pdf";
 }
 /* Name used for the PDF saved into the linked CompanyCam project (Mark,
-   2026-07-15: "the save pdf on CC should include the job number ... like
-   leak_17362, or repair_17362"). Deterministic {type}_{jobNo} -- both a
-   readable label in the project's Documents AND the stable key that lets the
-   re-send REPLACE the prior version instead of piling up duplicates (issue #54).
-   Falls back to the job name when there's no job number. */
+   2026-07-15: "leak_<JobNumber> or workorder_<jobnumber> etc"). Deterministic
+   {type}_{jobNo} -- both a readable label in the project's Documents AND the
+   stable key that lets the re-send REPLACE the prior version instead of piling
+   up duplicates (issue #54). Falls back to the job name when there's no job
+   number. The slug follows the DISPLAY type, so "Repair" (which renders as
+   "Work Order" everywhere since #46) is "workorder", not "repair". */
 function ccDocumentTypeSlug(woType){
-  return ({ "Leak / Service": "leak", "Repair": "repair", "Inspection": "inspection",
+  return ({ "Leak / Service": "leak", "Repair": "workorder", "Inspection": "inspection",
     "Warranty": "warranty", "Change Order": "changeorder" })[woType] || "workorder";
 }
 function ccDocumentName(o){

@@ -79,7 +79,8 @@ const nm = loadBlock("export.js", "function ccDocumentTypeSlug", "/* Routes to a
 
 test("CC document name is {type}_{jobNo}: leak_17362 / repair_17362", () => {
   assert.equal(nm.ccDocumentName({ woType: "Leak / Service", jobNo: "17362" }), "leak_17362.pdf");
-  assert.equal(nm.ccDocumentName({ woType: "Repair", jobNo: "17362" }), "repair_17362.pdf");
+  // "Repair" displays as "Work Order" everywhere (#46), so its CC doc slug is "workorder", not "repair".
+  assert.equal(nm.ccDocumentName({ woType: "Repair", jobNo: "17362" }), "workorder_17362.pdf");
   assert.equal(nm.ccDocumentName({ woType: "Inspection", jobNo: "88" }), "inspection_88.pdf");
   assert.equal(nm.ccDocumentName({ woType: "Change Order", jobNo: "5" }), "changeorder_5.pdf");
   assert.equal(nm.ccDocumentName({ woType: "Warranty", jobNo: "42" }), "warranty_42.pdf");
