@@ -792,16 +792,58 @@ async function dprSetupSectionMap(divId, roof, opts){
     map2.fitBounds(llb);
     return { map: map2, mode: "geo", frameUrl: null, w: null, h: null };
   }
-  /* Satellite: center on existing roof geometry, else geocode the job, else a wide view. */
-  var center = dprRoofExistingCenter(roof);
-  if (center){ map2.setView([center.lat, center.lng], 20); }
+  /* Satellite: zoom straight to the job — best-available GPS/coordinate for
+     the site (photo GPS → building's cached/geometry coord → geocoded address
+     on file → this device's GPS), else a wide view to pan from. */
+  var resolved = await dprResolveJobCenter(roof);
+  if (resolved){ map2.setView([resolved.lat, resolved.lng], resolved.zoom || 20); }
   else {
-    var geo = null;
-    try{ geo = await geocodeAddress(val("dpr-location") || val("dpr-jobName")); }catch(e){}
-    if (geo){ map2.setView([geo.lat, geo.lng], 20); }
-    else { map2.setView([39.8, -98.6], 4); toast("Couldn't locate the address — pan/zoom to the roof, then trace."); }
+    var dev = null;
+    try{ dev = await captureDeviceGps(); }catch(e){}
+    if (dev && dev.ok){ map2.setView([dev.lat, dev.lng], 20); }
+    else { map2.setView([39.8, -98.6], 4); toast("Couldn't locate the job — pan/zoom to the roof, then trace."); }
   }
   return { map: map2, mode: "geo", frameUrl: null, w: null, h: null };
+}
+/* Best-known coordinate for the current job, most-precise first. "gps location
+   or the address in the file" (Mark): today's on-site photo GPS, then the
+   building's cached geocode / most-recent roof-outline centroid (reusing
+   bnmCachedCoord — the same resolver Buildings Near Me trusts), then a live
+   geocode of the address on file (cached back so it's a one-time cost). Device
+   GPS is a further fallback handled by the caller. Returns {lat,lng,zoom} or null. */
+async function dprResolveJobCenter(roof){
+  /* 1) A photo taken on the job today carries the truest position. */
+  for (var i = 0; i < dprPhotos.length; i++){
+    var g = dprPhotos[i] && dprPhotos[i].gps;
+    if (g && typeof g.lat === "number" && typeof g.lng === "number") return { lat: g.lat, lng: g.lng, zoom: 20 };
+  }
+  /* 1b) An outline already traced on this roof (fast, no fetch). */
+  var rc = dprRoofExistingCenter(roof);
+  if (rc) return { lat: rc.lat, lng: rc.lng, zoom: 20 };
+  var buildingId = dprState.buildingId || dprBuildingId(val("dpr-billTo"), val("dpr-jobName"));
+  if (buildingId && fdb){
+    try{
+      var snap = await fdb.collection("buildings").doc(buildingId).get();
+      if (snap.exists){
+        var b = Object.assign({ id: buildingId }, snap.data());
+        /* 2) Building's cached geocode or any roof's outline centroid. */
+        if (typeof bnmCachedCoord === "function"){
+          var c = bnmCachedCoord(b);
+          if (c) return { lat: c.lat, lng: c.lng, zoom: 20 };
+        }
+        /* 3) Geocode the address on file, then cache it back for next time. */
+        var addr = b.location || val("dpr-location") || b.name || val("dpr-jobName");
+        var geo = await geocodeAddress(addr);
+        if (geo){ try{ if (typeof bnmCacheGeocode === "function") bnmCacheGeocode(buildingId, geo); }catch(e){} return { lat: geo.lat, lng: geo.lng, zoom: 20 }; }
+      }
+    }catch(e){}
+  }
+  /* 3b) No building doc yet — geocode whatever address the form has. */
+  try{
+    var geo2 = await geocodeAddress(val("dpr-location") || val("dpr-jobName"));
+    if (geo2) return { lat: geo2.lat, lng: geo2.lng, zoom: 20 };
+  }catch(e){}
+  return null;
 }
 function dprLoadImageDims(url){
   return new Promise(function(resolve, reject){

@@ -203,6 +203,20 @@ test("image-mode fraction round-trips through the base-map coordinate helpers", 
   assert.deepStrictEqual([back.lat, back.lng], [300, 250]); // same pixel
 });
 
+test("dprResolveJobCenter prefers a photo's on-site GPS", async () => {
+  const s = makeSandbox();
+  s.dprPhotos.push({ caption: "x", gps: { lat: 41.23, lng: -81.55 } });
+  const c = await s.dprResolveJobCenter(null);
+  assert.deepStrictEqual([c.lat, c.lng], [41.23, -81.55]);
+});
+
+test("dprResolveJobCenter falls back to an existing roof outline centroid", async () => {
+  const s = makeSandbox();
+  const roof = { id: "roof_default", roof_outlines: [{ center: { lat: 40.5, lng: -80.2 } }] };
+  const c = await s.dprResolveJobCenter(roof);
+  assert.deepStrictEqual([c.lat, c.lng], [40.5, -80.2]);
+});
+
 test("a traced section survives collect() and fill()", () => {
   const s = makeSandbox();
   s.setVal("dpr-jobName", "North Warehouse");
