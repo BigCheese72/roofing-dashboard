@@ -1092,7 +1092,7 @@ function startNewWorkOrder(type){
    tech can review prior leaks, inspections, repairs, pins, and the base roof
    map without navigating away from the job they are writing. */
 var woInlineHistorySeq = 0, woInlineHistoryTimer = null, woInlineHistoryListenersInstalled = false,
-  woInlineHistoryBoundListeners = {};
+  woInlineHistoryBoundListeners = {}, woInlineHistoryHideExistingPins = false;
 function woInlineHistorySupportedType(){
   var t = val("woType") || WORK_ORDER_TYPES[0];
   return t === WORK_ORDER_TYPES[0] || t === "Inspection" || t === "Repair";
@@ -1251,6 +1251,25 @@ function inlineHistorySetCoverage(full, rendered, disclosureFn){
     disclosed: disclosed,
     disclosure: disclosureFn ? disclosureFn(disclosed) : ""
   };
+}
+function setWoInlineHistoryHideExistingPins(checked){
+  woInlineHistoryHideExistingPins = !!checked;
+  refreshInlineBuildingHistory();
+}
+function inlineHistoryHiddenSessionPinDisclosure(disclosedPins){
+  var count = (disclosedPins || []).length;
+  if (!count) return "";
+  return count + " existing pin" + (count === 1 ? "" : "s") +
+    " hidden for this Inspection session.";
+}
+function inlineHistoryHiddenSessionPinCoverage(fullPins){
+  return inlineHistorySetCoverage(fullPins || [], [], inlineHistoryHiddenSessionPinDisclosure);
+}
+function inlineHistoryPinToggleHtml(isInspection, pinCount, hideExistingPins){
+  if (!isInspection || !pinCount) return "";
+  return '<label class="hint" style="display:inline-flex;align-items:center;gap:6px;margin:0 0 8px">' +
+    '<input type="checkbox" ' + (hideExistingPins ? 'checked ' : '') +
+    'onchange="setWoInlineHistoryHideExistingPins(this.checked)">Hide existing pins</label>';
 }
 function inlineHistoryPinCoverage(events, roofId, hasCustomBaseMap){
   var full = inlineAllHistoryPins(events);
@@ -1422,7 +1441,12 @@ async function refreshInlineBuildingHistory(){
     var mapRoofId = roofId;
     var hasCustomBaseMap = !!baseMap.customBld;
     var orthoOverlay = baseMap.orthoOverlay;
-    var pinCoverage = inlineHistoryPinCoverage(events, mapRoofId, hasCustomBaseMap);
+    var fullPins = inlineAllHistoryPins(events);
+    var isInspection = val("woType") === "Inspection";
+    var hideExistingPins = isInspection && woInlineHistoryHideExistingPins && fullPins.length > 0;
+    var pinCoverage = hideExistingPins ?
+      inlineHistoryHiddenSessionPinCoverage(fullPins) :
+      inlineHistoryPinCoverage(events, mapRoofId, hasCustomBaseMap);
     var assetCoverage = inlineHistoryAssetCoverage(ctx.roofs, mapRoof, hasCustomBaseMap);
     var roofAssets = assetCoverage.rendered;
     var outlines = inlineHistoryOutlines(ctx.roofs, hasCustomBaseMap, mapRoof);
@@ -1438,10 +1462,11 @@ async function refreshInlineBuildingHistory(){
       'Showing ' + latestEvents.length + ' of ' + events.length + ' prior events' :
       (events.length ? events.length + ' prior event' + (events.length === 1 ? '' : 's') : '');
     var mapHtml = inlineHistoryMapHtml(hasMapVisual, mapLabel, noBaseMapNotice, hiddenDisclosure);
+    var pinToggleHtml = inlineHistoryPinToggleHtml(isInspection, fullPins.length, hideExistingPins);
     var eventsHtml = latestEvents.length ?
       latestEvents.map(function(e){ return timelineEventHtml(e, ctx.buildingId, { readOnly: true }); }).join("") :
       '<div class="empty">No prior leak, inspection, or repair history is logged for this building yet.</div>';
-    body.innerHTML = mapHtml +
+    body.innerHTML = mapHtml + pinToggleHtml +
       '<div class="evt-head" style="margin:0 0 6px"><span class="evt-tag">Read-only</span>' +
       (eventCountLabel ? '<span class="evt-tag">' + eventCountLabel + '</span>' : '') +
       '</div>' +
