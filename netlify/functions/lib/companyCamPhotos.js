@@ -43,7 +43,7 @@
 // window and stores its own copy; the link then rots harmlessly. This is the
 // ONLY thing in the app that hands out a Storage-readable URL, and it hands it
 // to CompanyCam, not to a browser.
-const { getAdmin } = require("./authGuard");
+const { getAdmin, getDb } = require("./authGuard");
 
 // Same shapes photos.js validates -- a crafted workOrderId must not be able to
 // address anything outside the workorders/ prefix, and the path is always
@@ -204,8 +204,78 @@ async function uploadPhotoToCompanyCam(opts) {
   }
 }
 
+// Removes a photo the INTEGRATION pushed into a CompanyCam project's feed
+// (issue: pushed photos are "sticky" -- CompanyCam's UI won't let a user delete
+// an integration-owned photo, but the API + our token can).
+//
+// THE SAFETY SCOPING, and why it is structurally impossible to delete a real
+// user-taken CompanyCam photo:
+//   - The client sends { workOrderId, photoIndex } -- NEVER a raw CompanyCam
+//     photo id. The id to delete is DERIVED HERE, server-side, from OUR OWN
+//     Firestore record: workorders/{id}/photos/p{index}.ccFeedPhotoId, which we
+//     only ever wrote after WE pushed that exact photo (see ccPersistFeedPhotoId
+//     / pushPhotosToCompanyCamFeed). A photo we didn't push has no ccFeedPhotoId,
+//     so there is nothing for this to delete -> it refuses ({skipped}).
+//   - A user-taken CompanyCam photo is never in our records, is never addressable
+//     here, and cannot be reached even by a crafted request. The only thing this
+//     can ever DELETE is an id this app itself created.
+//   - Optional drift guard: the caller may pass expectedFeedPhotoId (it has it in
+//     memory); if our stored id disagrees (e.g. an unsaved photo reorder), refuse
+//     rather than delete a DIFFERENT one of our own photos.
+async function deletePushedPhotoFromCompanyCam(opts) {
+  opts = opts || {};
+  const writeToken = process.env.COMPANYCAM_WRITE_TOKEN || process.env.COMPANYCAM_TOKEN;
+  if (!writeToken) {
+    return { ok: false, error: "COMPANYCAM_WRITE_TOKEN (or COMPANYCAM_TOKEN) is not set. Add it in Netlify > Project configuration > Environment variables, then redeploy." };
+  }
+  if (!validWorkOrderId(opts.workOrderId)) return { ok: false, error: "Invalid workOrderId" };
+  if (!validPhotoIndex(opts.photoIndex)) return { ok: false, error: "Invalid photoIndex" };
+
+  const db = getDb();
+  const photoRef = db.collection("workorders").doc(opts.workOrderId).collection("photos").doc("p" + opts.photoIndex);
+  let snap;
+  try { snap = await photoRef.get(); }
+  catch (e) { return { ok: false, error: "Record read failed: " + (e && e.message ? e.message : "unknown") }; }
+  const stored = (snap && snap.exists) ? snap.data() : null;
+  const ccFeedPhotoId = stored && stored.ccFeedPhotoId ? String(stored.ccFeedPhotoId) : null;
+
+  // SCOPING GUARD -- no id of ours => nothing we may delete.
+  if (!ccFeedPhotoId) return { ok: false, skipped: true, reason: "not_integration_photo" };
+  if (opts.expectedFeedPhotoId && String(opts.expectedFeedPhotoId) !== ccFeedPhotoId) {
+    return { ok: false, skipped: true, reason: "feed_id_mismatch" };
+  }
+
+  let projectId = null;
+  try {
+    const woSnap = await db.collection("workorders").doc(opts.workOrderId).get();
+    projectId = (woSnap && woSnap.exists && woSnap.data().companyCamProjectId) || null;
+  } catch (e) { /* project id is for the audit log only -- not required to delete */ }
+
+  const headers = { "Authorization": "Bearer " + writeToken, "Accept": "application/json" };
+  if (process.env.COMPANYCAM_USER_EMAIL) headers["X-CompanyCam-User"] = process.env.COMPANYCAM_USER_EMAIL;
+
+  let status;
+  try {
+    const r = await fetch("https://api.companycam.com/v2/photos/" + encodeURIComponent(ccFeedPhotoId), { method: "DELETE", headers });
+    status = r.status;
+    // 204 No Content = deleted. 404 = already gone -> the goal (not in the feed) holds either way.
+    if (r.status !== 204 && r.status !== 404) {
+      let t = ""; try { t = await r.text(); } catch (e) {}
+      return { ok: false, error: "CompanyCam rejected the delete: " + r.status + " " + t.slice(0, 200), ccFeedPhotoId: ccFeedPhotoId, projectId: projectId };
+    }
+  } catch (e) { return { ok: false, error: e && e.message ? e.message : "delete failed", ccFeedPhotoId: ccFeedPhotoId, projectId: projectId }; }
+
+  // Clear OUR record so the photo can be re-pushed later and our state reflects
+  // it is no longer in the feed. Merge-only -- never touches img/storageRef/etc.
+  try { await photoRef.set({ ccFeedPhotoId: null }, { merge: true }); }
+  catch (e) { /* the CompanyCam delete already succeeded; the stale flag self-heals on the next save/push */ }
+
+  return { ok: true, deletedPhotoId: ccFeedPhotoId, projectId: projectId, alreadyGone: status === 404 };
+}
+
 module.exports = {
   uploadPhotoToCompanyCam,
+  deletePushedPhotoFromCompanyCam,
   // exported for tests -- the normalizers are where the silent, expensive bugs
   // live (ms-vs-seconds, lng-vs-lon, null island), so they get asserted directly.
   normalizeCoordinates,

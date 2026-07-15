@@ -1769,6 +1769,15 @@ function renderPhotos(){
     host.innerHTML = '<p class="hint">No photos added yet.</p>';
     return;
   }
+  /* Admin "undo push": remove app-pushed photos from the linked CompanyCam
+     feed (they stay on the work order). Only shown when some photo is actually
+     in the feed. Deletion is Mark-triggered here, never automatic. */
+  if (isAdmin && photos.some(function(p){ return p && p.ccFeedPhotoId; })){
+    var ccBar = document.createElement("div");
+    ccBar.style.margin = "0 0 8px";
+    ccBar.innerHTML = '<button class="btn" onclick="removeAllPushedPhotosFromCC()" title="Remove every app-pushed photo on this work order from the CompanyCam feed (they stay on the work order)">⤺ Remove pushed photos from CompanyCam</button>';
+    host.appendChild(ccBar);
+  }
   var findingOptions = findings.map(function(f,fi){
     var label = "Finding #" + (fi+1) + (f.condition ? ": " + f.condition.slice(0,40) : "");
     return { id: f.id, label: label };
@@ -1799,6 +1808,7 @@ function renderPhotos(){
         '<button class="btn" onclick="movePhoto(' + i + ', -1)"' + (i === 0 ? " disabled" : "") + ' title="Move up">▲</button>' +
         '<button class="btn" onclick="movePhoto(' + i + ', 1)"' + (i === photos.length - 1 ? " disabled" : "") + ' title="Move down">▼</button>' +
       '</div>' +
+      (isAdmin && p.ccFeedPhotoId ? '<button class="btn" onclick="removePushedPhotoFromCC(' + i + ')" title="Remove this photo from the CompanyCam feed (it stays on the work order)">⤺ CC</button>' : '') +
       '<button class="btn danger" onclick="removePhoto(' + i + ')">✕</button></div>' +
       '<div class="photo-finding-row"><label>Finding:</label>' +
       '<select data-photo-finding="' + i + '">' +

@@ -53,6 +53,51 @@ async function ccApiPost(body){
   if (!r.ok || !out) throw new Error((out && out.error) || ("server error " + r.status));
   return out;
 }
+/* "Undo push" -- removes a photo THIS app pushed into the linked CompanyCam
+   project's feed (CompanyCam's UI won't let a user delete an integration-owned
+   photo, but our token can). The photo stays on the work order; only the copy
+   in the CompanyCam feed is removed. Admin/owner only, and the server can only
+   ever delete an id we ourselves stored (ccFeedPhotoId) -- see
+   deletePushedPhotoFromCompanyCam(). Mark-triggered; never automatic. */
+async function removePushedPhotoFromCC(i){
+  if (!isAdmin){ toast("Admin required to remove a CompanyCam photo."); return; }
+  var p = photos[i];
+  if (!p || !p.ccFeedPhotoId){ toast("That photo isn't in the CompanyCam feed."); return; }
+  if (!currentId){ toast("Save the work order first, then remove."); return; }
+  if (!confirm("Remove this photo from the CompanyCam project feed?\n\nIt stays on the work order — only the copy the app pushed to CompanyCam is removed.")) return;
+  toast("Removing from CompanyCam…");
+  try{
+    var out = await ccApiPost({ action: "remove_pushed_photo", workOrderId: currentId, photoIndex: i, expectedFeedPhotoId: p.ccFeedPhotoId });
+    if (out && out.ok){
+      p.ccFeedPhotoId = null;
+      if (typeof renderPhotos === "function") renderPhotos();
+      toast("Removed from CompanyCam ✓" + (out.alreadyGone ? " (was already gone)" : ""));
+    } else if (out && out.skipped){
+      toast(out.reason === "feed_id_mismatch" ? "Photo list changed since it was pushed — save and try again." : "Nothing to remove for that photo.");
+    } else {
+      toast("Couldn't remove that photo from CompanyCam.");
+    }
+  }catch(e){ toast("Couldn't remove from CompanyCam: " + e.message); }
+}
+async function removeAllPushedPhotosFromCC(){
+  if (!isAdmin){ toast("Admin required."); return; }
+  if (!currentId){ toast("Save the work order first, then remove."); return; }
+  var pushed = [];
+  (photos || []).forEach(function(p, i){ if (p && p.ccFeedPhotoId) pushed.push({ p: p, i: i }); });
+  if (!pushed.length){ toast("No app-pushed photos to remove from CompanyCam."); return; }
+  if (!confirm("Remove all " + pushed.length + " app-pushed photo" + (pushed.length === 1 ? "" : "s") +
+    " from this work order's CompanyCam feed?\n\nThey stay on the work order.")) return;
+  var removed = 0, failed = 0;
+  for (var k = 0; k < pushed.length; k++){
+    toast("Removing " + (k + 1) + " of " + pushed.length + " from CompanyCam…");
+    try{
+      var out = await ccApiPost({ action: "remove_pushed_photo", workOrderId: currentId, photoIndex: pushed[k].i, expectedFeedPhotoId: pushed[k].p.ccFeedPhotoId });
+      if (out && out.ok){ pushed[k].p.ccFeedPhotoId = null; removed++; } else { failed++; }
+    }catch(e){ failed++; }
+  }
+  if (typeof renderPhotos === "function") renderPhotos();
+  toast(removed + " removed from CompanyCam ✓" + (failed ? ", " + failed + " couldn't be removed" : "") + ".");
+}
 /* Pulls CompanyCam project metadata + photo metadata (ids/urls/timestamps only —
    never re-downloads full images) and stores it in Firestore so this building's
    CompanyCam project history survives even if photos are later removed from
