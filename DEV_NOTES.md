@@ -8127,3 +8127,41 @@ the building inheritance, and "never auto-create").
   history beyond photos/documents.
 - **RoofOps Admin / Customer Portal**: separate modules, out of scope for this repo
   for now.
+
+## Photo-save data integrity (cloudSaveOrder) — Phase 0
+
+Three defects fixed at the one function every save funnels through:
+
+1. **Reference-aware Storage deletion + re-home** (the live prod corruption, first
+   shipped as hotfix `b0a57fe`). Storage paths are index-based
+   (`workorders/<id>/<index>.jpg`). The old cleanup deleted removed photos by a
+   naive trailing index range (`for j = ph.length; j < prevCount`) — but a
+   surviving cloud-backed photo keeps its *original*-index `storageRef`, so
+   removing N photos freed the N highest indices and deleted a *different*
+   surviving photo's confirmed-good bytes. Now: survivors are compacted and
+   **re-homed** (fetch old path → re-upload at new index so index/doc/array
+   agree), and Storage deletion is **reference-aware** — an object any surviving
+   photo still points at is never deleted, whatever index it's at. Offline
+   re-home keeps the old ref and deletes nothing.
+
+2. **Dead-slot drop.** A slot with no bytes anywhere (`photoSlotIsEmpty`: no
+   img/storageRef/imgFallback/thumb/localId) is dropped instead of re-persisted
+   as an empty doc that Preview flags forever.
+
+3. **Enumerated cleanup, not `photoCount`-bounded** (the orphan bug — Mark's
+   "delete all, still 4"). `cloudFetchOrder` counts the actual photo *documents*
+   in the subcollection, but the old cleanup only deleted docs up to the parent
+   `photoCount` field. Concurrent multi-device saves drift that field below the
+   real doc count, leaving "orphan" docs above it that survive every save —
+   including a delete-everything save. Cleanup now **reads what docs actually
+   exist** (`ref.collection("photos").get()`) and deletes any not in the
+   compacted set, so orphans can't persist.
+
+Report-side safeguard (js/export.js `filledFindings`): a finding is shown if it
+has text **or any photos** — a photographed-but-uncaptioned finding no longer
+silently vanishes and drags its photos out of the report.
+
+Still open (later phases): the multi-device **clobber** itself (an auto-flushed
+stale copy overwriting a newer cloud — needs a savedAt/version guard), and the
+storage engine (bytes → IndexedDB, upload-on-add). See the photo-storage
+workstream.

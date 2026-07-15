@@ -1,6 +1,14 @@
 "use strict";
 /* ================= document build ================= */
-function filledFindings(){ return findings.filter(function(f){ return f.condition || f.location; }); }
+/* A finding shows in the report if it has any text OR any photos attached.
+   The has-photos clause is a safeguard (Mark): a finding a tech photographed
+   but hasn't captioned yet must NOT silently vanish from the report and drag
+   its photos out with it -- better to print the finding (blank text is a
+   visible prompt to fill it) than to drop documented photos. */
+function findingHasPhotos(f){
+  return !!(f && f.id && (photos || []).some(function(p){ return p && p.finding_id === f.id; }));
+}
+function filledFindings(){ return findings.filter(function(f){ return f.condition || f.location || findingHasPhotos(f); }); }
 function filledRepairs(){ return repairs.filter(function(r){ return r.repair || r.location; }); }
 function filledRepairItems(){ return repairItems.filter(function(it){ return it.qty || it.notes; }); }
 function filledPhotos(){ return photos.filter(function(p){ return p.img || (p.caption||"").trim(); }); }
