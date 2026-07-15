@@ -1350,7 +1350,21 @@ function rmBuildInheritedScaleRecord(src, factor){
 function rmEdgeDimensionMeta(outline, edgeIndex, distFt){
   var measured = rmGetMeasuredEdge(outline, edgeIndex);
   if (measured){
-    var matches = !rmIsFiniteNumber(distFt) || Math.abs((measured.measuredFt || 0) - distFt) <= RM_EDGE_MEASURE_LABEL_TOLERANCE_FT;
+    if (!rmIsFiniteNumber(distFt)){
+      return {
+        measured: true,
+        conflict: false,
+        bg: "#263238",
+        prefix: "",
+        border: true,
+        labelFt: measured.measuredFt,
+        measuredFt: measured.measuredFt,
+        derivedFt: distFt,
+        labelIsMeasured: true,
+        agreementUnknown: true
+      };
+    }
+    var matches = Math.abs((measured.measuredFt || 0) - distFt) <= RM_EDGE_MEASURE_LABEL_TOLERANCE_FT;
     return {
       measured: true,
       conflict: !matches,
