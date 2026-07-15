@@ -929,6 +929,18 @@ async function ensureCustomerAndBuilding(o){
       updatedAt: Date.now()
     };
     if (o.companyCamProjectId) patch.companyCamProjectId = o.companyCamProjectId;
+    /* Foundation (construction-accounting) job link — the durable per-site
+       identity from the system of record, persisted onto the building exactly
+       like companyCamProjectId so every form for this site inherits it and the
+       base-map resolver can follow the site by Foundation job (Step 3). Set by
+       the Foundation job picker (issue #76, js/workorders.js) via collect();
+       these lines are inert until that lands. Only ever ADD the link (never
+       null it out here) so a stray unlinked save can't wipe a building's job
+       reference. foundationAddress snapshots the accounting address even if the
+       tech later edits the form's location field. */
+    if (o.foundationJobNo) patch.foundationJobNo = o.foundationJobNo;
+    if (o.foundationCustomerNo) patch.foundationCustomerNo = o.foundationCustomerNo;
+    if (o.foundationAddress) patch.foundationAddress = o.foundationAddress;
     if (!snap.exists){
       patch.createdAt = Date.now();
       /* roof_base_map_type/url/bounds are set later via admin.js's
@@ -1115,6 +1127,22 @@ async function authHeaders(){
     try{ h["Authorization"] = "Bearer " + (await currentAuthUser.getIdToken()); }catch(e){}
   }
   return h;
+}
+/* Read-only search over active Foundation (construction-accounting) jobs, for
+   the Foundation job picker (issue #76, js/workorders.js). Returns the mapped
+   job list [{ job_no, name, customer_no, project_manager_no, address, city,
+   state, zip }] or [] on any failure, so the picker degrades to "no matches"
+   rather than throwing. The connector is read-only; this never writes. */
+async function fetchFoundationJobs(search){
+  try{
+    var qs = search ? ("&search=" + encodeURIComponent(String(search).slice(0, 100))) : "";
+    var r = await fetch("/.netlify/functions/foundation?action=jobs" + qs, {
+      method: "GET", headers: await authHeaders()
+    });
+    if (!r.ok) return [];
+    var out = await r.json().catch(function(){ return null; });
+    return (out && Array.isArray(out.jobs)) ? out.jobs : [];
+  }catch(e){ return []; }
 }
 async function callAdminApi(body){
   var r = await fetch("/.netlify/functions/admin", {
