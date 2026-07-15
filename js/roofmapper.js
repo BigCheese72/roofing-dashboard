@@ -5675,6 +5675,13 @@ function rmSaveAllSplitSections(){
   rmSplitState.savingAll = true;
   openRmSaveModal();
 }
+function rmFailSafeSaveSplitOutline(reason, error){
+  return rmFailSafeSaveOutline(rmState.outline, {
+    reason: reason || "split",
+    error: error || null,
+    toastMessage: "Split save stopped, so your traced outline is saved on THIS DEVICE. Load it and try again when the save issue is fixed."
+  });
+}
 /* Saves every pending section as its OWN new roof on buildingId, in one
    Firestore write (mirrors rmAddRoofAndSave()'s shape for each roof, but
    batched -- one saveBuildingRoofs() call for all of them rather than N
@@ -5699,7 +5706,10 @@ async function rmSaveSplitSectionsToBuilding(buildingId){
     var splitBaseMapRoof = null;
     if (rmSyntheticOrthoSaveRequiresFrame()){
       splitBaseMapRoof = { id: genId("roof") };
-      if (!await rmEnsureSyntheticOrthoFrameForSave(buildingId, splitBaseMapRoof, false)) return false;
+      if (!await rmEnsureSyntheticOrthoFrameForSave(buildingId, splitBaseMapRoof, false)){
+        rmFailSafeSaveSplitOutline("split-synthetic-ortho-refused");
+        return false;
+      }
     }
     var renamed = [];
     var created = sections.map(function(sec){
@@ -5806,7 +5816,10 @@ async function rmSaveSplitSectionsToExistingRoof(buildingId, roofId){
     if (origIdx === -1) throw new Error("couldn't find the original roof");
     var origRoof = roofs[origIdx];
     var baseOutline = rmState.outline || {};
-    if (!await rmEnsureSyntheticOrthoFrameForSave(buildingId, origRoof, true)) return false;
+    if (!await rmEnsureSyntheticOrthoFrameForSave(buildingId, origRoof, true)){
+      rmFailSafeSaveSplitOutline("split-synthetic-ortho-refused");
+      return false;
+    }
 
     /* Section 0 -- update the EXISTING roof in place: new outline entry
        appended (never overwrites/removes the old one -- append-only, same
@@ -5897,7 +5910,9 @@ async function rmSaveSplitSectionsToExistingRoof(buildingId, roofId){
     rmRenderRoofSwitcher(buildingId, roofs, roofId);
     rmRenderExportRoofSelect(buildingId, roofs, roofId);
     await rmDrawReferenceRoofs(buildingId, bld, roofId);
-  }catch(e){ toast("Couldn't save the split sections: " + e.message); }
+  }catch(e){
+    rmFailSafeSaveSplitOutline("split", e);
+  }
 }
 
 function rmConfirmSiteBoundarySave(){
