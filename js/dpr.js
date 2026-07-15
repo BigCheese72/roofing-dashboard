@@ -73,15 +73,94 @@ var DPR_CREATE_ROLES = ["admin", "service_manager", "superintendent", "ops_manag
    TODO(Mark's roster): add foreman names, e.g. ["Jose Garcia", "Mark Ruiz", ...]. */
 var DPR_FOREMEN = [];
 function dprPopulateForemen(){
-  var dl = document.getElementById("dl-dprForeman");
-  if (!dl) return;
   var names = DPR_FOREMEN.slice();
-  /* Merge in previously-typed foremen (roster first, then anything else the
-     crew has entered on this device), de-duped. */
   try{
     (getFieldHistory("dprForeman") || []).forEach(function(v){ if (names.indexOf(v) === -1) names.push(v); });
   }catch(e){}
-  dl.innerHTML = names.map(function(v){ return "<option value='" + esc(v) + "'>"; }).join("");
+  dprSetDatalist("dl-dprForeman", names);
+}
+/* Fills a <datalist> with de-duped, non-empty option values (case-insensitive
+   de-dupe, order preserved so the most relevant source can go first). */
+function dprSetDatalist(id, values){
+  var dl = document.getElementById(id);
+  if (!dl) return;
+  var seen = {}, opts = [];
+  (values || []).forEach(function(v){
+    v = (v == null ? "" : String(v)).trim();
+    if (!v) return;
+    var k = v.toLowerCase();
+    if (seen[k]) return;
+    seen[k] = 1;
+    opts.push("<option value='" + esc(v) + "'>");
+  });
+  dl.innerHTML = opts.join("");
+}
+
+/* ================= autofill from real data =================
+   The device-history datalists (dl-jobName etc.) only hold what was typed on
+   THIS device, so on a fresh phone the DPR fields had nothing to pick from.
+   This populates the DPR's own datalists from actual records — existing
+   buildings (job names / customers / addresses) and prior DPRs (foremen, crew,
+   job numbers) — so the foreman can choose from real jobs and names. Job No.
+   also auto-fills from the picked building's parent job (see dprAutofillJobNo).
+   NOTE: Foundation (ERP) job data is a separate, still-pending integration — see
+   dpr-feature-phases memory; this covers everything already in the app. */
+var dprDataListsLoaded = false;
+async function dprPopulateDataLists(force){
+  dprPopulateForemen(); /* immediate/offline: roster + device history */
+  if ((dprDataListsLoaded && !force) || !fdb) return;
+  try{
+    if (!dprBldCache){
+      var bs = await fdb.collection("buildings").orderBy("updatedAt", "desc").limit(300).get();
+      dprBldCache = [];
+      bs.forEach(function(d){ var b = Object.assign({ id: d.id }, d.data()); if (!b.archived) dprBldCache.push(b); });
+    }
+    var names = [], custs = [], locs = [];
+    dprBldCache.forEach(function(b){
+      if (b.name) names.push(b.name);
+      if (b.customerName) custs.push(b.customerName);
+      if (b.location) locs.push(b.location);
+    });
+    var foremen = DPR_FOREMEN.slice(), crew = [], jobNos = [];
+    try{
+      var ds = await fdb.collection("daily_progress_reports").orderBy("date", "desc").limit(200).get();
+      ds.forEach(function(d){
+        var r = d.data();
+        if (r.foreman) foremen.push(r.foreman);
+        (r.crew || []).forEach(function(c){ if (c && c.name) crew.push(c.name); });
+        if (r.jobNo) jobNos.push(r.jobNo);
+      });
+    }catch(e){}
+    dprSetDatalist("dl-dprJobName", names.concat(getFieldHistory("jobName")));
+    dprSetDatalist("dl-dprBillTo", custs.concat(getFieldHistory("billTo")));
+    dprSetDatalist("dl-dprLocation", locs.concat(getFieldHistory("location")));
+    dprSetDatalist("dl-dprForeman", foremen.concat(getFieldHistory("dprForeman")));
+    dprSetDatalist("dl-dprCrew", crew.concat(getFieldHistory("technician")));
+    dprSetDatalist("dl-dprJobNo", jobNos);
+    dprDataListsLoaded = true;
+  }catch(e){ /* best-effort — the fields still work as free text */ }
+}
+/* Auto-fill Job No. from the picked building's parent job (reuses the same
+   building-history resolver the Change Order autofill uses), and offer that
+   building's job numbers in the dl-dprJobNo picker. Never stomps a number the
+   foreman typed. */
+var dprJobNoAutoVal = "";
+async function dprAutofillJobNo(buildingId){
+  if (!fdb || !buildingId) return;
+  var cur = (val("dpr-jobNo") || "").trim();
+  if (cur && cur !== dprJobNoAutoVal) return; /* their value wins */
+  try{
+    var events = await loadBuildingHistoryEvents(buildingId, 50);
+    var nums = (events || []).map(function(e){ return e && e.workOrderNo; }).filter(Boolean);
+    if (nums.length) dprSetDatalist("dl-dprJobNo", nums);
+    if (typeof parentJobNoFromHistoryEvents !== "function") return;
+    var base = parentJobNoFromHistoryEvents(events);
+    if (!base) return;
+    var now = (val("dpr-jobNo") || "").trim();
+    if (now && now !== dprJobNoAutoVal) return; /* re-check after await */
+    setVal("dpr-jobNo", base);
+    dprJobNoAutoVal = base;
+  }catch(e){ /* non-fatal */ }
 }
 
 function dprCanView(){
@@ -117,7 +196,7 @@ function dprOnShow(){
   if (!dprCanView()){ return; }
   /* Default the date to today for a fresh report; never stomp an in-progress one. */
   if (!dprState.id && !val("dpr-date")) setVal("dpr-date", dprTodayStr());
-  dprPopulateForemen();
+  dprPopulateDataLists();
   dprEnsureListeners();
   dprRenderCrew();
   dprRenderPhotos();
@@ -213,6 +292,7 @@ function dprPickBuilding(buildingId){
   dprState.buildingId = buildingId;
   dprState.roofs = getBuildingRoofs(b);
   dprRenderRoofPicker();
+  dprAutofillJobNo(buildingId);
   dprScheduleSameDayLoad();
   toast("Loaded “" + b.name + "” — review the fields, then fill in today's progress");
 }
@@ -275,10 +355,12 @@ async function dprLoadForBuildingDate(){
       }
       toast("Opened today's existing report for this job — add your crew's progress and save");
     } else {
-      /* No report yet for this day — fresh, keyed but unsaved. */
+      /* No report yet for this day — fresh, keyed but unsaved. Default the
+         Job No. from the building's parent job (foreman can still override). */
       dprState.id = null;
       dprState.continuedExisting = false;
       if (notice) notice.style.display = "none";
+      dprAutofillJobNo(buildingId);
     }
   }catch(e){ if (notice) notice.style.display = "none"; }
 }
@@ -304,7 +386,7 @@ function dprRenderCrew(){
   host.innerHTML = dprCrew.map(function(c, i){
     return '<div class="btnrow" style="margin:0 0 6px;gap:6px">' +
       '<input type="text" placeholder="Crew member name" data-dprcrew="' + i + '" value="' + esc(c.name) + '" ' +
-        'list="dl-technician" style="flex:1;min-width:140px">' +
+        'list="dl-dprCrew" style="flex:1;min-width:140px">' +
       '<button class="btn danger" onclick="dprRemoveCrewRow(' + i + ')">✕</button>' +
       '</div>';
   }).join("");
@@ -455,6 +537,7 @@ function dprFill(o){
   setVal("dpr-billTo", o.billTo || "");
   setVal("dpr-location", o.location || "");
   setVal("dpr-jobNo", o.jobNo || "");
+  dprJobNoAutoVal = String(o.jobNo || "");
   setVal("dpr-roofSystem", o.roofSystem || "");
   setVal("dpr-date", o.date || dprTodayStr());
   setVal("dpr-headcount", o.headcount || "");
@@ -562,6 +645,16 @@ async function dprCloudSave(o){
     });
     await Promise.all(deletions);
   }catch(e){ /* non-fatal */ }
+  /* Persist the job's location so EVERY later map open (next report, progress
+     map) zooms straight here — the durable fix for "the second report didn't
+     zoom." A traced section's centroid is an on-the-roof coordinate; cache it
+     to the building the same way Buildings Near Me caches a geocode. */
+  try{
+    var centroid = dprSectionCentroid(o.section);
+    if (centroid && o.buildingId && typeof bnmCacheGeocode === "function"){
+      bnmCacheGeocode(o.buildingId, centroid);
+    }
+  }catch(e){ /* best-effort */ }
 }
 
 /* ================= new / reset ================= */
@@ -571,6 +664,7 @@ function dprNewReport(){
   dprCrew = [];
   dprPhotos = [];
   dprHeadcountAutoVal = "";
+  dprJobNoAutoVal = "";
   ["dpr-foreman", "dpr-jobName", "dpr-billTo", "dpr-location", "dpr-jobNo", "dpr-headcount", "dpr-hours", "dpr-squares", "dpr-summary", "dpr-bld-search"].forEach(function(id){ setVal(id, ""); });
   setVal("dpr-roofSystem", "");
   setVal("dpr-date", dprTodayStr());
@@ -760,6 +854,11 @@ async function dprOpenSectionTrace(){
     }
     ctx.map.on("click", function(e){ dprSectionAddPoint(e.latlng); });
     dprSectionRenderPreview();
+    /* If we seeded an existing section, frame it (so an edit opens ON the
+       section, not wherever the base map happened to center). */
+    if (dprTrace.points.length >= 2){
+      try{ ctx.map.fitBounds(L.latLngBounds(dprTrace.points).pad(0.4)); }catch(e){}
+    }
     setTimeout(function(){ try{ ctx.map.invalidateSize(); }catch(e){} }, 60);
   }catch(e){
     hint.textContent = "Couldn't load the map: " + e.message;
@@ -817,6 +916,10 @@ async function dprResolveJobCenter(roof){
     var g = dprPhotos[i] && dprPhotos[i].gps;
     if (g && typeof g.lat === "number" && typeof g.lng === "number") return { lat: g.lat, lng: g.lng, zoom: 20 };
   }
+  /* 1a) A section already traced on THIS report — the foreman just marked
+     exactly where the work is, so re-opening the trace should land there. */
+  var scNow = dprSectionCentroid(dprState.section);
+  if (scNow) return { lat: scNow.lat, lng: scNow.lng, zoom: 20 };
   /* 1b) An outline already traced on this roof (fast, no fetch). */
   var rc = dprRoofExistingCenter(roof);
   if (rc) return { lat: rc.lat, lng: rc.lng, zoom: 20 };
@@ -831,19 +934,48 @@ async function dprResolveJobCenter(roof){
           var c = bnmCachedCoord(b);
           if (c) return { lat: c.lat, lng: c.lng, zoom: 20 };
         }
-        /* 3) Geocode the address on file, then cache it back for next time. */
-        var addr = b.location || val("dpr-location") || b.name || val("dpr-jobName");
-        var geo = await geocodeAddress(addr);
-        if (geo){ try{ if (typeof bnmCacheGeocode === "function") bnmCacheGeocode(buildingId, geo); }catch(e){} return { lat: geo.lat, lng: geo.lng, zoom: 20 }; }
       }
     }catch(e){}
+    /* 2b) A section traced on a PRIOR day's report for this same job — this is
+       the fix for "the second report didn't zoom": even with no RoofMapper
+       outline and no geocode cache, yesterday's traced section pins the job. */
+    try{
+      var pq = await fdb.collection("daily_progress_reports").where("buildingId", "==", buildingId).get();
+      var best = null;
+      pq.forEach(function(d){
+        var r = d.data();
+        var pc = dprSectionCentroid(r && r.section);
+        if (pc && (!best || (r.updatedAt || 0) > best.updatedAt)) best = { lat: pc.lat, lng: pc.lng, updatedAt: r.updatedAt || 0 };
+      });
+      if (best) return { lat: best.lat, lng: best.lng, zoom: 20 };
+    }catch(e){}
+    /* 3) Geocode the address on file, then cache it back for next time. */
+    try{
+      var geo = await geocodeAddress(val("dpr-location") || val("dpr-jobName"));
+      if (geo){ try{ if (typeof bnmCacheGeocode === "function") bnmCacheGeocode(buildingId, geo); }catch(e){} return { lat: geo.lat, lng: geo.lng, zoom: 20 }; }
+    }catch(e){}
+  } else {
+    /* 3b) No building yet — geocode whatever address the form has. */
+    try{
+      var geo2 = await geocodeAddress(val("dpr-location") || val("dpr-jobName"));
+      if (geo2) return { lat: geo2.lat, lng: geo2.lng, zoom: 20 };
+    }catch(e){}
   }
-  /* 3b) No building doc yet — geocode whatever address the form has. */
-  try{
-    var geo2 = await geocodeAddress(val("dpr-location") || val("dpr-jobName"));
-    if (geo2) return { lat: geo2.lat, lng: geo2.lng, zoom: 20 };
-  }catch(e){}
   return null;
+}
+/* Geo-mode section centroid (null for image-mode / missing) — used both to
+   center the map on an already-traced area and to cache a job's location. */
+function dprSectionCentroid(section){
+  if (!section || section.mode !== "geo" || !section.ring || section.ring.length < 3) return null;
+  var pts = section.ring.slice();
+  if (pts.length > 1){
+    var a = pts[0], z = pts[pts.length - 1];
+    if (a.lat === z.lat && a.lng === z.lng) pts = pts.slice(0, -1);
+  }
+  if (!pts.length) return null;
+  var sLat = 0, sLng = 0;
+  pts.forEach(function(p){ sLat += p.lat; sLng += p.lng; });
+  return { lat: sLat / pts.length, lng: sLng / pts.length };
 }
 function dprLoadImageDims(url){
   return new Promise(function(resolve, reject){

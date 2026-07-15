@@ -210,6 +210,25 @@ test("dprResolveJobCenter prefers a photo's on-site GPS", async () => {
   assert.deepStrictEqual([c.lat, c.lng], [41.23, -81.55]);
 });
 
+test("dprSectionCentroid averages a geo ring; null for image/degenerate", () => {
+  const s = makeSandbox();
+  const c = s.dprSectionCentroid({ mode: "geo", ring: [
+    { lat: 40, lng: -80 }, { lat: 42, lng: -80 }, { lat: 42, lng: -78 }, { lat: 40, lng: -78 }, { lat: 40, lng: -80 }
+  ] });
+  assert.deepStrictEqual([c.lat, c.lng], [41, -79]); // closing dup dropped, averaged
+  assert.strictEqual(s.dprSectionCentroid({ mode: "image", imageRing: [{ x: 0, y: 0 }] }), null);
+  assert.strictEqual(s.dprSectionCentroid(null), null);
+});
+
+test("dprResolveJobCenter falls back to the current report's traced section", async () => {
+  const s = makeSandbox();
+  s.dprState.section = { mode: "geo", ring: [
+    { lat: 40, lng: -80 }, { lat: 40.3, lng: -80 }, { lat: 40.3, lng: -79.7 }, { lat: 40, lng: -80 }
+  ] };
+  const c = await s.dprResolveJobCenter(null);
+  assert.ok(Math.abs(c.lat - 40.2) < 0.001 && Math.abs(c.lng + 79.9) < 0.001, JSON.stringify(c));
+});
+
 test("dprResolveJobCenter falls back to an existing roof outline centroid", async () => {
   const s = makeSandbox();
   const roof = { id: "roof_default", roof_outlines: [{ center: { lat: 40.5, lng: -80.2 } }] };

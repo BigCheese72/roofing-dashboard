@@ -795,10 +795,10 @@
             onblur="rememberFieldValue('dprForeman', this.value)">
         </div>
         <div class="grid">
-          <div class="fld"><label>Job Name</label><input type="text" id="dpr-jobName" list="dl-jobName" onblur="rememberFieldValue('jobName', this.value)"></div>
-          <div class="fld"><label>Customer (Bill To)</label><input type="text" id="dpr-billTo" list="dl-billTo" onblur="rememberFieldValue('billTo', this.value)"></div>
-          <div class="fld"><label>Location</label><input type="text" id="dpr-location" list="dl-location" onblur="rememberFieldValue('location', this.value)"></div>
-          <div class="fld"><label>Job No.</label><input type="text" id="dpr-jobNo" placeholder="Manual for now"></div>
+          <div class="fld"><label>Job Name</label><input type="text" id="dpr-jobName" list="dl-dprJobName" onblur="rememberFieldValue('jobName', this.value)"></div>
+          <div class="fld"><label>Customer (Bill To)</label><input type="text" id="dpr-billTo" list="dl-dprBillTo" onblur="rememberFieldValue('billTo', this.value)"></div>
+          <div class="fld"><label>Location</label><input type="text" id="dpr-location" list="dl-dprLocation" onblur="rememberFieldValue('location', this.value)"></div>
+          <div class="fld"><label>Job No.</label><input type="text" id="dpr-jobNo" list="dl-dprJobNo" placeholder="Auto-fills from the job"></div>
           <div class="fld"><label>Date</label><input type="date" id="dpr-date"></div>
           <div class="fld"><label>Roof System</label><input type="text" id="dpr-roofSystem" list="dl-roofSystem"></div>
         </div>
@@ -1306,6 +1306,15 @@
      Mark provides the roster — the field works as free text meanwhile, and
      also remembers typed values via field-history autocomplete. -->
 <datalist id="dl-dprForeman"></datalist>
+<!-- DPR field pick-lists, populated from real records (existing buildings +
+     prior daily reports) by dprPopulateDataLists() in js/dpr.js — distinct
+     from the work-order form's device-history datalists so the two don't
+     clobber each other. -->
+<datalist id="dl-dprJobName"></datalist>
+<datalist id="dl-dprBillTo"></datalist>
+<datalist id="dl-dprLocation"></datalist>
+<datalist id="dl-dprJobNo"></datalist>
+<datalist id="dl-dprCrew"></datalist>
 
 <!-- Modularized (see DEV_NOTES.md) -- index.html is now just markup + these
      script tags in order. Plain globals, not ES modules: this app's
