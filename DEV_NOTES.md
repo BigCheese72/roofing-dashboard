@@ -203,6 +203,23 @@ document can be downloaded/viewed from" — confirmed against their API docs) st
    new pin-source logic was needed for this case. Getting the bounds is the hard part —
    see `tools/geotiff_to_webmap.py` below.
 
+**base-map anchor (base maps follow the job site, not the billTo+jobName key).**
+A base map lives per-roof under a building doc keyed `bld_ + slug(billTo + "_" + jobName)`.
+That fragments a physical site: open a form for the same place under a different customer
+or a differently-typed job name and it resolves to a *different* building doc, so the base
+map made earlier "isn't there." Mark's requirement: once a base map is made it stays with
+the site and shows in **any** form opened for it. Step 1 (`lookupProspectiveBuildingBaseMap`
+/ `photosRoofsForCompanyCamProject` in js/photos.js) anchors resolution on the **linked
+CompanyCam project** — the durable per-site identity: try the primary building's own roofs
+first, and if it has no base map, borrow one from any building sharing this
+`companyCamProjectId` (a single-field equality query, automatic Firestore index — no
+composite to deploy). Read-only across buildings — nothing is re-keyed or moved. A borrowed
+map is labeled honestly (`viaCompanyCam` → "from this site's linked CompanyCam project").
+Later steps: a Foundation-job anchor (needs `foundationJobNo` first persisted onto the
+building via a Foundation-job→WO link — not yet wired), and optional building-identity
+consolidation (workorders.js `buildingIdFor`, Codex lane). Issue #39 (resolve building-wide
+across roofs) already shipped separately.
+
 A building shows **one map** overall — either the satellite/drone_ortho lat/lng view,
 or a roof_plan/sketch x/y view, never both, since x/y and lat/lng can't merge onto one
 Leaflet CRS without the manual anchoring the spec explicitly excludes from this phase.

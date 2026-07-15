@@ -175,9 +175,18 @@ async function lookupProspectiveBuildingRoofInfo(){
   if (!bldName) return null;
   var custId = custName ? ("cust_" + slugify(custName)) : null;
   var bldId = "bld_" + slugify((custId || "nocust") + "_" + bldName);
+  /* The linked CompanyCam project is the durable, site-level anchor (it maps
+     1:1 to a physical job site/address) — carried alongside the roofs so the
+     base-map resolver can follow a site across forms whose customer/job-name
+     resolve to a different building doc. Prefer the building's own saved link,
+     then the current work order's, then the in-memory linked project. */
+  var woCcId = (o.companyCamProjectId || (typeof ccLinkedProjectId !== "undefined" ? ccLinkedProjectId : null)) || null;
   try{
     var snap = await fdb.collection("buildings").doc(bldId).get();
-    var result = !snap.exists ? { buildingId: bldId, roofs: [] } : { buildingId: bldId, roofs: getBuildingRoofs(snap.data()) };
+    var result = !snap.exists
+      ? { buildingId: bldId, roofs: [], companyCamProjectId: woCcId }
+      : { buildingId: bldId, roofs: getBuildingRoofs(snap.data()),
+          companyCamProjectId: (snap.data().companyCamProjectId || woCcId) };
     lastLookupRoofInfo = result; /* see the var's own comment -- collect() denormalizes roof LABELS from this */
     return result;
   }catch(e){ return null; }
@@ -224,9 +233,50 @@ function photosResolveBuildingBaseMap(roofs, selectedRoofId){
 async function lookupProspectiveBuildingBaseMap(){
   try{
     var info = await lookupProspectiveBuildingRoofInfo();
-    if (!info || !info.roofs.length) return null;
-    return photosResolveBuildingBaseMap(info.roofs, currentRoofId);
+    /* 1) The billTo+jobName building's own roofs -- if it already has a base
+       map, that's the one, exactly as before. */
+    if (info && info.roofs.length){
+      var primary = photosResolveBuildingBaseMap(info.roofs, currentRoofId);
+      if (primary) return primary;
+    }
+    /* 2) CompanyCam-project anchor (Mark: once a base map is made it follows
+       the job SITE, into any form opened for it -- not just forms that happen
+       to share the billTo+jobName key). The same physical site can resolve to a
+       different building doc when the customer or job name is entered
+       differently; the durable link tying them together is the CompanyCam
+       project. When the primary building has no base map of its own, borrow one
+       from any building sharing this CompanyCam project. Non-destructive: it
+       only READS across buildings, nothing is re-keyed or moved. See "base-map
+       anchor" in DEV_NOTES.md. */
+    var ccId = info && info.companyCamProjectId;
+    if (ccId){
+      var ccRoofs = await photosRoofsForCompanyCamProject(ccId, info && info.buildingId);
+      if (ccRoofs.length){
+        var viaCc = photosResolveBuildingBaseMap(ccRoofs, currentRoofId);
+        if (viaCc){
+          viaCc.fromSelectedRoof = false; // it's from another building entirely
+          viaCc.viaCompanyCam = true;     // so the honesty label says whose it is
+          return viaCc;
+        }
+      }
+    }
+    return null;
   }catch(e){ return null; }
+}
+/* All roofs across every building linked to this CompanyCam project, minus the
+   one we've already checked. A single-field equality query, so Firestore's
+   automatic index covers it -- no composite index to deploy. */
+async function photosRoofsForCompanyCamProject(companyCamProjectId, excludeBuildingId){
+  if (!fdb || !companyCamProjectId) return [];
+  try{
+    var qs = await fdb.collection("buildings").where("companyCamProjectId", "==", companyCamProjectId).get();
+    var roofs = [];
+    qs.forEach(function(d){
+      if (excludeBuildingId && d.id === excludeBuildingId) return;
+      getBuildingRoofs(d.data()).forEach(function(r){ roofs.push(r); });
+    });
+    return roofs;
+  }catch(e){ return []; }
 }
 function boundsToLatLngBounds(b){
   return [[b.south, b.west], [b.north, b.east]];
@@ -351,7 +401,9 @@ async function openPinModal(findingId){
          selected roof's own -- never present another roof's image as this
          roof's without saying so (issue #39). */
       var whose = customBaseMap.fromSelectedRoof ? "" :
-        " (from " + customBaseMap.sourceRoofLabel + " — building-wide)";
+        (customBaseMap.viaCompanyCam
+          ? " (from this site's linked CompanyCam project)"
+          : " (from " + customBaseMap.sourceRoofLabel + " — building-wide)");
       document.getElementById("pin-hint").textContent = (f.pin ?
         "Existing pin on the " + customBaseMap.type.replace("_"," ") + " — drag to move." :
         "Tap the " + customBaseMap.type.replace("_"," ") + " to place the pin.") + whose;
@@ -476,7 +528,8 @@ async function openPinModalSatellite(f, findingId, orthoOverlay, opts){
   if (opts.gpsPinKeptOffBaseMap){
     var skipped = opts.gpsPinKeptOffBaseMap;
     hint += " Showing satellite: this finding's pin is a GPS location, which can't be plotted on " +
-      (skipped.fromSelectedRoof ? "this roof's" : (skipped.sourceRoofLabel + "'s")) + " " +
+      (skipped.fromSelectedRoof ? "this roof's" :
+        (skipped.viaCompanyCam ? "the linked CompanyCam project's" : (skipped.sourceRoofLabel + "'s"))) + " " +
       String(skipped.type || "drawing").replace("_", " ") + ". Clear the pin to place it on the drawing instead.";
   }
   document.getElementById("pin-hint").textContent = hint;
