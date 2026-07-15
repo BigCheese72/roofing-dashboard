@@ -125,6 +125,16 @@
       <p class="hint" style="margin:4px 0 0">One-time cleanup — moves already-saved photos out of Firestore
         into Firebase Storage. Non-destructive: nothing is deleted, safe to run more than once.</p>
     </div>
+    <!-- Manual Foundation job sync (netlify/functions/foundation-sync.js). Forces
+         the same read-only pull the scheduled hourly Action does, so an admin can
+         refresh the job picker on demand instead of waiting. Server-gated on the
+         foundation.read permission; a non-permitted caller just gets a 403 toast. -->
+    <div class="fld" style="max-width:400px;margin:10px 0 0">
+      <label style="font-size:12px">Admin: Sync Foundation Jobs</label>
+      <button class="btn" onclick="runFoundationSync(this)">🔄 Sync Foundation Jobs Now</button>
+      <p class="hint" style="margin:4px 0 0">Pulls the latest active jobs from Foundation into the job picker now,
+        instead of waiting for the scheduled hourly sync. Read-only pull; safe to run anytime.</p>
+    </div>
     <!-- Thumbnail backfill (see "captions but no photos" in DEV_NOTES.md) --
          every already-migrated photo falls back to its full-size backup
          today (js/core.js's imgFallback), this just makes the gallery

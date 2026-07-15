@@ -1237,6 +1237,34 @@ async function fetchFoundationJobs(search){
     return (out && Array.isArray(out.jobs)) ? out.jobs : [];
   }catch(e){ return []; }
 }
+/* Admin-triggered Foundation job sync -- forces the same read-only pull the
+   scheduled hourly Action runs (netlify/functions/foundation-sync.js), so an
+   admin can refresh the job picker on demand. The function is server-gated:
+   the caller must hold foundation.read (or be the scheduled secret), so a
+   non-permitted user just gets a clear 403 toast. Wired to the admin-only
+   "Sync Foundation Jobs Now" button; disables the button while in flight. */
+async function runFoundationSync(btn){
+  if (btn) btn.disabled = true;
+  toast("Syncing Foundation jobs…");
+  try{
+    var r = await fetch("/.netlify/functions/foundation-sync", {
+      method: "POST", headers: await authHeaders(),
+      body: JSON.stringify({ action: "sync" })
+    });
+    var out = null; try{ out = await r.json(); }catch(e){}
+    if (!r.ok || !out || out.ok === false){
+      toast("Foundation sync failed: " + ((out && out.error) || ("server error " + r.status)));
+    } else {
+      var n = (out.active_jobs != null) ? out.active_jobs : "?";
+      toast("Foundation jobs synced ✓ — " + n + " active job" + (out.active_jobs === 1 ? "" : "s") +
+        (out.written != null ? " (" + out.written + " updated)" : "") + ".");
+    }
+  }catch(e){
+    toast("Foundation sync failed: " + (e && e.message ? e.message : "network error"));
+  }finally{
+    if (btn) btn.disabled = false;
+  }
+}
 async function callAdminApi(body){
   var r = await fetch("/.netlify/functions/admin", {
     method: "POST",
