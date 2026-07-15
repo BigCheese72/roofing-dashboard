@@ -8193,3 +8193,34 @@ Fix: optimistic concurrency on `savedAt`.
 Last-writer-wins by `savedAt`; cross-device clock skew is a known minor risk
 (a server timestamp would be more robust — later). Does NOT merge concurrent
 edits: the newer cloud wins and the older copy is surfaced, not silently lost.
+
+## Photo bytes in IndexedDB (Phase 1)
+
+localStorage's ~5 MB ceiling was the origin of the whole storage saga: full
+base64 photo bytes were cached there (in each order's `photos[].img`), so a
+batch of photos on one order overflowed it. Bytes now live in **IndexedDB**
+(local, tens of MB+) and Firebase **Storage** (cloud); localStorage keeps only
+metadata + thumb + `storageRef` + `localId`.
+
+- **1a — `resolvePhotoImg` IDB fallback.** It now tries the IDB backup by
+  `localId` (freshest local copy, no network) before Storage — the single
+  chokepoint export / lightbox / cloud re-home all use, so every read path can
+  rehydrate a photo whose bytes were dropped from localStorage.
+- **1b — strip on write + offload.** `leanDbReplacer` (a `JSON.stringify`
+  replacer in `saveDb`) OMITS a photo's `img` from the localStorage string once
+  its bytes are safely elsewhere — confirmed in IDB (`_idbBacked`) or in Storage
+  (`storageRef`). A replacer only shapes the output string, so the in-memory
+  `photos[]` the gallery is showing is never mutated. Un-backed photos keep
+  their `img` (the only copy). The condition is only ever true for photo objects
+  (only they carry `_idbBacked`/`storageRef`), so a Change Order signature's
+  `img` is untouched. `_idbBacked` is set at capture time
+  (`addPhotosFromFiles`/`Camera`, after the `idbPutPhoto` write is CONFIRMED —
+  never before) and `offloadPhotoBytesToIdb()` (run after `saveOrder`'s local
+  save) sweeps up bytes cached before this session. Deliberately does NOT set
+  `photosStripped` (that flag forces a cloud refetch on load); an offloaded
+  order keeps its thumbs, loads locally, and rehydrates from IDB on demand.
+  IDB-unavailable → no-op, falls back to the old keep-in-localStorage + quota
+  evict behavior.
+
+Still open: **Phase 2** upload-on-add (get bytes to Storage as you shoot, so
+they're cloud-durable, not just IDB-durable) and **Phase 3** proactive eviction.

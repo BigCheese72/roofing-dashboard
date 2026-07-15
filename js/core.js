@@ -2278,9 +2278,24 @@ function loadDb(){
   }catch(e){}
   return { orders:{}, index:[] };
 }
+/* Serialization replacer that keeps the localStorage cache lean (Phase 1): a
+   photo's full base64 img is OMITTED from what's written to localStorage once
+   its bytes are safely elsewhere -- confirmed in IndexedDB (_idbBacked) or in
+   Storage (storageRef). Un-backed photos keep their img (the only copy). A
+   replacer only shapes the OUTPUT string; the in-memory photo objects are never
+   mutated, so the open gallery still has its bytes. The condition is only ever
+   true for photo objects (only they carry _idbBacked/storageRef), so unrelated
+   img fields -- e.g. a Change Order signature's -- are untouched. localStorage's
+   ~5MB ceiling is what started the storage saga; IndexedDB holds the bytes and
+   resolvePhotoImg() rehydrates on demand. See "Photo bytes in IndexedDB" in
+   DEV_NOTES.md. */
+function leanDbReplacer(key, value){
+  if (key === "img" && this && (this._idbBacked === true || this.storageRef)) return undefined;
+  return value;
+}
 function saveDb(db){
   try{
-    localStorage.setItem(STORE_KEY, JSON.stringify(db));
+    localStorage.setItem(STORE_KEY, JSON.stringify(db, leanDbReplacer));
     return true;
   }catch(e){
     var isQuota = e && (e.name === "QuotaExceededError" || String(e.message).toLowerCase().indexOf("quota") > -1);
@@ -2288,7 +2303,7 @@ function saveDb(db){
        save is never permanently blocked while there's evictable data. Only the
        current order and still-unsynced photos keep their bytes. */
     if (isQuota && evictCloudBackedPhotoBytes(db)){
-      try{ localStorage.setItem(STORE_KEY, JSON.stringify(db)); return true; }
+      try{ localStorage.setItem(STORE_KEY, JSON.stringify(db, leanDbReplacer)); return true; }
       catch(e2){ e = e2; }
     }
     if (isQuota){
@@ -2400,6 +2415,33 @@ async function idbRecoverPhotoBytes(o){
     }
   }
   return o;
+}
+/* Offload already-cached photo bytes into IndexedDB so the next saveDb (via
+   leanDbReplacer) can drop them from localStorage -- clears bloat from photos
+   cached before this session / before they were flagged. For each order photo
+   that still carries img + localId but isn't marked _idbBacked, confirm the
+   bytes are in IDB, THEN flag it (never flag before the write is confirmed, so
+   a photo whose IDB write fails keeps its localStorage copy). Best-effort and
+   idempotent; a no-op when IndexedDB isn't usable (bytes just stay as before).
+   Newly-added photos are flagged at capture time (addPhotosFromFiles); this
+   handles the rest. */
+async function offloadPhotoBytesToIdb(){
+  if (typeof window === "undefined" || !window.indexedDB) return false;
+  var db = loadDb();
+  var orders = db.orders || {};
+  var changed = false;
+  for (var id in orders){
+    var o = orders[id];
+    var ph = o && o.photos;
+    if (!ph || !ph.length) continue;
+    for (var i = 0; i < ph.length; i++){
+      var p = ph[i];
+      if (!p || !p.img || p._idbBacked || !p.localId) continue;
+      try{ await idbPutPhoto(p.localId, p.img); p._idbBacked = true; changed = true; }catch(e){}
+    }
+  }
+  if (changed) saveDb(db); // leanDbReplacer now drops the freshly-flagged bytes
+  return changed;
 }
 
 /* ================= offline-first: sync queue =================
@@ -2663,6 +2705,10 @@ function saveOrder(opts){
   pruneCachedPhotoDrafts(db);
   var localOk = saveDb(db);
   if (localOk) drawSaved();
+  /* Offload any not-yet-flagged cached bytes into IndexedDB so localStorage
+     stays lean (Phase 1). Fire-and-forget: never delays the save, and it
+     re-persists a leaner db itself only if it moved anything. */
+  if (localOk) offloadPhotoBytesToIdb();
   /* localOnly (see debouncedLocalAutosave() below) is the "persist
      continuously, not just on submit" half of offline-first -- pure local
      safety net, deliberately never touches the network or the sync queue
