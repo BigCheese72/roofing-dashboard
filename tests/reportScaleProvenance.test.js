@@ -172,6 +172,34 @@ test("(b) #29 repro -- re-tape same edge + Record only: NO fabricated edit claim
     "REQUIRED 20: the same record's status must not be printed twice in one method line");
 });
 
+test("#28 rmBuildScaleSource: record-only remeasure does not make the applied scale stale", () => {
+  const now = Date.now();
+  const outline = {
+    id: "case-b-scale-source", ring: RING, source: "geotiff_trace",
+    edgeMeasurements: [
+      {
+        id: "mOld", edgeIndex: 0, measuredFt: 42.5, rescaleApplied: true, decision: "use", source: "measured",
+        measuredAt: now - 86400000, invalidatedAt: now, invalidatedReason: "superseded_by_remeasure"
+      },
+      {
+        id: "mNew", edgeIndex: 0, measuredFt: 40, rescaleApplied: false, decision: "record_only",
+        source: "measured", measuredAt: now
+      }
+    ]
+  };
+
+  const scaleSource = sb.rmBuildScaleSource(outline, sb.rmBuildCaptureSource(outline));
+
+  assert.strictEqual(scaleSource.kind, "measured");
+  assert.strictEqual(scaleSource.measurementStale, false,
+    "#28: a newer record-only reading must not mean the applied edge moved");
+  assert.strictEqual(scaleSource.edgeIndex, 0);
+  assert.strictEqual(scaleSource.measuredFt, 42.5);
+  assert.strictEqual(scaleSource.measurementId, "mOld");
+  assert.strictEqual(scaleSource.measurementInvalidatedReason, null);
+  assert.doesNotMatch(scaleSource.label, /edited|stale/i);
+});
+
 // =====================================================================
 // (c) A clean, never-stale tape -- the ordinary case, must stay exactly
 //     as simple as it always was.
