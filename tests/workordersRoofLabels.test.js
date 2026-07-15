@@ -25,10 +25,15 @@ function makeSandbox(fields){
     repairItems: [],
     inspectionChecklist: [],
     photos: [],
+    bpCache: [],
     ccLinkedProjectId: null,
     ccLinkedProjectName: "",
     changeOrderSignature: null,
+    __refreshes: [],
     __fields: Object.assign({}, fields),
+    document: { getElementById(){ return null; } },
+    setTimeout(){ return 0; },
+    clearTimeout(){},
     slugify(s){
       return String(s || "").toLowerCase().trim()
         .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "unknown";
@@ -45,10 +50,24 @@ function makeSandbox(fields){
     renderChangeOrderSignature(){},
     ensureInspectionChecklist(){},
     renderInspectionChecklist(){},
-    scheduleInlineBuildingHistoryRefresh(){}
+    scheduleInlineBuildingHistoryRefresh(){},
+    scheduleChangeOrderAutofill(){},
+    closeBuildingPicker(){},
+    toast(){},
+    refreshInspectionRoofPickerIfNeeded(){
+      sandbox.__refreshes.push({
+        jobName: sandbox.__fields.jobName || "",
+        billTo: sandbox.__fields.billTo || "",
+        location: sandbox.__fields.location || "",
+        roofSystem: sandbox.__fields.roofSystem || "",
+        currentRoofId: sandbox.currentRoofId,
+        currentRoofIds: sandbox.currentRoofIds
+      });
+    }
   };
   vm.createContext(sandbox);
   vm.runInContext(
+    between("function bpSelectBuilding", "/* ---- Move/reassign") +
     between("var lastLookupRoofInfo = null;", "/* ================= dynamic rows ================= */") +
     between("function rmRoofLabelFromCache", "function renderFindings") +
     between("var FIELD_IDS =", "function todayStr"),
@@ -98,4 +117,57 @@ test("fill clears lookup roof info when loading a different building", () => {
   });
 
   assert.strictEqual(sandbox.lastLookupRoofInfo, null);
+});
+
+test("bpSelectBuilding clears stale roof selection before refreshing Inspection picker", () => {
+  const sandbox = makeSandbox({ billTo: "Alpha Customer", jobName: "North Warehouse" });
+  sandbox.currentRoofId = "roof-old";
+  sandbox.currentRoofIds = ["roof-old", "roof-other"];
+  sandbox.bpCache = [{
+    id: "bld_beta",
+    name: "South Shop",
+    customerName: "Beta Customer",
+    location: "200 South St",
+    roofSystem: "TPO"
+  }];
+
+  sandbox.bpSelectBuilding("bld_beta");
+
+  assert.strictEqual(sandbox.currentRoofId, null);
+  assert.strictEqual(sandbox.currentRoofIds, null);
+  assert.deepStrictEqual(sandbox.__refreshes, [{
+    jobName: "South Shop",
+    billTo: "Beta Customer",
+    location: "200 South St",
+    roofSystem: "TPO",
+    currentRoofId: null,
+    currentRoofIds: null
+  }]);
+});
+
+test("fill refreshes Inspection roof picker with loaded fields and roof selection", () => {
+  const sandbox = makeSandbox({ billTo: "Alpha Customer", jobName: "North Warehouse" });
+
+  sandbox.fill({
+    id: "wo_inspection",
+    billTo: "Beta Customer",
+    jobName: "South Shop",
+    location: "200 South St",
+    roofSystem: "TPO",
+    woType: "Inspection",
+    roofId: "roof-main",
+    roofIds: ["roof-main", "roof-west"],
+    inspectionChecklist: [],
+    findings: [{ id: "f2", condition: "", location: "", warranty: "Warrantable", pin: null }],
+    photos: []
+  });
+
+  assert.deepStrictEqual(sandbox.__refreshes, [{
+    jobName: "South Shop",
+    billTo: "Beta Customer",
+    location: "200 South St",
+    roofSystem: "TPO",
+    currentRoofId: "roof-main",
+    currentRoofIds: ["roof-main", "roof-west"]
+  }]);
 });

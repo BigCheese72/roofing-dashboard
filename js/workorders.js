@@ -176,6 +176,9 @@ function bpSelectBuilding(buildingId){
     ccLinkedProjectName = b.companyCamProjectName || "";
     renderCCLinkInfo();
   }
+  currentRoofId = null;
+  currentRoofIds = null;
+  if (typeof refreshInspectionRoofPickerIfNeeded === "function") refreshInspectionRoofPickerIfNeeded();
   closeBuildingPicker();
   toast("Loaded “" + b.name + "” — review the fields below before saving");
   scheduleInlineBuildingHistoryRefresh();
@@ -923,6 +926,7 @@ function fill(o){
      PREVIOUSLY open order instead of this one. Cheap, harmless if run
      twice. */
   if (val("woType") === "Inspection"){ ensureInspectionChecklist(); renderInspectionChecklist(); }
+  if (typeof refreshInspectionRoofPickerIfNeeded === "function") refreshInspectionRoofPickerIfNeeded();
   scheduleInlineBuildingHistoryRefresh();
 }
 /* ================= Change Order autofill =================
