@@ -404,3 +404,31 @@ test("dual-coordinate pins on another roof disclose the roof mismatch first", ()
   assert.doesNotMatch(coverage.disclosure, /GPS-placed/);
   assert.match(coverage.disclosure, /1 finding pinned to other roofs is not shown here/);
 });
+
+test("location-less pins and assets are disclosed instead of dropped from coverage", () => {
+  const sandbox = makeSandbox();
+  const events = [{ pins: [
+    { id: "selected-gps", roofId: "roof1", lat: 40, lng: -90 },
+    { id: "missing-location", roofId: "roof1" }
+  ] }];
+  const roofs = [{
+    id: "roof1",
+    label: "Roof 1",
+    roof_assets: [
+      { id: "asset-gps", lat: 40, lng: -90 },
+      { id: "asset-missing-location" }
+    ]
+  }];
+
+  const pinCoverage = sandbox.inlineHistoryPinCoverage(events, "roof1", false);
+  const assetCoverage = sandbox.inlineHistoryAssetCoverage(roofs, roofs[0], false);
+
+  assertCoverage(pinCoverage, "location-less pins");
+  assertCoverage(assetCoverage, "location-less assets");
+  assert.deepStrictEqual(Array.from(pinCoverage.rendered, (p) => p.id), ["selected-gps"]);
+  assert.deepStrictEqual(Array.from(pinCoverage.disclosed, (p) => p.id), ["missing-location"]);
+  assert.deepStrictEqual(Array.from(assetCoverage.rendered, (a) => a.id), ["asset-gps"]);
+  assert.deepStrictEqual(Array.from(assetCoverage.disclosed, (a) => a.id), ["asset-missing-location"]);
+  assert.match(pinCoverage.disclosure, /1 finding has no saved location/);
+  assert.match(assetCoverage.disclosure, /1 feature has no saved location/);
+});

@@ -1213,8 +1213,6 @@ function inlineAllHistoryPins(events){
   var allPins = [];
   (events || []).forEach(function(e, eventIndex){ (e.pins || []).forEach(function(p, pinIndex){
     p = p || {};
-    if (!(typeof p.lat === "number" && typeof p.lng === "number") &&
-        !(typeof p.x === "number" && typeof p.y === "number")) return;
     allPins.push(Object.assign({}, p, {
       eventDate: e.date,
       _inlineKey: eventIndex + ":" + pinIndex
@@ -1249,14 +1247,15 @@ function inlineHistoryPinsForMap(events, roofId, hasCustomBaseMap){
   return inlineHistoryPinCoverage(events, roofId, hasCustomBaseMap).rendered;
 }
 function inlineHiddenPinDisclosure(disclosedPins, roofId, hasCustomBaseMap){
-  var hiddenGps = 0, hiddenOtherRoof = 0, hiddenUnassigned = 0, hiddenXY = 0;
+  var hiddenGps = 0, hiddenOtherRoof = 0, hiddenUnassigned = 0, hiddenXY = 0, hiddenNoLocation = 0;
   /* Pins are written in either x/y image space or lat/lng GPS space. These
      checks keep the disclosure tied to the stored coordinate frame. */
   (disclosedPins || []).forEach(function(p){
     var pinRoofId = p.roofId || "roof_default";
     var hasXY = typeof p.x === "number" && typeof p.y === "number";
     var hasGps = typeof p.lat === "number" && typeof p.lng === "number";
-    if (!hasCustomBaseMap && hasXY) hiddenXY++;
+    if (!hasXY && !hasGps) hiddenNoLocation++;
+    else if (!hasCustomBaseMap && hasXY) hiddenXY++;
     else if (pinRoofId === "roof_default" && roofId !== "roof_default") hiddenUnassigned++;
     else if (pinRoofId !== roofId) hiddenOtherRoof++;
     else if (hasCustomBaseMap && hasGps) hiddenGps++;
@@ -1271,6 +1270,8 @@ function inlineHiddenPinDisclosure(disclosedPins, roofId, hasCustomBaseMap){
     " can't be shown on a non-georeferenced drawing");
   if (hiddenXY) notes.push(hiddenXY + " image-placed finding" + (hiddenXY === 1 ? "" : "s") +
     " can't be shown on the satellite map");
+  if (hiddenNoLocation) notes.push(hiddenNoLocation + " finding" + (hiddenNoLocation === 1 ? "" : "s") +
+    " " + (hiddenNoLocation === 1 ? "has" : "have") + " no saved location");
   return notes.length ? notes.join(". ") + "." : "";
 }
 function inlineAllRoofAssets(roofs){
@@ -1278,8 +1279,6 @@ function inlineAllRoofAssets(roofs){
   (roofs || []).forEach(function(r, roofIndex){
     (r.roof_assets || []).forEach(function(a, assetIndex){
       a = a || {};
-      if (!(typeof a.lat === "number" && typeof a.lng === "number") &&
-          !(typeof a.x === "number" && typeof a.y === "number")) return;
       allAssets.push(Object.assign({}, a, {
         _roofId: r.id || "roof_default",
         _roofLabel: r.label || "Roof",
@@ -1305,11 +1304,12 @@ function inlineHistoryAssetCoverage(roofs, roof, hasCustomBaseMap){
   });
 }
 function inlineHiddenAssetDisclosure(disclosedAssets, roofId, hasCustomBaseMap){
-  var hiddenGps = 0, hiddenOtherRoof = 0, hiddenXY = 0;
+  var hiddenGps = 0, hiddenOtherRoof = 0, hiddenXY = 0, hiddenNoLocation = 0;
   (disclosedAssets || []).forEach(function(a){
     var hasXY = typeof a.x === "number" && typeof a.y === "number";
     var hasGps = typeof a.lat === "number" && typeof a.lng === "number";
-    if (!hasCustomBaseMap && hasXY) hiddenXY++;
+    if (!hasXY && !hasGps) hiddenNoLocation++;
+    else if (!hasCustomBaseMap && hasXY) hiddenXY++;
     /* Other-roof disclosure applies only to selected-roof image maps. Satellite
        mode renders GPS assets building-wide, so remaining satellite misses are
        x/y-only image features caught above. */
@@ -1323,6 +1323,8 @@ function inlineHiddenAssetDisclosure(disclosedAssets, roofId, hasCustomBaseMap){
     " can't be shown on a non-georeferenced drawing");
   if (hiddenXY) notes.push(hiddenXY + " image-placed feature" + (hiddenXY === 1 ? "" : "s") +
     " can't be shown on the satellite map");
+  if (hiddenNoLocation) notes.push(hiddenNoLocation + " feature" + (hiddenNoLocation === 1 ? "" : "s") +
+    " " + (hiddenNoLocation === 1 ? "has" : "have") + " no saved location");
   return notes.length ? notes.join(". ") + "." : "";
 }
 function inlineHistoryAssetsForMap(roofs, roof, hasCustomBaseMap){
