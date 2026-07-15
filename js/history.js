@@ -1107,14 +1107,56 @@ async function renderReportsList(){
    generated files other than its Documents endpoint (base64, ~30MB limit,
    see netlify/functions/companycam.js). If that ever changes shape, this
    is the only place that needs updating. */
+/* Content fingerprint of the PDF bytes (FNV-1a 32-bit + length). Not crypto --
+   just "did this PDF change since we last pushed it?" A base64 diff of any size
+   changes the hash; length is appended as cheap extra collision insurance. */
+function pdfContentHash(str){
+  str = String(str || "");
+  var h = 0x811c9dc5;
+  for (var i = 0; i < str.length; i++){
+    h ^= str.charCodeAt(i);
+    h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
+  }
+  return ("0000000" + h.toString(16)).slice(-8) + ":" + str.length;
+}
+/* A re-push is redundant only if the SAME content is already on CompanyCam AND
+   we hold that document's id (so we know it really landed). */
+function ccDocumentPushIsRedundant(o, hash){
+  return !!(o && o.ccDocumentId && o.ccDocumentHash && o.ccDocumentHash === hash);
+}
+/* Persist the pushed doc id + content hash on the work-order record so the NEXT
+   send can tell an unchanged re-send from a changed one. Merge-only; also mirrors
+   into the in-memory o so a save that follows carries it (cloudSaveOrder writes
+   every top-level o field; cloudFetchOrder hydrates them back). */
+async function ccPersistDocumentInfo(workOrderId, ccDocumentId, ccDocumentHash){
+  if (typeof fdb === "undefined" || !fdb || !workOrderId) return;
+  try{
+    await fdb.collection("workorders").doc(workOrderId)
+      .set({ ccDocumentId: ccDocumentId || null, ccDocumentHash: ccDocumentHash || null }, { merge: true });
+  }catch(e){ /* the in-memory o.ccDocument* still guards this session; next save persists it */ }
+}
 async function uploadPdfToCompanyCam(doc, o){
   if (!o.companyCamProjectId) return { skipped: true };
   try{
     var base64 = doc.output("datauristring").split("base64,")[1] || "";
     if (!base64) throw new Error("couldn't encode PDF");
-    await ccApiPost({ action: "upload_document", project_id: o.companyCamProjectId,
+    /* Idempotent push (#54). CompanyCam's Documents API is CREATE-ONLY -- no
+       delete, no update (verified against their live API) -- so re-sending an
+       UNCHANGED work order would pile a duplicate PDF into the project. If the
+       exact same PDF is already on CompanyCam (same content hash AND we hold its
+       document id), skip the upload instead of creating a copy. A genuinely
+       CHANGED report still uploads a new version; old versions can't be removed
+       via their API, so the deterministic {type}_{jobNo} name keeps them grouped. */
+    var hash = pdfContentHash(base64);
+    if (ccDocumentPushIsRedundant(o, hash)) return { ok: true, skipped: true, unchanged: true, documentId: o.ccDocumentId };
+    var out = await ccApiPost({ action: "upload_document", project_id: o.companyCamProjectId,
       name: (typeof ccDocumentName === "function" ? ccDocumentName(o) : pdfFileName()), attachment: base64 });
-    return { ok: true };
+    var documentId = (out && out.document && out.document.id) ? String(out.document.id) :
+      (out && out.documentId ? String(out.documentId) : null);
+    o.ccDocumentId = documentId;
+    o.ccDocumentHash = hash;
+    if (o.id) await ccPersistDocumentInfo(o.id, documentId, hash);
+    return { ok: true, documentId: documentId };
   }catch(e){
     return { ok: false, error: e.message };
   }
@@ -1337,7 +1379,8 @@ async function uploadLinkedPdfToCompanyCam(doc, o, doneLabel){
   if (!o.companyCamProjectId) return { skipped: true };
   toast(doneLabel + ". Saving PDF to CompanyCam\u2026");
   var ccUp = await uploadPdfToCompanyCam(doc, o);
-  if (ccUp.ok) toast(doneLabel + " \u2014 PDF saved to CompanyCam project \u2713");
+  if (ccUp.ok && ccUp.unchanged) toast(doneLabel + " \u2014 PDF already current on CompanyCam \u2713");
+  else if (ccUp.ok) toast(doneLabel + " \u2014 PDF saved to CompanyCam project \u2713");
   else if (!ccUp.skipped) toast(doneLabel + " \u2014 CompanyCam PDF upload failed: " + ccUp.error);
 
   /* The photo-feed push rides the SAME linked-project path as the PDF, so every
