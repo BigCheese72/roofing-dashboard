@@ -19,7 +19,7 @@ assert.notEqual(start, -1, "ccValidLatLng not found");
 assert.notEqual(end, -1, "end marker not found");
 const ctx = {};
 vm.runInNewContext(src.slice(start, end), ctx);
-const { ccLatLngFromImageFramePin, ccPinForFinding, ccBestPhotoCoordinate } = ctx;
+const { ccLatLngFromImageFramePin, ccPinForFinding, ccBestPhotoCoordinate, ccBestPhotoCoordinateWithSource } = ctx;
 
 // Georeferenced drone-ortho roof. Forward projection (js/roofmapper.js):
 //   x = (lng - west)/(east - west) ,  y = (north - lat)/(north - south)
@@ -82,4 +82,43 @@ test("ccBestPhotoCoordinate: with no resolvable pin, still falls back to site (u
   const photo = { finding_id: "f1", gps: null };
   const out = ccBestPhotoCoordinate(photo, o, { lat: 39.1, lng: -84.5 }, [sketchRoof]);
   assert.ok(out && out.lat === 39.1 && out.lng === -84.5, "synthetic pin unresolved -> job-site floor still applies");
+});
+
+/* ---- #51 pins still missing: building-location FLOOR + source labels (fix) ---- */
+
+const JOB = { lat: 39.1031, lng: -84.5120 };  // building geoCache / geocoded job location
+
+test("FLOOR: a photo with no pin and no GPS falls back to the building/job location", () => {
+  const o = { findings: [{ id: "f1", pin: null }], inspectionChecklist: [] };
+  const photo = { finding_id: "f1", gps: null };
+  const r = ccBestPhotoCoordinateWithSource(photo, o, JOB, []);
+  assert.ok(r.coord, "must resolve a coordinate so the photo is mappable in CompanyCam");
+  assert.equal(r.coord.lat, 39.1031);
+  assert.equal(r.coord.lng, -84.5120);
+  assert.equal(r.source, "building_location");
+});
+
+test("FLOOR: a synthetic base-map x/y pin (no georef) still lands at the job location, not unpinned", () => {
+  const o = { findings: [{ id: "f1", pin: { x: 0.3, y: 0.4, lat: null, lng: null, imageFrameUrl: "sketch.jpg" } }], inspectionChecklist: [] };
+  const photo = { finding_id: "f1", gps: null };
+  const r = ccBestPhotoCoordinateWithSource(photo, o, JOB, [sketchRoof]);
+  assert.equal(r.source, "building_location", "synthetic x/y can't georeference -> floor applies");
+  assert.deepEqual([r.coord.lat, r.coord.lng], [JOB.lat, JOB.lng]);
+});
+
+test("source labels: finding pin, photo GPS, and none are reported correctly", () => {
+  const oPinned = { findings: [{ id: "f1", pin: { lat: 35.5, lng: -80.5 } }], inspectionChecklist: [] };
+  assert.equal(ccBestPhotoCoordinateWithSource({ finding_id: "f1" }, oPinned, JOB, []).source, "finding_pin");
+  assert.equal(ccBestPhotoCoordinateWithSource({ finding_id: "none", gps: { lat: 36, lng: -81 } }, { findings: [], inspectionChecklist: [] }, JOB, []).source, "photo_gps");
+  // no pin, no gps, and NO job location -> genuinely unpinned (source "none")
+  const r = ccBestPhotoCoordinateWithSource({ finding_id: "none", gps: null }, { findings: [], inspectionChecklist: [] }, null, []);
+  assert.equal(r.coord, null);
+  assert.equal(r.source, "none");
+});
+
+test("a georeferenced base-map pin still beats the building floor (precision preserved)", () => {
+  const o = { findings: [{ id: "f1", pin: xyFor(41.505, -81.605) }], inspectionChecklist: [] };
+  const r = ccBestPhotoCoordinateWithSource({ finding_id: "f1" }, o, JOB, [orthoRoof]);
+  assert.equal(r.source, "finding_pin");
+  assert.ok(Math.abs(r.coord.lat - 41.505) < 1e-9, "the exact roof pin wins over the coarse job floor");
 });

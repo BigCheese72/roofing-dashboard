@@ -1249,14 +1249,24 @@ function ccPinForFinding(o, findingId, roofs){
    at all. A finding pin is the tech's confirmed answer; the GPS is the question.
    If raw GPS should win instead, swap the two lines below -- it's a one-line
    change, and the test that asserts this order will fail loudly and say so. */
-function ccBestPhotoCoordinate(p, o, siteLatLng, roofs){
-  if (!p) return null;
-  return ccValidLatLng(p.pin) ||
-    ccLatLngFromImageFramePin(p.pin, roofs) ||
-    ccPinForFinding(o, p.finding_id, roofs) ||
-    ccValidLatLng(p.gps) ||
-    ccValidLatLng(siteLatLng) ||
-    null;
+/* Resolves a photo's coordinate AND reports which branch produced it, so the push
+   can LOG exactly what it sent per photo (Mark: "we need to see the exact
+   coordinates object sent per photo"). Priority: a pin on the photo -> the
+   finding's pin (real lat/lng, or a georeferenced base-map x/y) -> the photo's own
+   device GPS -> the JOB/BUILDING location floor (so an unpinned photo still lands
+   at the job, not nowhere) -> none. */
+function ccBestPhotoCoordinateWithSource(p, o, jobLoc, roofs){
+  if (!p) return { coord: null, source: "none" };
+  var c;
+  if ((c = ccValidLatLng(p.pin))) return { coord: c, source: "photo_pin" };
+  if ((c = ccLatLngFromImageFramePin(p.pin, roofs))) return { coord: c, source: "photo_pin_georef" };
+  if ((c = ccPinForFinding(o, p.finding_id, roofs))) return { coord: c, source: "finding_pin" };
+  if ((c = ccValidLatLng(p.gps))) return { coord: c, source: "photo_gps" };
+  if ((c = ccValidLatLng(jobLoc))) return { coord: c, source: "building_location" };
+  return { coord: null, source: "none" };
+}
+function ccBestPhotoCoordinate(p, o, jobLoc, roofs){
+  return ccBestPhotoCoordinateWithSource(p, o, jobLoc, roofs).coord;
 }
 /* The job's location, for photos that carry no coordinate of their own.
    Resolved at most ONCE per push run (geocoding is a network call), and only if
@@ -1278,17 +1288,34 @@ async function ccSiteLatLng(o){
    writes. Non-fatal: any miss (no building, no fdb, a throw) returns [] and photos
    fall back to their own GPS / the job site, exactly as before. Resolved at most
    once per push. */
-async function ccResolveBuildingRoofs(o){
+async function ccResolveBuildingContext(o){
+  var ctx = { roofs: [], geo: null, bldId: null };
   try{
-    if (!fdb || typeof slugify !== "function" || typeof getBuildingRoofs !== "function") return [];
+    if (!fdb || typeof slugify !== "function" || typeof getBuildingRoofs !== "function") return ctx;
     var bldName = (o.jobName || "").trim();
-    if (!bldName) return [];
+    if (!bldName) return ctx;
     var custId = (o.billTo || "").trim() ? ("cust_" + slugify(o.billTo)) : null;
-    var bldId = "bld_" + slugify((custId || "nocust") + "_" + bldName);
-    var snap = await fdb.collection("buildings").doc(bldId).get();
-    if (!snap || !snap.exists) return [];
-    return getBuildingRoofs(snap.data()) || [];
-  }catch(e){ return []; }
+    ctx.bldId = "bld_" + slugify((custId || "nocust") + "_" + bldName);
+    var snap = await fdb.collection("buildings").doc(ctx.bldId).get();
+    if (!snap || !snap.exists) return ctx;
+    var bld = snap.data() || {};
+    ctx.roofs = getBuildingRoofs(bld) || [];
+    /* geoCache = the building's SAVED geocode of its address (DATA_MODEL.md;
+       written by Buildings-Near-Me). This is the reliable job-location floor --
+       preferred over a live geocode, which is rate-limited and fails silently. */
+    ctx.geo = ccValidLatLng(bld.geoCache);
+    return ctx;
+  }catch(e){ return ctx; }
+}
+/* Cache a freshly-geocoded job coordinate onto the building's geoCache so the NEXT
+   push (and Buildings-Near-Me) reads it instead of re-geocoding. Merge-only,
+   non-fatal, same shape Buildings-Near-Me writes. */
+async function ccCacheBuildingGeo(bldId, coord){
+  if (!fdb || !bldId || !coord) return;
+  try{
+    await fdb.collection("buildings").doc(bldId)
+      .set({ geoCache: { lat: coord.lat, lng: coord.lng, source: "geocoded", updatedAt: Date.now() } }, { merge: true });
+  }catch(e){ /* non-fatal: the coordinate is still used for THIS push */ }
 }
 /* Photos carry no capture timestamp of their own, and captured_at is REQUIRED by
    CompanyCam -- the service date is the honest answer (it's the day the photo
@@ -1334,33 +1361,50 @@ async function ccPersistFeedPhotoId(workOrderId, photoIndex, ccFeedPhotoId){
 async function pushPhotosToCompanyCamFeed(o){
   if (!o.companyCamProjectId) return { skipped: true };
   var photos = o.photos || [];
-  var r = { ok: true, pushed: 0, alreadyPushed: 0, imported: 0, notStored: 0, failed: 0, error: "" };
+  var r = { ok: true, pushed: 0, alreadyPushed: 0, imported: 0, notStored: 0, failed: 0, pinned: 0, unpinned: 0, jobLoc: null, error: "" };
   if (!photos.length) return r;
 
-  var site = null, siteResolved = false;
-  /* Loaded once per push so georeferenced base-map x/y finding pins can resolve
-     to lat/lng (see ccLatLngFromImageFramePin). Non-fatal: [] on any miss. */
-  var roofs = await ccResolveBuildingRoofs(o);
+  /* ONE read: the building's roofs (to georeference base-map x/y pins) AND its
+     stored geo-anchor (the reliable JOB-LOCATION FLOOR -- so a photo with no pin
+     and no device GPS still lands at the job, instead of unpinned). */
+  var ctx = await ccResolveBuildingContext(o);
+  var roofs = ctx.roofs;
+  var jobLoc = null, jobResolved = false;
   for (var i = 0; i < photos.length; i++){
     var p = photos[i];
     if (!p) continue;
     if (p.ccPhotoId){ r.imported++; continue; }
     if (p.ccFeedPhotoId){ r.alreadyPushed++; continue; }
-    if (!siteResolved){ site = await ccSiteLatLng(o); siteResolved = true; }
-    var coord = ccBestPhotoCoordinate(p, o, site, roofs);
+    if (!jobResolved){
+      jobResolved = true;
+      jobLoc = ctx.geo || await ccSiteLatLng(o); /* saved geoCache first; live geocode only if none */
+      if (jobLoc && !ctx.geo && ctx.bldId) ccCacheBuildingGeo(ctx.bldId, jobLoc); /* cache a fresh geocode for next time */
+      r.jobLoc = jobLoc;
+    }
+    var res = ccBestPhotoCoordinateWithSource(p, o, jobLoc, roofs);
+    var coord = res.coord;
+    var payloadCoord = coord ? { lat: coord.lat, lon: coord.lng } : null;
+    /* EVIDENCE (Mark's ask): the EXACT coordinates object sent per photo + why. */
+    if (typeof console !== "undefined" && console.log){
+      console.log("[CompanyCam push] photo " + i + ": coordinates=" +
+        (payloadCoord ? JSON.stringify(payloadCoord) : "null") + " source=" + res.source, {
+          finding_id: p.finding_id || null, photoGps: p.gps || null, jobLoc: jobLoc || null
+        });
+    }
     try{
       var out = await ccApiPost({
         action: "upload_photo",
         project_id: o.companyCamProjectId,
         workOrderId: o.id,
         photoIndex: i,
-        coordinates: coord ? { lat: coord.lat, lon: coord.lng } : null,
+        coordinates: payloadCoord,
         captured_at: ccPhotoCapturedAt(o),
         description: ccPhotoDescription(p, o)
       });
       if (out && out.ok && out.photoId){
         p.ccFeedPhotoId = String(out.photoId);
         r.pushed++;
+        if (payloadCoord) r.pinned++; else r.unpinned++;
         await ccPersistFeedPhotoId(o.id, i, p.ccFeedPhotoId);
       } else if (out && out.skipped){
         r.notStored++;
@@ -1397,7 +1441,14 @@ async function uploadLinkedPdfToCompanyCam(doc, o, doneLabel){
      still describes the PDF and only the PDF. */
   try{
     var feed = await pushPhotosToCompanyCamFeed(o);
-    if (feed && feed.pushed) toast(feed.pushed + " photo" + (feed.pushed === 1 ? "" : "s") + " added to the CompanyCam feed \u2713");
+    if (feed && feed.pushed){
+      /* Phone-visible evidence: how many landed map-pinned, and (when none of
+         them did) that the job has no location to pin to. */
+      var feedMsg = feed.pushed + " photo" + (feed.pushed === 1 ? "" : "s") + " added to CompanyCam \u2713 \u2014 " +
+        feed.pinned + " map-pinned";
+      if (feed.unpinned) feedMsg += ", " + feed.unpinned + " with NO location (no pin/GPS and the job has no mappable address)";
+      toast(feedMsg);
+    }
     if (feed && feed.failed) toast(feed.failed + " photo" + (feed.failed === 1 ? "" : "s") + " couldn\u2019t be added to CompanyCam \u2014 they retry on the next send.");
     ccUp.photoFeed = feed;
   }catch(e){
