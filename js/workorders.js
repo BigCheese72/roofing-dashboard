@@ -176,6 +176,9 @@ function bpSelectBuilding(buildingId){
     ccLinkedProjectName = b.companyCamProjectName || "";
     renderCCLinkInfo();
   }
+  currentRoofId = null;
+  currentRoofIds = null;
+  if (typeof refreshInspectionRoofPickerIfNeeded === "function") refreshInspectionRoofPickerIfNeeded();
   closeBuildingPicker();
   toast("Loaded “" + b.name + "” — review the fields below before saving");
   scheduleInlineBuildingHistoryRefresh();
