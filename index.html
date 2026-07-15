@@ -185,9 +185,8 @@
         <select id="woType" onchange="onWoTypeChange()"></select>
       </div>
       <div class="btnrow" style="margin:0 0 12px">
-        <button class="btn" onclick="openBuildingPicker()">🔍 Select Existing Building</button>
-        <button class="btn" onclick="openFoundationPicker()">🏗️ Foundation Job</button>
-        <span class="hint" style="margin:0">Pick an existing building, or a Foundation job to auto-fill customer / PM / address — or just type a new one in directly.</span>
+        <button class="btn" onclick="openBuildingPicker()">🔍 Select Job</button>
+        <span class="hint" style="margin:0">Search jobs by # or name to auto-fill customer / PM / address — or just type a new one in directly.</span>
       </div>
       <div id="fdn-link-info" class="hint" style="margin:0 0 10px;display:none"></div>
       <div class="grid">
@@ -228,7 +227,7 @@
          server (foundation.read) — see js/foundation.js fdnRefreshLaborCard().
          Hours are fetched live from the Foundation connector, never cached. -->
     <div class="card" id="wo-foundation-labor-card" style="display:none">
-      <h2 class="cond">🏗️ Foundation Labor Hours</h2>
+      <h2 class="cond">🕒 Labor Hours</h2>
       <div id="wo-foundation-labor-body" class="hint">Loading…</div>
     </div>
 
@@ -979,33 +978,18 @@
 <div id="bp-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)closeBuildingPicker()">
   <div style="background:#fff;max-width:640px;margin:4vh auto;border-radius:8px;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;width:94%">
     <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
-      <b class="cond" style="font-size:17px">Select Existing Building</b>
+      <b class="cond" style="font-size:17px">Select Job</b>
       <span style="flex:1"></span>
       <button class="btn" onclick="closeBuildingPicker()">Close</button>
     </div>
     <div style="padding:14px 16px;overflow:auto">
-      <input type="text" id="bp-search" placeholder="Search by building, customer, or address…" style="width:100%;margin-bottom:10px;box-sizing:border-box" oninput="bpFilter(); bpDebouncedCcSearch();">
+      <input type="text" id="bp-search" placeholder="Search by job # or name (customer, address)…" style="width:100%;margin-bottom:10px;box-sizing:border-box" oninput="bpFilter(); bpDebouncedCcSearch(); fdnFilterPicker();">
+      <h2 class="cond" style="font-size:14px;margin:4px 0 8px">Jobs</h2>
+      <div id="bp-job-list" class="hint">Loading…</div>
+      <h2 class="cond" style="font-size:14px;margin:16px 0 8px">Already in this app</h2>
       <div id="bp-list" class="hint">Loading…</div>
       <h2 class="cond" style="font-size:14px;margin:16px 0 8px">☁️ From CompanyCam (not yet a building here)</h2>
       <div id="bp-cc-list" class="hint">Loading…</div>
-    </div>
-  </div>
-</div>
-
-<!-- Foundation job picker (Phase 2). Reads the client-readable foundation_jobs
-     cache (populated by the nightly sync) and, on select, auto-fills the WO's
-     job name / customer / PM / address / job no. Mirrors the Select-Existing-
-     Building picker above -- see js/foundation.js. -->
-<div id="fdn-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)closeFoundationPicker()">
-  <div style="background:#fff;max-width:640px;margin:4vh auto;border-radius:8px;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;width:94%">
-    <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
-      <b class="cond" style="font-size:17px">Select a Foundation Job</b>
-      <span style="flex:1"></span>
-      <button class="btn" onclick="closeFoundationPicker()">Close</button>
-    </div>
-    <div style="padding:14px 16px;overflow:auto">
-      <input type="text" id="fdn-search" placeholder="Search by job name, number, customer, PM, or city…" style="width:100%;margin-bottom:10px;box-sizing:border-box" oninput="fdnFilter()">
-      <div id="fdn-list" class="hint">Loading…</div>
     </div>
   </div>
 </div>

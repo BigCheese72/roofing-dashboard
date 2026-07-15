@@ -42,6 +42,11 @@ async function openBuildingPicker(){
      never holds up the (usually much faster) existing-buildings list. See
      "Change Order building picker" in DEV_NOTES.md. */
   bpSearchCompanyCam("");
+  /* The job list (Foundation-sourced cache) is the primary section of this
+     same picker -- primed independently so it never blocks (or is blocked by)
+     the buildings/CompanyCam loads. Guarded so this file has no hard dependency
+     on js/foundation.js. */
+  if (typeof fdnPrimePicker === "function") fdnPrimePicker();
 }
 function closeBuildingPicker(){
   document.getElementById("bp-modal").style.display = "none";

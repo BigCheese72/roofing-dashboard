@@ -2824,17 +2824,23 @@ every keystroke. Read-only against Foundation; the only writes are to Firestore.
 
 Client half, in **`js/foundation.js`** (loaded after `companycam.js` in index.html):
 
-- **2b — job picker + auto-fill.** A "🏗️ Foundation Job" button beside "Select Existing Building"
-  opens `#fdn-modal`, which reads the client-readable `foundation_jobs` cache directly from
-  Firestore (`fdb.collection("foundation_jobs")`, capped at 5000, cached per session, filtered
-  client-side) — NOT the live connector, so any signed-in user can use it. On select
-  (`fdnSelectJob`), it auto-fills the WO the same way `bpSelectBuilding` does: `jobName` ← name,
-  `location` ← composed address, `jobNo` ← job number, and a **new `projectManager` field** ←
-  `project_manager_no`. `billTo` is filled with Foundation's **customer CODE** (`customer_no`) —
-  the jobs table has no customer display name; a friendly name would need a customers-table join
-  (small follow-up). The Foundation linkage is stored on the WO as `foundationJobNo` /
-  `foundationJobName` (added in `collect()`, restored in `fill()` via `fdnSetLinkedJob`; persisted
-  automatically by `cloudSaveOrder`). `projectManager` was added to `FIELD_IDS` so it round-trips.
+- **2b — job picker + auto-fill (ONE unified "Select Job" picker).** The job list is a section of
+  the SINGLE picker (the existing `#bp-modal`), not a separate modal — "Foundation" appears
+  nowhere in the UI (it's just "jobs" by # / name). The `#bp-modal` now has three sections:
+  **Jobs** (`#bp-job-list`, the `foundation_jobs` cache — the primary list), **Already in this app**
+  (`#bp-list`, existing buildings), and **From CompanyCam** (`#bp-cc-list`). One "🔍 Select Job"
+  button opens it; one search box filters all three (`bpFilter(); bpDebouncedCcSearch();
+  fdnFilterPicker();`); `openBuildingPicker()` primes the jobs section via `fdnPrimePicker()`.
+  Reads the cache directly from Firestore (capped 5000, cached per session, filtered client-side) —
+  NOT the live connector, so any signed-in user can use it. On select (`fdnSelectJob`): auto-fills
+  `jobName` ← name, `location` ← composed address, `jobNo` ← job number, new `projectManager`
+  field ← `project_manager_no`, and `billTo` ← **customer CODE** (`customer_no`; the jobs table has
+  no display name — a customers-table join is a small follow-up). **If the picked job also exists
+  as an app building** (matched by name via `fdnFindMatchingBuilding` against `bpCache`), it carries
+  that building's richer context — `roofSystem` + the CompanyCam link — on top, and such rows show a
+  "✓ in app" tag. The job linkage is stored on the WO as `foundationJobNo`/`foundationJobName`
+  (`collect()`/`fill()` via `fdnSetLinkedJob`; persisted by `cloudSaveOrder`). `projectManager` was
+  added to `FIELD_IDS` so it round-trips.
 - **2c — admin-only labor hours.** A WO linked to a Foundation job shows the
   `#wo-foundation-labor-card`, populated by `fdnRefreshLaborCard()`, which fetches hours LIVE from
   `foundation.js?action=job_hours` (server-gated on `foundation.read`). The card renders **only if
