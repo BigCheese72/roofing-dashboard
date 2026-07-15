@@ -37,6 +37,7 @@ const CODE = [
   RM_LOCAL_KEY_DECL[0],
   between("/* ---- save locally (localStorage fallback", "/* Same triggers the work-order queue already uses"),
   between("function rmSaveLocally(){", "/* Mobile: auto-hide the header on scroll"),
+  between("function rmFailSafeSaveSplitOutline", "function rmConfirmSiteBoundarySave"),
   between("function rmConfirmSiteBoundarySave(){", '/* THE fix for "RoofMapper can')
 ].join("\n");
 
@@ -123,12 +124,22 @@ function makeSandbox(opts){
     rmUpdateExportHint(){},
     rmUpdateControlVisibility(){},
     rmSetDisp(){},
+    async rmEnsureSyntheticOrthoFrameForSave(){ return !sandbox.__refuseSyntheticFrame; },
+    rmSyntheticOrthoSaveRequiresFrame(){ return !!sandbox.__syntheticRequiresFrame; },
+    rmSplitOutlineStorageFields(){ return {}; },
+    rmSyntheticSplitBaseMapFields(){ return {}; },
+    rmCopyOutlineSourceMetadata(){},
+    rmDropSplitMeasurementMetadata(){},
+    rmSuggestUniqueRoofLabel(roofs, label){ return { isDuplicate: false, suggestion: label }; },
+    rmOutlineStorageFields(){ return {}; },
     rmPersistOrthoBaseMap(){},
     rmPersistKmlGroundOverlayBaseMap(){},
     rmCancelTrace(){},
     rmClearLinkedFeatures(){},
     rmDrawEdgeDimensions(){},
     rmRenderOutlineStats(){},
+    async rmDrawReferenceRoofs(){},
+    rmRenameLinkedRoof(){},
     rmOutlineTitle(o){ return o.label || "Outline"; },
     rmGeomRingCentroid(){ return { lat: 0, lng: 0 }; },
     roofLabelMarker(){ return { addTo(){ return {}; } }; },
@@ -141,6 +152,7 @@ function makeSandbox(opts){
     /* --- harness handles --- */
     __failWrite: false,
     __failRead: false,
+    __refuseSyntheticFrame: false,
     __store: store,
     __els: els,
     __toasts: toasts,
@@ -165,6 +177,25 @@ function anOutline(){
     edgeMeasurements: [],
     createdAt: Date.now()
   };
+}
+
+function splitSections(){
+  return [
+    {
+      label: "Roof A",
+      ring: [{ lat: 1, lng: 1 }, { lat: 1, lng: 1.5 }, { lat: 1.5, lng: 1.5 }],
+      center: { lat: 1.2, lng: 1.2 },
+      areaSqFt: 500,
+      perimeterFt: 90
+    },
+    {
+      label: "Roof B",
+      ring: [{ lat: 1.5, lng: 1.5 }, { lat: 2, lng: 2 }, { lat: 1, lng: 2 }],
+      center: { lat: 1.7, lng: 1.8 },
+      areaSqFt: 700,
+      perimeterFt: 110
+    }
+  ];
 }
 
 const LOCAL_KEY = "roofmapper-local-outlines-v1";
@@ -238,6 +269,122 @@ test("fail-safe also catches a failure in the initial building read", async () =
 
   assert.strictEqual(localOutlines(sb).length, 1, "trace still preserved");
   assert.strictEqual(Object.keys(pendingSaves(sb)).length, 1, "still queued for retry");
+});
+
+test("reopened-roof read failure queues under a fail-safe id, not the saved outline id", async () => {
+  const saved = Object.assign(anOutline(), { id: "rmo_saved", areaSqFt: 12450 });
+  const sb = makeSandbox({
+    building: { name: "Clinic", roofs: [{ id: "roof_a", label: "Roof 1", roof_outlines: [saved] }] }
+  });
+  sb.rmState.outline = Object.assign(anOutline(), { id: "rmo_saved", areaSqFt: 48000 });
+  sb.__failRead = true; /* dies before rmSaveOutlineToBuilding can mint the normal fresh id */
+
+  await sb.rmSaveOutlineToBuilding("bld_1", "roof_a");
+
+  const queuedId = Object.keys(pendingSaves(sb))[0];
+  assert.ok(queuedId, "queued for retry");
+  assert.notStrictEqual(queuedId, "rmo_saved", "does not reuse the id already present on the building");
+  assert.strictEqual(localOutlines(sb)[0].id, queuedId, "device copy uses the retry id");
+
+  sb.__failRead = false;
+  const writesBefore = sb.__saved.calls;
+  await sb.rmFlushPendingBuildingSaves();
+
+  const outlines = sb.__building.roofs[0].roof_outlines;
+  assert.strictEqual(sb.__saved.calls, writesBefore + 1, "retry actually wrote the recovered trace");
+  assert.strictEqual(outlines.length, 2, "re-trace lands as a new append-only outline");
+  assert.strictEqual(outlines[1].id, queuedId);
+  assert.strictEqual(outlines[1].areaSqFt, 48000);
+  assert.deepStrictEqual(localOutlines(sb), [], "device copy retired only after the retry writes");
+  assert.deepStrictEqual(pendingSaves(sb), {}, "queue entry retired");
+});
+
+test("synthetic-ortho save refusal preserves the trace on-device without auto-retry", async () => {
+  const saved = Object.assign(anOutline(), { id: "rmo_saved", areaSqFt: 12450 });
+  const sb = makeSandbox({
+    building: { name: "Clinic", roofs: [{ id: "roof_a", label: "Roof 1", roof_outlines: [saved] }] }
+  });
+  sb.rmState.outline = Object.assign(anOutline(), { id: "rmo_saved", areaSqFt: 48000 });
+  sb.__refuseSyntheticFrame = true;
+
+  const result = await sb.rmSaveOutlineToBuilding("bld_1", "roof_a");
+
+  assert.strictEqual(result, false, "save is refused");
+  assert.strictEqual(sb.__saved.calls, 0, "nothing inaccurate was written");
+  assert.strictEqual(sb.__building.roofs[0].roof_outlines.length, 1, "existing building geometry is untouched");
+  assert.strictEqual(sb.__building.roofs[0].roof_outlines[0].areaSqFt, 12450);
+
+  const local = localOutlines(sb);
+  assert.strictEqual(local.length, 1, "trace preserved on this device");
+  assert.notStrictEqual(local[0].id, "rmo_saved", "device copy does not borrow the saved outline id");
+  assert.strictEqual(local[0].areaSqFt, 48000);
+  assert.strictEqual(local[0].failSafeReason, "synthetic-ortho-refused");
+  assert.deepStrictEqual(pendingSaves(sb), {}, "policy refusal is device-only, not auto-retried");
+  assert.ok(sb.__toasts.some(t => /Save refused/i.test(t)), "clear refusal message is shown");
+});
+
+test("new-roof split refusal preserves the source trace device-only", async () => {
+  const sb = makeSandbox();
+  sb.rmState.outline = anOutline();
+  sb.rmSplitState.sections = splitSections();
+  sb.__syntheticRequiresFrame = true;
+  sb.__refuseSyntheticFrame = true;
+
+  const result = await sb.rmSaveSplitSectionsToBuilding("bld_1");
+
+  assert.strictEqual(result, false, "split save is refused");
+  assert.strictEqual(sb.__saved.calls, 0, "no inaccurate split write is attempted");
+  assert.strictEqual(sb.__building.roofs.length, 1, "no new roofs were added");
+
+  const local = localOutlines(sb);
+  assert.strictEqual(local.length, 1, "source trace preserved on this device");
+  assert.strictEqual(local[0].failSafeReason, "split-synthetic-ortho-refused");
+  assert.deepStrictEqual(pendingSaves(sb), {}, "split refusal is device-only, not auto-retried");
+  assert.ok(sb.__toasts.some(t => /Split save stopped/i.test(t)), "clear split refusal message is shown");
+});
+
+test("existing-roof split refusal preserves the source trace device-only", async () => {
+  const saved = Object.assign(anOutline(), { id: "rmo_saved", areaSqFt: 12450 });
+  const sb = makeSandbox({
+    building: { name: "Clinic", roofs: [{ id: "roof_a", label: "Roof 1", roof_outlines: [saved] }] }
+  });
+  sb.rmState.outline = Object.assign(anOutline(), { id: "rmo_saved", areaSqFt: 48000 });
+  sb.rmSplitState.sections = splitSections();
+  sb.__refuseSyntheticFrame = true;
+
+  const result = await sb.rmSaveSplitSectionsToExistingRoof("bld_1", "roof_a");
+
+  assert.strictEqual(result, false, "split save is refused");
+  assert.strictEqual(sb.__saved.calls, 0, "no inaccurate split write is attempted");
+  assert.strictEqual(sb.__building.roofs[0].roof_outlines.length, 1, "existing roof geometry is untouched");
+
+  const local = localOutlines(sb);
+  assert.strictEqual(local.length, 1, "source trace preserved on this device");
+  assert.notStrictEqual(local[0].id, "rmo_saved", "device copy does not borrow the saved outline id");
+  assert.strictEqual(local[0].failSafeReason, "split-synthetic-ortho-refused");
+  assert.deepStrictEqual(pendingSaves(sb), {}, "split refusal is device-only, not auto-retried");
+});
+
+test("existing-roof split catch preserves the source trace device-only", async () => {
+  const saved = Object.assign(anOutline(), { id: "rmo_saved", areaSqFt: 12450 });
+  const sb = makeSandbox({
+    building: { name: "Clinic", roofs: [{ id: "roof_a", label: "Roof 1", roof_outlines: [saved] }] }
+  });
+  sb.rmState.outline = Object.assign(anOutline(), { id: "rmo_saved", areaSqFt: 48000 });
+  sb.rmSplitState.sections = splitSections();
+  sb.__failWrite = true;
+
+  await sb.rmSaveSplitSectionsToExistingRoof("bld_1", "roof_a");
+
+  assert.strictEqual(sb.__saved.calls, 1, "split write was attempted");
+  assert.strictEqual(sb.__building.roofs[0].roof_outlines.length, 1, "failed write did not mutate persisted building data");
+
+  const local = localOutlines(sb);
+  assert.strictEqual(local.length, 1, "source trace preserved on this device");
+  assert.notStrictEqual(local[0].id, "rmo_saved", "device copy does not borrow the saved outline id");
+  assert.strictEqual(local[0].failSafeReason, "split");
+  assert.deepStrictEqual(pendingSaves(sb), {}, "split catch is device-only, not auto-retried");
+  assert.ok(sb.__toasts.some(t => /Split save stopped/i.test(t)), "clear split failure message is shown");
 });
 
 /* ---------------------------------------------------------------- *
