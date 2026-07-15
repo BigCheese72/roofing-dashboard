@@ -926,6 +926,7 @@ function fill(o){
      PREVIOUSLY open order instead of this one. Cheap, harmless if run
      twice. */
   if (val("woType") === "Inspection"){ ensureInspectionChecklist(); renderInspectionChecklist(); }
+  if (typeof refreshInspectionRoofPickerIfNeeded === "function") refreshInspectionRoofPickerIfNeeded();
   scheduleInlineBuildingHistoryRefresh();
 }
 /* ================= Change Order autofill =================

@@ -144,3 +144,30 @@ test("bpSelectBuilding clears stale roof selection before refreshing Inspection 
     currentRoofIds: null
   }]);
 });
+
+test("fill refreshes Inspection roof picker with loaded fields and roof selection", () => {
+  const sandbox = makeSandbox({ billTo: "Alpha Customer", jobName: "North Warehouse" });
+
+  sandbox.fill({
+    id: "wo_inspection",
+    billTo: "Beta Customer",
+    jobName: "South Shop",
+    location: "200 South St",
+    roofSystem: "TPO",
+    woType: "Inspection",
+    roofId: "roof-main",
+    roofIds: ["roof-main", "roof-west"],
+    inspectionChecklist: [],
+    findings: [{ id: "f2", condition: "", location: "", warranty: "Warrantable", pin: null }],
+    photos: []
+  });
+
+  assert.deepStrictEqual(sandbox.__refreshes, [{
+    jobName: "South Shop",
+    billTo: "Beta Customer",
+    location: "200 South St",
+    roofSystem: "TPO",
+    currentRoofId: "roof-main",
+    currentRoofIds: ["roof-main", "roof-west"]
+  }]);
+});
