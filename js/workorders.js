@@ -724,13 +724,34 @@ function useMyLocationForPin(){
     toast("Couldn't get your location: " + (err.message || "permission denied"));
   }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
 }
+function pinImageFrameUrlForFinding(f){
+  if (pinXYSize && (pinXYSize.imageFrameUrl || pinXYSize.frameUrl)){
+    return pinXYSize.imageFrameUrl || pinXYSize.frameUrl;
+  }
+  if (!lookupRoofInfoMatchesBuilding(lastLookupRoofInfo, currentWorkOrderBuildingId())) return null;
+  var roofs = lastLookupRoofInfo.roofs || [];
+  var roofId = (f && f.roofId) || currentRoofId || "roof_default";
+  var roof = roofs.find(function(r){ return r && r.id === roofId; });
+  if (!roof && roofId === "roof_default") roof = roofs[0] || null;
+  if (!roof) return null;
+  return ((roof.roof_base_map_type === "roof_plan" || roof.roof_base_map_type === "sketch") &&
+    roof.roof_base_map_url) ? roof.roof_base_map_url : null;
+}
 function savePinFromModal(){
   if (!pinMarker || !pinModalFindingId) return;
   var f = findingById(pinModalFindingId);
   if (!f) return;
   var ll = pinMarker.getLatLng();
   if (pinMapMode === "xy" && pinXYSize){
-    f.pin = { lat: null, lng: null, x: ll.lng / pinXYSize.w, y: ll.lat / pinXYSize.h, source: "tech_placed" };
+    f.pin = {
+      lat: null,
+      lng: null,
+      x: ll.lng / pinXYSize.w,
+      y: ll.lat / pinXYSize.h,
+      source: "tech_placed",
+      imageFrame: "roof_base_map",
+      imageFrameUrl: pinImageFrameUrlForFinding(f)
+    };
   } else {
     var source = pinDeviceGpsUsed ? "device_gps" :
       (pinInitialSource === "photo_gps" ? (pinInteracted ? "gps_corrected" : "photo_gps") : pinInitialSource);
@@ -1135,16 +1156,35 @@ function inlineHistoryAssetsForMap(roofs, roof, hasCustomBaseMap){
   roof = roof || {};
   if (hasCustomBaseMap) return roof.roof_assets || [];
   return (roofs || []).reduce(function(acc, r){
-    (r.roof_assets || []).forEach(function(a){ acc.push(a); });
+    (r.roof_assets || []).forEach(function(a){
+      acc.push(Object.assign({}, a, {
+        _roofBaseMapSynthetic: !!r.roof_base_map_synthetic,
+        _roofBaseMapType: r.roof_base_map_type || null
+      }));
+    });
     return acc;
   }, []);
 }
-function inlineHistoryOutlines(roofs, hasCustomBaseMap){
-  if (hasCustomBaseMap) return [];
+function inlineHistoryOutlines(roofs, hasCustomBaseMap, selectedRoof){
+  if (hasCustomBaseMap){
+    var selectedOutlines = (selectedRoof && selectedRoof.roof_outlines) || [];
+    var selectedLatest = selectedOutlines[selectedOutlines.length - 1];
+    return selectedLatest ? [Object.assign({}, selectedLatest, {
+      _roofLabel: selectedRoof.label || "Roof",
+      _roofLabelPos: selectedRoof.labelPos || null,
+      _roofBaseMapSynthetic: !!selectedRoof.roof_base_map_synthetic,
+      _roofBaseMapType: selectedRoof.roof_base_map_type || null
+    })] : [];
+  }
   return (roofs || []).reduce(function(acc, r){
     var ol = r.roof_outlines || [];
     var latest = ol[ol.length - 1];
-    if (latest) acc.push(Object.assign({}, latest, { _roofLabel: r.label || "Roof", _roofLabelPos: r.labelPos || null }));
+    if (latest) acc.push(Object.assign({}, latest, {
+      _roofLabel: r.label || "Roof",
+      _roofLabelPos: r.labelPos || null,
+      _roofBaseMapSynthetic: !!r.roof_base_map_synthetic,
+      _roofBaseMapType: r.roof_base_map_type || null
+    }));
     return acc;
   }, []);
 }
@@ -1184,7 +1224,7 @@ async function refreshInlineBuildingHistory(){
     var orthoOverlay = (roof.roof_base_map_type === "drone_ortho" && roof.roof_base_map_url && roof.roof_base_map_bounds) ?
       { url: roof.roof_base_map_url, bounds: roof.roof_base_map_bounds } : null;
     var roofAssets = inlineHistoryAssetsForMap(ctx.roofs, roof, hasCustomBaseMap);
-    var outlines = inlineHistoryOutlines(ctx.roofs, hasCustomBaseMap);
+    var outlines = inlineHistoryOutlines(ctx.roofs, hasCustomBaseMap, roof);
     /* Inline Building History is building-wide: outlines, pins, and the
        timeline all describe the same building-level history. The selected
        roof only chooses a roof-specific base image when one is set. */
@@ -1591,6 +1631,98 @@ function outlinePopupHtml(o, roofLabel){
    thing you can look at, not something that only appears once a pin
    exists. bldAddress centers satellite mode when there's nothing else
    to derive a center from. */
+function buildingMapIsFiniteNumber(value){
+  return typeof value === "number" && Number.isFinite(value);
+}
+function buildingMapIsFiniteLatLng(point){
+  return !!point && buildingMapIsFiniteNumber(point.lat) && buildingMapIsFiniteNumber(point.lng);
+}
+function buildingMapIsNearNullIsland(point){
+  return buildingMapIsFiniteLatLng(point) && Math.abs(point.lat) < 0.05 && Math.abs(point.lng) < 0.05;
+}
+function buildingMapIsSyntheticImageGeometry(item){
+  item = item || {};
+  var capture = item.captureSource || {};
+  var methodCapture = item.measurementMethod && item.measurementMethod.captureSource || {};
+  return !!(item.tracedOnOrtho || item.imageFrame === "roof_base_map" ||
+    item._roofBaseMapSynthetic || capture.mechanism === "ortho_image" ||
+    methodCapture.mechanism === "ortho_image");
+}
+function buildingMapImageFrameMatches(item, frameUrl){
+  if (!item || !item.imageFrameUrl) return true;
+  return !!frameUrl && item.imageFrameUrl === frameUrl;
+}
+function buildingMapHasWrongImageFrame(item, frameUrl){
+  return !!(item && item.imageFrameUrl && !buildingMapImageFrameMatches(item, frameUrl));
+}
+function buildingMapFrameMismatchDisclosure(outlines, assets, pins, frameUrl){
+  var outlineCount = (outlines || []).filter(function(o){
+    return Array.isArray(o.imageRing) && o.imageRing.length >= 3 && buildingMapHasWrongImageFrame(o, frameUrl);
+  }).length;
+  var assetCount = (assets || []).filter(function(a){
+    return buildingMapIsFiniteNumber(a && a.x) && buildingMapIsFiniteNumber(a && a.y) &&
+      buildingMapHasWrongImageFrame(a, frameUrl);
+  }).length;
+  var pinCount = (pins || []).filter(function(p){
+    return buildingMapIsFiniteNumber(p && p.x) && buildingMapIsFiniteNumber(p && p.y) &&
+      buildingMapHasWrongImageFrame(p, frameUrl);
+  }).length;
+  return { outlines: outlineCount, assets: assetCount, pins: pinCount, total: outlineCount + assetCount + pinCount };
+}
+function buildingMapFrameMismatchPartsText(parts){
+  if (!parts.length) return "";
+  if (parts.length === 1) return parts[0];
+  if (parts.length === 2) return parts[0] + " and " + parts[1];
+  return parts.slice(0, -1).join(", ") + ", and " + parts[parts.length - 1];
+}
+function buildingMapFrameMismatchText(disclosure){
+  disclosure = disclosure || {};
+  var parts = [];
+  if (disclosure.outlines) parts.push(disclosure.outlines + " outline" + (disclosure.outlines === 1 ? "" : "s"));
+  if (disclosure.assets) parts.push(disclosure.assets + " feature" + (disclosure.assets === 1 ? "" : "s"));
+  if (disclosure.pins) parts.push(disclosure.pins + " pin" + (disclosure.pins === 1 ? "" : "s"));
+  if (!parts.length) return "";
+  return buildingMapFrameMismatchPartsText(parts) + " were placed on a different base image and can't be shown here.";
+}
+function buildingMapSetFrameMismatchDisclosure(el, disclosure){
+  if (!el || !el.id || !el.parentNode) return;
+  var id = el.id + "-frame-disclosure";
+  var existing = document.getElementById(id);
+  var text = buildingMapFrameMismatchText(disclosure);
+  if (!text){
+    if (existing) existing.remove();
+    return;
+  }
+  var node = existing || document.createElement("p");
+  node.id = id;
+  node.className = "hint";
+  node.style.margin = "6px 0 0";
+  node.textContent = text;
+  if (!existing) el.insertAdjacentElement("afterend", node);
+}
+function buildingMapShouldUseWorldPoint(point, owner){
+  if (!buildingMapIsFiniteLatLng(point)) return false;
+  return !(buildingMapIsSyntheticImageGeometry(owner) && buildingMapIsNearNullIsland(point));
+}
+function buildingMapRenderableOutline(outline){
+  if (!outline || !Array.isArray(outline.ring) || outline.ring.length < 3) return false;
+  return outline.ring.every(function(p){ return buildingMapShouldUseWorldPoint(p, outline); });
+}
+function buildingMapImageOutlineRing(outline, width, height, frameUrl){
+  if (!outline || !Array.isArray(outline.imageRing) || outline.imageRing.length < 3) return null;
+  if (!buildingMapImageFrameMatches(outline, frameUrl)) return null;
+  var ring = outline.imageRing.map(function(p){
+    if (!p || !buildingMapIsFiniteNumber(p.x) || !buildingMapIsFiniteNumber(p.y)) return null;
+    return [p.y * height, p.x * width];
+  }).filter(Boolean);
+  return ring.length >= 3 ? ring : null;
+}
+function buildingMapImageOutlineCenter(ring){
+  if (!Array.isArray(ring) || !ring.length) return null;
+  var sumY = 0, sumX = 0;
+  ring.forEach(function(p){ sumY += p[0]; sumX += p[1]; });
+  return [sumY / ring.length, sumX / ring.length];
+}
 function renderBuildingMap(pins, customBld, bldAddress, orthoOverlay, assets, buildingId, outlines, mapOptions){
   assets = assets || [];
   var opts = (typeof mapOptions === "string") ? { mapElementId: mapOptions } : (mapOptions || {});
@@ -1613,6 +1745,8 @@ function renderBuildingMap(pins, customBld, bldAddress, orthoOverlay, assets, bu
   var renderSeq = (buildingMapRenderSeqByElementId[mapElementId] || 0) + 1;
   buildingMapRenderSeqByElementId[mapElementId] = renderSeq;
   if (customBld){
+    buildingMapSetFrameMismatchDisclosure(el,
+      buildingMapFrameMismatchDisclosure(outlines, assets, pins, customBld.roof_base_map_url));
     var img = new Image();
     img.onload = function(){
       var w = img.naturalWidth, h = img.naturalHeight;
@@ -1622,13 +1756,23 @@ function renderBuildingMap(pins, customBld, bldAddress, orthoOverlay, assets, bu
         var map = L.map(mapElementId, { crs: L.CRS.Simple, minZoom: -5 });
         setBuildingMapHandle(mapElementId, map);
         L.imageOverlay(customBld.roof_base_map_url, bounds).addTo(map);
+        outlines.forEach(function(o){
+          var ring = buildingMapImageOutlineRing(o, w, h, customBld.roof_base_map_url);
+          if (!ring) return;
+          L.polygon(ring, {
+            color: "#E8600A", weight: 2, fillColor: "#E8600A", fillOpacity: 0.1
+          }).addTo(map).bindPopup(outlinePopupHtml(o, o._roofLabel));
+          if (o._roofLabel) roofLabelMarker.apply(null, buildingMapImageOutlineCenter(ring).concat([o._roofLabel])).addTo(map);
+        });
         pins.forEach(function(p){
+          if (!buildingMapImageFrameMatches(p, customBld.roof_base_map_url)) return;
           L.circleMarker([p.y * h, p.x * w], {
             radius: 9, color: "#fff", weight: 2, fillColor: warrantyColor(p.warranty), fillOpacity: 0.95
           }).addTo(map).bindPopup(pinPopupHtml(p, { readOnly: readOnly }));
         });
         assets.forEach(function(a){
           if (typeof a.x !== "number") return;
+          if (!buildingMapImageFrameMatches(a, customBld.roof_base_map_url)) return;
           L.marker([a.y * h, a.x * w], { icon: assetIcon(a.type) }).addTo(map)
             .bindPopup(readOnly ? assetPopupReadonlyHtml(a) : assetPopupHtml(buildingId, a));
         });
@@ -1644,11 +1788,13 @@ function renderBuildingMap(pins, customBld, bldAddress, orthoOverlay, assets, bu
     img.src = customBld.roof_base_map_url;
     return;
   }
+  buildingMapSetFrameMismatchDisclosure(el, null);
   (async function(){
     var bounds = [];
-    pins.forEach(function(p){ bounds.push([p.lat, p.lng]); });
-    assets.forEach(function(a){ if (typeof a.lat === "number") bounds.push([a.lat, a.lng]); });
-    outlines.forEach(function(o){ (o.ring || []).forEach(function(p){ bounds.push([p.lat, p.lng]); }); });
+    var renderableOutlines = outlines.filter(buildingMapRenderableOutline);
+    pins.forEach(function(p){ if (buildingMapIsFiniteLatLng(p)) bounds.push([p.lat, p.lng]); });
+    assets.forEach(function(a){ if (buildingMapShouldUseWorldPoint(a, a)) bounds.push([a.lat, a.lng]); });
+    renderableOutlines.forEach(function(o){ (o.ring || []).forEach(function(p){ bounds.push([p.lat, p.lng]); }); });
     var center = null, zoom = 18;
     if (!bounds.length){
       if (orthoOverlay){
@@ -1667,8 +1813,7 @@ function renderBuildingMap(pins, customBld, bldAddress, orthoOverlay, assets, bu
         maxZoom: 22, maxNativeZoom: SAT_MAX_NATIVE_ZOOM, attribution: "Tiles &copy; Esri"
       }).addTo(map);
       if (orthoOverlay) L.imageOverlay(orthoOverlay.url, boundsToLatLngBounds(orthoOverlay.bounds)).addTo(map);
-      outlines.forEach(function(o){
-        if (!o.ring || o.ring.length < 3) return;
+      renderableOutlines.forEach(function(o){
         L.polygon(o.ring.map(function(p){ return [p.lat, p.lng]; }), {
           color: "#E8600A", weight: 2, fillColor: "#E8600A", fillOpacity: 0.1
         }).addTo(map).bindPopup(outlinePopupHtml(o, o._roofLabel));
@@ -1683,12 +1828,13 @@ function renderBuildingMap(pins, customBld, bldAddress, orthoOverlay, assets, bu
         }
       });
       pins.forEach(function(p){
+        if (!buildingMapIsFiniteLatLng(p)) return;
         L.circleMarker([p.lat, p.lng], {
           radius: 9, color: "#fff", weight: 2, fillColor: warrantyColor(p.warranty), fillOpacity: 0.95
         }).addTo(map).bindPopup(pinPopupHtml(p, { readOnly: readOnly }));
       });
       assets.forEach(function(a){
-        if (typeof a.lat !== "number") return;
+        if (!buildingMapShouldUseWorldPoint(a, a)) return;
         L.marker([a.lat, a.lng], { icon: assetIcon(a.type) }).addTo(map)
           .bindPopup(readOnly ? assetPopupReadonlyHtml(a) : assetPopupHtml(buildingId, a));
       });
