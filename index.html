@@ -135,6 +135,17 @@
       <p class="hint" style="margin:4px 0 0">One-time cleanup — generates a real thumbnail for photos migrated
         to Storage before thumbnails existed. Doesn't touch the photo itself, safe to run more than once.</p>
     </div>
+    <!-- Retroactive CompanyCam photo-feed backfill (issue #55). Pushes photos
+         from EXISTING CompanyCam-linked work orders into their project feeds
+         -- for reports sent before the photo-feed push shipped. Idempotent
+         (already-pushed photos are skipped), non-destructive, safe to re-run. -->
+    <div class="fld" style="max-width:400px;margin:10px 0 0">
+      <label style="font-size:12px">Admin: Backfill Photos to CompanyCam</label>
+      <button class="btn" onclick="runCompanyCamPhotoBackfill()">🏢 Backfill Photos to CompanyCam</button>
+      <p class="hint" style="margin:4px 0 0">Pushes photos from existing CompanyCam-linked work orders into their
+        project photo feeds (map-pinned) — for reports sent before this feature existed. Already-pushed photos are
+        skipped automatically, so it's safe to run more than once.</p>
+    </div>
     <!-- Inspection-report ingestion (CCM Inspect emails -> Warranty
          section, see netlify/functions/inspection-reports.js). A scheduled
          function already polls automatically every 30 min; this button is
