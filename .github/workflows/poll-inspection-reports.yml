@@ -1,0 +1,87 @@
+# Automated CCM Inspect report polling.
+#
+# This replaces the Netlify Scheduled Function that used to drive
+# netlify/functions/inspection-reports.js. That scheduler could not attach
+# custom headers, so the function identified it by a `next_run` field in the
+# POST body -- which anyone on the internet could type. See the note in
+# netlify.toml for the full story.
+#
+# GitHub Actions CAN send a header, so the poll is now authenticated with a
+# shared secret compared using timingSafeEqual on the server.
+#
+# SETUP -- both values must match, and both must be at least 32 characters:
+#   1. Netlify > Site configuration > Environment variables > POLLER_SHARED_SECRET
+#   2. GitHub  > Settings > Secrets and variables > Actions > POLLER_SHARED_SECRET
+#
+# Until both exist, this workflow will fail with 401 and automatic polling stays
+# off -- which is the correct, fail-closed default. The manual
+# "Check for New Inspection Reports" button in the app is unaffected and keeps
+# working for any signed-in user with warranty.manage_reports.
+name: Poll CCM inspection reports
+
+on:
+  schedule:
+    # Every 30 minutes -- same cadence the Netlify scheduler used.
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Which deploy to poll"
+        required: true
+        default: dev
+        type: choice
+        options: [dev, production]
+
+permissions:
+  contents: read
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Poll for new inspection reports
+        env:
+          POLLER_SHARED_SECRET: ${{ secrets.POLLER_SHARED_SECRET }}
+          # Scheduled runs poll dev. Promote to production deliberately, by
+          # running this workflow manually with target=production -- an
+          # automated cron should not be the thing that first touches prod.
+          TARGET: ${{ github.event.inputs.target || 'dev' }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${POLLER_SHARED_SECRET:-}" ]; then
+            echo "::error::POLLER_SHARED_SECRET is not set as a GitHub Actions secret."
+            echo "Automatic polling is disabled until it is set here AND in Netlify (same value)."
+            exit 1
+          fi
+
+          if [ "$TARGET" = "production" ]; then
+            BASE="https://leak-work-orders.netlify.app"
+          else
+            BASE="https://dev--leak-work-orders.netlify.app"
+          fi
+          echo "Polling $BASE"
+
+          # -sS: quiet but still show errors. The secret goes in a header, never
+          # in the URL and never echoed. Only the HTTP status and the response
+          # body (a summary of what was filed/queued) are printed.
+          HTTP=$(curl -sS -o response.json -w '%{http_code}' \
+            -X POST "$BASE/.netlify/functions/inspection-reports" \
+            -H 'Content-Type: application/json' \
+            -H "x-roofops-poll-key: ${POLLER_SHARED_SECRET}" \
+            -d '{"action":"poll"}')
+
+          echo "HTTP $HTTP"
+          cat response.json || true
+          echo
+
+          if [ "$HTTP" = "401" ] || [ "$HTTP" = "403" ]; then
+            echo "::error::Poll was rejected ($HTTP). POLLER_SHARED_SECRET here does not match Netlify's, or is under 32 characters."
+            exit 1
+          fi
+          if [ "$HTTP" != "200" ]; then
+            echo "::error::Poll failed with HTTP $HTTP (see response above)."
+            exit 1
+          fi
+
+          echo "Poll completed."

@@ -182,20 +182,50 @@ async function lookupProspectiveBuildingRoofInfo(){
     return result;
   }catch(e){ return null; }
 }
-/* Checks the CURRENT work order's selected roof (currentRoofId, defaulting
-   to the building's first roof) for a custom (non-georeferenced) base map. */
+/* roof_base_map_* are PER-ROOF fields (js/core.js, DATA_MODEL.md §roofs[]),
+   but a base map -- a drone orthomosaic especially -- is one image of the
+   whole BUILDING. The old resolver asked a single roof (the selected one,
+   else roofs[0]) whether it had a base map and silently fell back to plain
+   satellite when it didn't. Tri-Delta has 11 roofs: attach the ortho to
+   roof 7, don't select a roof, and the saved base map simply never showed.
+   Resolve at the building level instead, and when the map we use does NOT
+   belong to the selected roof, SAY WHOSE IT IS. An honest label beats a
+   silent substitution. See issue #39. */
+function photosRoofHasBaseMap(r){
+  return !!(r && r.roof_base_map_url && (
+    r.roof_base_map_type === "roof_plan" || r.roof_base_map_type === "sketch" ||
+    (r.roof_base_map_type === "drone_ortho" && r.roof_base_map_bounds)));
+}
+/* A pin the tech can't be shown on a non-georeferenced drawing: it lives in
+   real lat/lng and the drawing has no coordinate system to convert into. */
+function photosPinIsGpsOnly(pin){
+  return !!(pin && typeof pin.lat === "number" && typeof pin.lng === "number" &&
+    !(typeof pin.x === "number" && typeof pin.y === "number"));
+}
+function photosResolveBuildingBaseMap(roofs, selectedRoofId){
+  roofs = roofs || [];
+  var selected = roofs.find(function(r){ return r.id === selectedRoofId; }) || roofs[0] || null;
+  var source = photosRoofHasBaseMap(selected) ? selected :
+    (roofs.find(function(r){
+      return r && photosRoofHasBaseMap(r) && !(selected && r.id === selected.id);
+    }) || null);
+  if (!source) return null;
+  var georeferenced = source.roof_base_map_type === "drone_ortho" && !!source.roof_base_map_bounds;
+  return {
+    url: source.roof_base_map_url,
+    type: source.roof_base_map_type,
+    georeferenced: georeferenced,
+    bounds: georeferenced ? source.roof_base_map_bounds : null,
+    sourceRoofId: source.id || null,
+    sourceRoofLabel: source.label || "Roof",
+    fromSelectedRoof: !!(selected && source.id === selected.id)
+  };
+}
 async function lookupProspectiveBuildingBaseMap(){
   try{
     var info = await lookupProspectiveBuildingRoofInfo();
     if (!info || !info.roofs.length) return null;
-    var bld = info.roofs.find(function(r){ return r.id === currentRoofId; }) || info.roofs[0];
-    if ((bld.roof_base_map_type === "roof_plan" || bld.roof_base_map_type === "sketch") && bld.roof_base_map_url){
-      return { url: bld.roof_base_map_url, type: bld.roof_base_map_type, georeferenced: false };
-    }
-    if (bld.roof_base_map_type === "drone_ortho" && bld.roof_base_map_url && bld.roof_base_map_bounds){
-      return { url: bld.roof_base_map_url, type: "drone_ortho", georeferenced: true, bounds: bld.roof_base_map_bounds };
-    }
-    return null;
+    return photosResolveBuildingBaseMap(info.roofs, currentRoofId);
   }catch(e){ return null; }
 }
 function boundsToLatLngBounds(b){
@@ -276,8 +306,26 @@ async function openPinModal(findingId){
     // Drone orthomosaic: real coordinates, so it's just a higher-detail
     // image layer on top of the normal lat/lng satellite map — pins still
     // save as lat/lng like any other satellite pin, no separate x/y mode.
+    // Safe to use building-wide: a georeferenced ortho plots correctly no
+    // matter which roof it happens to be attached to.
     pinMapMode = "latlng";
     await openPinModalSatellite(f, findingId, customBaseMap);
+    return;
+  }
+  /* A non-georeferenced drawing (roof plan / sketch) has no coordinate system,
+     so a finding whose existing pin is a real GPS location CANNOT be plotted on
+     it. The old code switched to x/y mode anyway, dropped the marker at the
+     image centre, and told the tech "Existing pin on the roof plan — drag to
+     move" — which was a lie: that marker was the middle of the drawing, not the
+     finding. savePinFromModal() then overwrote the real coordinate with the
+     centre as {source:"tech_placed"}, fabricating a provenance for a placement
+     no tech ever made. Mark's call: keep these findings on satellite, where
+     their pin is real and visible, rather than show a drawing that can only
+     destroy them. Findings with no pin, or an existing x/y pin, still get the
+     drawing. See issue #39. */
+  if (customBaseMap && photosPinIsGpsOnly(f.pin)){
+    pinMapMode = "latlng";
+    await openPinModalSatellite(f, findingId, null, { gpsPinKeptOffBaseMap: customBaseMap });
     return;
   }
   if (customBaseMap){
@@ -299,9 +347,14 @@ async function openPinModal(findingId){
         pinMap.invalidateSize();
         setTimeout(function(){ if (pinMap) pinMap.invalidateSize(); }, 300);
       }, 50);
-      document.getElementById("pin-hint").textContent = f.pin ?
+      /* Name the roof the drawing actually came from whenever it isn't the
+         selected roof's own -- never present another roof's image as this
+         roof's without saying so (issue #39). */
+      var whose = customBaseMap.fromSelectedRoof ? "" :
+        " (from " + customBaseMap.sourceRoofLabel + " — building-wide)";
+      document.getElementById("pin-hint").textContent = (f.pin ?
         "Existing pin on the " + customBaseMap.type.replace("_"," ") + " — drag to move." :
-        "Tap the " + customBaseMap.type.replace("_"," ") + " to place the pin.";
+        "Tap the " + customBaseMap.type.replace("_"," ") + " to place the pin.") + whose;
     };
     img.onerror = function(){
       toast("Couldn't load the custom base map — using satellite instead.");
@@ -323,7 +376,8 @@ async function openPinModal(findingId){
    already fetches (renderPinRoofPicker(), lookupProspectiveBuildingRoofInfo())
    so this map can actually show what that dropdown is choosing between.
    See "Pin placement map roof rendering" in DEV_NOTES.md. */
-async function openPinModalSatellite(f, findingId, orthoOverlay){
+async function openPinModalSatellite(f, findingId, orthoOverlay, opts){
+  opts = opts || {};
   document.getElementById("pin-mylocation-btn").style.display = navigator.geolocation ? "" : "none";
   var warnEl = document.getElementById("pin-roof-mismatch-warning");
   if (warnEl) warnEl.style.display = "none";
@@ -415,6 +469,16 @@ async function openPinModalSatellite(f, findingId, orthoOverlay){
     }
   }
   if (orthoOverlay && !fitOrthoBounds) hint += " (drone orthomosaic loaded for extra detail)";
+  /* This finding has a real GPS pin and the building's only base map is a
+     non-georeferenced drawing, so we deliberately stayed on satellite (issue
+     #39). Say that plainly -- a tech who knows a roof plan exists must not be
+     left wondering why they aren't looking at it. */
+  if (opts.gpsPinKeptOffBaseMap){
+    var skipped = opts.gpsPinKeptOffBaseMap;
+    hint += " Showing satellite: this finding's pin is a GPS location, which can't be plotted on " +
+      (skipped.fromSelectedRoof ? "this roof's" : (skipped.sourceRoofLabel + "'s")) + " " +
+      String(skipped.type || "drawing").replace("_", " ") + ". Clear the pin to place it on the drawing instead.";
+  }
   document.getElementById("pin-hint").textContent = hint;
 
   setTimeout(function(){
@@ -891,6 +955,84 @@ async function saveGlobalPhotoSizePref(){
    needing the separate dropdown in the global Photo Documentation
    section. Omitted (existing call sites) behaves exactly as before --
    finding_id: null, "General / no specific finding". */
+/* EXIF GPS extraction for LIBRARY IMPORTS (addPhotosFromFiles). A photo the
+   tech shot on their phone carries its location in EXIF, but our canvas resize
+   re-encodes the image and drops ALL EXIF -- so a photo that HAD a GPS fix used
+   to reach CompanyCam unpinned (Mark, 2026-07-15: "the photos I took then
+   uploaded directly to CC have gps coords, the same photos the app uploaded do
+   not"). Camera captures already carry device geolocation (addPhotosFromCamera);
+   this recovers the coordinate for imports by parsing the EXIF GPS IFD out of the
+   ORIGINAL file bytes BEFORE the resize throws them away. Pure, dependency-free,
+   fully non-fatal: any malformed/absent EXIF returns null and the photo imports
+   exactly as before. Rejects (0,0) and out-of-range, like everywhere else. */
+function rmExifGpsFromTiff(view, tiff){
+  var bo = view.getUint16(tiff);
+  var little = bo === 0x4949; /* "II" little-endian; "MM" (0x4D4D) big-endian */
+  if (!little && bo !== 0x4D4D) return null;
+  var u16 = function(o){ return view.getUint16(o, little); };
+  var u32 = function(o){ return view.getUint32(o, little); };
+  if (u16(tiff + 2) !== 0x002A) return null;
+  function entryFor(ifd, tag){
+    var n = u16(ifd);
+    for (var i = 0; i < n; i++){ var e = ifd + 2 + i * 12; if (u16(e) === tag) return e; }
+    return -1;
+  }
+  var gpsPtr = entryFor(tiff + u32(tiff + 4), 0x8825);
+  if (gpsPtr < 0) return null;
+  var gps = tiff + u32(gpsPtr + 8);
+  function ref(tag){ var e = entryFor(gps, tag); return e < 0 ? "" : String.fromCharCode(view.getUint8(e + 8)); }
+  function dms(tag){
+    var e = entryFor(gps, tag);
+    if (e < 0 || u32(e + 4) < 3) return null;
+    var base = tiff + u32(e + 8), out = 0, weight = [1, 1 / 60, 1 / 3600];
+    for (var i = 0; i < 3; i++){
+      var den = u32(base + i * 8 + 4);
+      out += (den ? u32(base + i * 8) / den : 0) * weight[i];
+    }
+    return out;
+  }
+  var lat = dms(0x0002), lng = dms(0x0004);
+  if (lat == null || lng == null) return null;
+  if (ref(0x0001) === "S") lat = -lat;
+  if (ref(0x0003) === "W") lng = -lng;
+  if (!isFinite(lat) || !isFinite(lng) || (lat === 0 && lng === 0)) return null;
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
+  return { lat: lat, lng: lng };
+}
+function parseExifGps(buffer){
+  try{
+    var view = new DataView(buffer);
+    if (view.byteLength < 12 || view.getUint16(0) !== 0xFFD8) return null; /* not a JPEG */
+    var offset = 2;
+    while (offset + 4 <= view.byteLength){
+      var marker = view.getUint16(offset);
+      if ((marker & 0xFF00) !== 0xFF00) return null;
+      if (marker === 0xFFE1){ /* APP1 -- Exif */
+        var exif = offset + 4;
+        if (exif + 6 <= view.byteLength && view.getUint32(exif) === 0x45786966 && view.getUint16(exif + 4) === 0){
+          return rmExifGpsFromTiff(view, exif + 6);
+        }
+        return null;
+      }
+      if (marker === 0xFFDA) return null; /* start of scan -- image data, no EXIF beyond here */
+      offset += 2 + view.getUint16(offset + 2); /* skip this segment */
+    }
+    return null;
+  }catch(e){ return null; }
+}
+/* Parses EXIF GPS from a data-URL's leading bytes (the APP1 Exif segment sits
+   right after SOI, so the first ~150KB always covers it -- no need to decode a
+   multi-MB image in full). */
+function dataUrlExifGps(dataUrl){
+  try{
+    var comma = String(dataUrl || "").indexOf(",");
+    if (comma < 0) return null;
+    var bin = atob(dataUrl.slice(comma + 1, comma + 1 + 200000));
+    var n = bin.length, bytes = new Uint8Array(n);
+    for (var i = 0; i < n; i++) bytes[i] = bin.charCodeAt(i);
+    return parseExifGps(bytes.buffer);
+  }catch(e){ return null; }
+}
 function addPhotosFromFiles(files, findingId){
   var list = Array.prototype.slice.call(files || []);
   if (!list.length) return;
@@ -919,6 +1061,10 @@ function addPhotosFromFiles(files, findingId){
   list.forEach(function(file, idx){
     var reader = new FileReader();
     reader.onload = function(){
+      /* EXIF GPS off the ORIGINAL bytes, before the canvas resize below strips
+         it (see parseExifGps). null when the photo has no location -- then it
+         behaves exactly as an import did before. */
+      var exifGps = dataUrlExifGps(reader.result);
       var img = new Image();
       img.onload = function(){
         var preset = photoPreset();
@@ -931,7 +1077,7 @@ function addPhotosFromFiles(files, findingId){
         c.width = w; c.height = h;
         c.getContext("2d").drawImage(img, 0, 0, w, h);
         results[idx] = { caption:"", img: c.toDataURL("image/jpeg", preset.q), thumb: makeThumbDataUrl(img), w: w, h: h,
-          finding_id: findingId || null, localId: makeLocalPhotoId() };
+          finding_id: findingId || null, gps: exifGps, localId: makeLocalPhotoId() };
         done();
       };
       img.onerror = function(){ toast("Couldn't read one of the photos"); done(); };

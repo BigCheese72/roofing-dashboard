@@ -171,6 +171,8 @@ async function uploadRoofBaseMap(buildingId, files, roofId){
     var bldSnap = await fdb.collection("buildings").doc(buildingId).get();
     var bld = bldSnap.exists ? bldSnap.data() : {};
     if (!bld.companyCamProjectId) throw new Error("no CompanyCam project linked to this building");
+    var roof = roofId ? getRoofById(bld, roofId) : null;
+    if (rmRefuseImageFrameBaseMapChange(roof, "Changing this base map")) return;
     var dataUrl = await resizeImageFile(f, 2000, 0.85);
     var base64 = dataUrl.split("base64,")[1];
     if (!base64) throw new Error("couldn't encode the image");
@@ -190,6 +192,15 @@ async function uploadRoofBaseMap(buildingId, files, roofId){
 }
 async function clearRoofBaseMap(buildingId, roofId){
   if (!isAdmin){ toast("Admin mode required."); return; }
+  try{
+    var bldSnap = await fdb.collection("buildings").doc(buildingId).get();
+    var bld = bldSnap.exists ? bldSnap.data() : {};
+    var roof = roofId ? getRoofById(bld, roofId) : null;
+    if (rmRefuseImageFrameBaseMapChange(roof, "Clearing this base map")) return;
+  }catch(e){
+    toast("Failed: " + e.message);
+    return;
+  }
   if (!confirm("Clear this building's custom base map? Pins will fall back to satellite.")) return;
   toast("Clearing…");
   try{
@@ -1114,8 +1125,18 @@ function rmLegacyCalibrationMeasurement(outline){
   return rmLegacyCalibrationEntry(c);
 }
 function rmMigrateLegacyCalibration(outline){
-  if (!outline || !outline.calibration || outline.calibration.inherited) return false;
+  if (!outline || !outline.calibration) return false;
   var c = outline.calibration;
+  if (c.inherited){
+    if (!rmIsFiniteNumber(c.factor) || outline.inheritedScale) return false;
+    outline.inheritedScale = {
+      fromOutlineId: null,
+      factor: c.factor,
+      scaleSource: "measured",
+      derivedAt: c.calibratedAt || null
+    };
+    return true;
+  }
   if (!rmIsFiniteNumber(c.edgeIndex) || !rmIsFiniteNumber(c.measuredFt) || c.measuredFt <= 0) return false;
   var legacy = rmLegacyCalibrationMeasurement(outline);
   if (!legacy) return false;
@@ -1125,6 +1146,19 @@ function rmMigrateLegacyCalibration(outline){
   if (exists) return false;
   outline.edgeMeasurements = (outline.edgeMeasurements || []).concat([legacy]);
   return true;
+}
+function rmLegacyCalibrationIsMirrored(outline){
+  if (!outline || !outline.calibration) return true;
+  var c = outline.calibration;
+  if (c.inherited){
+    return !!(outline.inheritedScale && rmIsFiniteNumber(outline.inheritedScale.factor) &&
+      rmIsFiniteNumber(c.factor) && Math.abs(outline.inheritedScale.factor - c.factor) < 0.000001);
+  }
+  var legacy = rmLegacyCalibrationMeasurement(outline);
+  if (!legacy) return false;
+  return ((outline.edgeMeasurements) || []).some(function(m){
+    return m && m.legacyCalibration && m.edgeIndex === legacy.edgeIndex && m.measuredFt === legacy.measuredFt;
+  });
 }
 function rmActiveMeasuredEdges(outline){
   var active = rmActiveEdgeMeasurements(outline).filter(function(m){
@@ -1151,16 +1185,24 @@ function rmLatestActiveMeasuredEdge(outline){
   })[0];
 }
 function rmLatestAppliedMeasuredEdge(outline){
-  var list = rmActiveMeasuredEdges(outline).filter(function(m){
-    return m && m.rescaleApplied === true;
+  var list = rmAllMeasuredEdgeRecords(outline).filter(function(m){
+    return rmMeasurementScaleStillApplied(m) && m.rescaleApplied === true;
   });
   if (!list.length) return null;
   return list.slice().sort(function(a, b){
     return (b.measuredAt || 0) - (a.measuredAt || 0);
   })[0];
 }
+function rmMeasurementInvalidationKeepsScale(reason){
+  return reason === "superseded_by_remeasure" ||
+    reason === "vertex_edit" || reason === "square_up" ||
+    reason === "resnap_neighbors" || reason === "align_outline";
+}
+function rmMeasurementInvalidationMovedEdge(reason){
+  return reason !== "superseded_by_remeasure";
+}
 function rmMeasurementScaleStillApplied(m){
-  return !!(m && (!m.invalidatedAt || m.invalidatedReason === "superseded_by_remeasure"));
+  return !!(m && (!m.invalidatedAt || rmMeasurementInvalidationKeepsScale(m.invalidatedReason)));
 }
 function rmComposedAppliedScaleFactor(outline){
   var recorded = rmAllMeasuredEdgeRecords(outline).filter(function(m){
@@ -1213,14 +1255,16 @@ function rmInvalidateEdgeMeasurements(outline, reason){
     outline.edgeMeasurements = outline.edgeMeasurements.map(function(m){
       if (!m || m.invalidatedAt) return m;
       changed = true;
-      return Object.assign({}, m, { invalidatedAt: now, invalidatedReason: reason || "geometry_edit" });
+      return Object.assign({}, m, { invalidatedAt: now, invalidatedReason: reason || "unknown_edit" });
     });
   }
   if (outline.calibration){
-    /* Safe to clear this legacy mirror after migration; the tape record now
-       lives in edgeMeasurements[] and carries the invalidation audit trail. */
-    changed = true;
-    delete outline.calibration;
+    /* Drop legacy calibration only after its scale data is mirrored into the
+       normalized measurement model. Unknown legacy shapes stay intact. */
+    if (rmLegacyCalibrationIsMirrored(outline)){
+      changed = true;
+      delete outline.calibration;
+    }
   }
   rmRefreshOutlineMeasurementModel(outline);
   return changed;
@@ -1309,7 +1353,21 @@ function rmBuildInheritedScaleRecord(src, factor){
 function rmEdgeDimensionMeta(outline, edgeIndex, distFt){
   var measured = rmGetMeasuredEdge(outline, edgeIndex);
   if (measured){
-    var matches = !rmIsFiniteNumber(distFt) || Math.abs((measured.measuredFt || 0) - distFt) <= RM_EDGE_MEASURE_LABEL_TOLERANCE_FT;
+    if (!rmIsFiniteNumber(distFt)){
+      return {
+        measured: true,
+        conflict: false,
+        bg: "#263238",
+        prefix: "",
+        border: true,
+        labelFt: measured.measuredFt,
+        measuredFt: measured.measuredFt,
+        derivedFt: distFt,
+        labelIsMeasured: true,
+        agreementUnknown: true
+      };
+    }
+    var matches = Math.abs((measured.measuredFt || 0) - distFt) <= RM_EDGE_MEASURE_LABEL_TOLERANCE_FT;
     return {
       measured: true,
       conflict: !matches,
@@ -1363,14 +1421,17 @@ function rmBuildCaptureSource(outline){
 function rmBuildScaleSource(outline, captureSource){
   var measured = rmLatestAppliedMeasuredEdge(outline);
   if (measured){
+    var measurementStale = !!measured.invalidatedAt && rmMeasurementInvalidationMovedEdge(measured.invalidatedReason);
     return {
       kind: "measured",
-      label: "tape-measured edge on this roof",
+      label: measurementStale ? "tape-measured scale on this roof; edge has since been edited" : "tape-measured edge on this roof",
       factor: rmIsFiniteNumber(measured.factor) ? measured.factor : null,
       appliedFactor: rmIsFiniteNumber(measured.appliedFactor) ? measured.appliedFactor : null,
-      edgeIndex: measured.edgeIndex,
-      measuredFt: measured.measuredFt,
-      measurementId: measured.id || null
+      edgeIndex: measurementStale ? null : measured.edgeIndex,
+      measuredFt: measurementStale ? null : measured.measuredFt,
+      measurementId: measurementStale ? null : (measured.id || null),
+      measurementStale: measurementStale,
+      measurementInvalidatedReason: measurementStale ? (measured.invalidatedReason || null) : null
     };
   }
   if (rmHasInheritedScale(outline)){
@@ -2121,8 +2182,10 @@ var rmState = {
      a fresh location-based search knows to tear the overlay down. See
      "Ortho upload + flat-canvas tracing" in DEV_NOTES.md. */
   orthoActive: false,
+  orthoSynthetic: false,
   orthoOverlayLayer: null,
   orthoDataUrl: null,
+  orthoFrameUrl: null,
   orthoBounds: null,
   /* Multi-roof workflow (Mark, live on a roof: "I should be able to save,
      label, add another trace outline on the same page. I shouldn't have
@@ -2236,6 +2299,8 @@ function rmSearchThisArea(){
 function rmOnShow(){
   if (rmState.map) setTimeout(function(){ rmState.map.invalidateSize(); }, 60);
   rmRenderLocalSaves();
+  rmRenderPendingSaveStatus();
+  rmFlushPendingBuildingSaves(); /* back in RoofMapper with signal? finish the job */
 }
 function rmSetStatus(msg, kind, extraHtml){
   var el = document.getElementById("rm-status");
@@ -2943,13 +3008,20 @@ async function rmPersistVertexEdit(){
     if (!roof){ toast("Couldn't find the linked roof to save."); return; }
     var measurementFields = rmOutlineMeasurementPersistence(outline);
     roof.roof_outlines = (roof.roof_outlines || []).map(function(o){
-      return o.id === outline.id ? Object.assign({}, o, {
-        ring: outline.ring, areaSqFt: outline.areaSqFt, perimeterFt: outline.perimeterFt,
-        center: outline.center, calibration: outline.calibration || null, squared: null,
+      if (o.id !== outline.id) return o;
+      var storageFields = rmOutlineStorageFields(outline, o);
+      return Object.assign({}, o, {
+        ring: storageFields.ring, center: storageFields.center,
+        imageRing: storageFields.imageRing, imageCenter: storageFields.imageCenter,
+        imageFrame: storageFields.imageFrame, imageFrameUrl: storageFields.imageFrameUrl,
+        tracedOnOrtho: storageFields.tracedOnOrtho,
+        georeferencedSource: storageFields.georeferencedSource,
+        areaSqFt: outline.areaSqFt, perimeterFt: outline.perimeterFt,
+        calibration: outline.calibration || null, squared: null,
         edgeMeasurements: measurementFields.edgeMeasurements, inheritedScale: measurementFields.inheritedScale,
         captureSource: measurementFields.captureSource, scaleSource: measurementFields.scaleSource,
         measurementMethod: measurementFields.measurementMethod
-      }) : o;
+      });
     });
     var roofIdx = roofs.findIndex(function(r){ return r.id === roof.id; });
     roofs[roofIdx] = roof;
@@ -3211,7 +3283,9 @@ async function rmCalibrateEdge(edgeIndex){
   var rescaledAssets = null;
   if (rmState.linkedAssetsCache && rmState.linkedAssetsCache.length){
     rescaledAssets = rmState.linkedAssetsCache.map(function(asset){
-      var p = rmGeomScalePoint({ lat: asset.lat, lng: asset.lng }, centroid, appliedFactor);
+      var displayPoint = rmAssetDisplayLatLng(asset);
+      if (!displayPoint) return asset;
+      var p = rmGeomScalePoint(displayPoint, centroid, appliedFactor);
       return Object.assign({}, asset, { lat: p.lat, lng: p.lng });
     });
     rmState.linkedAssetsCache = rescaledAssets;
@@ -3243,15 +3317,23 @@ async function rmPersistCalibration(rescaledAssets){
     if (!roof){ toast("Couldn't find the linked roof to save calibration."); return; }
     var measurementFields = rmOutlineMeasurementPersistence(outline);
     roof.roof_outlines = (roof.roof_outlines || []).map(function(o){
-      return o.id === outline.id ? Object.assign({}, o, {
-        ring: outline.ring, areaSqFt: outline.areaSqFt, perimeterFt: outline.perimeterFt,
-        center: outline.center, calibration: outline.calibration || null,
+      if (o.id !== outline.id) return o;
+      var storageFields = rmOutlineStorageFields(outline, o);
+      return Object.assign({}, o, {
+        ring: storageFields.ring, center: storageFields.center,
+        imageRing: storageFields.imageRing, imageCenter: storageFields.imageCenter,
+        imageFrame: storageFields.imageFrame, imageFrameUrl: storageFields.imageFrameUrl,
+        tracedOnOrtho: storageFields.tracedOnOrtho,
+        georeferencedSource: storageFields.georeferencedSource,
+        areaSqFt: outline.areaSqFt, perimeterFt: outline.perimeterFt, calibration: outline.calibration || null,
         edgeMeasurements: measurementFields.edgeMeasurements, inheritedScale: measurementFields.inheritedScale,
         captureSource: measurementFields.captureSource, scaleSource: measurementFields.scaleSource,
         measurementMethod: measurementFields.measurementMethod
-      }) : o;
+      });
     });
-    if (rescaledAssets) roof.roof_assets = rescaledAssets;
+    if (rescaledAssets) roof.roof_assets = rescaledAssets.map(function(a){
+      return Object.assign({}, a, rmAssetPersistenceFields(a));
+    });
     var roofIdx = roofs.findIndex(function(r){ return r.id === roof.id; });
     roofs[roofIdx] = roof;
     await saveBuildingRoofs(rmState.linkedBuildingId, roofs);
@@ -3341,13 +3423,20 @@ async function rmPersistOutlineGeometryEdit(){
     if (!roof){ toast("Couldn't find the linked roof to save."); return; }
     var measurementFields = rmOutlineMeasurementPersistence(outline);
     roof.roof_outlines = (roof.roof_outlines || []).map(function(o){
-      return o.id === outline.id ? Object.assign({}, o, {
-        ring: outline.ring, areaSqFt: outline.areaSqFt, perimeterFt: outline.perimeterFt,
-        center: outline.center, calibration: outline.calibration || null, squared: outline.squared || null,
+      if (o.id !== outline.id) return o;
+      var storageFields = rmOutlineStorageFields(outline, o);
+      return Object.assign({}, o, {
+        ring: storageFields.ring, center: storageFields.center,
+        imageRing: storageFields.imageRing, imageCenter: storageFields.imageCenter,
+        imageFrame: storageFields.imageFrame, imageFrameUrl: storageFields.imageFrameUrl,
+        tracedOnOrtho: storageFields.tracedOnOrtho,
+        georeferencedSource: storageFields.georeferencedSource,
+        areaSqFt: outline.areaSqFt, perimeterFt: outline.perimeterFt,
+        calibration: outline.calibration || null, squared: outline.squared || null,
         edgeMeasurements: measurementFields.edgeMeasurements, inheritedScale: measurementFields.inheritedScale,
         captureSource: measurementFields.captureSource, scaleSource: measurementFields.scaleSource,
         measurementMethod: measurementFields.measurementMethod
-      }) : o;
+      });
     });
     var roofIdx = roofs.findIndex(function(r){ return r.id === roof.id; });
     roofs[roofIdx] = roof;
@@ -4436,8 +4525,10 @@ function rmClearOrthoOverlay(){
   if (rmState.map && rmState.orthoOverlayLayer) rmState.map.removeLayer(rmState.orthoOverlayLayer);
   rmState.orthoOverlayLayer = null;
   rmState.orthoDataUrl = null;
+  rmState.orthoFrameUrl = null;
   rmState.orthoBounds = null;
   rmState.orthoActive = false;
+  rmState.orthoSynthetic = false;
   rmUpdateMapZoomCap();
 }
 /* Image pixel (0,0) is the top-left / north-west corner; local XY here
@@ -4461,6 +4552,247 @@ function rmComputeOrthoBounds(pixelW, pixelH){
     orthoBounds: { north: nw.lat, south: se.lat, east: se.lng, west: nw.lng }
   };
 }
+function rmValidOrthoBounds(bounds){
+  return !!bounds &&
+    rmIsFiniteNumber(bounds.north) && rmIsFiniteNumber(bounds.south) &&
+    rmIsFiniteNumber(bounds.east) && rmIsFiniteNumber(bounds.west) &&
+    bounds.north !== bounds.south && bounds.east !== bounds.west;
+}
+function rmSyntheticOrthoFrameActive(){
+  return !!(rmState.orthoActive && rmState.orthoSynthetic && rmValidOrthoBounds(rmState.orthoBounds));
+}
+function rmOrthoLatLngToImageXY(point, bounds){
+  if (!point || !rmValidOrthoBounds(bounds) || !rmIsFiniteNumber(point.lat) || !rmIsFiniteNumber(point.lng)) return null;
+  return {
+    x: (point.lng - bounds.west) / (bounds.east - bounds.west),
+    y: (bounds.north - point.lat) / (bounds.north - bounds.south)
+  };
+}
+function rmOrthoImageXYToLatLng(point, bounds){
+  if (!point || !rmValidOrthoBounds(bounds) || !rmIsFiniteNumber(point.x) || !rmIsFiniteNumber(point.y)) return null;
+  return {
+    lat: bounds.north - point.y * (bounds.north - bounds.south),
+    lng: bounds.west + point.x * (bounds.east - bounds.west)
+  };
+}
+function rmImageRingToDisplayRing(imageRing, bounds){
+  if (!Array.isArray(imageRing)) return null;
+  var ring = imageRing.map(function(p){ return rmOrthoImageXYToLatLng(p, bounds); }).filter(Boolean);
+  return ring.length >= 3 ? ring : null;
+}
+function rmDisplayRingToImageRing(ring, bounds){
+  if (!Array.isArray(ring)) return null;
+  var imageRing = ring.map(function(p){ return rmOrthoLatLngToImageXY(p, bounds); }).filter(Boolean);
+  return imageRing.length === ring.length && imageRing.length >= 3 ? imageRing : null;
+}
+function rmCurrentImageFrameUrl(){
+  return rmState.orthoFrameUrl || (/^https?:\/\//i.test(rmState.orthoDataUrl || "") ? rmState.orthoDataUrl : null);
+}
+function rmImageFrameUrlMatches(item, frameUrl){
+  if (!item || !item.imageFrameUrl) return true;
+  return !!frameUrl && item.imageFrameUrl === frameUrl;
+}
+function rmRoofHasImageFrameGeometry(roof){
+  roof = roof || {};
+  return (roof.roof_outlines || []).some(function(o){
+    return !!(o && (o.imageFrameUrl || o.imageFrame === "roof_base_map" ||
+      (Array.isArray(o.imageRing) && o.imageRing.length >= 3)));
+  }) || (roof.roof_assets || []).some(function(a){
+    return !!(a && (a.imageFrameUrl || a.imageFrame === "roof_base_map" ||
+      (rmIsFiniteNumber(a.x) && rmIsFiniteNumber(a.y) && !rmIsFiniteNumber(a.lat) && !rmIsFiniteNumber(a.lng))));
+  });
+}
+function rmRefuseImageFrameBaseMapChange(roof, action){
+  if (!rmRoofHasImageFrameGeometry(roof)) return false;
+  toast((action || "Changing this base map") + " was refused because this roof has outlines or features tied to its current base image. Remove or recreate those image-based records first so saved geometry is not re-anchored to the wrong picture.");
+  return true;
+}
+function rmRefuseKmlGroundOverlayBaseMapChange(roof){
+  if (!rmRoofHasImageFrameGeometry(roof)) return false;
+  toast("Roof outline saved. The KMZ/KML image was not attached because this roof already has outlines or features tied to its current base image. Attaching this orthomosaic would re-anchor those image-based records to the wrong picture.");
+  return true;
+}
+function rmOutlineDisplayGeometry(outline, bounds, frameUrl){
+  if (!outline) return null;
+  if (Array.isArray(outline.ring) && outline.ring.length >= 3) return Object.assign({}, outline);
+  if (!rmImageFrameUrlMatches(outline, frameUrl || rmCurrentImageFrameUrl())) return null;
+  var displayRing = rmImageRingToDisplayRing(outline.imageRing, bounds);
+  if (!displayRing) return null;
+  var displayCenter = rmOrthoImageXYToLatLng(outline.imageCenter, bounds) || rmGeomRingCentroid(displayRing);
+  return Object.assign({}, outline, { ring: displayRing, center: displayCenter });
+}
+function rmOutlineImageFramePersistence(outline, bounds){
+  var imageRing = rmDisplayRingToImageRing(outline && outline.ring, bounds);
+  if (!imageRing) return null;
+  var imageCenter = rmOrthoLatLngToImageXY(outline.center || rmGeomRingCentroid(outline.ring), bounds);
+  return {
+    ring: [],
+    center: null,
+    imageRing: imageRing,
+    imageCenter: imageCenter,
+    imageFrame: "roof_base_map",
+    imageFrameUrl: rmCurrentImageFrameUrl(),
+    tracedOnOrtho: true,
+    georeferencedSource: false
+  };
+}
+function rmOutlinePersistenceFields(outline){
+  if (rmSyntheticOrthoFrameActive()){
+    var imageFields = rmOutlineImageFramePersistence(outline, rmState.orthoBounds);
+    if (imageFields) return imageFields;
+  }
+  return {
+    ring: outline.ring,
+    center: outline.center
+  };
+}
+function rmOutlineStorageFields(outline, existing){
+  var geometryFields = rmOutlinePersistenceFields(outline);
+  return {
+    ring: geometryFields.ring || [],
+    center: geometryFields.center || null,
+    imageRing: geometryFields.imageRing || null,
+    imageCenter: geometryFields.imageCenter || null,
+    imageFrame: geometryFields.imageFrame || null,
+    imageFrameUrl: geometryFields.imageFrame ? (geometryFields.imageFrameUrl || (existing && existing.imageFrameUrl) || null) : null,
+    tracedOnOrtho: geometryFields.tracedOnOrtho || (existing && existing.tracedOnOrtho) || null,
+    georeferencedSource: geometryFields.georeferencedSource === false ? false : ((existing && existing.georeferencedSource) || null)
+  };
+}
+function rmSyntheticSplitBaseMapFields(sourceRoof){
+  if (!rmState.orthoSynthetic || !sourceRoof || sourceRoof.roof_base_map_type !== "sketch" ||
+    !sourceRoof.roof_base_map_synthetic || !sourceRoof.roof_base_map_url) return {};
+  return {
+    roof_base_map_type: "sketch",
+    roof_base_map_url: sourceRoof.roof_base_map_url,
+    roof_base_map_bounds: null,
+    roof_base_map_synthetic: true
+  };
+}
+function rmApplySyntheticOrthoBaseMap(roof, url){
+  if (!roof || !url) return roof;
+  roof.roof_base_map_type = "sketch";
+  roof.roof_base_map_url = url;
+  roof.roof_base_map_bounds = null;
+  roof.roof_base_map_synthetic = true;
+  rmState.orthoFrameUrl = url;
+  return roof;
+}
+function rmHasDurableSyntheticSplitFrame(sourceRoof){
+  return !!rmSyntheticSplitBaseMapFields(sourceRoof).roof_base_map_url;
+}
+function rmSyntheticOrthoSaveRequiresFrame(){
+  return !!(rmState.orthoActive && rmState.orthoSynthetic);
+}
+function rmRefuseSyntheticOrthoSave(detail){
+  toast("This roof was traced on an uploaded image and that image can't be kept with it, so the outline can't be saved accurately." +
+    (detail ? " " + detail : ""));
+}
+async function rmEnsureSyntheticOrthoFrameForSave(buildingId, roof, alreadySaved){
+  if (!rmSyntheticOrthoSaveRequiresFrame()) return true;
+  if (!rmSyntheticOrthoFrameActive()){
+    rmRefuseSyntheticOrthoSave("Reload the uploaded image and try again.");
+    return false;
+  }
+  if (rmHasDurableSyntheticSplitFrame(roof) && roof.roof_base_map_url === rmState.orthoDataUrl){
+    rmState.orthoFrameUrl = roof.roof_base_map_url;
+    return roof.roof_base_map_url;
+  }
+  if (rmHasDurableSyntheticSplitFrame(roof) && roof.roof_base_map_url !== rmState.orthoDataUrl &&
+      rmRoofHasImageFrameGeometry(roof)){
+    rmRefuseSyntheticOrthoSave("This roof already has saved outlines or features tied to a different uploaded image, so saving would re-anchor them to the wrong picture.");
+    return false;
+  }
+  var url = alreadySaved ?
+    await rmPersistOrthoBaseMap(buildingId, roof.id) :
+    await rmUploadSyntheticOrthoBaseMap(buildingId, roof.id);
+  if (!url) return false;
+  rmApplySyntheticOrthoBaseMap(roof, url);
+  return url;
+}
+function rmSplitOutlineStorageFields(outline, sourceRoof){
+  if (rmSyntheticOrthoFrameActive() && !rmHasDurableSyntheticSplitFrame(sourceRoof)){
+    /* Never commit synthetic-image geometry unless the image itself has a
+       durable URL to reopen with it. Callers must upload/refuse before save. */
+    return null;
+  }
+  return rmOutlineStorageFields(outline, null);
+}
+function rmAssetDisplayLatLng(asset){
+  if (!asset) return null;
+  if (rmIsFiniteNumber(asset.lat) && rmIsFiniteNumber(asset.lng)) return { lat: asset.lat, lng: asset.lng };
+  if (rmSyntheticOrthoFrameActive() && rmImageFrameUrlMatches(asset, rmCurrentImageFrameUrl())){
+    return rmOrthoImageXYToLatLng(asset, rmState.orthoBounds);
+  }
+  return null;
+}
+function rmAssetPersistenceFields(asset){
+  if (rmSyntheticOrthoFrameActive()){
+    var xy = rmOrthoLatLngToImageXY(asset, rmState.orthoBounds);
+    if (xy) return {
+      lat: null,
+      lng: null,
+      x: xy.x,
+      y: xy.y,
+      imageFrame: "roof_base_map",
+      imageFrameUrl: rmCurrentImageFrameUrl(),
+      tracedOnOrtho: true,
+      georeferencedSource: false
+    };
+  }
+  if (rmIsFiniteNumber(asset.x) && rmIsFiniteNumber(asset.y)) return {
+    lat: null,
+    lng: null,
+    x: asset.x,
+    y: asset.y,
+    imageFrame: asset.imageFrame || null,
+    imageFrameUrl: asset.imageFrame ? (asset.imageFrameUrl || null) : null,
+    tracedOnOrtho: asset.tracedOnOrtho || null,
+    georeferencedSource: asset.georeferencedSource === false ? false : (asset.georeferencedSource || null)
+  };
+  return {
+    lat: asset.lat,
+    lng: asset.lng,
+    x: null,
+    y: null
+  };
+}
+function rmIsNearNullIslandPoint(point){
+  return !!point && rmIsFiniteNumber(point.lat) && rmIsFiniteNumber(point.lng) &&
+    Math.abs(point.lat) < 0.05 && Math.abs(point.lng) < 0.05;
+}
+function rmIsSyntheticImageGeometry(item, roof){
+  item = item || {};
+  roof = roof || {};
+  var capture = item.captureSource || {};
+  var methodCapture = item.measurementMethod && item.measurementMethod.captureSource || {};
+  return !!(item.tracedOnOrtho || item.imageFrame === "roof_base_map" ||
+    capture.mechanism === "ortho_image" || methodCapture.mechanism === "ortho_image" ||
+    roof.roof_base_map_synthetic);
+}
+function rmShouldDrawWorldAsset(asset, roof){
+  if (!asset || !rmIsFiniteNumber(asset.lat) || !rmIsFiniteNumber(asset.lng)) return false;
+  return !(rmIsSyntheticImageGeometry(asset, roof) && rmIsNearNullIslandPoint(asset));
+}
+function rmShouldDrawWorldOutline(outline, roof){
+  if (!outline || !Array.isArray(outline.ring) || outline.ring.length < 3) return false;
+  var validRing = outline.ring.every(function(p){ return p && rmIsFiniteNumber(p.lat) && rmIsFiniteNumber(p.lng); });
+  if (!validRing) return false;
+  if (rmIsSyntheticImageGeometry(outline, roof) && outline.ring.some(rmIsNearNullIslandPoint)) return false;
+  return true;
+}
+function rmImageNaturalDimensions(url){
+  return new Promise(function(res, rej){
+    var img = new Image();
+    img.onload = function(){ res({ w: img.naturalWidth, h: img.naturalHeight }); };
+    img.onerror = function(){ rej(new Error("couldn't reload the saved image")); };
+    img.src = url;
+  });
+}
+async function rmComputeOrthoBoundsForImageUrl(url){
+  var dims = await rmImageNaturalDimensions(url);
+  return rmComputeOrthoBounds(dims.w, dims.h);
+}
 function rmStartOrthoTrace(dataUrl, pixelW, pixelH){
   var map = rmEnsureMap();
   rmClearFootprintLayers(); /* same clean-slate as any other fresh capture start --
@@ -4470,8 +4802,10 @@ function rmStartOrthoTrace(dataUrl, pixelW, pixelH){
   var computed = rmComputeOrthoBounds(pixelW, pixelH);
   rmState.orthoOverlayLayer = L.imageOverlay(dataUrl, computed.latLngBounds).addTo(map);
   rmState.orthoActive = true;
+  rmState.orthoSynthetic = true;
   rmUpdateMapZoomCap();
   rmState.orthoDataUrl = dataUrl;
+  rmState.orthoFrameUrl = /^https?:\/\//i.test(dataUrl || "") ? dataUrl : null;
   rmState.orthoBounds = computed.orthoBounds;
   rmState.lat = RM_ORTHO_ORIGIN.lat; rmState.lng = RM_ORTHO_ORIGIN.lng; rmState.accuracy = null;
   map.fitBounds(computed.latLngBounds);
@@ -4515,19 +4849,21 @@ function rmStartOrthoTrace(dataUrl, pixelW, pixelH){
    future status/label can say "drone photo, not geo-referenced" instead
    of implying a hand sketch. See "Ortho upload: persist with the roof
    for reopening" in DEV_NOTES.md. */
-async function rmPersistOrthoBaseMap(buildingId, roofId){
+async function rmUploadSyntheticOrthoBaseMap(buildingId, roofId){
   if (!isAdmin){
-    toast("Roof outline saved. Sign in as admin to also keep this drone image with the roof for reopening later.");
-    return;
+    rmRefuseSyntheticOrthoSave("Sign in as admin first.");
+    return false;
   }
-  if (!rmState.orthoDataUrl) return;
+  if (!rmState.orthoDataUrl){
+    rmRefuseSyntheticOrthoSave("The uploaded image is no longer available in this session.");
+    return false;
+  }
   try{
     var bldSnap = await fdb.collection("buildings").doc(buildingId).get();
     var bld = bldSnap.exists ? bldSnap.data() : {};
     if (!bld.companyCamProjectId){
-      toast("Roof outline saved. This building has no CompanyCam project linked, so the drone image itself " +
-        "can't be retained (the traced outline is saved either way).");
-      return;
+      rmRefuseSyntheticOrthoSave("This building has no linked CompanyCam project to retain the image.");
+      return false;
     }
     toast("Saving the drone image with this roof…");
     var base64 = rmState.orthoDataUrl.split("base64,")[1];
@@ -4536,11 +4872,23 @@ async function rmPersistOrthoBaseMap(buildingId, roofId){
       name: "roof-ortho-" + roofId + ".jpg", attachment: base64 });
     var url = out.document && out.document.url;
     if (!url) throw new Error("CompanyCam didn't return a URL for the uploaded file");
+    return url;
+  }catch(e){
+    rmRefuseSyntheticOrthoSave("Upload failed: " + e.message);
+    return false;
+  }
+}
+async function rmPersistOrthoBaseMap(buildingId, roofId){
+  var url = await rmUploadSyntheticOrthoBaseMap(buildingId, roofId);
+  if (!url) return false;
+  try{
     await callAdminApi({ action: "set_building_roof_map", buildingId: buildingId, roofId: roofId,
       roof_base_map_type: "sketch", roof_base_map_url: url, roof_base_map_synthetic: true });
-    toast("Drone image saved with the roof — reopen it any time from Building History ✓");
+    toast("Drone image saved with the roof -- reopen it any time from Building History.");
+    return url;
   }catch(e){
-    toast("Roof outline saved, but couldn't keep the drone image with it: " + e.message);
+    rmRefuseSyntheticOrthoSave("Could not attach the uploaded image to this roof: " + e.message);
+    return false;
   }
 }
 async function rmPersistKmlGroundOverlayBaseMap(buildingId, roofId){
@@ -4560,10 +4908,12 @@ async function rmPersistKmlGroundOverlayBaseMap(buildingId, roofId){
   try{
     var bldSnap = await fdb.collection("buildings").doc(buildingId).get();
     var bld = bldSnap.exists ? bldSnap.data() : {};
+    var roof = getRoofById(bld, roofId);
+    if (rmRefuseKmlGroundOverlayBaseMapChange(roof)) return false;
     if (!bld.companyCamProjectId){
       toast("Roof outline saved. This building has no CompanyCam project linked, so the KMZ/KML image itself " +
         "can't be retained (the traced outline and overlay metadata are saved either way).");
-      return;
+      return false;
     }
     toast("Saving the KMZ/KML orthomosaic with this roof...");
     var base64 = rmState.kmlOverlayDataUrl.split("base64,")[1];
@@ -4576,8 +4926,10 @@ async function rmPersistKmlGroundOverlayBaseMap(buildingId, roofId){
     await callAdminApi({ action: "set_building_roof_map", buildingId: buildingId, roofId: roofId,
       roof_base_map_type: "drone_ortho", roof_base_map_url: url, roof_base_map_bounds: rmState.kmlOverlayMeta.bounds });
     toast("KMZ/KML orthomosaic saved with the roof -- reopen it any time from Building History.");
+    return true;
   }catch(e){
     toast("Roof outline saved, but couldn't keep the KMZ/KML image with it: " + e.message);
+    return false;
   }
 }
 /* Walk-the-corners: no map-click handler -- points come from a GPS fix each
@@ -5352,6 +5704,13 @@ function rmSaveAllSplitSections(){
   rmSplitState.savingAll = true;
   openRmSaveModal();
 }
+function rmFailSafeSaveSplitOutline(reason, error){
+  return rmFailSafeSaveOutline(rmState.outline, {
+    reason: reason || "split",
+    error: error || null,
+    toastMessage: "Split save stopped, so your traced outline is saved on THIS DEVICE. Load it and try again when the save issue is fixed."
+  });
+}
 /* Saves every pending section as its OWN new roof on buildingId, in one
    Firestore write (mirrors rmAddRoofAndSave()'s shape for each roof, but
    batched -- one saveBuildingRoofs() call for all of them rather than N
@@ -5373,6 +5732,14 @@ async function rmSaveSplitSectionsToBuilding(buildingId){
     var bld = snap.exists ? snap.data() : {};
     var roofs = getBuildingRoofs(bld);
     var baseOutline = rmState.outline || {};
+    var splitBaseMapRoof = null;
+    if (rmSyntheticOrthoSaveRequiresFrame()){
+      splitBaseMapRoof = { id: genId("roof") };
+      if (!await rmEnsureSyntheticOrthoFrameForSave(buildingId, splitBaseMapRoof, false)){
+        rmFailSafeSaveSplitOutline("split-synthetic-ortho-refused");
+        return false;
+      }
+    }
     var renamed = [];
     var created = sections.map(function(sec){
       var check = rmSuggestUniqueRoofLabel(roofs, sec.label, null);
@@ -5385,11 +5752,14 @@ async function rmSaveSplitSectionsToBuilding(buildingId){
       };
       rmCopyOutlineSourceMetadata(baseOutline, outlineEntry);
       rmDropSplitMeasurementMetadata(outlineEntry, baseOutline);
-      var newRoof = {
+      var storedFields = rmSplitOutlineStorageFields(outlineEntry, splitBaseMapRoof);
+      if (!storedFields) throw new Error("the uploaded image could not be retained with these split sections");
+      var storedOutlineEntry = Object.assign({}, outlineEntry, storedFields);
+      var newRoof = Object.assign({
         id: genId("roof"), label: label, roofSystem: "",
-        roof_base_map_type: null, roof_base_map_url: null, roof_base_map_bounds: null,
-        roof_assets: [], roof_outlines: [outlineEntry], createdAt: Date.now(), updatedAt: Date.now()
-      };
+        roof_base_map_type: null, roof_base_map_url: null, roof_base_map_bounds: null, roof_base_map_synthetic: null,
+        roof_assets: [], roof_outlines: [storedOutlineEntry], createdAt: Date.now(), updatedAt: Date.now()
+      }, splitBaseMapRoof ? rmSyntheticSplitBaseMapFields(splitBaseMapRoof) : {});
       roofs.push(newRoof); /* so later sections' dup-check sees earlier ones from THIS SAME batch too */
       return { roof: newRoof, outlineEntry: outlineEntry };
     });
@@ -5425,7 +5795,18 @@ async function rmSaveSplitSectionsToBuilding(buildingId){
     await rmLoadLinkedAssets();
     rmUpdateExportHint();
     rmUpdateControlVisibility();
-  }catch(e){ toast("Couldn't save the split sections: " + e.message); }
+  }catch(e){
+    /* Same data-loss class as rmSaveOutlineToBuilding()'s catch: these
+       sections come from a FRESH trace that exists nowhere else yet, so a
+       failed write here used to lose it. Keep the source outline on the
+       device so he can Load it and re-split/re-save once he has signal.
+       Deliberately NOT auto-retried: replaying a multi-section write (new
+       roof ids, labels, dup-renames) isn't idempotent the way a single-
+       outline append is, so it's a manual retry by design.
+       (rmSplitSavedRoof()'s catch below needs no fail-safe -- that roof is
+       already saved on the building, so a failed split loses nothing.) */
+    rmFailSafeSaveOutline(rmState.outline, { reason: "split", error: e });
+  }
 }
 /* Splitting a roof that's ALREADY saved/linked -- the gap the previous
    pass deliberately left ("replacing one real roof's history with several
@@ -5464,6 +5845,10 @@ async function rmSaveSplitSectionsToExistingRoof(buildingId, roofId){
     if (origIdx === -1) throw new Error("couldn't find the original roof");
     var origRoof = roofs[origIdx];
     var baseOutline = rmState.outline || {};
+    if (!await rmEnsureSyntheticOrthoFrameForSave(buildingId, origRoof, true)){
+      rmFailSafeSaveSplitOutline("split-synthetic-ortho-refused");
+      return false;
+    }
 
     /* Section 0 -- update the EXISTING roof in place: new outline entry
        appended (never overwrites/removes the old one -- append-only, same
@@ -5477,7 +5862,11 @@ async function rmSaveSplitSectionsToExistingRoof(buildingId, roofId){
     };
     rmCopyOutlineSourceMetadata(baseOutline, primaryOutline);
     rmDropSplitMeasurementMetadata(primaryOutline, baseOutline);
-    origRoof.roof_outlines = (origRoof.roof_outlines || []).concat([primaryOutline]);
+    var primaryStoredFields = rmSplitOutlineStorageFields(primaryOutline, origRoof);
+    if (!primaryStoredFields) throw new Error("the uploaded image could not be retained with these split sections");
+    origRoof.roof_outlines = (origRoof.roof_outlines || []).concat([
+      Object.assign({}, primaryOutline, primaryStoredFields)
+    ]);
     var renamed = [];
     if ((origRoof.label || "Roof").trim() !== sections[0].label.trim()){
       var otherRoofs = roofs.filter(function(r){ return r.id !== roofId; });
@@ -5510,11 +5899,14 @@ async function rmSaveSplitSectionsToExistingRoof(buildingId, roofId){
       };
       rmCopyOutlineSourceMetadata(baseOutline, outlineEntry);
       rmDropSplitMeasurementMetadata(outlineEntry, baseOutline);
-      var newRoof = {
+      var storedFields = rmSplitOutlineStorageFields(outlineEntry, origRoof);
+      if (!storedFields) throw new Error("the uploaded image could not be retained with these split sections");
+      var storedOutlineEntry = Object.assign({}, outlineEntry, storedFields);
+      var newRoof = Object.assign({
         id: genId("roof"), label: label, roofSystem: "",
-        roof_base_map_type: null, roof_base_map_url: null, roof_base_map_bounds: null,
-        roof_assets: [], roof_outlines: [outlineEntry], createdAt: Date.now(), updatedAt: Date.now()
-      };
+        roof_base_map_type: null, roof_base_map_url: null, roof_base_map_bounds: null, roof_base_map_synthetic: null,
+        roof_assets: [], roof_outlines: [storedOutlineEntry], createdAt: Date.now(), updatedAt: Date.now()
+      }, rmSyntheticSplitBaseMapFields(origRoof));
       roofs.push(newRoof);
       return newRoof;
     });
@@ -5547,7 +5939,9 @@ async function rmSaveSplitSectionsToExistingRoof(buildingId, roofId){
     rmRenderRoofSwitcher(buildingId, roofs, roofId);
     rmRenderExportRoofSelect(buildingId, roofs, roofId);
     await rmDrawReferenceRoofs(buildingId, bld, roofId);
-  }catch(e){ toast("Couldn't save the split sections: " + e.message); }
+  }catch(e){
+    rmFailSafeSaveSplitOutline("split", e);
+  }
 }
 
 function rmConfirmSiteBoundarySave(){
@@ -5559,6 +5953,12 @@ async function rmSaveOutlineToBuilding(buildingId, roofId){
   if (!rmState.outline){ toast("Generate a roof outline first."); return; }
   if (!rmConfirmSiteBoundarySave()) return;
   toast("Saving…");
+  /* Captured BEFORE the save assigns a fresh entry id below. If this outline
+     was loaded back off the device from a previous failed save (rmLoadLocal
+     Outline()), this is that fail-safe copy's id -- so a successful save here
+     can retire the device copy AND its pending retry, and the trace never
+     ends up on the building twice. See rmResolveFailSafeCopy(). */
+  var priorOutlineId = rmState.outline.id || null;
   try{
     var snap = await fdb.collection("buildings").doc(buildingId).get();
     var bld = snap.exists ? snap.data() : {};
@@ -5570,8 +5970,27 @@ async function rmSaveOutlineToBuilding(buildingId, roofId){
        first roof is unambiguous. */
     var roof = roofs.find(function(r){ return r.id === roofId; }) || roofs[0];
     rmRefreshOutlineMeasurementModel(rmState.outline);
-    var entry = Object.assign({}, rmState.outline, { id: genId("rmo") });
-    roof.roof_outlines = (roof.roof_outlines || []).concat([entry]);
+    if (!await rmEnsureSyntheticOrthoFrameForSave(buildingId, roof, true)){
+      rmFailSafeSaveOutline(rmState.outline, {
+        reason: "synthetic-ortho-refused",
+        toastMessage: "Save refused so this roof would not be saved against the wrong image. Your traced outline is saved on THIS DEVICE."
+      });
+      return false;
+    }
+    /* Normally a fresh id (append-only: every save is a new roof_outlines[]
+       entry, newest is current). The ONE exception is a trace that's already
+       sitting on the device from a failed save -- it keeps its id, so a retry
+       updates that one pending outline instead of becoming a second copy of
+       the same roof. See rmPendingIdFor(). */
+    var entry = Object.assign({}, rmState.outline, rmOutlineStorageFields(rmState.outline, null), { id: rmPendingIdFor(rmState.outline) || genId("rmo") });
+    /* Replay guard. entry.id is brand new on the normal path, so this always
+       appends exactly as before. It can only match when we're re-saving a trace
+       that was pending from a failed attempt -- and if that attempt's write
+       actually DID land (response lost on a flaky link), appending again would
+       put the same roof on the building twice. Replace instead. */
+    var existingIdx = (roof.roof_outlines || []).findIndex(function(o){ return o && o.id === entry.id; });
+    if (existingIdx >= 0) roof.roof_outlines[existingIdx] = entry;
+    else roof.roof_outlines = (roof.roof_outlines || []).concat([entry]);
     /* Record the saved id back onto the in-memory outline so a later
        rmCalibrateEdge() call can find+update this exact saved entry
        instead of only updating the on-screen copy. See "Self-scaling
@@ -5580,6 +5999,13 @@ async function rmSaveOutlineToBuilding(buildingId, roofId){
     var roofIdx = roofs.findIndex(function(r){ return r.id === roof.id; });
     roofs[roofIdx] = roof;
     await saveBuildingRoofs(buildingId, roofs);
+    /* The write landed. If this trace was sitting on the device from an
+       earlier failed save, retire that copy and its pending retry now --
+       otherwise the same outline could later be re-loaded and saved again
+       (duplicate on the building) or re-pushed by the retry queue. No-op
+       for the normal path, where nothing was ever queued. */
+    rmResolveFailSafeCopy(priorOutlineId);
+    rmResolveFailSafeCopy(entry.id);
     toast("Roof outline saved — add features to it right here ✓");
     closeRmSaveModal();
     rmClearSplitState(); /* this outline is now itself a saved roof -- any pending split of it (a different way of saving the same shape) no longer applies */
@@ -5636,14 +6062,24 @@ async function rmSaveOutlineToBuilding(buildingId, roofId){
        the map in the DOM, so it's the very next thing visible. */
     rmUpdateControlVisibility();
     /* Finding A, part 2: if this outline was traced on an uploaded drone
-       image, retain that image with the roof so it can be reopened later
-       -- deliberately AFTER the outline itself is confirmed saved (the
-       outline always saves regardless of whether this next step
-       succeeds). See rmPersistOrthoBaseMap() and "Ortho upload: persist
-       with the roof for reopening" in DEV_NOTES.md. */
-    if (rmState.orthoActive) rmPersistOrthoBaseMap(buildingId, roof.id);
-    if (rmState.kmlOverlayActive) rmPersistKmlGroundOverlayBaseMap(buildingId, roof.id);
-  }catch(e){ toast("Couldn't save: " + e.message); }
+       image, rmEnsureSyntheticOrthoFrameForSave() already retained that
+       image before any image-frame geometry was committed. */
+    if (rmState.kmlOverlayActive) await rmPersistKmlGroundOverlayBaseMap(buildingId, roof.id);
+    return true;
+  }catch(e){
+    /* THE data-loss fix (Mark, 2026-07-14, live on a production roof: a long
+       trace was dropped when this save failed on weak signal and all he got
+       was a 3-second toast). NEVER let a traced outline die here. Keep it on
+       the device, queue it to retry against this exact building/roof the
+       moment signal returns, and say so LOUDLY and persistently. */
+    rmFailSafeSaveOutline(rmState.outline, {
+      buildingId: buildingId,
+      roofId: roofId || null,
+      buildingName: (typeof bld !== "undefined" && bld && bld.name) ? bld.name : "",
+      error: e
+    });
+    return false;
+  }
 }
 /* THE fix for "RoofMapper can't reopen a saved roof" -- Mark refreshed,
    went back into RoofMapper for a roof Building History shows intact and
@@ -5670,14 +6106,14 @@ async function rmOpenRoofInMapper(buildingId, roofId){
     if (!roof){ toast("Couldn't find that roof."); return; }
     var outlines = roof.roof_outlines || [];
     var outline = outlines[outlines.length - 1]; /* newest is current, same convention as everywhere else */
-    if (!outline || !outline.ring || outline.ring.length < 3){
+    if (!outline || ((!outline.ring || outline.ring.length < 3) && (!outline.imageRing || outline.imageRing.length < 3))){
       toast((roof.label || "This roof") + " has no traced outline yet — use Trace Another Roof to add one.");
       return;
     }
     var map = rmEnsureMap();
     rmState.preserveOrthoOnClear = false; /* opening a roof always rebuilds its OWN base image below, never inherits whatever was on screen before */
     rmClearFootprintLayers(); /* full reset -- footprints/outline/linked state/ortho/geotiff, same clean slate rmEnterMultiRoofCapture() uses */
-    var center = outline.center || rmGeomRingCentroid(outline.ring);
+    var center = outline.center || (outline.ring && outline.ring.length >= 3 ? rmGeomRingCentroid(outline.ring) : RM_ORTHO_ORIGIN);
     rmState.lat = center.lat; rmState.lng = center.lng; rmState.accuracy = null;
 
     /* Base image, if this roof has one persisted -- BEFORE rmDrawFinalOutline()
@@ -5687,6 +6123,8 @@ async function rmOpenRoofInMapper(buildingId, roofId){
       var b = roof.roof_base_map_bounds;
       rmState.orthoOverlayLayer = L.imageOverlay(roof.roof_base_map_url, [[b.south, b.west], [b.north, b.east]]).addTo(map);
       rmState.orthoActive = true;
+      rmState.orthoSynthetic = false;
+      rmState.orthoFrameUrl = null;
       rmState.orthoBounds = b;
     } else if (roof.roof_base_map_type === "sketch" && roof.roof_base_map_synthetic && roof.roof_base_map_url){
       /* RoofMapper's own persisted flat-canvas ortho (Finding A, part 2) --
@@ -5698,16 +6136,12 @@ async function rmOpenRoofInMapper(buildingId, roofId){
          image URL no longer resolves) doesn't block the roof itself from
          opening -- the outline loads regardless, just without its photo. */
       try{
-        var dims = await new Promise(function(res, rej){
-          var img = new Image();
-          img.onload = function(){ res({ w: img.naturalWidth, h: img.naturalHeight }); };
-          img.onerror = function(){ rej(new Error("couldn't reload the saved image")); };
-          img.src = roof.roof_base_map_url;
-        });
-        var computed = rmComputeOrthoBounds(dims.w, dims.h);
+        var computed = await rmComputeOrthoBoundsForImageUrl(roof.roof_base_map_url);
         rmState.orthoOverlayLayer = L.imageOverlay(roof.roof_base_map_url, computed.latLngBounds).addTo(map);
         rmState.orthoActive = true;
+        rmState.orthoSynthetic = true;
         rmState.orthoDataUrl = roof.roof_base_map_url;
+        rmState.orthoFrameUrl = roof.roof_base_map_url;
         rmState.orthoBounds = computed.orthoBounds;
       }catch(e){
         toast("Roof opened, but couldn't reload its saved drone image: " + e.message);
@@ -5728,6 +6162,11 @@ async function rmOpenRoofInMapper(buildingId, roofId){
        georeferenced ortho support" in DEV_NOTES.md) -- same result: outline
        loads on plain satellite, no photo underneath. */
 
+    outline = rmOutlineDisplayGeometry(outline, rmState.orthoBounds, roof.roof_base_map_url) || outline;
+    if (!outline.ring || outline.ring.length < 3){
+      toast((roof.label || "This roof") + " was saved in image coordinates, but its base image could not be loaded.");
+      return;
+    }
     rmDrawFinalOutline(outline); /* draws the polygon, edge dims, zooms to it, renders stats -- also resets linked state, restored right after */
     rmState.linkedBuildingId = buildingId;
     rmState.linkedRoofId = roof.id;
@@ -5798,7 +6237,14 @@ async function rmCreateBuildingAndSave(){
     if (!ids.buildingId) throw new Error("couldn't create building (need internet connection)");
     if (rmSplitState.savingAll) await rmSaveSplitSectionsToBuilding(ids.buildingId);
     else await rmSaveOutlineToBuilding(ids.buildingId);
-  }catch(e){ toast("Couldn't create building: " + e.message); }
+  }catch(e){
+    /* Same data-loss class as rmSaveOutlineToBuilding()'s catch: if the
+       building itself couldn't be created (offline / no fdb), the trace was
+       previously dropped with a toast. There's no building to queue a retry
+       against yet, so this is a device-only save -- the notice tells him to
+       Load it and save it once he has signal. */
+    rmFailSafeSaveOutline(rmState.outline, { reason: "no-building", error: e });
+  }
 }
 
 /* ---- Phase 2: inline feature placement (drains, HVAC, scuppers, etc.) on
@@ -5871,8 +6317,9 @@ function rmDrawLinkedAssets(assets){
        spot to show here. They're still saved correctly and still show on
        Building History's own roof map (which supports both coordinate
        systems) -- just not inline on this screen. */
-    if (typeof a.lat !== "number" || typeof a.lng !== "number") return;
-    var m = L.marker([a.lat, a.lng], { icon: assetIcon(a.type) }).addTo(rmState.assetLayerGroup);
+    var ll = rmAssetDisplayLatLng(a);
+    if (!ll) return;
+    var m = L.marker([ll.lat, ll.lng], { icon: assetIcon(a.type) }).addTo(rmState.assetLayerGroup);
     m._rmAssetId = a.id; /* so rmOpenFeatureForm can hide this exact marker while it's being edited */
     m.on("click", function(){ rmEditFeature(a.id); });
     /* Fast duplicate path (Mark: "point is speed when a roof has several of
@@ -5973,7 +6420,7 @@ async function rmDrawReferenceRoofs(buildingId, bld, excludeRoofId){
   roofs.forEach(function(roof){
     var outlines = roof.roof_outlines || [];
     var outline = outlines[outlines.length - 1]; /* newest is current, same convention as everywhere else */
-    if (outline && outline.ring && outline.ring.length >= 3){
+    if (rmShouldDrawWorldOutline(outline, roof)){
       L.polygon(outline.ring.map(function(p){ return [p.lat, p.lng]; }), {
         color: "#607D8B", weight: 2, dashArray: "6,4", fillColor: "#607D8B", fillOpacity: 0.08
       }).addTo(rmState.referenceLayerGroup);
@@ -5983,7 +6430,7 @@ async function rmDrawReferenceRoofs(buildingId, bld, excludeRoofId){
       rmState.referenceRings.push(outline.ring); /* snap targets -- see rmFindSnapTarget() */
     }
     (roof.roof_assets || []).forEach(function(a){
-      if (typeof a.lat !== "number" || typeof a.lng !== "number") return;
+      if (!rmShouldDrawWorldAsset(a, roof)) return;
       L.marker([a.lat, a.lng], { icon: rmRefAssetIcon(a.type) }).addTo(rmState.referenceLayerGroup);
       bounds.push([a.lat, a.lng]);
     });
@@ -6256,8 +6703,9 @@ function rmOpenFeatureForm(existingAsset){
     });
   }
   var start;
-  if (existingAsset && typeof existingAsset.lat === "number"){
-    start = [existingAsset.lat, existingAsset.lng];
+  var existingAssetLatLng = rmAssetDisplayLatLng(existingAsset);
+  if (existingAssetLatLng){
+    start = [existingAssetLatLng.lat, existingAssetLatLng.lng];
   } else if (rmState.outline){
     var c = rmGeomRingCentroid(rmState.outline.ring);
     start = [c.lat, c.lng];
@@ -6305,9 +6753,9 @@ async function rmSaveFeature(){
     type: document.getElementById("rm-feature-type").value,
     label: document.getElementById("rm-feature-label").value.trim(),
     notes: document.getElementById("rm-feature-notes").value.trim(),
-    lat: ll.lat, lng: ll.lng, x: null, y: null,
     updatedAt: Date.now()
   };
+  Object.assign(asset, rmAssetPersistenceFields({ lat: ll.lat, lng: ll.lng }));
   try{
     await persistRoofAsset(rmState.linkedBuildingId, rmState.linkedRoofId, asset);
     toast("Roof feature saved ✓");
@@ -6706,6 +7154,304 @@ function rmLoadLocalOutlines(){
 function rmSaveLocalOutlines(list){
   try{ localStorage.setItem(RM_LOCAL_KEY, JSON.stringify(list)); }catch(e){ toast("Couldn't save locally: " + e.message); }
 }
+
+/* ================= roof-outline save fail-safe (DATA-LOSS GUARD) =================
+   Mark, 2026-07-14, live on a production roof: he traced a long outline, hit
+   Save, the write to the building failed (weak signal), and the trace was GONE
+   -- the only notice was a 3-second toast that vanished. The save path had no
+   fallback and no retry: saveBuildingRoofs() (js/core.js) is a bare network
+   .set(), and the offline sync queue there covers WORK ORDERS only.
+
+   Two independent guarantees, so a trace can never die on the roof again:
+
+   1. THE TRACE ALWAYS SURVIVES. Every save path that can lose a fresh outline
+      now falls back to the existing on-device store (RM_LOCAL_KEY, the same
+      one the "Saved On This Device" panel reads) instead of dropping it. This
+      alone is sufficient -- everything below is convenience on top of it.
+
+   2. IT RETRIES ITSELF. When we know the target building, the outline is also
+      queued here and re-pushed automatically the moment signal returns, the
+      same way work orders already behave.
+
+   WHY A SEPARATE QUEUE FROM core.js's SYNC_QUEUE_KEY (asked for, deliberately
+   not done): that queue is work-order-shaped, not generic. tryFlushSyncQueue()
+   resolves every entry via loadDb().orders[id] and calls cloudSaveOrder() /
+   syncPinCorrectionsToHistory() / logReportAndHistoryEvent() on it -- and,
+   critically, any entry it can't find in db.orders it SILENTLY DROPS from the
+   queue ("if (!stored){ markSynced(id); continue; }"). Putting a roof outline
+   in there would hit that branch and quietly delete the retry -- reintroducing
+   the exact silent-loss bug this fix exists to kill. Making it polymorphic
+   means surgery on the live, working work-order sync path while production is
+   up. Not worth it: this queue reuses the proven PATTERN (localStorage record,
+   attempt counting, backoff, flush on 'online'/refocus) with zero blast radius
+   on work orders.
+
+   REPLAY SAFETY (no double-save): a queued retry re-reads the building and
+   skips the write if an outline with this same stable id is already on the
+   roof -- so a write that actually landed but whose response never made it
+   back over a flaky link is never appended twice. A successful save likewise
+   retires both the queue entry and the device copy. */
+var RM_PENDING_KEY = "roofmapper-pending-building-saves-v1";
+var RM_PENDING_MAX_ATTEMPTS = 6;
+
+function rmLoadPendingSaves(){
+  try{ return JSON.parse(localStorage.getItem(RM_PENDING_KEY) || "{}"); }catch(e){ return {}; }
+}
+function rmSavePendingSaves(q){
+  try{ localStorage.setItem(RM_PENDING_KEY, JSON.stringify(q)); }
+  catch(e){ console.warn("pending roof-save queue write failed", e); }
+}
+function rmMarkPendingSaveFailed(outlineId, err){
+  var q = rmLoadPendingSaves();
+  if (!q[outlineId]) return;
+  q[outlineId].attempts = (q[outlineId].attempts || 0) + 1;
+  q[outlineId].lastError = (err && err.message) ? err.message : String(err);
+  q[outlineId].lastAttemptAt = Date.now();
+  rmSavePendingSaves(q);
+  rmRenderPendingSaveStatus();
+}
+function rmClearPendingSave(outlineId){
+  if (!outlineId) return;
+  var q = rmLoadPendingSaves();
+  if (q[outlineId]){ delete q[outlineId]; rmSavePendingSaves(q); }
+  rmRenderPendingSaveStatus();
+}
+/* Retires a fail-safe device copy (and any pending retry for it) once its
+   outline is confirmed on the building -- whether that confirmation came from
+   the auto-retry or from him loading it and saving it by hand. Only ever
+   touches copies THIS fail-safe created (savedByFailSafe); an outline he
+   deliberately saved with the "Save on this Device" button is his, and is
+   never silently deleted out from under him. */
+function rmResolveFailSafeCopy(outlineId){
+  if (!outlineId) return;
+  /* Device copy FIRST, then the queue entry. rmRenderPendingSaveStatus() reads
+     a fail-safe copy with no queue entry as "device-only, still needs saving",
+     so clearing the queue first would leave that alarming banner up for an
+     outline that just saved successfully. */
+  var list = rmLoadLocalOutlines();
+  var next = list.filter(function(o){ return !(o && o.savedByFailSafe && o.id === outlineId); });
+  if (next.length !== list.length){
+    rmSaveLocalOutlines(next);
+    rmRenderLocalSaves();
+  }
+  rmClearPendingSave(outlineId);
+  rmRenderPendingSaveStatus();
+}
+/* Is this outline already carrying a fail-safe id from an EARLIER failed save?
+   If so, the next attempt has to reuse that same id rather than mint a fresh
+   one -- otherwise every retry of the same trace becomes a new "outline" with
+   its own device copy and its own queue entry, and they all eventually land on
+   the building as duplicates of each other. Returns null for a first-time save
+   (fresh id, normal path) and for re-saving a new version of an already-saved
+   outline (which is a genuinely new append-only entry, by design). */
+function rmPendingIdFor(outline){
+  if (!outline || !outline.id) return null;
+  if (rmLoadPendingSaves()[outline.id]) return outline.id;
+  var onDevice = rmLoadLocalOutlines().some(function(o){
+    return o && o.savedByFailSafe && o.id === outline.id;
+  });
+  return onDevice ? outline.id : null;
+}
+/* The fallback itself. Called from every save-path catch that could otherwise
+   drop a fresh trace. Never throws -- it is the last line of defense, so a
+   failure in here must not be able to take the outline down with it. */
+function rmFailSafeSaveOutline(outline, opts){
+  opts = opts || {};
+  if (!outline) return null;
+  try{
+    var outlineId = rmPendingIdFor(outline) || genId("rmo");
+    outline.id = outlineId; /* stable id: ties the device copy to its retry */
+    var rec = Object.assign({}, outline, {
+      id: outlineId,
+      createdAt: outline.createdAt || Date.now(),
+      savedByFailSafe: true,
+      failSafeAt: Date.now(),
+      failSafeReason: opts.reason || "save-failed",
+      pendingBuildingId: opts.buildingId || null,
+      pendingBuildingName: opts.buildingName || ""
+    });
+    if (typeof rec.areaSqFt !== "number") rec.areaSqFt = 0; /* rmRenderLocalSaves() calls .toFixed() on this */
+    /* Replace-not-duplicate: a repeated failure for the same outline updates
+       its one device copy rather than stacking up copies of the same trace. */
+    var list = rmLoadLocalOutlines().filter(function(o){ return !(o && o.id === outlineId); });
+    list.unshift(rec);
+    rmSaveLocalOutlines(list.slice(0, 50));
+    rmRenderLocalSaves();
+
+    if (opts.buildingId){
+      var q = rmLoadPendingSaves();
+      var existing = q[outlineId];
+      q[outlineId] = {
+        outlineId: outlineId,
+        buildingId: opts.buildingId,
+        roofId: opts.roofId || null,
+        buildingName: opts.buildingName || "",
+        outline: outline,
+        queuedAt: (existing && existing.queuedAt) || Date.now(),
+        attempts: (existing && existing.attempts) || 0,
+        lastError: (opts.error && opts.error.message) ? opts.error.message : (opts.error ? String(opts.error) : null),
+        lastAttemptAt: Date.now()
+      };
+      rmSavePendingSaves(q);
+    }
+    rmRenderPendingSaveStatus();
+    /* Toast for the immediate moment; the sticky bar above is what actually
+       has to survive him looking away. */
+    toast(opts.toastMessage || "Couldn't reach the server — your roof is saved on THIS DEVICE ✓");
+    var bar = document.getElementById("roof-sync-status-bar");
+    if (bar && bar.scrollIntoView) bar.scrollIntoView({ block: "nearest" });
+    return rec;
+  }catch(e){
+    /* Truly nothing left to fall back to (e.g. localStorage itself is full or
+       blocked). Say so as loudly as the platform allows -- an alert() blocks,
+       which is exactly right here: this is the one case where the trace really
+       is about to be lost, and he needs to know BEFORE he walks off the roof. */
+    console.error("roof-outline fail-safe could not persist the trace", e);
+    try{ alert("URGENT: this roof outline could NOT be saved to the building OR to this device (" +
+      (e && e.message ? e.message : "unknown error") + ").\n\nDo not close this page. " +
+      "Export the outline (PDF/DXF) now, or free up space on the device and save again."); }catch(_){}
+    return null;
+  }
+}
+/* Sticky, persistent, unmissable -- the whole point (a 3-second toast is what
+   let the original loss happen). Stays up until the outline is actually on the
+   building. Split into two states because they need different actions from him:
+   queued (we know the building, it will retry itself) vs. device-only (we never
+   got a building, so he has to Load it and save it). */
+function rmRenderPendingSaveStatus(){
+  var host = document.getElementById("roof-sync-status-bar");
+  if (!host) return;
+  var q = rmLoadPendingSaves();
+  var ids = Object.keys(q);
+  var deviceOnly = rmLoadLocalOutlines().filter(function(o){
+    return o && o.savedByFailSafe && !q[o.id];
+  });
+  if (!ids.length && !deviceOnly.length){
+    host.style.display = "none";
+    host.innerHTML = "";
+    return;
+  }
+  host.style.display = "";
+  var parts = [];
+  var stuck = ids.filter(function(id){ return (q[id].attempts || 0) >= RM_PENDING_MAX_ATTEMPTS; });
+  var retrying = ids.filter(function(id){ return (q[id].attempts || 0) < RM_PENDING_MAX_ATTEMPTS; });
+  var online = (typeof navigator === "undefined" || !navigator) ? true : navigator.onLine !== false;
+  if (retrying.length){
+    parts.push('<div><b>⚠️ Couldn\'t reach the server — ' + retrying.length + ' roof outline' +
+      (retrying.length === 1 ? " is" : "s are") + ' saved on THIS DEVICE.</b><br>' +
+      (online ? "Trying to finish saving " : "You're offline. We'll finish saving ") +
+      retrying.map(function(id){
+        return esc(q[id].buildingName || "the building");
+      }).join(", ") + (online ? " now…" : " to the building automatically when you have signal.") +
+      ' Your trace is safe either way — don\'t re-trace it.' +
+      ' <button class="btn" style="padding:2px 8px;font-size:12px" onclick="rmFlushPendingBuildingSaves()">Retry now</button></div>');
+  }
+  if (stuck.length){
+    parts.push('<div style="margin-top:6px"><b>⚠️ ' + stuck.length + ' roof outline' +
+      (stuck.length === 1 ? "" : "s") + " couldn't be saved to the building after repeated tries.</b><br>" +
+      'Your trace is SAFE on this device — do not re-trace it. When you have a solid signal, ' +
+      'open <b>Saved On This Device</b> below, tap <b>Load</b>, then <b>Save Outline to Building</b>. ' +
+      '<button class="btn" style="padding:2px 8px;font-size:12px" onclick="rmFlushPendingBuildingSaves()">Retry now</button></div>');
+  }
+  if (deviceOnly.length){
+    parts.push('<div style="margin-top:6px"><b>⚠️ ' + deviceOnly.length + ' roof outline' +
+      (deviceOnly.length === 1 ? " is" : "s are") + ' saved on THIS DEVICE only, not on a building yet.</b><br>' +
+      'Your trace is safe — don\'t re-trace it. When you have signal, open <b>Saved On This Device</b> below, ' +
+      'tap <b>Load</b>, then <b>Save Outline to Building</b> to finish saving it.</div>');
+  }
+  host.innerHTML = parts.join("");
+}
+/* Can we even attempt the cloud write right now? Deliberately tolerant of a
+   missing fdb/navigator rather than assuming them: this file is loaded whole
+   into a bare vm sandbox by the test suite (see tests/reportScaleProvenance
+   .test.js), and a bare `!fdb` there is a ReferenceError, not false. */
+function rmCanReachCloud(){
+  if (typeof fdb === "undefined" || !fdb) return false;
+  if (typeof navigator !== "undefined" && navigator && navigator.onLine === false) return false;
+  return true;
+}
+/* Auto-retry. Idempotent by construction: re-reads the building and only
+   appends if this exact outline id isn't already on the roof, so replaying a
+   write that actually landed is a no-op rather than a duplicate. */
+var rmPendingFlushInFlight = false;
+async function rmFlushPendingBuildingSaves(){
+  if (rmPendingFlushInFlight || !rmCanReachCloud()) return;
+  var q = rmLoadPendingSaves();
+  var ids = Object.keys(q);
+  if (!ids.length) return;
+  rmPendingFlushInFlight = true;
+  try{
+    for (var i = 0; i < ids.length; i++){
+      var id = ids[i];
+      var item = q[id];
+      /* Unlike the work-order queue, a malformed/targetless entry is NOT
+         silently dropped -- the device copy is the source of truth and stays
+         put; we just stop pretending we can auto-retry it. */
+      if (!item || !item.buildingId || !item.outline){ rmClearPendingSave(id); continue; }
+      try{
+        var snap = await fdb.collection("buildings").doc(item.buildingId).get();
+        var bld = snap.exists ? snap.data() : {};
+        var roofs = getBuildingRoofs(bld);
+        var target = item;
+        var roof = roofs.find(function(r){ return r.id === target.roofId; }) || roofs[0];
+        if (!roof) throw new Error("couldn't find that roof on the building");
+        var outlines = roof.roof_outlines || [];
+        var alreadyThere = outlines.some(function(o){ return o && o.id === target.outlineId; });
+        if (!alreadyThere){
+          roof.roof_outlines = outlines.concat([Object.assign({}, item.outline, { id: item.outlineId })]);
+          var idx = roofs.findIndex(function(r){ return r.id === roof.id; });
+          roofs[idx] = roof;
+          await saveBuildingRoofs(item.buildingId, roofs);
+        }
+        /* Confirmed on the building: retire the retry AND the device copy, so
+           the same trace can't be saved a second time later. */
+        rmResolveFailSafeCopy(item.outlineId);
+        toast("Roof outline finished saving to " + (item.buildingName || "the building") + " ✓");
+      }catch(e){
+        rmMarkPendingSaveFailed(id, e);
+      }
+    }
+  } finally {
+    rmPendingFlushInFlight = false;
+  }
+}
+/* Same triggers the work-order queue already uses -- kept local to RoofMapper
+   so core.js's sync path is untouched. */
+window.addEventListener("online", function(){ rmRenderPendingSaveStatus(); rmFlushPendingBuildingSaves(); });
+window.addEventListener("offline", function(){ rmRenderPendingSaveStatus(); });
+document.addEventListener("visibilitychange", function(){
+  if (document.visibilityState === "visible") rmFlushPendingBuildingSaves();
+});
+var rmPendingPollTimer = setInterval(function(){
+  var q = rmLoadPendingSaves();
+  var ids = Object.keys(q);
+  if (!ids.length) return;
+  /* Backoff, same shape as core.js's scheduleSyncPoll(): 5s, 10s, 20s... capped
+     at 2 min, so a genuinely dead connection isn't hammered. */
+  var maxAttempts = ids.reduce(function(m, id){ return Math.max(m, q[id].attempts || 0); }, 0);
+  var delayMs = Math.min(5000 * Math.pow(2, maxAttempts), 120000);
+  var lastTry = ids.reduce(function(min, id){ return Math.min(min, (q[id].lastAttemptAt || 0)); }, Infinity);
+  if (lastTry === Infinity || Date.now() - lastTry >= delayMs) rmFlushPendingBuildingSaves();
+}, 5000);
+/* No-op in a browser (DOM timers have no unref); in Node -- where the test
+   suite loads this whole file into a vm -- it stops this poll from holding the
+   process open after the tests finish. */
+if (rmPendingPollTimer && typeof rmPendingPollTimer.unref === "function") rmPendingPollTimer.unref();
+/* Don't let him walk away thinking it saved. core.js has the same guard for
+   unsynced work orders; browsers show their own generic text either way. */
+window.addEventListener("beforeunload", function(e){
+  if (Object.keys(rmLoadPendingSaves()).length){ e.preventDefault(); e.returnValue = ""; }
+});
+/* An outline left unsaved in a PREVIOUS session (he closed the app on the roof
+   and drove home) has to be shouting the moment the app opens -- not only once
+   he happens to navigate back into RoofMapper. The bar lives outside the view,
+   so render it at startup regardless of which view he lands on. */
+(function rmInitPendingSaveStatus(){
+  function go(){ rmRenderPendingSaveStatus(); rmFlushPendingBuildingSaves(); }
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", go);
+  else go();
+})();
+
 function rmSaveLocally(){
   if (!rmState.outline){ toast("Generate a roof outline first."); return; }
   if (!rmConfirmSiteBoundarySave()) return;
@@ -6719,11 +7465,20 @@ function rmRenderLocalSaves(){
   var list = rmLoadLocalOutlines();
   var panel = document.getElementById("rm-local-panel");
   var host = document.getElementById("rm-local-list");
+  if (!panel || !host) return;
   if (!list.length){ panel.style.display = "none"; return; }
   panel.style.display = "";
   host.innerHTML = list.map(function(o){
-    return '<div class="rm-local-item"><div class="info"><b>' + esc(rmOutlineTitle(o)) + '</b>' +
-      o.areaSqFt.toFixed(0) + ' sq ft · ' + new Date(o.createdAt).toLocaleDateString() + '</div>' +
+    /* An outline that landed here because its save to the building FAILED is
+       called out as such -- it isn't a casual local copy, it's unfinished work
+       that still needs to get onto a building. */
+    var badge = o.savedByFailSafe
+      ? '<span style="color:#D64545;font-weight:600">⚠️ Not saved to ' +
+        esc(o.pendingBuildingName || "a building") + ' yet — </span>'
+      : "";
+    var area = (typeof o.areaSqFt === "number" ? o.areaSqFt : 0).toFixed(0);
+    return '<div class="rm-local-item"><div class="info"><b>' + esc(rmOutlineTitle(o)) + '</b>' + badge +
+      area + ' sq ft · ' + new Date(o.createdAt).toLocaleDateString() + '</div>' +
       '<button class="btn" onclick="rmLoadLocalOutline(\'' + o.id + '\')">Load</button>' +
       '<button class="btn danger" onclick="rmDeleteLocalOutline(\'' + o.id + '\')">Delete</button></div>';
   }).join("");
@@ -6732,6 +7487,13 @@ function rmLoadLocalOutline(id){
   var o = rmLoadLocalOutlines().find(function(x){ return x.id === id; });
   if (!o) return;
   rmCancelTrace();
+  /* Strip the fail-safe's own bookkeeping so it never rides along into the
+     roof_outlines[] entry a subsequent save writes to Firestore. The id is
+     deliberately KEPT: rmSaveOutlineToBuilding() reads it as priorOutlineId to
+     retire this device copy (and its pending retry) once the save lands. */
+  o = Object.assign({}, o);
+  delete o.savedByFailSafe; delete o.failSafeAt; delete o.failSafeReason;
+  delete o.pendingBuildingId; delete o.pendingBuildingName;
   rmState.outline = o;
   rmClearLinkedFeatures(); /* a locally-saved outline has no building link -- clear any previous one */
   var map = rmEnsureMap();
@@ -6748,8 +7510,13 @@ function rmLoadLocalOutline(id){
   toast("Loaded saved outline — ready to save to a building or export.");
 }
 function rmDeleteLocalOutline(id){
+  /* Deleting the device copy is him discarding the trace on purpose -- so drop
+     any pending auto-retry for it too, rather than having it reappear on the
+     building later. */
+  rmClearPendingSave(id);
   rmSaveLocalOutlines(rmLoadLocalOutlines().filter(function(x){ return x.id !== id; }));
   rmRenderLocalSaves();
+  rmRenderPendingSaveStatus();
 }
 
 /* Mobile: auto-hide the header on scroll-down, show again on scroll-up --

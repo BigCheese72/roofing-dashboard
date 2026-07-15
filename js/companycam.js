@@ -17,9 +17,26 @@ function closeCC(){
   ccSelected = {};
   ccTargetFindingId = null;
 }
+/* ccApi()/ccApiPost() are the ONLY two places this app talks to
+   netlify/functions/companycam.js -- every CompanyCam action (projects,
+   project_detail, photos, image, upload_document) funnels through one of
+   them, which is why attaching the token here covers every call site.
+
+   As of 2026-07-13 companycam.js REQUIRES a verified Firebase ID token on
+   every action and 401s without one (it was previously wide open to the
+   internet -- project names, customer addresses, jobsite photos, and
+   document upload into Mark's account, all on the server's own CompanyCam
+   token). authHeaders() (js/core.js -- loaded before this file) attaches it
+   as `Authorization: Bearer <token>` via getIdToken(), which auto-refreshes
+   the ~1hr-lived token, so a tech with a tab open all day never sees a
+   spurious 401. Note ccApi() is a GET and previously sent no headers at all;
+   it sends the Authorization header now. The Content-Type authHeaders() also
+   sets is harmless on a bodyless GET. */
 async function ccApi(params){
   var qs = Object.keys(params).map(function(k){ return k + "=" + encodeURIComponent(params[k]); }).join("&");
-  var r = await fetch("/.netlify/functions/companycam?" + qs);
+  var r = await fetch("/.netlify/functions/companycam?" + qs, {
+    headers: await authHeaders()
+  });
   var out = null;
   try{ out = await r.json(); }catch(e){}
   if (!r.ok || !out) throw new Error((out && out.error) || ("server error " + r.status));
@@ -28,13 +45,58 @@ async function ccApi(params){
 async function ccApiPost(body){
   var r = await fetch("/.netlify/functions/companycam", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: await authHeaders(),
     body: JSON.stringify(body)
   });
   var out = null;
   try{ out = await r.json(); }catch(e){}
   if (!r.ok || !out) throw new Error((out && out.error) || ("server error " + r.status));
   return out;
+}
+/* "Undo push" -- removes a photo THIS app pushed into the linked CompanyCam
+   project's feed (CompanyCam's UI won't let a user delete an integration-owned
+   photo, but our token can). The photo stays on the work order; only the copy
+   in the CompanyCam feed is removed. Admin/owner only, and the server can only
+   ever delete an id we ourselves stored (ccFeedPhotoId) -- see
+   deletePushedPhotoFromCompanyCam(). Mark-triggered; never automatic. */
+async function removePushedPhotoFromCC(i){
+  if (!isAdmin){ toast("Admin required to remove a CompanyCam photo."); return; }
+  var p = photos[i];
+  if (!p || !p.ccFeedPhotoId){ toast("That photo isn't in the CompanyCam feed."); return; }
+  if (!currentId){ toast("Save the work order first, then remove."); return; }
+  if (!confirm("Remove this photo from the CompanyCam project feed?\n\nIt stays on the work order — only the copy the app pushed to CompanyCam is removed.")) return;
+  toast("Removing from CompanyCam…");
+  try{
+    var out = await ccApiPost({ action: "remove_pushed_photo", workOrderId: currentId, photoIndex: i, expectedFeedPhotoId: p.ccFeedPhotoId });
+    if (out && out.ok){
+      p.ccFeedPhotoId = null;
+      if (typeof renderPhotos === "function") renderPhotos();
+      toast("Removed from CompanyCam ✓" + (out.alreadyGone ? " (was already gone)" : ""));
+    } else if (out && out.skipped){
+      toast(out.reason === "feed_id_mismatch" ? "Photo list changed since it was pushed — save and try again." : "Nothing to remove for that photo.");
+    } else {
+      toast("Couldn't remove that photo from CompanyCam.");
+    }
+  }catch(e){ toast("Couldn't remove from CompanyCam: " + e.message); }
+}
+async function removeAllPushedPhotosFromCC(){
+  if (!isAdmin){ toast("Admin required."); return; }
+  if (!currentId){ toast("Save the work order first, then remove."); return; }
+  var pushed = [];
+  (photos || []).forEach(function(p, i){ if (p && p.ccFeedPhotoId) pushed.push({ p: p, i: i }); });
+  if (!pushed.length){ toast("No app-pushed photos to remove from CompanyCam."); return; }
+  if (!confirm("Remove all " + pushed.length + " app-pushed photo" + (pushed.length === 1 ? "" : "s") +
+    " from this work order's CompanyCam feed?\n\nThey stay on the work order.")) return;
+  var removed = 0, failed = 0;
+  for (var k = 0; k < pushed.length; k++){
+    toast("Removing " + (k + 1) + " of " + pushed.length + " from CompanyCam…");
+    try{
+      var out = await ccApiPost({ action: "remove_pushed_photo", workOrderId: currentId, photoIndex: pushed[k].i, expectedFeedPhotoId: pushed[k].p.ccFeedPhotoId });
+      if (out && out.ok){ pushed[k].p.ccFeedPhotoId = null; removed++; } else { failed++; }
+    }catch(e){ failed++; }
+  }
+  if (typeof renderPhotos === "function") renderPhotos();
+  toast(removed + " removed from CompanyCam ✓" + (failed ? ", " + failed + " couldn't be removed" : "") + ".");
 }
 /* Pulls CompanyCam project metadata + photo metadata (ids/urls/timestamps only —
    never re-downloads full images) and stores it in Firestore so this building's
@@ -308,15 +370,84 @@ async function ccImport(){
     toast("No CompanyCam photos were imported" + (fail ? " (" + fail + " failed)" : "") + ".");
   }
 }
+/* The CompanyCam link banner now has TWO possible hosts, not one:
+   #cc-link-info (inside the global Photo Documentation card, where it has
+   always lived -- visible for every type EXCEPT Change Order) and
+   #cc-link-info-co (inside the Change Order Details card). onWoTypeChange()
+   hides the whole global photos card for a Change Order, which took the
+   banner AND the "Import from CompanyCam" button down with it -- that card
+   was the ONLY CompanyCam entry point a Change Order had (regression from
+   cac0f84/88dded9). Rendering into every host that exists, rather than
+   moving the element, keeps ONE link and ONE source of truth
+   (ccLinkedProjectId) while showing it wherever the current form actually
+   displays it. Whichever host sits inside a hidden card simply isn't seen.
+   See "Change Order CompanyCam link" in DEV_NOTES.md. */
+var CC_LINK_INFO_HOST_IDS = ["cc-link-info", "cc-link-info-co"];
+/* Whether the standalone building-level "Link / Import from CompanyCam" control
+   (#wo-cc-link-row) shows for a work-order type. It exists to give the types
+   whose per-finding capture HIDES the global import row (Leak, Inspection,
+   Warranty) a visible way to link CompanyCam at the building level. Change Order
+   has its own control (#cc-link-info-co); Repair keeps the global import row.
+   The link itself is building-level regardless of where it's initiated --
+   collect() writes companyCamProjectId for every type and it's saved onto the
+   building, so all report types for that address inherit it (bpSelectBuilding). */
+function ccBuildingLinkControlVisible(woType){
+  return woType !== "Change Order" && woType !== "Repair";
+}
 function renderCCLinkInfo(){
-  var host = document.getElementById("cc-link-info");
-  if (!host) return;
-  if (!ccLinkedProjectId){ host.innerHTML = ""; return; }
-  host.innerHTML =
+  var linkedHtml = !ccLinkedProjectId ? "" :
     '<div class="cc-link">\ud83d\udd17 Locked to CompanyCam project: <b>' + esc(ccLinkedProjectName || ccLinkedProjectId) + '</b>' +
     '<span class="sp"></span><span class="hint" style="margin:0">Photos and history sync automatically.</span>' +
     (isAdmin ? '<button class="btn danger" onclick="unlinkCC()">Unlink (admin)</button>' : '') +
     '</div>';
+  CC_LINK_INFO_HOST_IDS.forEach(function(id){
+    var host = document.getElementById(id);
+    if (!host) return;
+    if (ccLinkedProjectId){ host.innerHTML = linkedHtml; return; }
+    /* Unlinked: the global host stays empty exactly as before (it sits
+       directly under an "Import from CompanyCam" button that already says
+       what to do). The Change Order host says it out loud instead, because
+       "not linked" is precisely the state that silently skips the PDF push
+       -- uploadLinkedPdfToCompanyCam() returns { skipped:true } with no
+       linked project, which is exactly the failure Mark could never see. */
+    host.innerHTML = (id === "cc-link-info-co") ?
+      '<p class="hint" style="margin:8px 0 0">No CompanyCam project linked yet \u2014 the signed PDF will not be saved to CompanyCam until one is.</p>' : "";
+  });
+}
+/* Inherits the building's durable CompanyCam link onto the work order that's
+   currently open -- exactly what bpSelectBuilding() already does when a
+   building is picked, but WITHOUT requiring the picker at all (a Change Order
+   started from the Home tile and typed straight into never touches it).
+   buildings/{id}.companyCamProjectId is the durable link; this only ever
+   READS it.
+
+   Change Order only, deliberately: every other type still shows the global
+   card's own banner and Import button, so nothing about their behavior
+   changes. NEVER creates a CompanyCam project -- it can only adopt one that
+   already exists on the building (the established rule: link and push only,
+   never auto-create from the field). Never clobbers an explicit link made in
+   this session either: the !ccLinkedProjectId guard is re-checked after the
+   await, so a link made mid-flight still wins. */
+async function resolveChangeOrderCompanyCamLink(){
+  if (typeof val !== "function" || val("woType") !== "Change Order") return { skipped: true, reason: "not-a-change-order" };
+  if (ccLinkedProjectId) return { ok: true, alreadyLinked: true, projectId: ccLinkedProjectId };
+  if (!fdb) return { skipped: true, reason: "offline" };
+  var buildingId = (typeof currentWorkOrderBuildingId === "function") ? currentWorkOrderBuildingId() : null;
+  if (!buildingId) return { skipped: true, reason: "no-building" };
+  try{
+    var snap = await fdb.collection("buildings").doc(buildingId).get();
+    if (!snap.exists) return { skipped: true, reason: "no-building-record" };
+    var b = snap.data() || {};
+    if (!b.companyCamProjectId) return { skipped: true, reason: "building-not-linked" };
+    if (ccLinkedProjectId) return { ok: true, alreadyLinked: true, projectId: ccLinkedProjectId };
+    ccLinkedProjectId = b.companyCamProjectId;
+    ccLinkedProjectName = b.companyCamProjectName || b.name || "";
+    renderCCLinkInfo();
+    return { ok: true, linked: true, projectId: ccLinkedProjectId };
+  }catch(e){
+    console.warn("CompanyCam link resolve from building failed", e);
+    return { ok: false, error: e.message };
+  }
 }
 function unlinkCC(){
   if (!isAdmin){ toast("Admin mode required to unlink."); return; }

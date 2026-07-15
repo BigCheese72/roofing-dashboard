@@ -1,0 +1,805 @@
+// Contacts sync — harvest the people Mark actually corresponds with out of his
+// mailbox and turn them into Outlook contacts, enriched from email signatures.
+//
+// DELEGATED Graph (lib/graphDelegatedAuth.js), not app-only: the app-only app
+// registration has no Contacts permission (and Exchange's Application Access
+// Policy gates it besides), whereas the delegated grant Mark consented to on
+// 2026-07-13 includes Contacts.ReadWrite. Every call here is therefore "as
+// Mark", against /me — which is also exactly the blast radius we want: this
+// function cannot touch any other mailbox in the tenant even in principle.
+//
+// SAFETY / SCOPE — this function is deliberately incapable of most things:
+//   * Behind requirePermission(..., "warranty.manage_reports") — the same gate
+//     as outlook.js / graph-selftest.js. Auth runs FIRST, before any env read
+//     or Graph call, so an unauthenticated caller gets 401 and never a 500
+//     that leaks configuration state.
+//   * Mail is READ-ONLY. It issues GETs only. It NEVER PATCHes `isRead`, and
+//     reading a message via Graph does not mark it read as a side effect (that
+//     is an Outlook-client behaviour, not a Graph one) — so the 322 unread in
+//     Mark's inbox stay unread. It never sends, replies, forwards, moves,
+//     deletes, or creates rules.
+//   * The ONLY writes are to /me/contacts, and only via `upsert`, and only for
+//     the exact payload the caller passes. Existing contacts are PATCHed
+//     (merge — Graph only overwrites the properties present in the body), never
+//     replaced or deleted.
+//   * `dryRun: true` on upsert reports what it *would* do and writes nothing.
+//   * It never returns the delegated token, the refresh token, or the client
+//     secret. It returns signature-derived contact fields and a few raw
+//     signature lines (Mark's own mail, shown back to Mark) — not message
+//     bodies wholesale, not subjects.
+//   * URLs found in signatures are recorded as text into the contact's
+//     businessHomePage. Nothing here ever fetches or follows them.
+const { requirePermission } = require("./lib/authGuard");
+const { graphFetchDelegated } = require("./lib/graphDelegatedAuth");
+
+function resp(code, obj) {
+  return { statusCode: code, headers: { "Content-Type": "application/json" }, body: JSON.stringify(obj) };
+}
+
+async function gj(pathOrUrl, options) {
+  const r = await graphFetchDelegated(pathOrUrl, options);
+  const text = await r.text();
+  let json = null;
+  try { json = text ? JSON.parse(text) : null; } catch (e) { /* non-JSON (204 etc.) */ }
+  if (!r.ok) {
+    const err = new Error("Graph " + r.status + " " + ((json && json.error && json.error.code) || "") +
+      " " + ((json && json.error && json.error.message) || String(text).slice(0, 200)));
+    err.statusCode = r.status;
+    throw err;
+  }
+  return json;
+}
+
+// ---------------------------------------------------------------------------
+// NOISE FILTER — what is not a person.
+//
+// Ordered from most to least specific. The bar for exclusion is deliberately
+// "provably not a human correspondent", not "looks spammy": a false exclusion
+// silently loses a real customer, which is worse than a junk contact Mark can
+// delete in two clicks. Anything uncertain is KEPT and flagged for review
+// rather than dropped.
+// ---------------------------------------------------------------------------
+const NOISE_LOCAL = [
+  /^no-?reply/i, /^do-?not-?reply/i, /^donotreply/i, /^bounces?[+@-]/i, /^mailer-daemon/i,
+  /^postmaster/i, /^notifications?[+@-]?/i, /^alerts?[+@-]?/i, /^info$/i, /^support$/i,
+  /^news(letter)?s?$/i, /^marketing$/i, /^updates?$/i, /^billing$/i, /^receipts?$/i,
+  /^invites?$/i, /^team$/i, /^hello$/i, /^automated/i, /^system/i, /^webmaster$/i,
+  /^security$/i, /^account(s)?[-_]?(security|team)?$/i, /^help$/i, /^admin$/i,
+  // Shared/role mailboxes at suppliers and manufacturers. These reply, so they
+  // look like people, but there is no person behind them to put on a card.
+  /^warranty/i, /^repairforwarranty$/i, /^claims?$/i, /^orders?$/i, /^dispatch$/i,
+  /^scheduling$/i, /^estimating$/i, /^bids?$/i, /^quotes?$/i, /^purchasing$/i,
+  /^shipping$/i, /^returns?$/i, /^subscriptions?$/i, /^careers?$/i, /^jobs?$/i,
+  /^(ap|ar|hr)$/i, /^payroll$/i, /^accounting$/i, /^customerservice$/i, /^service$/i,
+];
+
+// Mark's own automated RoofOps mail: workorders@ and the per-job WO#####@ aliases.
+const NOISE_WATKINS = [/^workorders$/i, /^wo\d+$/i, /^feedback$/i];
+
+const NOISE_DOMAIN = [
+  /(^|\.)microsoft\.com$/i, /(^|\.)microsoftonline\.com$/i, /(^|\.)office\.com$/i,
+  /(^|\.)accountprotection\.microsoft\.com$/i,
+  /(^|\.)x\.com$/i, /(^|\.)twitter\.com$/i, /(^|\.)resend\.(com|dev)$/i,
+  /(^|\.)linkedin\.com$/i, /(^|\.)facebook(mail)?\.com$/i, /(^|\.)google\.com$/i,
+  /(^|\.)firebaseapp\.com$/i, /(^|\.)github\.com$/i, /(^|\.)netlify\.(com|app)$/i,
+  /(^|\.)mailchimp(app)?\.com$/i, /(^|\.)sendgrid\.(net|com)$/i, /(^|\.)constantcontact\.com$/i,
+  /(^|\.)hubspot\.com$/i, /(^|\.)otter\.ai$/i, /(^|\.)zoom\.us$/i, /(^|\.)docusign\.(net|com)$/i,
+  /(^|\.)intuit\.com$/i, /(^|\.)quickbooks\.com$/i, /(^|\.)paypal\.com$/i, /(^|\.)indeed\.com$/i,
+  /(^|\.)ziprecruiter\.com$/i, /(^|\.)oracle\.com$/i, /(^|\.)netsuite\.com$/i,
+];
+
+function classify(email, displayName) {
+  const e = String(email || "").toLowerCase().trim();
+  const at = e.indexOf("@");
+  if (at < 1) return { keep: false, reason: "not an email address" };
+  const local = e.slice(0, at);
+  const domain = e.slice(at + 1);
+
+  if (domain === "watkinsroofing.net" && NOISE_WATKINS.some(re => re.test(local))) {
+    return { keep: false, reason: "RoofOps automated mail (" + local + "@)" };
+  }
+  if (NOISE_LOCAL.some(re => re.test(local))) return { keep: false, reason: "role/automated mailbox (" + local + "@)" };
+  if (NOISE_DOMAIN.some(re => re.test(domain))) return { keep: false, reason: "platform/notification sender (" + domain + ")" };
+  // Long random locals are bulk-mailer VERP/bounce addresses, never people.
+  if (/^[a-z0-9]{20,}$/i.test(local) || /=/.test(local)) return { keep: false, reason: "bulk-mailer generated address" };
+  if (/^(mark|marks)$/i.test(local) && domain === "watkinsroofing.net") return { keep: false, reason: "Mark himself" };
+  if (e === "mark.sheppard72@gmail.com") return { keep: false, reason: "Mark himself (personal address)" };
+
+  const dn = String(displayName || "").trim();
+  if (/\b(newsletter|no.?reply|notification|digest|alerts?)\b/i.test(dn)) {
+    return { keep: false, reason: "automated sender name (\"" + dn + "\")" };
+  }
+  return { keep: true, reason: null };
+}
+
+// ---------------------------------------------------------------------------
+// SIGNATURE PARSING
+//
+// Conservative on purpose: a wrong phone number on a customer's card is worse
+// than a blank field. Every extractor below returns null unless it is fairly
+// sure, and nothing is ever inferred from the message body proper — only from
+// the signature block at the end of the sender's own most recent message.
+// ---------------------------------------------------------------------------
+
+// Cut the reply/forward history off. Everything after the first quote marker
+// belongs to somebody else and must not be mined for this person's details.
+const QUOTE_MARKERS = [
+  /^\s*-{2,}\s*Original Message\s*-{2,}/im,
+  /^\s*_{10,}\s*$/m,
+  /^\s*From:\s*.+$/im,
+  /^\s*On .{3,80}\bwrote:\s*$/im,
+  /^\s*Sent from my /im,
+  /^\s*Get Outlook for /im,
+];
+
+function ownText(body) {
+  let t = String(body || "").replace(/\r\n/g, "\n");
+  let cut = t.length;
+  for (const re of QUOTE_MARKERS) {
+    const m = t.match(re);
+    if (m && m.index != null && m.index < cut) cut = m.index;
+  }
+  return t.slice(0, cut);
+}
+
+// Find the SIGNATURE BLOCK, not merely "the last few lines".
+//
+// Naively taking the tail of the message drags prose in with it — a two-line
+// reply has no signature at all, and "Yes, and the CO for wall panels..." will
+// happily match a company regex on the word "CO". So anchor the block: find an
+// explicit delimiter ("--"), or the last line that is just the sender's own
+// name, or the first line carrying a phone/contact marker, and take from there
+// down. If no anchor exists, there is NO signature — return nothing rather than
+// inventing one out of the body text.
+function sigLines(body, displayName) {
+  const lines = ownText(body).split("\n").map(l => l.replace(/\s+/g, " ").trim()).filter(Boolean);
+  if (!lines.length) return [];
+
+  const name = String(displayName || "").trim().toLowerCase();
+  const nameBits = name.replace(/,/g, " ").split(/\s+/).filter(w => w.length > 2);
+
+  let start = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    const low = l.toLowerCase();
+    if (/^--+\s*$/.test(l) || /^(thanks|thank you|regards|best|sincerely|cheers)[,!.]?$/i.test(l)) {
+      start = i + 1; // delimiter / sign-off: the block starts after it
+      continue;
+    }
+    // A line that is JUST the person's name (not a sentence containing it).
+    if (nameBits.length >= 2 && l.length <= 45 && nameBits.every(b => low.includes(b))) {
+      start = i;
+    }
+  }
+  // Fallback anchor: the first line that carries a phone or a contact label.
+  if (start < 0) {
+    for (let i = 0; i < lines.length; i++) {
+      if (PHONE_RE.test(lines[i]) || /\b(office|mobile|cell|direct|fax|main)\b\s*[:.\-]/i.test(lines[i])) {
+        start = Math.max(0, i - 2);
+        break;
+      }
+    }
+  }
+  if (start < 0 || start >= lines.length) return [];   // no signature — say so
+  return lines.slice(start, start + 12);
+}
+
+const PHONE_RE = /(?:\+?1[\s.\-]?)?\(?\b(\d{3})\)?[\s.\-]?(\d{3})[\s.\-]?(\d{4})\b(?:\s*(?:x|ext\.?|extension)\s*(\d{1,6}))?/i;
+
+function normPhone(m) {
+  const base = "(" + m[1] + ") " + m[2] + "-" + m[3];
+  return m[4] ? base + " x" + m[4] : base;
+}
+
+// Label a phone by the words immediately around it. Unlabelled numbers become
+// the business line only if we don't already have one — never a mobile, since
+// guessing a personal cell wrong is the worst version of this mistake.
+function extractPhones(lines) {
+  const out = { business: null, mobile: null, fax: null, home: null };
+  for (const line of lines) {
+    // A single line often carries several: "Office: 314-968-9366 | Fax: 314-968-1234"
+    const parts = line.split(/\||;|,|•|·/);
+    for (const part of parts) {
+      const m = part.match(PHONE_RE);
+      if (!m) continue;
+      const num = normPhone(m);
+      const before = part.slice(0, m.index).toLowerCase();
+      if (/\b(fax|f)\b\s*[:.\-]?\s*$/.test(before) || /\bfax\b/.test(before)) {
+        if (!out.fax) out.fax = num;
+      } else if (/\b(mobile|cell|cellular|mob|m|c)\b\s*[:.\-]?\s*$/.test(before) || /\b(mobile|cell)\b/.test(before)) {
+        if (!out.mobile) out.mobile = num;
+      } else if (/\b(direct|office|work|main|tel|phone|ph|o|p|t)\b\s*[:.\-]?\s*$/.test(before) || /\b(office|direct|main|phone)\b/.test(before)) {
+        if (!out.business) out.business = num;
+      } else if (/\b(home)\b/.test(before)) {
+        if (!out.home) out.home = num;
+      } else if (!out.business) {
+        out.business = num;
+      }
+    }
+  }
+  return out;
+}
+
+// SaaS/app/tracking hosts that turn up in message bodies and footers but are
+// never the sender's own website. (Wade Sanderson is not employed by CompanyCam.)
+const NOT_A_WEBSITE = /^(app\.|www\.)?(companycam|salesforce|force|my\.salesforce|docusign|calendly|dropbox|box|onedrive|sharepoint|google|goo\.gl|bit\.ly|linkedin|facebook|twitter|instagram|youtube|zoom|teams|outlook|office|microsoft|apple|amazonaws|mailchimp|constantcontact|sendgrid|hubspot|smartsheet|dotloop|adobe|acrobat|wetransfer|sharefile|egnyte|procore|buildertrend)\b/i;
+
+function extractWebsite(lines, senderDomain) {
+  let fallback = null;
+  for (const line of lines) {
+    const m = line.match(/\b((?:https?:\/\/)?(?:www\.)?[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)+)(\/[^\s|]*)?/i);
+    if (!m) continue;
+    let host = m[1].replace(/^https?:\/\//i, "").replace(/^www\./i, "").toLowerCase();
+    if (/@/.test(line) && line.indexOf(host) > line.indexOf("@")) continue; // part of an email address
+    if (/\.(png|jpg|jpeg|gif|svg)$/i.test(host)) continue;
+    if (NOT_A_WEBSITE.test(host)) continue;
+    if (!/\.(com|net|org|co|us|biz|info|io)$/i.test(host)) continue;
+    // A site on the sender's own mail domain is almost certainly their company
+    // site — take it outright. Anything else is only a fallback.
+    if (host === senderDomain || host.endsWith("." + senderDomain) || senderDomain.endsWith("." + host)) {
+      return host;
+    }
+    if (!fallback) fallback = host;
+  }
+  return fallback;
+}
+
+const TITLE_WORDS = /\b(president|vice president|vp|owner|principal|partner|director|manager|supervisor|superintendent|foreman|estimator|sales|account executive|account manager|representative|rep\b|specialist|consultant|engineer|architect|coordinator|administrator|assistant|controller|accountant|analyst|technician|inspector|project manager|pm\b|ceo|cfo|coo|cto|territory|business development|bd\b|operations|service|field|senior|sr\.|jr\.)\b/i;
+const COMPANY_WORDS = /\b(inc\.?|llc|l\.l\.c\.|ltd\.?|co\.?|corp\.?|corporation|company|group|roofing|construction|contractors?|supply|materials|systems|solutions|services|associates|partners|industries|manufacturing|products|insulation|sheet metal|builders|properties|realty|management|consulting|engineering|architects?)\b/i;
+const ADDRESS_RE = /\b\d{1,6}\s+[\w.'-]+(?:\s+[\w.'-]+){0,5}\s*,?\s+[A-Za-z .'-]+,\s*([A-Z]{2})\s+(\d{5})(?:-\d{4})?\b/;
+
+function extractAddress(lines) {
+  for (const line of lines) {
+    const m = line.match(ADDRESS_RE);
+    if (m) {
+      const full = m[0].trim();
+      const state = m[1];
+      const zip = m[2];
+      // Split "123 Main St, Ballwin, MO 63011" -> street / city / state / zip
+      const cityStateZip = new RegExp("([A-Za-z .'-]+),\\s*" + state + "\\s+" + zip);
+      const cm = full.match(cityStateZip);
+      const city = cm ? cm[1].trim() : null;
+      let street = full;
+      if (cm && cm.index != null) street = full.slice(0, cm.index).replace(/[,\s]+$/, "").trim();
+      return { street: street || null, city, state, postalCode: zip, full };
+    }
+  }
+  return null;
+}
+
+// Prose, not a label. A signature line is a fragment ("General Superintendent",
+// "Watkins Roofing Inc."); a body line is a sentence ("Yes, and the CO for wall
+// panels is approved"). Reject anything that reads like a sentence — that one
+// check is what stops COMPANY_WORDS matching the "CO" in "the CO for wall".
+function looksLikeProse(line) {
+  if (/[.?!]\s+\S/.test(line)) return true;                 // mid-line sentence break
+  if (/\b(i|we|you|they|it|he|she)\b\s+\b(will|can|have|has|am|are|is|was|were|think|need|want|would|should|could)\b/i.test(line)) return true;
+  if (/^(yes|no|ok|okay|sure|thanks|thank|please|sorry|hi|hello|hey|got|per|attached|see|let|here|that|this|there|and|but|so|if|when)\b/i.test(line)) return true;
+  if (/\?$/.test(line)) return true;
+  if (line.split(/\s+/).length > 9) return true;            // too long to be a label
+  if (/^[a-z]/.test(line)) return true;                     // labels are capitalised
+  return false;
+}
+
+function extractCompanyAndTitle(lines, displayName, senderDomain) {
+  let company = null, title = null;
+  const nameParts = String(displayName || "").toLowerCase().replace(/,/g, " ").split(/\s+/).filter(w => w.length > 2);
+  for (const line of lines) {
+    if (line.length > 70) continue;
+    if (/@/.test(line)) continue;                   // email line
+    if (PHONE_RE.test(line)) continue;              // phone line
+    if (looksLikeProse(line)) continue;             // body text, not a sig label
+    const low = line.toLowerCase();
+    if (nameParts.length && nameParts.every(p => low.includes(p))) continue; // the name itself
+
+    // Title wins over company on an ambiguous line. "Roof Management
+    // Coordinator" is a job, not an employer — but it trips COMPANY_WORDS on
+    // "Management". Only a STRONG company marker (a legal suffix like Inc/LLC)
+    // outranks a title match.
+    const strongCompany = /\b(inc\.?|llc|l\.l\.c\.|ltd\.?|corp\.?|corporation|company|& sons|group|holdings)\b/i.test(line);
+    if (!title && TITLE_WORDS.test(line) && !strongCompany) { title = line.replace(/^[-|\s]+/, "").trim(); continue; }
+    if (!company && COMPANY_WORDS.test(line)) { company = line.replace(/^[-|\s]+/, "").trim(); continue; }
+  }
+  // Deliberately NOT guessing the company from the mail domain: "cletusbagby@
+  // yahoo.com" does not work at Yahoo, and a plausible-looking wrong employer
+  // on a customer's card is worse than a blank field.
+  return { company, title };
+}
+
+function parseSignature(body, displayName, email) {
+  const senderDomain = String(email || "").split("@")[1] || "";
+  const lines = sigLines(body, displayName);
+  const phones = extractPhones(lines);
+  const { company, title } = extractCompanyAndTitle(lines, displayName, senderDomain);
+  return {
+    company,
+    jobTitle: title,
+    phones,
+    website: extractWebsite(lines, senderDomain),
+    address: extractAddress(lines),
+    signatureLines: lines.slice(-8),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Name handling
+// ---------------------------------------------------------------------------
+function splitName(displayName, email) {
+  let dn = String(displayName || "").trim();
+  if (!dn || dn.includes("@")) {
+    const local = String(email || "").split("@")[0] || "";
+    const guess = local.replace(/[._-]+/g, " ").replace(/\d+/g, "").trim();
+    dn = guess ? guess.replace(/\b\w/g, c => c.toUpperCase()) : "";
+  }
+  if (!dn) return { givenName: null, surname: null, displayName: email };
+  // "Wilson, Dakota" -> "Dakota Wilson"
+  let m = dn.match(/^([^,]+),\s*(.+)$/);
+  if (m && !/\b(inc|llc|ltd|co|corp)\b/i.test(m[1])) dn = m[2].trim() + " " + m[1].trim();
+  const parts = dn.split(/\s+/).filter(Boolean);
+  if (parts.length === 1) return { givenName: parts[0], surname: null, displayName: dn };
+  return { givenName: parts[0], surname: parts.slice(1).join(" "), displayName: dn };
+}
+
+// ---------------------------------------------------------------------------
+// Handler
+// ---------------------------------------------------------------------------
+exports.handler = async function (event) {
+  // AUTH FIRST — before any Graph call, before any env read.
+  try {
+    await requirePermission(event, "warranty.manage_reports");
+  } catch (e) {
+    return resp(e.statusCode || 401, { error: e.message });
+  }
+
+  if (event.httpMethod !== "POST") return resp(405, { error: "Method not allowed" });
+
+  let body;
+  try { body = JSON.parse(event.body || "{}"); }
+  catch (e) { return resp(400, { error: "Bad JSON body" }); }
+
+  const action = body.action;
+
+  try {
+    // ---- folders: resolve display names -> ids (so the caller can drive paging)
+    if (action === "folders") {
+      const j = await gj("/me/mailFolders?$top=100&$select=id,displayName,totalItemCount,unreadItemCount");
+      return resp(200, {
+        folders: (j.value || []).map(f => ({
+          id: f.id, displayName: f.displayName,
+          totalItemCount: f.totalItemCount, unreadItemCount: f.unreadItemCount,
+        })),
+      });
+    }
+
+    // ---- enumerate: one folder, up to `pages` pages, READ-ONLY.
+    // Returns raw (address, name, date, direction) rows; the caller aggregates.
+    // For Sent Items we harvest RECIPIENTS, not the sender (the sender is Mark)
+    // — those are the people he actually writes to, which is the whole point of
+    // including Sent.
+    if (action === "enumerate") {
+      const folderId = body.folderId;
+      const isSent = !!body.sent;
+      const pages = Math.min(5, Math.max(1, parseInt(body.pages || "3", 10)));
+      let url = body.nextLink;
+      if (!url) {
+        if (!folderId) return resp(400, { error: "folderId required" });
+        const select = isSent ? "toRecipients,ccRecipients,sentDateTime" : "from,sender,receivedDateTime";
+        url = "/me/mailFolders/" + encodeURIComponent(folderId) + "/messages" +
+          "?$top=500&$select=" + select;
+      }
+
+      const rows = [];
+      let scanned = 0;
+      let next = url;
+      for (let i = 0; i < pages && next; i++) {
+        const j = await gj(next);
+        for (const m of (j.value || [])) {
+          scanned++;
+          if (isSent) {
+            const rcpts = [].concat(m.toRecipients || [], m.ccRecipients || []);
+            for (const r of rcpts) {
+              const ea = r && r.emailAddress;
+              if (ea && ea.address) rows.push({ e: String(ea.address).toLowerCase(), n: ea.name || null, d: m.sentDateTime || null, dir: "to" });
+            }
+          } else {
+            const ea = (m.from && m.from.emailAddress) || (m.sender && m.sender.emailAddress);
+            if (ea && ea.address) rows.push({ e: String(ea.address).toLowerCase(), n: ea.name || null, d: m.receivedDateTime || null, dir: "from" });
+          }
+        }
+        next = j["@odata.nextLink"] || null;
+      }
+      return resp(200, { rows, scanned, nextLink: next });
+    }
+
+    // ---- enrich: for each address, read that person's most recent message and
+    // parse ONLY its signature block. GET only — nothing is marked read.
+    if (action === "enrich") {
+      const emails = (body.emails || []).slice(0, 12);
+      const out = [];
+      for (const email of emails) {
+        const addr = String(email).toLowerCase().replace(/'/g, "''");
+        try {
+          // NOTE: $filter + $orderby together across the whole mailbox makes
+          // Graph return 400 InefficientFilter ("restriction or sort order is
+          // too complex") — Exchange won't sort a cross-folder filtered set.
+          // So: filter only, pull a handful, and pick the newest ourselves.
+          // Signatures change over time, and we want the CURRENT one.
+          const url = "/me/messages?$top=10" +
+            "&$filter=" + encodeURIComponent("from/emailAddress/address eq '" + addr + "'") +
+            "&$select=" + encodeURIComponent("from,receivedDateTime,body");
+          const j = await gj(url, { headers: { Prefer: 'outlook.body-content-type="text"' } });
+          const msgs = (j.value || []).slice().sort((x, y) =>
+            String(y.receivedDateTime || "").localeCompare(String(x.receivedDateTime || "")));
+          if (!msgs.length) { out.push({ email, found: false }); continue; }
+
+          // The MOST RECENT message is often a two-line reply with no signature
+          // at all ("Thanks, will do"). So parse the last several messages and
+          // keep the richest signature, preferring newer ones on a tie — that
+          // gets the current signature without being defeated by a short reply.
+          const ea = (msgs[0].from && msgs[0].from.emailAddress) || {};
+          const score = p => [p.company, p.jobTitle, p.website, p.address,
+            p.phones.business, p.phones.mobile, p.phones.fax].filter(Boolean).length;
+          let best = null, bestScore = -1;
+          for (const m of msgs) {
+            const nm = (m.from && m.from.emailAddress && m.from.emailAddress.name) || ea.name || "";
+            const p = parseSignature((m.body && m.body.content) || "", nm, email);
+            const s = score(p);
+            if (s > bestScore) { bestScore = s; best = p; }   // strict >: newer wins ties
+            if (bestScore >= 5) break;                        // rich enough, stop early
+          }
+
+          out.push({
+            email,
+            found: true,
+            displayName: ea.name || null,
+            lastMessage: msgs[0].receivedDateTime || null,
+            fieldsFound: bestScore,
+            messagesScanned: msgs.length,
+            ...best,
+          });
+        } catch (e) {
+          out.push({ email, found: false, error: String(e.message || e).slice(0, 160) });
+        }
+      }
+      return resp(200, { enriched: out });
+    }
+
+    // ---- existing: current /me/contacts, for dedupe
+    if (action === "existing") {
+      const out = [];
+      let next = "/me/contacts?$top=100&$select=id,displayName,emailAddresses,companyName,jobTitle,businessPhones,mobilePhone";
+      while (next && out.length < 500) {
+        const j = await gj(next);
+        for (const c of (j.value || [])) {
+          out.push({
+            id: c.id,
+            displayName: c.displayName || null,
+            companyName: c.companyName || null,
+            jobTitle: c.jobTitle || null,
+            emails: (c.emailAddresses || []).map(e => String(e.address || "").toLowerCase()).filter(Boolean),
+            businessPhones: c.businessPhones || [],
+            mobilePhone: c.mobilePhone || null,
+          });
+        }
+        next = j["@odata.nextLink"] || null;
+      }
+      return resp(200, { contacts: out, count: out.length });
+    }
+
+    // ---- upsert: THE ONLY WRITE. Creates a contact, or PATCHes an existing one
+    // (Graph PATCH merges — properties absent from the body are left alone, so
+    // enriching never clobbers something Mark typed by hand). Never deletes.
+    if (action === "upsert") {
+      const items = (body.contacts || []).slice(0, 25);
+      const dryRun = !!body.dryRun;
+      const results = [];
+
+      for (const it of items) {
+        const email = String(it.email || "").toLowerCase();
+        if (!email) { results.push({ email: null, status: "skipped", reason: "no email" }); continue; }
+
+        const nm = splitName(it.displayName, email);
+        const payload = {};
+        if (nm.givenName) payload.givenName = nm.givenName;
+        if (nm.surname) payload.surname = nm.surname;
+        if (nm.displayName) payload.displayName = nm.displayName;
+        payload.emailAddresses = [{ address: email, name: nm.displayName || email }];
+        if (it.company) payload.companyName = it.company;
+        if (it.jobTitle) payload.jobTitle = it.jobTitle;
+        const bp = [];
+        if (it.businessPhone) bp.push(it.businessPhone);
+        if (bp.length) payload.businessPhones = bp;
+        if (it.mobilePhone) payload.mobilePhone = it.mobilePhone;
+        if (it.homePhone) payload.homePhones = [it.homePhone];
+        if (it.website) payload.businessHomePage = it.website; // stored as text; never fetched
+        if (it.address && (it.address.street || it.address.city)) {
+          payload.businessAddress = {
+            street: it.address.street || undefined,
+            city: it.address.city || undefined,
+            state: it.address.state || undefined,
+            postalCode: it.address.postalCode || undefined,
+            countryOrRegion: it.address.country || undefined,
+          };
+        }
+        // Microsoft Graph's `contact` resource has NO fax property — fax is an
+        // Outlook/MAPI-only field, and sending `businessFaxNumber` makes Graph
+        // reject the whole payload with 400 UnableToDeserializePostBody. So a
+        // fax found in a signature is preserved as a note rather than dropped
+        // on the floor (or silently mislabelled as another phone type).
+        const notes = [];
+        if (it.faxNumber) notes.push("Fax: " + it.faxNumber);
+        if (it.notes) notes.push(it.notes);
+        if (notes.length) payload.personalNotes = notes.join("\n");
+
+        try {
+          // Does a contact already exist for this address? Dedupe on the
+          // address, not the name — names drift, addresses don't.
+          const q = "/me/contacts?$top=1&$select=id,displayName&$filter=" +
+            encodeURIComponent("emailAddresses/any(e:e/address eq '" + email.replace(/'/g, "''") + "')");
+          const found = await gj(q);
+          const existing = (found.value || [])[0];
+
+          if (dryRun) {
+            results.push({ email, status: existing ? "would_update" : "would_create", existingId: existing ? existing.id : null });
+            continue;
+          }
+
+          if (existing) {
+            await gj("/me/contacts/" + encodeURIComponent(existing.id), {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload),
+            });
+            results.push({ email, status: "updated", id: existing.id });
+          } else {
+            const created = await gj("/me/contacts", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload),
+            });
+            results.push({ email, status: "created", id: created && created.id });
+          }
+        } catch (e) {
+          results.push({ email, status: "error", error: String(e.message || e).slice(0, 200) });
+        }
+      }
+
+      return resp(200, {
+        dryRun,
+        results,
+        created: results.filter(r => r.status === "created").length,
+        updated: results.filter(r => r.status === "updated").length,
+        errors: results.filter(r => r.status === "error").length,
+      });
+    }
+
+    // ---- diag: WHERE do the contacts actually live? /me/contacts only ever
+    // reads the DEFAULT contacts folder, so "443 in /me/contacts" and "Mark
+    // sees 155 in Outlook" can both be true if something is paging, filtering,
+    // or if there are extra contact folders. Count everything, everywhere.
+    if (action === "diag") {
+      const out = { defaultFolder: {}, contactFolders: [] };
+
+      // Authoritative server-side count of the default folder.
+      try {
+        const c = await gj("/me/contacts/$count", { headers: { ConsistencyLevel: "eventual" } });
+        out.defaultFolder.odataCount = c;
+      } catch (e) { out.defaultFolder.odataCountError = String(e.message || e).slice(0, 120); }
+
+      // Independently: actually page through and count, so we don't trust one number.
+      let n = 0, pages = 0;
+      let next = "/me/contacts?$top=100&$select=id";
+      while (next && pages < 40) {
+        const j = await gj(next);
+        n += (j.value || []).length;
+        next = j["@odata.nextLink"] || null;
+        pages++;
+      }
+      out.defaultFolder.pagedCount = n;
+      out.defaultFolder.pagesWalked = pages;
+
+      // Any non-default contact folders? (A contact in one of these is invisible
+      // in the default "Your contacts" view.)
+      const f = await gj("/me/contactFolders?$top=50&$select=id,displayName,parentFolderId");
+      for (const folder of (f.value || [])) {
+        let cnt = null;
+        try {
+          const jj = await gj("/me/contactFolders/" + encodeURIComponent(folder.id) + "/contacts?$top=1&$count=true",
+            { headers: { ConsistencyLevel: "eventual" } });
+          cnt = jj["@odata.count"] != null ? jj["@odata.count"] : null;
+        } catch (e) { /* count unsupported here; leave null */ }
+        out.contactFolders.push({ id: folder.id, displayName: folder.displayName, count: cnt });
+      }
+      return resp(200, out);
+    }
+
+    // ---- masterCategories: read (and optionally create) Outlook colour
+    // categories so `categories` on a contact renders natively with a colour
+    // instead of appearing as an unknown string.
+    if (action === "categories_setup") {
+      const want = body.categories || [];   // [{name, color}]
+      const cur = await gj("/me/outlook/masterCategories?$top=100");
+      const have = new Set((cur.value || []).map(c => String(c.displayName)));
+      const created = [];
+      for (const w of want) {
+        if (have.has(w.name)) continue;
+        try {
+          await gj("/me/outlook/masterCategories", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ displayName: w.name, color: w.color }),
+          });
+          created.push(w.name);
+        } catch (e) { /* already exists / race — harmless */ }
+      }
+      const after = await gj("/me/outlook/masterCategories?$top=100");
+      return resp(200, { created, all: (after.value || []).map(c => ({ name: c.displayName, color: c.color })) });
+    }
+
+    // ---- categorize: PATCH `categories` onto existing contacts. Touches ONLY
+    // the categories property — never the name, phones, or anything Mark typed.
+    if (action === "categorize") {
+      const items = (body.items || []).slice(0, 40);
+      const results = [];
+      for (const it of items) {
+        try {
+          await gj("/me/contacts/" + encodeURIComponent(it.id), {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ categories: [it.category] }),
+          });
+          results.push({ id: it.id, category: it.category, status: "ok" });
+        } catch (e) {
+          results.push({ id: it.id, status: "error", error: String(e.message || e).slice(0, 140) });
+        }
+      }
+      return resp(200, { ok: results.filter(r => r.status === "ok").length, errors: results.filter(r => r.status === "error") });
+    }
+
+    // ---- rules_list: READ-ONLY. Reports the inbox rules that already exist.
+    // This function has NO action that creates, edits, enables or deletes a
+    // rule — the rule plan is produced for a human to approve, and activating
+    // it is deliberately not something this code can do.
+    if (action === "rules_list") {
+      const j = await gj("/me/mailFolders/inbox/messageRules");
+      return resp(200, {
+        rules: (j.value || []).map(r => ({
+          id: r.id, displayName: r.displayName, sequence: r.sequence,
+          isEnabled: r.isEnabled, hasError: r.hasError,
+          conditions: r.conditions || null, actions: r.actions || null,
+        })),
+      });
+    }
+
+    // ---- folder_create: create a top-level mail folder if it doesn't already
+    // exist. Idempotent — an existing folder of the same name is returned as-is
+    // rather than duplicated. Creating a folder moves no mail by itself.
+    if (action === "folder_create") {
+      const name = String(body.displayName || "").trim();
+      if (!name) return resp(400, { error: "displayName required" });
+      const cur = await gj("/me/mailFolders?$top=100&$select=id,displayName");
+      const hit = (cur.value || []).find(f => String(f.displayName).toLowerCase() === name.toLowerCase());
+      if (hit) return resp(200, { id: hit.id, displayName: hit.displayName, created: false });
+      const made = await gj("/me/mailFolders", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ displayName: name }),
+      });
+      return resp(200, { id: made.id, displayName: made.displayName, created: true });
+    }
+
+    // ---- list_messages: READ-ONLY listing with the fields needed both to build
+    // a routing table (who lives in which folder already) and to write an audit
+    // log (id + subject + sender + read state) before anything is moved.
+    // Selecting isRead does NOT change it. Nothing here writes.
+    if (action === "list_messages") {
+      const pages = Math.min(5, Math.max(1, parseInt(body.pages || "3", 10)));
+      let url = body.nextLink;
+      if (!url) {
+        if (!body.folderId) return resp(400, { error: "folderId required" });
+        url = "/me/mailFolders/" + encodeURIComponent(body.folderId) + "/messages" +
+          "?$top=200&$select=id,subject,from,receivedDateTime,isRead";
+      }
+      const rows = [];
+      let next = url;
+      for (let i = 0; i < pages && next; i++) {
+        const j = await gj(next);
+        for (const m of (j.value || [])) {
+          const ea = (m.from && m.from.emailAddress) || {};
+          rows.push({
+            id: m.id,
+            s: (m.subject || "(no subject)").slice(0, 120),
+            e: String(ea.address || "").toLowerCase(),
+            n: ea.name || null,
+            d: m.receivedDateTime || null,
+            r: !!m.isRead,
+          });
+        }
+        next = j["@odata.nextLink"] || null;
+      }
+      return resp(200, { rows, nextLink: next });
+    }
+
+    // ---- move: THE ONLY MAIL MUTATION IN THIS FILE. POST /messages/{id}/move.
+    // Move does not alter isRead, does not delete, does not notify anyone, and
+    // is fully reversible (the message keeps its id's identity in the new
+    // folder and can be moved straight back). There is deliberately NO delete,
+    // NO forward, NO send, and NO isRead action anywhere in this function.
+    if (action === "move") {
+      const moves = (body.moves || []).slice(0, 20);
+      const results = [];
+      for (const mv of moves) {
+        try {
+          const r = await graphFetchDelegated("/me/messages/" + encodeURIComponent(mv.id) + "/move", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ destinationId: mv.destinationId }),
+          });
+          if (r.status === 429) {
+            const ra = r.headers.get("Retry-After");
+            results.push({ id: mv.id, status: "throttled", retryAfter: ra ? Number(ra) : 10 });
+            continue;
+          }
+          const t = await r.text();
+          if (!r.ok) {
+            let code = "";
+            try { code = (JSON.parse(t).error || {}).code || ""; } catch (e) { /* noop */ }
+            results.push({ id: mv.id, status: "error", error: (r.status + " " + code).slice(0, 100) });
+          } else {
+            results.push({ id: mv.id, status: "moved" });
+          }
+        } catch (e) {
+          results.push({ id: mv.id, status: "error", error: String(e.message || e).slice(0, 100) });
+        }
+      }
+      return resp(200, {
+        moved: results.filter(r => r.status === "moved").length,
+        throttled: results.filter(r => r.status === "throttled"),
+        errors: results.filter(r => r.status === "error"),
+        results,
+      });
+    }
+
+    // ---- rules_create: adds inbox rules. ADDITIVE ONLY — it never edits,
+    // disables or deletes an existing rule. The only action a created rule may
+    // carry is moveToFolder: this code refuses to build a rule that deletes,
+    // forwards, or marks mail read, regardless of what the caller asks for.
+    if (action === "rules_create") {
+      const wanted = (body.rules || []).slice(0, 12);
+      const results = [];
+      for (const r of wanted) {
+        if (!r.destinationId || !Array.isArray(r.senderContains) || !r.senderContains.length) {
+          results.push({ name: r.displayName, status: "skipped", reason: "needs destinationId + senderContains" });
+          continue;
+        }
+        const payload = {
+          displayName: r.displayName,
+          sequence: r.sequence,
+          isEnabled: true,
+          conditions: { senderContains: r.senderContains },
+          actions: { moveToFolder: r.destinationId, stopProcessingRules: true },
+        };
+        try {
+          const created = await gj("/me/mailFolders/inbox/messageRules", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          results.push({ name: r.displayName, status: "created", id: created && created.id, matchCount: r.senderContains.length });
+        } catch (e) {
+          results.push({ name: r.displayName, status: "error", error: String(e.message || e).slice(0, 180) });
+        }
+      }
+      return resp(200, { results });
+    }
+
+    return resp(400, { error: "Unknown action: " + String(action) });
+  } catch (e) {
+    return resp(e.statusCode && e.statusCode >= 400 && e.statusCode < 600 ? e.statusCode : 500, {
+      error: String((e && e.message) || "unknown error").slice(0, 400),
+    });
+  }
+};
+
+// Exported for reasoning/testing about the filter and parser without a mailbox.
+module.exports._internals = { classify, parseSignature, splitName, sigLines };

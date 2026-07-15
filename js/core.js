@@ -606,16 +606,30 @@ async function runOwnerBootstrap(){
 
 /* Client-side wrappers around netlify/functions/photos.js -- the ONLY
    place this app is allowed to touch Firebase Storage. Mark's explicit
-   architecture decision: the app has no user auth yet, so Storage
-   security rules must stay deny-all (an open bucket would make every
-   customer's roof photos world-readable to anyone who guessed a URL) --
-   the client therefore never talks to Storage directly, only through this
-   server-side proxy (Admin SDK, service-account credentials, not subject
-   to Storage rules). The bucket itself stays completely sealed to the
-   browser. See "Photo storage migration" in DEV_NOTES.md. */
+   architecture decision: Storage security rules stay deny-all (an open
+   bucket would make every customer's roof photos world-readable to anyone
+   who guessed a URL) -- the client therefore never talks to Storage
+   directly, only through this server-side proxy (Admin SDK,
+   service-account credentials, not subject to Storage rules). The bucket
+   itself stays completely sealed to the browser. See "Photo storage
+   migration" in DEV_NOTES.md.
+
+   EVERY call below goes through authHeaders(), which attaches the signed-in
+   user's Firebase ID token as `Authorization: Bearer <token>`. As of
+   2026-07-13 photos.js REQUIRES that token on every action (upload, get,
+   get_batch, delete) and 401s without it -- previously these four were
+   reachable by anyone on the internet with no token at all, including
+   `delete`. authHeaders() calls getIdToken(), which transparently refreshes
+   an expired token (Firebase ID tokens last ~1hr, and a tech's tab is open
+   all day), so it must never be replaced with a token cached in a variable.
+
+   This is an AUTHENTICATION gate, not a permission gate: any signed-in
+   Watkins user passes, so a tech keeps FULL view/upload/delete on their own
+   work orders and photos -- fixing your own mistake in the field is a
+   supported operation, not a privileged one. */
 async function uploadPhotoToStorage(workOrderId, photoIndex, dataUrl){
   var r = await fetch("/.netlify/functions/photos", {
-    method: "POST", headers: { "Content-Type": "application/json" },
+    method: "POST", headers: await authHeaders(),
     body: JSON.stringify({ action: "upload", workOrderId: workOrderId, photoIndex: photoIndex, dataUrl: dataUrl })
   });
   var out = null;
@@ -626,7 +640,7 @@ async function uploadPhotoToStorage(workOrderId, photoIndex, dataUrl){
 async function deletePhotoFromStorage(workOrderId, photoIndex){
   try{
     var r = await fetch("/.netlify/functions/photos", {
-      method: "POST", headers: { "Content-Type": "application/json" },
+      method: "POST", headers: await authHeaders(),
       body: JSON.stringify({ action: "delete", workOrderId: workOrderId, photoIndex: photoIndex })
     });
     await r.json().catch(function(){});
@@ -634,7 +648,7 @@ async function deletePhotoFromStorage(workOrderId, photoIndex){
 }
 async function fetchPhotoFromStorage(workOrderId, photoIndex){
   var r = await fetch("/.netlify/functions/photos", {
-    method: "POST", headers: { "Content-Type": "application/json" },
+    method: "POST", headers: await authHeaders(),
     body: JSON.stringify({ action: "get", workOrderId: workOrderId, photoIndex: photoIndex })
   });
   var out = null;
@@ -750,9 +764,20 @@ async function cloudSaveOrder(o){
         }
       }catch(e){ console.warn("couldn't check existing photo before save (proceeding without it — no data was overwritten)", e); }
     }
+    /* ccPhotoId  : set when this photo was IMPORTED FROM CompanyCam.
+       ccFeedPhotoId: set when this photo was PUSHED TO CompanyCam's photo feed
+       (see pushPhotosToCompanyCamFeed() in js/history.js). They are opposite
+       directions and must not be confused.
+
+       ccFeedPhotoId MUST be carried through this save. This .set() is a full
+       overwrite, not a merge -- so omitting it here would silently erase the
+       push record on the very next save of the work order, and the next
+       send would re-push every photo and duplicate the whole set into the
+       project feed. The flag IS the idempotency. */
     var photoDoc = {
       caption: p.caption || "", w: p.w || 0, h: p.h || 0, i: i,
       finding_id: p.finding_id || null, ccPhotoId: p.ccPhotoId || null, gps: p.gps || null,
+      ccFeedPhotoId: p.ccFeedPhotoId || null,
       storageRef: storageRef, thumb: p.thumb || null
     };
     if (existingImg) photoDoc.img = existingImg;
@@ -780,6 +805,7 @@ async function cloudFetchIndex(){
     var v = d.data();
     arr.push({ id: d.id, jobName: v.jobName || "(untitled)", jobNo: v.jobNo || "",
       location: v.location || "", serviceDate: v.serviceDate || "", savedAt: v.savedAt || 0, cloud: true,
+      companyCamProjectId: v.companyCamProjectId || null,
       lastEmailedAt: v.lastEmailedAt || null, lastEmailedTo: v.lastEmailedTo || [] });
   });
   return arr;
@@ -834,8 +860,15 @@ async function cloudFetchOrder(id){
          for why that signal has to stay exactly what it is). Only
          populated when thumb is missing -- once a photo has a real thumb
          (freshly captured, or backfilled), this is never touched. */
+      /* ccFeedPhotoId is hydrated here for the same reason it's written in
+         cloudSaveOrder(): it's the record that this photo has ALREADY been
+         pushed into the linked CompanyCam project's photo feed. Without it on
+         the client-side photo object, re-opening a work order and re-sending it
+         would push every photo a second time -- see pushPhotosToCompanyCamFeed()
+         in js/history.js. */
       photosArr[v.i] = { caption: v.caption || "", img: v.storageRef ? null : (v.img || null), w: v.w || 0, h: v.h || 0,
         finding_id: v.finding_id || null, ccPhotoId: v.ccPhotoId || null, gps: v.gps || null,
+        ccFeedPhotoId: v.ccFeedPhotoId || null,
         storageRef: v.storageRef || null, thumb: v.thumb || null,
         imgFallback: (!v.thumb && v.storageRef) ? (v.img || null) : null };
     });
@@ -1200,6 +1233,54 @@ async function runThumbnailBackfill(){
     (failed ? ", " + failed + " FAILED (safe to retry — nothing was changed on those, run this again)" : "") + ".");
   if (failures.length) console.warn("Thumbnail backfill failures (safe to retry):", failures);
   return { backfilled: backfilled, failed: failed, failures: failures };
+}
+/* Retroactive CompanyCam photo-feed backfill (issue #55). #51 pushes a work
+   order's photos into its linked CompanyCam project feed on send/download/share
+   going forward; this walks EXISTING work orders and does the same for photos
+   that predate #51. Same owner-only, idempotent, safe-to-rerun shape as the
+   migration/thumbnail backfills above -- it reuses pushPhotosToCompanyCamFeed()
+   (js/history.js), so the per-photo idempotency (ccFeedPhotoId), imported-photo
+   guard (ccPhotoId), not-yet-in-Storage skip, and non-fatal-per-photo behavior
+   are exactly the same ones the normal send path already has. Running it twice
+   pushes nothing the second time. Never creates a CompanyCam project. */
+async function runCompanyCamPhotoBackfill(){
+  if (!currentAuthClaims || currentAuthClaims.owner !== true){ toast("Owner login required."); return; }
+  if (!fdb){ toast("Cloud not available."); return; }
+  if (typeof pushPhotosToCompanyCamFeed !== "function"){ toast("CompanyCam photo push isn't available."); return; }
+  toast("Scanning work orders for CompanyCam photo backfill…");
+  var index;
+  try{ index = await cloudFetchIndex(); }
+  catch(e){ toast("Scan failed: " + e.message); return; }
+
+  var linked = (index || []).filter(function(w){ return w.companyCamProjectId; });
+  if (!linked.length){
+    toast("No CompanyCam-linked work orders found — nothing to backfill.");
+    return { orders: 0, ordersTouched: 0, pushed: 0, alreadyPushed: 0, failed: 0, failures: [] };
+  }
+  if (!confirm(linked.length + " CompanyCam-linked work order" + (linked.length === 1 ? "" : "s") +
+    " will have their photos pushed into the linked project feed" + (linked.length === 1 ? "" : "s") +
+    ". Photos already in the feed are skipped automatically, and photos imported FROM CompanyCam are never pushed back — safe to run more than once. Proceed?")) return null;
+
+  var pushed = 0, alreadyPushed = 0, failed = 0, ordersTouched = 0, failures = [];
+  for (var i = 0; i < linked.length; i++){
+    toast("Backfilling CompanyCam photos — work order " + (i + 1) + " of " + linked.length + "…");
+    try{
+      var o = await cloudFetchOrder(linked[i].id);
+      if (!o) continue;
+      var r = await pushPhotosToCompanyCamFeed(o);
+      pushed += (r && r.pushed) || 0;
+      alreadyPushed += (r && r.alreadyPushed) || 0;
+      failed += (r && r.failed) || 0;
+      if (r && r.pushed) ordersTouched++;
+      if (r && r.failed) failures.push({ workOrderId: linked[i].id, error: r.error || "photo push failed" });
+    }catch(e){ failed++; failures.push({ workOrderId: linked[i].id, error: e.message }); }
+  }
+  toast(pushed + " photo" + (pushed === 1 ? "" : "s") + " added to CompanyCam across " +
+    ordersTouched + " work order" + (ordersTouched === 1 ? "" : "s") + " ✓" +
+    (alreadyPushed ? ", " + alreadyPushed + " already in the feed" : "") +
+    (failed ? ", " + failed + " FAILED (safe to retry — run this again)" : "") + ".");
+  if (failures.length) console.warn("CompanyCam photo backfill failures (safe to retry):", failures);
+  return { orders: linked.length, ordersTouched: ordersTouched, pushed: pushed, alreadyPushed: alreadyPushed, failed: failed, failures: failures };
 }
 /* Admin toggle button removed entirely (2026-07-12) -- there was nothing
    left for it to toggle. isAdmin has followed sign-in state and role
@@ -1688,6 +1769,15 @@ function renderPhotos(){
     host.innerHTML = '<p class="hint">No photos added yet.</p>';
     return;
   }
+  /* Admin "undo push": remove app-pushed photos from the linked CompanyCam
+     feed (they stay on the work order). Only shown when some photo is actually
+     in the feed. Deletion is Mark-triggered here, never automatic. */
+  if (isAdmin && photos.some(function(p){ return p && p.ccFeedPhotoId; })){
+    var ccBar = document.createElement("div");
+    ccBar.style.margin = "0 0 8px";
+    ccBar.innerHTML = '<button class="btn" onclick="removeAllPushedPhotosFromCC()" title="Remove every app-pushed photo on this work order from the CompanyCam feed (they stay on the work order)">⤺ Remove pushed photos from CompanyCam</button>';
+    host.appendChild(ccBar);
+  }
   var findingOptions = findings.map(function(f,fi){
     var label = "Finding #" + (fi+1) + (f.condition ? ": " + f.condition.slice(0,40) : "");
     return { id: f.id, label: label };
@@ -1718,6 +1808,7 @@ function renderPhotos(){
         '<button class="btn" onclick="movePhoto(' + i + ', -1)"' + (i === 0 ? " disabled" : "") + ' title="Move up">▲</button>' +
         '<button class="btn" onclick="movePhoto(' + i + ', 1)"' + (i === photos.length - 1 ? " disabled" : "") + ' title="Move down">▼</button>' +
       '</div>' +
+      (isAdmin && p.ccFeedPhotoId ? '<button class="btn" onclick="removePushedPhotoFromCC(' + i + ')" title="Remove this photo from the CompanyCam feed (it stays on the work order)">⤺ CC</button>' : '') +
       '<button class="btn danger" onclick="removePhoto(' + i + ')">✕</button></div>' +
       '<div class="photo-finding-row"><label>Finding:</label>' +
       '<select data-photo-finding="' + i + '">' +
@@ -1790,13 +1881,54 @@ var WORK_ORDER_TYPE_ICONS = {
   "Leak / Service": "💧", "Change Order": "📝", "Inspection": "🔍",
   "Repair": "🔧", "Warranty": "🛡️"
 };
-var WORK_ORDER_TYPE_LABELS = { "Leak / Service": "Leak Work Order" };
+/* DISPLAY-ONLY label overrides. The STORED value on a work order is still
+   the raw WORK_ORDER_TYPES string ("Repair", "Leak / Service", ...) — this
+   map only changes what a human sees. "Repair" now renders as "Work Order"
+   (Mark: a Work Order executes predetermined work already sold on a
+   proposal). Every already-saved repair work order keeps woType "Repair"
+   in Firestore and in building_history_events.workOrderType — it still
+   loads, still matches, still filters, and simply DISPLAYS as "Work
+   Order". No migration, no rewrite of stored values. WORK_ORDER_TYPES
+   above is deliberately unchanged. Route EVERY user-visible rendering of a
+   type through woTypeLabel() — form dropdown, report/PDF, timeline and
+   reports chips, type filters. See "Repair -> Work Order rename" in
+   DEV_NOTES.md. */
+var WORK_ORDER_TYPE_LABELS = { "Leak / Service": "Leak Work Order", "Repair": "Work Order" };
+function woTypeLabel(t){
+  var raw = t || WORK_ORDER_TYPES[0];
+  return WORK_ORDER_TYPE_LABELS[raw] || raw;
+}
+
+/* EMAIL COPY ONLY — the wording used in the outgoing email subject/body.
+   Deliberately separate from woTypeLabel(): in the app a leak job is still a
+   "Leak Work Order" on the form, but the customer-facing EMAIL must never say
+   "Leak". Both the leak type ("Leak / Service") and the plain work order
+   ("Repair", displayed as "Work Order") send as "Service Work Order"; Change
+   Order, Inspection and Warranty keep their own wording. Stored woType values
+   are untouched. */
+var EMAIL_TYPE_COPY = {
+  "Change Order": { subject: "Change Order", noun: "Change order" },
+  "Inspection":   { subject: "Inspection",   noun: "Inspection" },
+  "Warranty":     { subject: "Warranty",     noun: "Warranty" }
+};
+function emailTypeSubject(t){
+  var e = EMAIL_TYPE_COPY[t || ""];
+  return e ? e.subject : "Service Work Order";
+}
+function emailTypeNoun(t){
+  var e = EMAIL_TYPE_COPY[t || ""];
+  return e ? e.noun : "Service work order";
+}
 function populateWoTypeSelect(){
   var sel = document.getElementById("woType");
   if (sel.options.length) return;
   WORK_ORDER_TYPES.forEach(function(t){
     var opt = document.createElement("option");
-    opt.value = t; opt.textContent = t;
+    /* value = the raw stored enum (unchanged, what collect() saves);
+       textContent = the display label. Keeping these two apart is the
+       whole point — setVal("woType", "Repair") on an existing record still
+       matches an option, it just reads "Work Order" on screen. */
+    opt.value = t; opt.textContent = woTypeLabel(t);
     sel.appendChild(opt);
   });
 }
@@ -1805,6 +1937,15 @@ function onWoTypeChange(){
   var el = document.getElementById("wo-changeorder-card");
   if (el) el.style.display = isCO ? "" : "none";
   if (isCO) renderChangeOrderPhotos();
+  /* Change Order-only autofill: adopt the building's existing CompanyCam
+     link (so the signed CO PDF actually pushes -- see
+     resolveChangeOrderCompanyCamLink() in js/companycam.js) and default the
+     Job No. to the parent job's number + " CO" (see
+     maybeApplyChangeOrderJobNo() in js/workorders.js). Both are no-ops for
+     every other type, both are pure defaults the tech can override, and
+     neither ever creates a CompanyCam project. typeof-guarded because
+     js/workorders.js loads after this file. */
+  if (isCO && typeof scheduleChangeOrderAutofill === "function") scheduleChangeOrderAutofill();
   var isRepair = val("woType") === "Repair";
   var rc = document.getElementById("wo-repair-card");
   if (rc) rc.style.display = isRepair ? "" : "none";
@@ -1815,11 +1956,21 @@ function onWoTypeChange(){
   if (fc) fc.style.display = (isRepair || isCO) ? "none" : "";
   /* Change Order has no repairs-made concept (it IS the work being
      authorized, described in its own Description field) — hide the
-     generic "Work Performed" section for it. Repair keeps this card
-     (per "Repair work order type" in DEV_NOTES.md — carries most of the
-     same info as Leak/Service). */
+     generic "Work Performed" section for it. A Leak Work Order is now a
+     PURE leak investigation (Mark): findings, roof map + pins, photos,
+     warranty determination, summary — and nothing about repair scope.
+     Work actually performed belongs on a Work Order (stored value
+     "Repair"), the type that executes predetermined scope already sold on
+     a proposal. Repair/Inspection/Warranty keep this card exactly as
+     before. DISPLAY GATING ONLY — collect() still writes repairs[] and
+     fill() still loads it for EVERY type, so an existing leak record that
+     already has repair rows keeps them byte-for-byte; they're simply no
+     longer editable on the leak form (and its report still prints them —
+     see buildLeakReportText()). No field removed, no data dropped, no
+     migration. See "Leak form = pure leak investigation" in DEV_NOTES.md. */
+  var isLeakType = val("woType") === WORK_ORDER_TYPES[0];
   var rpc = document.getElementById("wo-repairsperformed-card");
-  if (rpc) rpc.style.display = isCO ? "none" : "";
+  if (rpc) rpc.style.display = (isCO || isLeakType) ? "none" : "";
   /* Change Order has its own in-scope photo box (#co-photos-host, inside
      wo-changeorder-card) — the global Photo Documentation section would
      just be a second, redundant place to add the exact same photos[]
@@ -1875,6 +2026,16 @@ function onWoTypeChange(){
   if (isInspection){ ensureInspectionChecklist(); renderInspectionChecklist(); renderInspectionRoofPicker(); }
   var ft = document.getElementById("wo-findings-title");
   if (ft) ft.textContent = isInspection ? "Roofing Inspection Findings" : "Roof Investigation Findings";
+  /* Building-level CompanyCam link control (#wo-cc-link-row): shown for the
+     findings-based types (Leak / Inspection / Warranty) whose per-finding capture
+     hid the global import row above -- so Inspection etc. finally have a visible
+     way to LINK CompanyCam at the building level. Change Order/Repair are covered
+     elsewhere (see ccBuildingLinkControlVisible in js/companycam.js). */
+  var ccLinkVisible = typeof ccBuildingLinkControlVisible === "function" && ccBuildingLinkControlVisible(val("woType"));
+  var ccRow = document.getElementById("wo-cc-link-row");
+  if (ccRow) ccRow.style.display = ccLinkVisible ? "" : "none";
+  var ccHint = document.getElementById("wo-cc-link-hint");
+  if (ccHint) ccHint.style.display = ccLinkVisible ? "" : "none";
 }
 
 /* ================= storage ================= */

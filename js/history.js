@@ -27,8 +27,15 @@ function populateTimelineFilterOptions(){
       var sel = document.getElementById(spec[0]);
       if (!sel) return;
       var current = sel.value;
+      /* The Work Order Type filter is built from the RAW stored values found
+         in the data ("Repair", "Leak / Service", ...) — the option's value
+         must stay raw, because filterTimelineEvents() compares it straight
+         against e.workOrderType. Only the visible text gets the display
+         label, so the tech picks "Work Order" and it still matches every
+         record stored as "Repair". */
+      var isWoType = spec[1] === "workOrderType";
       sel.innerHTML = '<option value="">All</option>' + tlDistinctSorted(spec[1]).map(function(v){
-        return '<option value="' + esc(v) + '">' + esc(v) + '</option>';
+        return '<option value="' + esc(v) + '">' + esc(isWoType ? woTypeLabel(v) : v) + '</option>';
       }).join("");
       sel.value = Array.prototype.some.call(sel.options, function(o){ return o.value === current; }) ? current : "";
     });
@@ -97,20 +104,21 @@ function isBackdatedEvent(e){
   var enteredDay = new Date(e.enteredAt); enteredDay.setHours(0,0,0,0);
   return eventDay < enteredDay.getTime();
 }
-function timelineEventHtml(e, buildingId){
+function timelineEventHtml(e, buildingId, opts){
+  opts = opts || {};
   var backdated = isBackdatedEvent(e);
   return '<div class="evt-item"' + (e._dup ? ' style="border-left-color:#D64545"' : '') + '><div class="evt-head">' +
     '<span class="evt-date">' + esc(e.date || fmtTs(e.createdAt)) + '</span>' +
     '<span class="evt-tag">' + esc(e.reportType || "") + '</span>' +
     (e.workOrderType && e.workOrderType !== WORK_ORDER_TYPES[0] ?
-      '<span class="evt-tag" style="background:#FFF3E0;color:#8A5A00">' + esc(e.workOrderType) + '</span>' : '') +
+      '<span class="evt-tag" style="background:#FFF3E0;color:#8A5A00">' + esc(woTypeLabel(e.workOrderType)) + '</span>' : '') +
     (e.warrantyStatus ? '<span class="evt-tag">' + esc(e.warrantyStatus) + '</span>' : '') +
     (e.emailSent ? '<span class="evt-tag">Emailed ✓</span>' : '') +
     ccUploadBadgeHtml(e.companyCamUploadStatus) +
     (backdated ? '<span class="evt-tag" style="background:#ECEFF1;color:#5B6770" title="Entered ' +
       esc(fmtTs(e.enteredAt)) + ', for an event dated ' + esc(e.date) + '">🕓 Added later</span>' : '') +
     (e._dup ? '<span class="evt-tag" style="background:#FBE2E2;color:#D64545">Possible duplicate</span>' : '') +
-    (isAdmin ? '<span class="sp"></span><button class="btn danger" onclick="deleteHistoryEventAdmin(\'' + e._id + '\', \'' + buildingId + '\')">Delete (admin)</button>' : '') +
+    (isAdmin && !opts.readOnly ? '<span class="sp"></span><button class="btn danger" onclick="deleteHistoryEventAdmin(\'' + e._id + '\', \'' + buildingId + '\')">Delete (admin)</button>' : '') +
     '</div>' +
     (e.workOrderNo ? '<div class="evt-row">Job No. ' + esc(e.workOrderNo) + '</div>' : '') +
     (e.technician ? '<div class="evt-row">Technician: ' + esc(e.technician) + '</div>' : '') +
@@ -153,6 +161,31 @@ function renderTimelineList(){
     filtered.map(function(e){ return timelineEventHtml(e, historyBuildingId); }).join("") :
     '<div class="empty">No timeline entries match these filters.</div>';
 }
+async function loadBuildingHistoryEvents(buildingId, limit){
+  if (!fdb || !buildingId) return [];
+  /* Keep this query shape identical to the main Building History page:
+     buildingId equality + createdAt order + limit. Firestore rules already
+     allow reads on building_history_events, and this is the existing indexed
+     path instead of a new ad-hoc query for the work-order inline card. */
+  var qs = await fdb.collection("building_history_events")
+    .where("buildingId", "==", buildingId).orderBy("createdAt", "desc").limit(limit || 50).get();
+  var events = [];
+  qs.forEach(function(d){ events.push(Object.assign({ _id: d.id }, d.data())); });
+  /* Mark: "show the timeline ordered by the EVENT date" -- the query
+     above orders by createdAt (when it was ENTERED, a Firestore-native
+     field) purely to fetch the most-recently-touched records; that's NOT
+     the same as chronological order once a backfilled record's real date
+     can be anywhere in the past. Re-sort client-side by the actual date
+     field (parseMDYDate() -- plain string orderBy would sort "M/D/YY"
+     lexicographically wrong) before anything renders. Same-day events keep
+     their createdAt order as a stable tiebreak. */
+  events.sort(function(a, b){
+    var d = parseMDYDate(b.date) - parseMDYDate(a.date);
+    return d !== 0 ? d : (b.createdAt || 0) - (a.createdAt || 0);
+  });
+  flagDuplicateEvents(events);
+  return events;
+}
 async function openBuildingHistory(buildingId){
   var detail = document.getElementById("history-detail");
   detail.innerHTML = '<p class="hint">Loading timeline\u2026</p>';
@@ -177,7 +210,12 @@ async function openBuildingHistory(buildingId){
     var hasCustomBaseMap = !!((roof.roof_base_map_type === "roof_plan" || roof.roof_base_map_type === "sketch") && roof.roof_base_map_url);
     var orthoOverlay = (roof.roof_base_map_type === "drone_ortho" && roof.roof_base_map_url && roof.roof_base_map_bounds) ?
       { url: roof.roof_base_map_url, bounds: roof.roof_base_map_bounds } : null;
-    var roofAssets = roof.roof_assets || [];
+    var roofAssets = (roof.roof_assets || []).map(function(a){
+      return Object.assign({}, a, {
+        _roofBaseMapSynthetic: !!roof.roof_base_map_synthetic,
+        _roofBaseMapType: roof.roof_base_map_type || null
+      });
+    });
     /* Every roof's most recent outline, each tagged with its own roof's
        label -- lets Mark see every roof on this building at once, labeled,
        instead of switching one-at-a-time via the picker below. Only
@@ -186,10 +224,24 @@ async function openBuildingHistory(buildingId){
        be drawn onto at all -- same coordinate-system constraint already
        documented for pins/assets above). See "Individual-roof tracing +
        labels" in DEV_NOTES.md. */
-    var allRoofOutlinesForMap = hasCustomBaseMap ? [] : roofs.reduce(function(acc, r){
+    var allRoofOutlinesForMap = hasCustomBaseMap ? (function(){
+      var ol = roof.roof_outlines || [];
+      var latest = ol[ol.length - 1];
+      return latest ? [Object.assign({}, latest, {
+        _roofLabel: roof.label || "Roof",
+        _roofLabelPos: roof.labelPos || null,
+        _roofBaseMapSynthetic: !!roof.roof_base_map_synthetic,
+        _roofBaseMapType: roof.roof_base_map_type || null
+      })] : [];
+    })() : roofs.reduce(function(acc, r){
       var ol = r.roof_outlines || [];
       var latest = ol[ol.length - 1];
-      if (latest) acc.push(Object.assign({}, latest, { _roofLabel: r.label || "Roof", _roofLabelPos: r.labelPos || null }));
+      if (latest) acc.push(Object.assign({}, latest, {
+        _roofLabel: r.label || "Roof",
+        _roofLabelPos: r.labelPos || null,
+        _roofBaseMapSynthetic: !!r.roof_base_map_synthetic,
+        _roofBaseMapType: r.roof_base_map_type || null
+      }));
       return acc;
     }, []);
     /* Roof selector only renders for a building with more than one real
@@ -271,23 +323,7 @@ async function openBuildingHistory(buildingId){
       'Permanent features (drains, HVAC units, hatches, etc.) can be added any time.</p>' +
       '<div id="building-map" style="height:min(50vh,420px);border-radius:6px;overflow:hidden;margin-bottom:10px"></div>' +
       addFeatureBtnHtml + ' ' + addRoofBtnHtml + ' ' + autoAssignBtnHtml + ' ' + bulkReassignBtnHtml + '</div>';
-    var qs = await fdb.collection("building_history_events")
-      .where("buildingId", "==", buildingId).orderBy("createdAt", "desc").limit(50).get();
-    var events = [];
-    qs.forEach(function(d){ events.push(Object.assign({ _id: d.id }, d.data())); });
-    /* Mark: "show the timeline ordered by the EVENT date" -- the query
-       above orders by createdAt (when it was ENTERED, a Firestore-native
-       field) purely to fetch the most-recently-touched 50 records; that's
-       NOT the same as chronological order once a backfilled record's real
-       date can be anywhere in the past. Re-sort client-side by the actual
-       date field (parseMDYDate() -- plain string orderBy would sort
-       "M/D/YY" lexicographically wrong) before anything renders. Same-day
-       events keep their createdAt order as a stable tiebreak. See
-       "Retroactive backfill: back-dating" in DEV_NOTES.md. */
-    events.sort(function(a, b){
-      var d = parseMDYDate(b.date) - parseMDYDate(a.date);
-      return d !== 0 ? d : (b.createdAt || 0) - (a.createdAt || 0);
-    });
+    var events = await loadBuildingHistoryEvents(buildingId, 50);
     if (!events.length){
       historyEvents = [];
       historyBuildingId = buildingId;
@@ -298,7 +334,6 @@ async function openBuildingHistory(buildingId){
       renderBuildingMap([], hasCustomBaseMap ? roof : null, bld.location, orthoOverlay, roofAssets, buildingId, allRoofOutlinesForMap);
       return;
     }
-    flagDuplicateEvents(events);
     var dupCount = events.filter(function(e){ return e._dup; }).length;
     historyEvents = events;
     historyBuildingId = buildingId;
@@ -966,8 +1001,12 @@ function populateReportsFilterOptions(){
       var sel = document.getElementById(spec[0]);
       if (!sel) return;
       var current = sel.value;
+      /* Same raw-value / display-label split as populateTimelineFilterOptions()
+         above — filterReports() compares the option value against the raw
+         stored r.workOrderType. */
+      var isWoType = spec[1] === "workOrderType";
       sel.innerHTML = '<option value="">All</option>' + rpDistinctSorted(spec[1]).map(function(v){
-        return '<option value="' + esc(v) + '">' + esc(v) + '</option>';
+        return '<option value="' + esc(v) + '">' + esc(isWoType ? woTypeLabel(v) : v) + '</option>';
       }).join("");
       sel.value = Array.prototype.some.call(sel.options, function(o){ return o.value === current; }) ? current : "";
     });
@@ -1005,7 +1044,7 @@ function rpReportItemHtml(r){
     '<span class="evt-date">' + esc(r.date || fmtTs(r.createdAt)) + '</span>' +
     '<span class="evt-tag">' + esc(r.reportType || "") + '</span>' +
     (r.workOrderType && r.workOrderType !== WORK_ORDER_TYPES[0] ?
-      '<span class="evt-tag" style="background:#FFF3E0;color:#8A5A00">' + esc(r.workOrderType) + '</span>' : '') +
+      '<span class="evt-tag" style="background:#FFF3E0;color:#8A5A00">' + esc(woTypeLabel(r.workOrderType)) + '</span>' : '') +
     (r.warrantyStatus ? '<span class="evt-tag">' + esc(r.warrantyStatus) + '</span>' : '') +
     (r.emailSent ? '<span class="evt-tag">Emailed ✓</span>' : '') +
     ccUploadBadgeHtml(r.companyCamUploadStatus) +
@@ -1068,24 +1107,353 @@ async function renderReportsList(){
    generated files other than its Documents endpoint (base64, ~30MB limit,
    see netlify/functions/companycam.js). If that ever changes shape, this
    is the only place that needs updating. */
+/* Content fingerprint of the PDF bytes (FNV-1a 32-bit + length). Not crypto --
+   just "did this PDF change since we last pushed it?" A base64 diff of any size
+   changes the hash; length is appended as cheap extra collision insurance. */
+function pdfContentHash(str){
+  str = String(str || "");
+  var h = 0x811c9dc5;
+  for (var i = 0; i < str.length; i++){
+    h ^= str.charCodeAt(i);
+    h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
+  }
+  return ("0000000" + h.toString(16)).slice(-8) + ":" + str.length;
+}
+/* A re-push is redundant only if the SAME content is already on CompanyCam AND
+   we hold that document's id (so we know it really landed). */
+function ccDocumentPushIsRedundant(o, hash){
+  return !!(o && o.ccDocumentId && o.ccDocumentHash && o.ccDocumentHash === hash);
+}
+/* Persist the pushed doc id + content hash on the work-order record so the NEXT
+   send can tell an unchanged re-send from a changed one. Merge-only; also mirrors
+   into the in-memory o so a save that follows carries it (cloudSaveOrder writes
+   every top-level o field; cloudFetchOrder hydrates them back). */
+async function ccPersistDocumentInfo(workOrderId, ccDocumentId, ccDocumentHash){
+  if (typeof fdb === "undefined" || !fdb || !workOrderId) return;
+  try{
+    await fdb.collection("workorders").doc(workOrderId)
+      .set({ ccDocumentId: ccDocumentId || null, ccDocumentHash: ccDocumentHash || null }, { merge: true });
+  }catch(e){ /* the in-memory o.ccDocument* still guards this session; next save persists it */ }
+}
 async function uploadPdfToCompanyCam(doc, o){
   if (!o.companyCamProjectId) return { skipped: true };
   try{
     var base64 = doc.output("datauristring").split("base64,")[1] || "";
     if (!base64) throw new Error("couldn't encode PDF");
-    await ccApiPost({ action: "upload_document", project_id: o.companyCamProjectId,
-      name: pdfFileName(), attachment: base64 });
-    return { ok: true };
+    /* Idempotent push (#54). CompanyCam's Documents API is CREATE-ONLY -- no
+       delete, no update (verified against their live API) -- so re-sending an
+       UNCHANGED work order would pile a duplicate PDF into the project. If the
+       exact same PDF is already on CompanyCam (same content hash AND we hold its
+       document id), skip the upload instead of creating a copy. A genuinely
+       CHANGED report still uploads a new version; old versions can't be removed
+       via their API, so the deterministic {type}_{jobNo} name keeps them grouped. */
+    var hash = pdfContentHash(base64);
+    if (ccDocumentPushIsRedundant(o, hash)) return { ok: true, skipped: true, unchanged: true, documentId: o.ccDocumentId };
+    var out = await ccApiPost({ action: "upload_document", project_id: o.companyCamProjectId,
+      name: (typeof ccDocumentName === "function" ? ccDocumentName(o) : pdfFileName()), attachment: base64 });
+    var documentId = (out && out.document && out.document.id) ? String(out.document.id) :
+      (out && out.documentId ? String(out.documentId) : null);
+    o.ccDocumentId = documentId;
+    o.ccDocumentHash = hash;
+    if (o.id) await ccPersistDocumentInfo(o.id, documentId, hash);
+    return { ok: true, documentId: documentId };
   }catch(e){
     return { ok: false, error: e.message };
   }
+}
+/* ================= CompanyCam PHOTO FEED push =================
+   The PDF above lands in CompanyCam as a DOCUMENT. That's the record, but
+   nobody browses documents -- CompanyCam users live in the project's photo
+   feed and on its map. So every photo on a work order also gets pushed into
+   the linked project's feed as a real, map-pinned CompanyCam photo. Both
+   pushes happen; neither replaces the other.
+
+   DEV_NOTES.md (2026-07-09) deferred this as impossible because "CompanyCam's
+   photo-upload API requires a publicly-fetchable URL for every photo, and the
+   app has no image hosting." Half of that is still true and always will be:
+   the Storage bucket is DENY-ALL and must stay that way. What changed is that
+   photos now live in Storage at a known path, so the server can mint a
+   short-lived, single-object V4 SIGNED url for CompanyCam to fetch -- public
+   enough for one fetch, by one party, for one object, for a bounded time, with
+   the bucket still sealed. See netlify/functions/lib/companyCamPhotos.js.
+
+   NEVER creates a project. Pushes only when one is already LINKED -- the same
+   rule the PDF push has always followed. */
+
+/* A coordinate is only usable if it's real. (0,0) is what a BROKEN coordinate
+   looks like in this app's live data -- there's a whole tools/audit_null_island.js
+   because of it -- and a photo confidently pinned in the Gulf of Guinea is worse
+   than an honestly unpinned one. */
+function ccValidLatLng(c){
+  if (!c) return null;
+  var lat = Number(c.lat), lng = Number(c.lng !== undefined && c.lng !== null ? c.lng : c.lon);
+  if (!isFinite(lat) || !isFinite(lng)) return null;
+  if (lat === 0 && lng === 0) return null;
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
+  return { lat: lat, lng: lng };
+}
+/* A base-map (x/y) finding pin has NO lat/lng -- savePinFromModal() stores it as
+   fractional image coordinates ({x, y, lat:null, lng:null, imageFrame:"roof_base_map",
+   imageFrameUrl}) against the base image it was dropped on. If that image is a
+   GEOREFERENCED drone ortho (roof_base_map_type "drone_ortho" with real
+   roof_base_map_bounds), the x/y maps back to a true coordinate -- the inverse of
+   the ortho projection in js/roofmapper.js. A SYNTHETIC / sketch base map has no
+   real-world bounds (the whole Null Island lesson, #40), so its x/y can't become a
+   real coordinate: it returns null and the photo falls through to the job-site
+   floor rather than being pinned in the Gulf of Guinea. THIS is why a finding a
+   tech pinned on a drawing used to push its photo UNPINNED. */
+function ccLatLngFromImageFramePin(pin, roofs){
+  if (!pin || typeof pin.x !== "number" || typeof pin.y !== "number" || !pin.imageFrameUrl) return null;
+  var roof = (roofs || []).find(function(r){
+    return r && r.roof_base_map_url === pin.imageFrameUrl &&
+      r.roof_base_map_type === "drone_ortho" && r.roof_base_map_bounds;
+  });
+  if (!roof) return null;
+  var b = roof.roof_base_map_bounds;
+  if (!b || typeof b.north !== "number" || typeof b.south !== "number" ||
+      typeof b.east !== "number" || typeof b.west !== "number") return null;
+  return ccValidLatLng({ lat: b.north - pin.y * (b.north - b.south), lng: b.west + pin.x * (b.east - b.west) });
+}
+/* A photo attached to a finding (or to an inspection checklist item -- they pin
+   identically, see buildPinsForHistoryEvent()) inherits that pin's roof
+   coordinates: a real lat/lng pin directly, or a georeferenced base-map x/y pin
+   converted via ccLatLngFromImageFramePin(). */
+function ccPinForFinding(o, findingId, roofs){
+  if (!findingId) return null;
+  var f = (o.findings || []).find(function(x){ return x && x.id === findingId; });
+  if (f && f.pin){ var a = ccValidLatLng(f.pin) || ccLatLngFromImageFramePin(f.pin, roofs); if (a) return a; }
+  var item = (o.inspectionChecklist || []).find(function(x){ return x && x.id === findingId; });
+  if (item && item.pin){ var b = ccValidLatLng(item.pin) || ccLatLngFromImageFramePin(item.pin, roofs); if (b) return b; }
+  return null;
+}
+/* THE COORDINATE PRIORITY, and why it is what it is:
+
+     1. photo.pin      -- a pin placed on the photo ITSELF. No capture path sets
+                          this today; it's honoured first so that if one ever
+                          does, it wins without another edit here.
+     2. FINDING pin    -- tech-placed and tech-CONFIRMED on the roof.
+     3. photo.gps      -- the phone's GPS at capture.
+     4. site location  -- the job/building location (the bottom "Photo
+                          Documentation" section's photos, which have no
+                          coordinate of their own).
+
+   NOTE FOR MARK -- a deliberate, flagged decision. The spec listed the order as
+   "photo.pin / GPS EXIF / finding pin / building location" in one place, and
+   asserted "finding-pin > photo GPS > building location" in the test spec. Those
+   two disagree about GPS vs finding pin, so this had to pick one. It follows the
+   TEST spec (finding pin ABOVE photo GPS), because that is what this codebase
+   already believes everywhere else: photo GPS is treated as an initial GUESS for
+   pin placement and explicitly "never trusted as final without a tech confirming"
+   (see companycam.js's action=photos mapping, and openPinModal()), consumer GPS
+   is ~10-30ft off, and on the real Tri-Delta report 11 of 12 photos had no GPS
+   at all. A finding pin is the tech's confirmed answer; the GPS is the question.
+   If raw GPS should win instead, swap the two lines below -- it's a one-line
+   change, and the test that asserts this order will fail loudly and say so. */
+/* Resolves a photo's coordinate AND reports which branch produced it, so the push
+   can LOG exactly what it sent per photo (Mark: "we need to see the exact
+   coordinates object sent per photo"). Priority: a pin on the photo -> the
+   finding's pin (real lat/lng, or a georeferenced base-map x/y) -> the photo's own
+   device GPS -> the JOB/BUILDING location floor (so an unpinned photo still lands
+   at the job, not nowhere) -> none. */
+function ccBestPhotoCoordinateWithSource(p, o, jobLoc, roofs){
+  if (!p) return { coord: null, source: "none" };
+  var c;
+  if ((c = ccValidLatLng(p.pin))) return { coord: c, source: "photo_pin" };
+  if ((c = ccLatLngFromImageFramePin(p.pin, roofs))) return { coord: c, source: "photo_pin_georef" };
+  if ((c = ccPinForFinding(o, p.finding_id, roofs))) return { coord: c, source: "finding_pin" };
+  if ((c = ccValidLatLng(p.gps))) return { coord: c, source: "photo_gps" };
+  if ((c = ccValidLatLng(jobLoc))) return { coord: c, source: "building_location" };
+  return { coord: null, source: "none" };
+}
+function ccBestPhotoCoordinate(p, o, jobLoc, roofs){
+  return ccBestPhotoCoordinateWithSource(p, o, jobLoc, roofs).coord;
+}
+/* The job's location, for photos that carry no coordinate of their own.
+   Resolved at most ONCE per push run (geocoding is a network call), and only if
+   some photo actually needs it. If it can't be resolved, the photo is still
+   pushed -- just without coordinates -- and the SERVER then falls back to the
+   linked CompanyCam project's OWN coordinates, which is the truest available
+   answer to "where is this job" (see companyCamPhotos.js). A photo with no pin
+   still belongs in the feed; we never invent a location for it. */
+async function ccSiteLatLng(o){
+  var addr = o.location || o.jobName || "";
+  if (!addr || typeof geocodeAddress !== "function") return null;
+  try{ return ccValidLatLng(await geocodeAddress(addr)); }
+  catch(e){ return null; }
+}
+/* The building's roofs (READ-ONLY), so a base-map x/y finding pin can be
+   georeferenced back to lat/lng by ccLatLngFromImageFramePin(). Derives the same
+   deterministic bld_/cust_ id the rest of the app uses (see
+   rmFetchReportRoofOutlines in js/export.js) and does exactly one .get() -- never
+   writes. Non-fatal: any miss (no building, no fdb, a throw) returns [] and photos
+   fall back to their own GPS / the job site, exactly as before. Resolved at most
+   once per push. */
+async function ccResolveBuildingContext(o){
+  var ctx = { roofs: [], geo: null, bldId: null };
+  try{
+    if (!fdb || typeof slugify !== "function" || typeof getBuildingRoofs !== "function") return ctx;
+    var bldName = (o.jobName || "").trim();
+    if (!bldName) return ctx;
+    var custId = (o.billTo || "").trim() ? ("cust_" + slugify(o.billTo)) : null;
+    ctx.bldId = "bld_" + slugify((custId || "nocust") + "_" + bldName);
+    var snap = await fdb.collection("buildings").doc(ctx.bldId).get();
+    if (!snap || !snap.exists) return ctx;
+    var bld = snap.data() || {};
+    ctx.roofs = getBuildingRoofs(bld) || [];
+    /* geoCache = the building's SAVED geocode of its address (DATA_MODEL.md;
+       written by Buildings-Near-Me). This is the reliable job-location floor --
+       preferred over a live geocode, which is rate-limited and fails silently. */
+    ctx.geo = ccValidLatLng(bld.geoCache);
+    return ctx;
+  }catch(e){ return ctx; }
+}
+/* Cache a freshly-geocoded job coordinate onto the building's geoCache so the NEXT
+   push (and Buildings-Near-Me) reads it instead of re-geocoding. Merge-only,
+   non-fatal, same shape Buildings-Near-Me writes. */
+async function ccCacheBuildingGeo(bldId, coord){
+  if (!fdb || !bldId || !coord) return;
+  try{
+    await fdb.collection("buildings").doc(bldId)
+      .set({ geoCache: { lat: coord.lat, lng: coord.lng, source: "geocoded", updatedAt: Date.now() } }, { merge: true });
+  }catch(e){ /* non-fatal: the coordinate is still used for THIS push */ }
+}
+/* Photos carry no capture timestamp of their own, and captured_at is REQUIRED by
+   CompanyCam -- the service date is the honest answer (it's the day the photo
+   was taken on site), falling back to now. */
+function ccPhotoCapturedAt(o){
+  var t = o.serviceDate ? Date.parse(o.serviceDate + "T12:00:00") : NaN;
+  return isFinite(t) ? t : Date.now();
+}
+function ccPhotoDescription(p, o){
+  var bits = [];
+  if (p.caption) bits.push(p.caption);
+  var f = (o.findings || []).find(function(x){ return x && x.id === p.finding_id; });
+  if (f && f.condition) bits.push(f.condition);
+  if (!bits.length) bits.push("Work order photo");
+  if (o.jobNo) bits.push("WO " + o.jobNo);
+  return bits.join(" \u2014 ").slice(0, 500);
+}
+/* Persists the CompanyCam feed photo id onto the photo's Firestore doc. This is
+   the IDEMPOTENCY record -- it is the reason re-sending a work order (or
+   re-downloading its PDF, or re-sharing it) doesn't spam the project feed with
+   duplicate copies of the same photo. Merge-write only: it never touches
+   img/storageRef/caption/anything else on the doc. */
+async function ccPersistFeedPhotoId(workOrderId, photoIndex, ccFeedPhotoId){
+  if (!fdb) return;
+  try{
+    await fdb.collection("workorders").doc(workOrderId)
+      .collection("photos").doc("p" + photoIndex)
+      .set({ ccFeedPhotoId: ccFeedPhotoId }, { merge: true });
+  }catch(e){ /* the in-memory flag still guards this session; the next save persists it */ }
+}
+/* Pushes every eligible photo on the work order into the linked project's feed.
+
+   SKIPS, and why each one matters:
+     - p.ccPhotoId    : this photo was IMPORTED FROM CompanyCam. Pushing it back
+                        would duplicate CompanyCam's own photo into its own feed.
+                        Never.
+     - p.ccFeedPhotoId: already pushed by an earlier save/send. Idempotency.
+     - not in Storage : the server reports { skipped } (a legacy pre-migration
+                        photo, or a save whose upload hasn't landed yet). Not an
+                        error -- the next send picks it up for free.
+
+   One photo's failure never aborts the rest. */
+async function pushPhotosToCompanyCamFeed(o){
+  if (!o.companyCamProjectId) return { skipped: true };
+  var photos = o.photos || [];
+  var r = { ok: true, pushed: 0, alreadyPushed: 0, imported: 0, notStored: 0, failed: 0, pinned: 0, unpinned: 0, jobLoc: null, error: "" };
+  if (!photos.length) return r;
+
+  /* ONE read: the building's roofs (to georeference base-map x/y pins) AND its
+     stored geo-anchor (the reliable JOB-LOCATION FLOOR -- so a photo with no pin
+     and no device GPS still lands at the job, instead of unpinned). */
+  var ctx = await ccResolveBuildingContext(o);
+  var roofs = ctx.roofs;
+  var jobLoc = null, jobResolved = false;
+  for (var i = 0; i < photos.length; i++){
+    var p = photos[i];
+    if (!p) continue;
+    if (p.ccPhotoId){ r.imported++; continue; }
+    if (p.ccFeedPhotoId){ r.alreadyPushed++; continue; }
+    if (!jobResolved){
+      jobResolved = true;
+      jobLoc = ctx.geo || await ccSiteLatLng(o); /* saved geoCache first; live geocode only if none */
+      if (jobLoc && !ctx.geo && ctx.bldId) ccCacheBuildingGeo(ctx.bldId, jobLoc); /* cache a fresh geocode for next time */
+      r.jobLoc = jobLoc;
+    }
+    var res = ccBestPhotoCoordinateWithSource(p, o, jobLoc, roofs);
+    var coord = res.coord;
+    var payloadCoord = coord ? { lat: coord.lat, lon: coord.lng } : null;
+    /* EVIDENCE (Mark's ask): the EXACT coordinates object sent per photo + why. */
+    if (typeof console !== "undefined" && console.log){
+      console.log("[CompanyCam push] photo " + i + ": coordinates=" +
+        (payloadCoord ? JSON.stringify(payloadCoord) : "null") + " source=" + res.source, {
+          finding_id: p.finding_id || null, photoGps: p.gps || null, jobLoc: jobLoc || null
+        });
+    }
+    try{
+      var out = await ccApiPost({
+        action: "upload_photo",
+        project_id: o.companyCamProjectId,
+        workOrderId: o.id,
+        photoIndex: i,
+        coordinates: payloadCoord,
+        captured_at: ccPhotoCapturedAt(o),
+        description: ccPhotoDescription(p, o)
+      });
+      if (out && out.ok && out.photoId){
+        p.ccFeedPhotoId = String(out.photoId);
+        r.pushed++;
+        if (payloadCoord) r.pinned++; else r.unpinned++;
+        await ccPersistFeedPhotoId(o.id, i, p.ccFeedPhotoId);
+      } else if (out && out.skipped){
+        r.notStored++;
+      } else {
+        r.failed++;
+      }
+    }catch(e){
+      r.failed++;
+      if (!r.error) r.error = e.message;
+    }
+  }
+  if (r.failed) r.ok = false;
+  return r;
 }
 async function uploadLinkedPdfToCompanyCam(doc, o, doneLabel){
   if (!o.companyCamProjectId) return { skipped: true };
   toast(doneLabel + ". Saving PDF to CompanyCam\u2026");
   var ccUp = await uploadPdfToCompanyCam(doc, o);
-  if (ccUp.ok) toast(doneLabel + " \u2014 PDF saved to CompanyCam project \u2713");
+  if (ccUp.ok && ccUp.unchanged) toast(doneLabel + " \u2014 PDF already current on CompanyCam \u2713");
+  else if (ccUp.ok) toast(doneLabel + " \u2014 PDF saved to CompanyCam project \u2713");
   else if (!ccUp.skipped) toast(doneLabel + " \u2014 CompanyCam PDF upload failed: " + ccUp.error);
+
+  /* The photo-feed push rides the SAME linked-project path as the PDF, so every
+     action that already saves a PDF to CompanyCam (Send, Share, Download -- see
+     their call sites below) now also lands the photos, with no separate wiring
+     per call site to forget.
+
+     Deliberately AFTER the PDF, and deliberately non-fatal: the PDF is the record
+     of the job and must never be held hostage to a photo push, and the user's
+     actual action (email sent / file downloaded / sheet shared) has ALREADY
+     succeeded by the time we are here. A photo-push failure is reported, retried
+     on the next send, and never turns a successful send into a failed one. It also
+     never changes what this function RETURNS to logReportAndHistoryEvent(), which
+     still describes the PDF and only the PDF. */
+  try{
+    var feed = await pushPhotosToCompanyCamFeed(o);
+    if (feed && feed.pushed){
+      /* Phone-visible evidence: how many landed map-pinned, and (when none of
+         them did) that the job has no location to pin to. */
+      var feedMsg = feed.pushed + " photo" + (feed.pushed === 1 ? "" : "s") + " added to CompanyCam \u2713 \u2014 " +
+        feed.pinned + " map-pinned";
+      if (feed.unpinned) feedMsg += ", " + feed.unpinned + " with NO location (no pin/GPS and the job has no mappable address)";
+      toast(feedMsg);
+    }
+    if (feed && feed.failed) toast(feed.failed + " photo" + (feed.failed === 1 ? "" : "s") + " couldn\u2019t be added to CompanyCam \u2014 they retry on the next send.");
+    ccUp.photoFeed = feed;
+  }catch(e){
+    ccUp.photoFeed = { ok: false, error: e.message };
+  }
   return ccUp;
 }
 function summarizeRows(rows, keyA, keyB){
@@ -1467,16 +1835,16 @@ async function sendEmailNow(){
   toast("Sending email\u2026");
   var o = collect();
   var isCO = o.woType === "Change Order";
-  var subject = (isCO ? "Change Order \u2014 " : "Leak Work Order \u2014 ") + (o.jobName || "Job") +
+  var subject = emailTypeSubject(o.woType) + " \u2014 " + (o.jobName || "Job") +
     (o.jobNo ? " #" + o.jobNo : "") + (o.location ? " (" + o.location + ")" : "");
   var body = (isCO ?
       "Change order documentation for " + (o.jobName || "the job") +
       (o.jobNo ? " (Job No. " + o.jobNo + ")" : "") + " is attached as a PDF." :
-      "Leak work order documentation for " + (o.jobName || "the job") +
+      emailTypeNoun(o.woType) + " documentation for " + (o.jobName || "the job") +
       (o.jobNo ? " (Job No. " + o.jobNo + ")" : "") + " is attached as a PDF, including photo documentation.") +
     "\n\nDate of Service: " + (o.serviceDate || "") +
     "\nLocation: " + (o.location || "") +
-    "\n\nSent from the Watkins Roofing work order app.";
+    "\n\nSent from the RoofOps app.";
   var pdfBase64 = "";
   try{ pdfBase64 = d.output("datauristring").split("base64,")[1] || ""; }catch(e){}
   if (!pdfBase64){ toast("Couldn't prepare the PDF for sending \u2014 try Download PDF instead."); return; }
@@ -1514,9 +1882,9 @@ async function sharePdf(){
   if (!isMobile){
     /* Open the email app before building the PDF so desktop browsers do not block it. */
     var o = collect();
-    var subject = "Leak Work Order \u2014 " + (o.jobName || "Job") +
+    var subject = emailTypeSubject(o.woType) + " \u2014 " + (o.jobName || "Job") +
       (o.jobNo ? " #" + o.jobNo : "") + (o.location ? " (" + o.location + ")" : "");
-    var body = "Leak work order documentation for " + (o.jobName || "the job") +
+    var body = emailTypeNoun(o.woType) + " documentation for " + (o.jobName || "the job") +
       (o.jobNo ? " (Job No. " + o.jobNo + ")" : "") +
       " is attached as a PDF, including photo documentation." +
       "\n\nDate of Service: " + (o.serviceDate || "") +
