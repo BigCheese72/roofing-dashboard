@@ -805,6 +805,7 @@ async function cloudFetchIndex(){
     var v = d.data();
     arr.push({ id: d.id, jobName: v.jobName || "(untitled)", jobNo: v.jobNo || "",
       location: v.location || "", serviceDate: v.serviceDate || "", savedAt: v.savedAt || 0, cloud: true,
+      companyCamProjectId: v.companyCamProjectId || null,
       lastEmailedAt: v.lastEmailedAt || null, lastEmailedTo: v.lastEmailedTo || [] });
   });
   return arr;
@@ -1232,6 +1233,54 @@ async function runThumbnailBackfill(){
     (failed ? ", " + failed + " FAILED (safe to retry — nothing was changed on those, run this again)" : "") + ".");
   if (failures.length) console.warn("Thumbnail backfill failures (safe to retry):", failures);
   return { backfilled: backfilled, failed: failed, failures: failures };
+}
+/* Retroactive CompanyCam photo-feed backfill (issue #55). #51 pushes a work
+   order's photos into its linked CompanyCam project feed on send/download/share
+   going forward; this walks EXISTING work orders and does the same for photos
+   that predate #51. Same owner-only, idempotent, safe-to-rerun shape as the
+   migration/thumbnail backfills above -- it reuses pushPhotosToCompanyCamFeed()
+   (js/history.js), so the per-photo idempotency (ccFeedPhotoId), imported-photo
+   guard (ccPhotoId), not-yet-in-Storage skip, and non-fatal-per-photo behavior
+   are exactly the same ones the normal send path already has. Running it twice
+   pushes nothing the second time. Never creates a CompanyCam project. */
+async function runCompanyCamPhotoBackfill(){
+  if (!currentAuthClaims || currentAuthClaims.owner !== true){ toast("Owner login required."); return; }
+  if (!fdb){ toast("Cloud not available."); return; }
+  if (typeof pushPhotosToCompanyCamFeed !== "function"){ toast("CompanyCam photo push isn't available."); return; }
+  toast("Scanning work orders for CompanyCam photo backfill…");
+  var index;
+  try{ index = await cloudFetchIndex(); }
+  catch(e){ toast("Scan failed: " + e.message); return; }
+
+  var linked = (index || []).filter(function(w){ return w.companyCamProjectId; });
+  if (!linked.length){
+    toast("No CompanyCam-linked work orders found — nothing to backfill.");
+    return { orders: 0, ordersTouched: 0, pushed: 0, alreadyPushed: 0, failed: 0, failures: [] };
+  }
+  if (!confirm(linked.length + " CompanyCam-linked work order" + (linked.length === 1 ? "" : "s") +
+    " will have their photos pushed into the linked project feed" + (linked.length === 1 ? "" : "s") +
+    ". Photos already in the feed are skipped automatically, and photos imported FROM CompanyCam are never pushed back — safe to run more than once. Proceed?")) return null;
+
+  var pushed = 0, alreadyPushed = 0, failed = 0, ordersTouched = 0, failures = [];
+  for (var i = 0; i < linked.length; i++){
+    toast("Backfilling CompanyCam photos — work order " + (i + 1) + " of " + linked.length + "…");
+    try{
+      var o = await cloudFetchOrder(linked[i].id);
+      if (!o) continue;
+      var r = await pushPhotosToCompanyCamFeed(o);
+      pushed += (r && r.pushed) || 0;
+      alreadyPushed += (r && r.alreadyPushed) || 0;
+      failed += (r && r.failed) || 0;
+      if (r && r.pushed) ordersTouched++;
+      if (r && r.failed) failures.push({ workOrderId: linked[i].id, error: r.error || "photo push failed" });
+    }catch(e){ failed++; failures.push({ workOrderId: linked[i].id, error: e.message }); }
+  }
+  toast(pushed + " photo" + (pushed === 1 ? "" : "s") + " added to CompanyCam across " +
+    ordersTouched + " work order" + (ordersTouched === 1 ? "" : "s") + " ✓" +
+    (alreadyPushed ? ", " + alreadyPushed + " already in the feed" : "") +
+    (failed ? ", " + failed + " FAILED (safe to retry — run this again)" : "") + ".");
+  if (failures.length) console.warn("CompanyCam photo backfill failures (safe to retry):", failures);
+  return { orders: linked.length, ordersTouched: ordersTouched, pushed: pushed, alreadyPushed: alreadyPushed, failed: failed, failures: failures };
 }
 /* Admin toggle button removed entirely (2026-07-12) -- there was nothing
    left for it to toggle. isAdmin has followed sign-in state and role
