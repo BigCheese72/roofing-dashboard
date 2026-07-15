@@ -4764,6 +4764,18 @@ function rmShouldDrawWorldOutline(outline, roof){
   if (rmIsSyntheticImageGeometry(outline, roof) && outline.ring.some(rmIsNearNullIslandPoint)) return false;
   return true;
 }
+function rmImageNaturalDimensions(url){
+  return new Promise(function(res, rej){
+    var img = new Image();
+    img.onload = function(){ res({ w: img.naturalWidth, h: img.naturalHeight }); };
+    img.onerror = function(){ rej(new Error("couldn't reload the saved image")); };
+    img.src = url;
+  });
+}
+async function rmComputeOrthoBoundsForImageUrl(url){
+  var dims = await rmImageNaturalDimensions(url);
+  return rmComputeOrthoBounds(dims.w, dims.h);
+}
 function rmStartOrthoTrace(dataUrl, pixelW, pixelH){
   var map = rmEnsureMap();
   rmClearFootprintLayers(); /* same clean-slate as any other fresh capture start --
@@ -6107,13 +6119,7 @@ async function rmOpenRoofInMapper(buildingId, roofId){
          image URL no longer resolves) doesn't block the roof itself from
          opening -- the outline loads regardless, just without its photo. */
       try{
-        var dims = await new Promise(function(res, rej){
-          var img = new Image();
-          img.onload = function(){ res({ w: img.naturalWidth, h: img.naturalHeight }); };
-          img.onerror = function(){ rej(new Error("couldn't reload the saved image")); };
-          img.src = roof.roof_base_map_url;
-        });
-        var computed = rmComputeOrthoBounds(dims.w, dims.h);
+        var computed = await rmComputeOrthoBoundsForImageUrl(roof.roof_base_map_url);
         rmState.orthoOverlayLayer = L.imageOverlay(roof.roof_base_map_url, computed.latLngBounds).addTo(map);
         rmState.orthoActive = true;
         rmState.orthoSynthetic = true;
