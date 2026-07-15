@@ -2699,6 +2699,67 @@ previously-typed value across work orders or suggests it while typing. This is a
 real gap if Mark wants it; not something this pass built (report-only, per his
 request — he'll decide with the user whether to build it).
 
+## Foundation (construction accounting) integration (Phase 1: connect + pull, dev-only, HELD for sign-off)
+
+Read-only integration with **Foundation** (FoundationSoft), Watkins Roofing's construction
+accounting system — its SQL Server holds the jobs master and the labor timecards. Phase 1 is
+**the pull only**: connect and read a small slice (active jobs + per-job hours). Same guarded
+proxy pattern as `companycam.js`/`outlook.js` — the DB credential lives only in a Netlify env
+var, never in the browser or the repo. **Not promoted to production** — held for Mark's sign-off.
+
+- **`netlify/functions/lib/foundationDb.js`** — the ONE place that opens a connection to
+  Foundation. Owns the `mssql` (tedious — pure JS) driver, the connection config, the SELECT
+  query builders, and the row mappers. `foundation.js` never touches `mssql` directly.
+  - **Connection facts (validated live against the real server):** server
+    `sql.foundationsoft.com`, port **9000** (not the default 1433), database `Cas_10262`, user
+    `roofops`. Only the **password** is secret (`FOUNDATION_SQL_PASSWORD`, a Netlify secret env
+    var) — the rest are non-secret and hardcoded.
+  - **`encrypt` MUST be `false`.** This is the one non-obvious, load-bearing setting: with
+    `encrypt=true` the connection hangs and **times out in the post-login phase every time**;
+    with `encrypt=false` (+ `trustServerCertificate=true`) it connects instantly and reads fine.
+    Do not "harden" this to `encrypt=true` — it does not work against this server.
+  - **Read-only + least privilege.** Every query is a `SELECT`; there is deliberately no
+    write/exec path. The hours pull selects **only** `dated`/`employee_no`/`hours`/`phase_no`/
+    `cost_code_no` — the pay columns on `dbo.his_timecard` (`amount`/`pay_rate`) are never
+    selected, so pay can't leak through a downstream mapping mistake.
+  - **The CHAR `job_no` gotcha.** `job_no` is a fixed-width `CHAR` column, so `"17053"` is
+    stored padded (`"17053     "`) — a naive `job_no = '17053'` match returns **0 hours rows**
+    for a job that clearly has labor. Both sides are `LTRIM(RTRIM())`'d so the match is on the
+    logical value, not the padding.
+- **`netlify/functions/foundation.js`** — the deployed endpoint.
+  - `GET ?action=jobs` (optional `&search=`) — active jobs from `dbo.jobs` (`job_status='A'`),
+    search over job no / job number / name / customer. Foundation stores the job **name** in
+    `description`; the mapper exposes it as `name`.
+  - `GET ?action=job_hours&job_no=…` — labor rows from `dbo.his_timecard` (trimmed match) plus a
+    summed `total_hours`. Admin-only hours, **not** pay.
+- **Auth is a PERMISSION gate, not just authentication.** Unlike `companycam.js` (any signed-in
+  tech), Foundation data is admin-grade (customers, PMs, contract values, employee hours), so
+  every action is behind `requirePermission(..., "foundation.read")`. `foundation.read` is a new
+  key in `lib/permissions.js` granted to **owner / admin / service_manager / ops_manager**. The
+  check runs FIRST — ahead of the `FOUNDATION_SQL_PASSWORD` env read and the action dispatch,
+  including the unknown-action branch — so an unauthorized caller can't tell a configured deploy
+  from a misconfigured one, and there is no unauthenticated path. The password is never returned,
+  thrown to the caller, or logged; a DB error surfaces as a generic `502` with the real error in
+  the function logs only.
+- **The one real unknown — outbound TCP to port 9000 from a Netlify Function.** Netlify Functions
+  run on AWS Lambda; whether the runtime can open an outbound TCP connection to a non-HTTP port
+  (9000) is not something unit tests can prove. This is smoke-tested live from the **dev deploy**
+  using Mark's authenticated admin session (`action=jobs` should include `17053` "CPS Smithton MS
+  FACS Renovation"; `action=job_hours&job_no=17053` should return hours via the trimmed match). If
+  the Lambda runtime can't reach `sql.foundationsoft.com:9000`, the connector needs a different
+  host (e.g. a small always-on proxy) — that's a STOP-and-decide, not a code tweak.
+- **Tests** (`tests/foundation.test.js`): the permission gate (401 no token / 403 without
+  `foundation.read` / DB never touched in either case), the SELECT-only query builders, the
+  trimmed `job_no` match, the `description`→`name` mapping, and that pay columns + the password
+  never reach a response. `firebase-admin` and `mssql` are both stubbed, so it runs offline; the
+  fake driver exercises the real builders/mappers end-to-end through the handler.
+- **Not built yet — Phase 2 (left as code comments in `foundation.js`, not scaffolding):**
+  scheduled nightly sync of active jobs into Firestore (so the job picker / WO auto-fill read a
+  fast local cache, not a live DB call per keystroke), WO auto-fill of customer/PM/address from a
+  selected Foundation job, DPR PM from `project_manager_no`, and admin-only labor hours on the WO
+  for holders of `foundation.read`. The clean hooks already exist (`fetchJobs`/`fetchJobHours` +
+  the mappers); don't build the sync/writes until Phase 2 is speced.
+
 ## Outlook / Microsoft 365 integration (Phase 0: auth + mailbox read, shipped dev-only)
 
 First increment of integrating Mark's Microsoft 365 mailbox (`marks@watkinsroofing.net`)
@@ -6907,6 +6968,7 @@ console clean throughout.
 | `GRAPH_CLIENT_ID` | `outlook.js` / `lib/graphAuth.js` | yes, for the Outlook/M365 integration to work | App registration (client) id. |
 | `GRAPH_CLIENT_SECRET` | `outlook.js` / `lib/graphAuth.js` | yes, for the Outlook/M365 integration to work | App registration client secret. Time-limited, will be rotated before go-live — treat as a secret, never commit it. |
 | `GRAPH_MAILBOX` | `outlook.js` / `lib/graphAuth.js` | yes, for the Outlook/M365 integration to work | Mailbox this app reads, e.g. `marks@watkinsroofing.net`. Must be a member of the Exchange Application Access Policy's allowed group — see "Outlook / Microsoft 365 integration" above. |
+| `FOUNDATION_SQL_PASSWORD` | `foundation.js` / `lib/foundationDb.js` | yes, for the Foundation (construction accounting) integration to work | Password for the read-only `roofops` SQL login on `sql.foundationsoft.com:9000`. **Secret** — treat as such, never commit it. The rest of the connection (server/port/database/user) is non-secret and hardcoded. Set on all deploy contexts. See "Foundation (construction accounting) integration" above. |
 
 ### Email (Resend) — designated test recipient, and known blocker
 
