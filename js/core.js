@@ -3019,6 +3019,9 @@ var currentViewName = "home"; /* mirrors showView()'s v -- used by Send
   Feedback to auto-capture which screen the tester was on. See "Send
   Feedback" in DEV_NOTES.md. */
 function showView(v){
+  if (v === "admin" && !isAdmin){
+    v = "edit";
+  }
   currentViewName = v;
   /* "home" has no header tab (reached via "+ New", the empty-state button
      in Building History, or tapping the logo) — every other view still
