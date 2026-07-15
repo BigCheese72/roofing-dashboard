@@ -701,6 +701,24 @@ async function cloudSaveOrder(o){
   main.photoCount = writePhotos.length;
   main.savedAt = Date.now();
   var ref = fdb.collection("workorders").doc(o.id);
+  /* MULTI-DEVICE CLOBBER GUARD (optimistic concurrency). Refuse to overwrite a
+     cloud doc that has advanced past the version THIS copy descends from
+     (o._cloudBaseSavedAt, stamped at fetch). Without it, a stale copy
+     auto-flushed from one device silently overwrote a newer save from another
+     -- the PC<->phone tug-of-war that resurrected deleted photos and wiped
+     re-adds. base 0 = a new/never-synced order -> not guarded (nothing to
+     conflict with). A read failure here never blocks the save (best-effort).
+     See "Multi-device clobber guard" in DEV_NOTES.md. */
+  var base = o._cloudBaseSavedAt || 0;
+  if (base){
+    var cloudSavedAt = 0, gotCloud = false;
+    try{ var curSnap = await ref.get(); cloudSavedAt = curSnap.exists ? (curSnap.data().savedAt || 0) : 0; gotCloud = true; }catch(e){}
+    if (gotCloud && cloudSavedAt > base){
+      var ce = new Error("This work order was updated on another device. Reopen it to get the latest version before saving — your changes on this screen weren't uploaded, so they don't overwrite the newer copy.");
+      ce.__conflict = true;
+      throw ce;
+    }
+  }
   await ref.set(main);
   /* Photos off base64/localStorage onto Storage (Mark's "photos gone in
      PDFs" bug, and the storage-is-full/pruning mess it grew out of -- see
@@ -836,6 +854,12 @@ async function cloudSaveOrder(o){
     });
   }catch(e){ console.warn("photo cleanup enumeration failed (proceeding — nothing overwritten)", e); }
   await Promise.all(ops);
+  /* This device is now in sync with the cloud at main.savedAt -- advance the
+     local base so its OWN subsequent saves don't false-conflict against the
+     version it just wrote. Runs before the throws below so a partial-upload
+     retry still starts from the right base. */
+  o._cloudBaseSavedAt = main.savedAt;
+  try{ var sdb = loadDb(); if (sdb.orders[o.id]){ sdb.orders[o.id]._cloudBaseSavedAt = main.savedAt; saveDb(sdb); } }catch(e){}
   if (uploadFailures > 0){
     throw new Error(uploadFailures + " photo" + (uploadFailures === 1 ? "" : "s") +
       " (photo " + failedPhotoNums.join(", ") + ") couldn't be uploaded to cloud storage. Your work order and these photos are safe on this device — tap “Retry now” on the sync banner (or Save again) to finish uploading them; they will NOT be dropped locally until they're in the cloud.");
@@ -865,6 +889,10 @@ async function cloudFetchOrder(id){
   if (!snap.exists) return null;
   var o = snap.data();
   o.id = id;
+  /* The cloud version this copy descends from -- the base for the multi-device
+     clobber guard in cloudSaveOrder(). Preserved through local caching
+     (stripPhotoBytes copies it) and edits (saveOrder carries it forward). */
+  o._cloudBaseSavedAt = o.savedAt || 0;
   var photosArr = [];
   try{
     var ps = await ref.collection("photos").get();
@@ -2473,7 +2501,18 @@ async function tryFlushSyncQueue(){
         markSynced(id);
         if (typeof renderSaved === "function") renderSaved();
       }catch(e){
-        markSyncFailed(id, e);
+        if (e && e.__conflict){
+          /* The cloud holds a newer version than this device's QUEUED copy.
+             Don't keep trying to overwrite it -- that's exactly the stale-copy
+             clobber loop that resurrected deleted photos. Remove it from the
+             queue (the local copy stays in db.orders for the tech to reopen)
+             and tell them, rather than retrying forever. */
+          markSynced(id);
+          toast("A newer version of “" + (q[id].jobLabel || id) + "” was saved on another device — this device's older copy wasn't uploaded. Reopen it to get the latest.");
+          if (typeof renderSaved === "function") renderSaved();
+        } else {
+          markSyncFailed(id, e);
+        }
       }
     }
   } finally {
@@ -2595,6 +2634,11 @@ function saveOrder(opts){
   }
   currentId = o.id;
   var db = loadDb();
+  /* Carry the clobber-guard base forward across collect() (which rebuilds the
+     order from the form and doesn't know about it). The previously-stored copy
+     -- placed here by an earlier save or by loadOrder() -- holds the base this
+     edit descends from. A brand-new order has none (0 -> unguarded). */
+  o._cloudBaseSavedAt = (db.orders[o.id] && db.orders[o.id]._cloudBaseSavedAt) || 0;
   db.orders[o.id] = o;
   db.index = db.index.filter(function(e){ return e.id !== o.id; });
   db.index.unshift({ id:o.id, jobName:o.jobName || "(untitled)", jobNo:o.jobNo,
@@ -2641,6 +2685,17 @@ function saveOrder(opts){
       renderSaved();
       return true;
     }).catch(function(e){
+      if (e && e.__conflict){
+        /* A newer version exists in the cloud (another device saved since this
+           copy was loaded). Retrying would only keep losing to it, so DON'T
+           keep it queued -- drop it from the sync queue (the local copy stays
+           in db.orders for the tech to reopen) and say so plainly. This is the
+           opposite of a transient failure. */
+        markSynced(o.id);
+        toast(e.message);
+        renderSaved();
+        return localOk;
+      }
       /* A cloud-save failure must never be silent, even on a quiet autosave
          (e.g. ccImport()'s post-import saveOrder({quiet:true})) -- quiet
          only means "don't announce success," never "hide a real failure."
