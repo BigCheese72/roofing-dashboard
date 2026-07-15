@@ -1101,8 +1101,11 @@ function addPhotosFromFiles(files, findingId){
            instant a photo exists, before Save is ever tapped -- see the
            block comment on idbPutPhoto() in js/core.js. Fire-and-forget on
            purpose: never delay the tech seeing the photo in the gallery
-           waiting on this. */
-        idbPutPhoto(r.localId, r.img);
+           waiting on this. Once the IDB write is CONFIRMED, flag the photo
+           _idbBacked so saveDb (leanDbReplacer) can drop its bytes from
+           localStorage -- this is what lets a big batch of photos stop
+           overflowing the ~5MB cache (Phase 1). */
+        idbPutPhoto(r.localId, r.img).then(function(){ r._idbBacked = true; }).catch(function(){});
       });
       renderPhotos();
       if (findingId){
@@ -1238,8 +1241,10 @@ function addPhotosFromCamera(files, findingId){
           photos.push(r);
           /* Offline-first (Mark, 2026-07-12) -- see the block comment on
              idbPutPhoto() in js/core.js. Fire-and-forget, never blocks the
-             gallery/auto-pin flow below on it. */
-          idbPutPhoto(r.localId, r.img);
+             gallery/auto-pin flow below on it. Flag _idbBacked once the IDB
+             write is confirmed so saveDb can drop the bytes from localStorage
+             (Phase 1). IIFE binds this iteration's photo (var-scoped loop). */
+          (function(pp){ idbPutPhoto(pp.localId, pp.img).then(function(){ pp._idbBacked = true; }).catch(function(){}); })(r);
           if (findingId){
             /* Exactly one of these actually does anything -- each checks
                its own array (findings[] vs inspectionChecklist[]) and
