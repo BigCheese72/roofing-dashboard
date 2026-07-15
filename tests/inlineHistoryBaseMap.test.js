@@ -432,3 +432,26 @@ test("location-less pins and assets are disclosed instead of dropped from covera
   assert.match(pinCoverage.disclosure, /1 finding has no saved location/);
   assert.match(assetCoverage.disclosure, /1 feature has no saved location/);
 });
+
+test("Inspection hide-existing-pins toggle is display-only coverage", () => {
+  const sandbox = makeSandbox();
+  const fullPins = sandbox.inlineAllHistoryPins(mixedEvents());
+  const coverage = sandbox.inlineHistoryHiddenSessionPinCoverage(fullPins);
+
+  assert.strictEqual(coverage.rendered.length, 0);
+  assert.deepStrictEqual(keySet(coverage.disclosed), keySet(fullPins));
+  assert.match(coverage.disclosure, /7 existing pins hidden for this Inspection session/);
+  assertCoverage(coverage, "hidden Inspection pins");
+});
+
+test("hide-existing-pins control only appears for Inspection history with pins", () => {
+  const sandbox = makeSandbox();
+
+  assert.match(
+    sandbox.inlineHistoryPinToggleHtml(true, 2, false),
+    /type="checkbox"[^>]*>Hide existing pins/
+  );
+  assert.match(sandbox.inlineHistoryPinToggleHtml(true, 2, true), /checked/);
+  assert.strictEqual(sandbox.inlineHistoryPinToggleHtml(false, 2, false), "");
+  assert.strictEqual(sandbox.inlineHistoryPinToggleHtml(true, 0, false), "");
+});
