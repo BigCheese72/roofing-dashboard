@@ -2790,11 +2790,16 @@ every keystroke. Read-only against Foundation; the only writes are to Firestore.
   other than `sync` from the automated caller → 403. Supports `dryRun`. It calls the existing
   `foundationDb.fetchJobs()` directly (no self-HTTP) with **limit 0 = no `TOP` cap**, since Watkins
   has more than 500 active jobs, and upserts them via the Admin SDK in batches of 400.
-- **`.github/workflows/sync-foundation-jobs.yml`** — nightly cron (`0 7 * * *`, ~1–2 AM Central)
-  that POSTs `{"action":"sync"}` to the **dev** deploy with the secret header. Mirrors
-  `poll-inspection-reports.yml` exactly — **not** a Netlify Scheduled Function (those can't attach
-  a header and carry no forgery-proof signal; see the `netlify.toml` end comment). Production is
-  synced only by a deliberate manual `workflow_dispatch` with `target=production`.
+- **`.github/workflows/sync-foundation-jobs.yml`** — work-day hourly cron (`0 12-21 * * *` =
+  7 AM–4 PM Central/CDT; GitHub cron is UTC with no DST, so it shifts to 6 AM–3 PM in CST/winter —
+  flip to `0 13-22` in November). POSTs `{"action":"sync"}` to the **dev** deploy with the secret
+  header. Mirrors `poll-inspection-reports.yml` exactly — **not** a Netlify Scheduled Function
+  (those can't attach a header and carry no forgery-proof signal; see the `netlify.toml` end
+  comment). Production is synced only by a deliberate manual `workflow_dispatch` with
+  `target=production`. **GitHub only runs `schedule`/`workflow_dispatch` from the DEFAULT branch
+  (`main`)**, so this does not auto-run while it lives on `dev` — it starts firing when it rides to
+  `main` with the Foundation prod promotion. Until then, use the on-demand "sync now" path (a
+  `foundation.read` user POSTing `{"action":"sync"}` to `/.netlify/functions/foundation-sync`).
 - **Firestore collection `foundation_jobs`** (doc id = sanitized `job_no`). Rule: **read = any
   signed-in user**, **write = false** (Admin-SDK only). The cached doc is the identifying subset —
   `job_no`/`job_number`/`name`/`customer_no`/`project_manager_no`/address/city/state/zip/dates +
@@ -7058,7 +7063,7 @@ console clean throughout.
 | `GRAPH_CLIENT_SECRET` | `outlook.js` / `lib/graphAuth.js` | yes, for the Outlook/M365 integration to work | App registration client secret. Time-limited, will be rotated before go-live — treat as a secret, never commit it. |
 | `GRAPH_MAILBOX` | `outlook.js` / `lib/graphAuth.js` | yes, for the Outlook/M365 integration to work | Mailbox this app reads, e.g. `marks@watkinsroofing.net`. Must be a member of the Exchange Application Access Policy's allowed group — see "Outlook / Microsoft 365 integration" above. |
 | `FOUNDATION_SQL_PASSWORD` | `foundation.js` / `foundation-sync.js` / `lib/foundationDb.js` | yes, for the Foundation (construction accounting) integration to work | Password for the read-only `roofops` SQL login on `sql.foundationsoft.com:9000`. **Secret** — treat as such, never commit it. The rest of the connection (server/port/database/user) is non-secret and hardcoded. Set on all deploy contexts. See "Foundation (construction accounting) integration" above. |
-| `FOUNDATION_SYNC_SECRET` | `foundation-sync.js` + `.github/workflows/sync-foundation-jobs.yml` | yes, for the **nightly Foundation→Firestore sync** (Phase 2a) to run automatically | Shared secret (**≥ 32 chars**) authenticating the GitHub Actions cron caller, compared server-side with `timingSafeEqual`. Must be set to the **same value in BOTH** Netlify (Environment variables) and GitHub (Settings → Secrets and variables → Actions). Dedicated to this sync — separate from `POLLER_SHARED_SECRET`. Until both are set the nightly sync stays off (fail-closed); the on-demand "sync now" path (a signed-in user with `foundation.read`) is unaffected. **Secret** — never commit it. |
+| `FOUNDATION_SYNC_SECRET` | `foundation-sync.js` + `.github/workflows/sync-foundation-jobs.yml` | yes, for the **scheduled Foundation→Firestore sync** (Phase 2a, work-day hourly) to run automatically | Shared secret (**≥ 32 chars**) authenticating the GitHub Actions cron caller, compared server-side with `timingSafeEqual`. Must be set to the **same value in BOTH** Netlify (Environment variables) and GitHub (Settings → Secrets and variables → Actions). Dedicated to this sync — separate from `POLLER_SHARED_SECRET`. Until both are set the nightly sync stays off (fail-closed); the on-demand "sync now" path (a signed-in user with `foundation.read`) is unaffected. **Secret** — never commit it. |
 
 ### Email (Resend) — designated test recipient, and known blocker
 
