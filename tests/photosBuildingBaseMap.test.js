@@ -123,3 +123,37 @@ test("lat/lng of 0 is still a real coordinate, not a missing one", () => {
      as "no GPS" and hand the pin to the overwrite path. */
   assert.strictEqual(s.photosPinIsGpsOnly({ lat: 0, lng: 0 }), true);
 });
+
+/* Regression tests for issue #45 (photos.js half) — savePinFromModal()
+   (js/workorders.js) already stamps a saved x/y pin's imageFrameUrl from
+   pinXYSize.imageFrameUrl in preference to its own narrower fallback, but
+   photos.js's openPinModal() -- the only place that ever populates
+   pinXYSize for a custom base map -- used to set only {w, h}. A pin placed
+   through the inspection/leak-investigation flow therefore saved with no
+   frame stamp: buildingMapImageFrameMatches() treats a missing stamp as
+   "always matches" (the legacy self-heal convention), so a later base-map
+   swap silently re-anchored the pin to a different picture instead of
+   being disclosed as dropped. */
+test("issue #45: pinXYSize carries the base map's url as imageFrameUrl", () => {
+  const s = makeSandbox();
+  const customBaseMap = { url: "https://x/plan.png", type: "roof_plan", georeferenced: false };
+  const got = s.photosPinXYSizeFor(customBaseMap, 800, 600);
+  assert.strictEqual(got.w, 800);
+  assert.strictEqual(got.h, 600);
+  assert.strictEqual(got.imageFrameUrl, "https://x/plan.png");
+});
+
+test("issue #45: a borrowed building-wide base map's url is the frame that gets stamped", () => {
+  const s = makeSandbox();
+  /* photosResolveBuildingBaseMap() may resolve to a sibling roof's map
+     (issue #39) -- customBaseMap.url is always that resolved map's own
+     url, whichever roof it came from, so the stamp is correct either way. */
+  const customBaseMap = { url: "https://x/ortho-from-roof7.png", sourceRoofId: "roof7", fromSelectedRoof: false };
+  const got = s.photosPinXYSizeFor(customBaseMap, 1200, 900);
+  assert.strictEqual(got.imageFrameUrl, "https://x/ortho-from-roof7.png");
+});
+
+test("issue #45: no base map -> no frame to stamp, not a fabricated one", () => {
+  const s = makeSandbox();
+  assert.strictEqual(s.photosPinXYSizeFor(null, 800, 600).imageFrameUrl, null);
+});
