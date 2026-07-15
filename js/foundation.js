@@ -29,9 +29,15 @@
    All resolved at call time, not parse time. */
 
 // Linkage for the currently-open work order. Read by collect() in
-// js/workorders.js (guarded) so it persists on the WO doc.
+// js/workorders.js (guarded) so it persists on the WO doc — and, via
+// ensureCustomerAndBuilding() (js/core.js), onto the BUILDING doc so the site's
+// accounting identity + base-map anchor follow the job (issue #76). customer_no
+// and the composed address are captured alongside the job no/name so the
+// building doc carries the full accounting snapshot, not just the number.
 var fdnLinkedJobNo = null;
 var fdnLinkedJobName = "";
+var fdnLinkedCustomerNo = null;
+var fdnLinkedAddress = "";
 
 // Session cache of the jobs collection (filtered copy for the current search).
 var fdnCache = null;
@@ -157,7 +163,7 @@ function fdnSelectJob(jobNo) {
       if (typeof renderCCLinkInfo === "function") renderCCLinkInfo();
     }
   }
-  fdnSetLinkedJob(j.job_no, j.name || "");
+  fdnSetLinkedJob(j.job_no, j.name || "", j.customer_no || null, fdnComposeAddress(j));
   if (typeof closeBuildingPicker === "function") closeBuildingPicker();
   if (typeof toast === "function") toast("Loaded job “" + (j.name || j.job_no) + "” — review the fields below before saving");
 }
@@ -165,9 +171,11 @@ function fdnSelectJob(jobNo) {
 // Central setter for the WO's Foundation linkage: updates the module vars (read
 // by collect()), the link line, and the admin labor card. Called by
 // fdnSelectJob and by fill() (js/workorders.js) when a saved WO loads.
-function fdnSetLinkedJob(jobNo, jobName) {
+function fdnSetLinkedJob(jobNo, jobName, customerNo, address) {
   fdnLinkedJobNo = jobNo || null;
   fdnLinkedJobName = jobName || "";
+  fdnLinkedCustomerNo = customerNo || null;
+  fdnLinkedAddress = address || "";
   renderFdnLinkInfo();
   fdnRefreshLaborCard();
 }
@@ -186,7 +194,7 @@ function renderFdnLinkInfo() {
 }
 
 function fdnUnlinkJob() {
-  fdnSetLinkedJob(null, "");
+  fdnSetLinkedJob(null, "", null, "");
 }
 
 // GET the linked job's hours from the live connector (server-gated on
