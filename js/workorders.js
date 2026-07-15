@@ -1142,15 +1142,73 @@ function inlineRoofById(ctx, roofId){
   return (ctx.roofs || []).find(function(r){ return r.id === roofId; }) ||
     (ctx.roofs && ctx.roofs[0]) || getRoofById(ctx.building || {}, roofId);
 }
-function inlineHistoryPinsForMap(events, roofId, hasCustomBaseMap){
+function inlineRoofHasBaseMap(roof){
+  return !!(roof && roof.roof_base_map_url &&
+    (roof.roof_base_map_type === "roof_plan" || roof.roof_base_map_type === "sketch" ||
+     (roof.roof_base_map_type === "drone_ortho" && roof.roof_base_map_bounds)));
+}
+async function inlineResolveBuildingBaseMap(roofs, selectedRoofId){
+  roofs = roofs || [];
+  var selectedRoof = roofs.find(function(r){ return r.id === selectedRoofId; }) || roofs[0] || null;
+  var sourceRoof = inlineRoofHasBaseMap(selectedRoof) ? selectedRoof :
+    (roofs.find(inlineRoofHasBaseMap) || null);
+  if (!sourceRoof) return { selectedRoof: selectedRoof, sourceRoof: null };
+  var base = {
+    selectedRoof: selectedRoof,
+    sourceRoof: sourceRoof,
+    fromSelectedRoof: !!(selectedRoof && sourceRoof.id === selectedRoof.id),
+    customBld: null,
+    orthoOverlay: null,
+    syntheticOrtho: false,
+    syntheticOrthoError: ""
+  };
+  if (sourceRoof.roof_base_map_type === "drone_ortho" && sourceRoof.roof_base_map_bounds){
+    base.orthoOverlay = { url: sourceRoof.roof_base_map_url, bounds: sourceRoof.roof_base_map_bounds };
+    return base;
+  }
+  if (sourceRoof.roof_base_map_type === "sketch" && sourceRoof.roof_base_map_synthetic){
+    try{
+      if (typeof rmComputeOrthoBoundsForImageUrl !== "function") throw new Error("RoofMapper ortho bounds helper is not loaded");
+      var computed = await rmComputeOrthoBoundsForImageUrl(sourceRoof.roof_base_map_url);
+      base.orthoOverlay = { url: sourceRoof.roof_base_map_url, bounds: computed.orthoBounds };
+      base.syntheticOrtho = true;
+      return base;
+    }catch(e){
+      base.syntheticOrthoError = e && e.message ? e.message : "couldn't reconstruct the saved drone image bounds";
+    }
+  }
+  base.customBld = sourceRoof;
+  return base;
+}
+function inlineAllHistoryPins(events){
   var allPins = [];
-  events.forEach(function(e){ (e.pins || []).forEach(function(p){
+  (events || []).forEach(function(e){ (e.pins || []).forEach(function(p){
     allPins.push(Object.assign({ eventDate: e.date }, p));
   }); });
+  return allPins;
+}
+function inlineHistoryPinsForMap(events, roofId, hasCustomBaseMap){
+  var allPins = inlineAllHistoryPins(events);
   return hasCustomBaseMap ?
     allPins.filter(function(p){ return (p.roofId || "roof_default") === roofId &&
       typeof p.x === "number" && typeof p.y === "number"; }) :
     allPins.filter(function(p){ return typeof p.lat === "number" && typeof p.lng === "number"; });
+}
+function inlineHiddenPinDisclosure(events, roofId, hasCustomBaseMap){
+  if (!hasCustomBaseMap) return "";
+  var allPins = inlineAllHistoryPins(events);
+  var hiddenGps = 0, hiddenOtherRoof = 0;
+  allPins.forEach(function(p){
+    var shownHere = (p.roofId || "roof_default") === roofId && typeof p.x === "number" && typeof p.y === "number";
+    if (!shownHere && typeof p.lat === "number" && typeof p.lng === "number") hiddenGps++;
+    else if (!shownHere && typeof p.x === "number" && typeof p.y === "number") hiddenOtherRoof++;
+  });
+  var notes = [];
+  if (hiddenGps) notes.push(hiddenGps + " GPS-placed finding" + (hiddenGps === 1 ? "" : "s") +
+    " can't be shown on a non-georeferenced drawing");
+  if (hiddenOtherRoof) notes.push(hiddenOtherRoof + " finding" + (hiddenOtherRoof === 1 ? "" : "s") +
+    " pinned to other roof drawings " + (hiddenOtherRoof === 1 ? "is" : "are") + " not shown here");
+  return notes.length ? notes.join(". ") + "." : "";
 }
 function inlineHistoryAssetsForMap(roofs, roof, hasCustomBaseMap){
   roof = roof || {};
@@ -1220,27 +1278,42 @@ async function refreshInlineBuildingHistory(){
     if (seq !== woInlineHistorySeq) return;
     var roofId = inlineSelectedRoofId(ctx.roofs);
     var roof = inlineRoofById(ctx, roofId);
-    var hasCustomBaseMap = !!((roof.roof_base_map_type === "roof_plan" || roof.roof_base_map_type === "sketch") && roof.roof_base_map_url);
-    var orthoOverlay = (roof.roof_base_map_type === "drone_ortho" && roof.roof_base_map_url && roof.roof_base_map_bounds) ?
-      { url: roof.roof_base_map_url, bounds: roof.roof_base_map_bounds } : null;
-    var roofAssets = inlineHistoryAssetsForMap(ctx.roofs, roof, hasCustomBaseMap);
-    var outlines = inlineHistoryOutlines(ctx.roofs, hasCustomBaseMap, roof);
+    var baseMap = await inlineResolveBuildingBaseMap(ctx.roofs, roofId);
+    if (seq !== woInlineHistorySeq) return;
+    var mapRoof = baseMap.sourceRoof || roof;
+    var mapRoofId = (mapRoof && mapRoof.id) || roofId;
+    var hasCustomBaseMap = !!baseMap.customBld;
+    var orthoOverlay = baseMap.orthoOverlay;
+    var roofAssets = inlineHistoryAssetsForMap(ctx.roofs, mapRoof, hasCustomBaseMap);
+    var outlines = inlineHistoryOutlines(ctx.roofs, hasCustomBaseMap, mapRoof);
     /* Inline Building History is building-wide: outlines, pins, and the
        timeline all describe the same building-level history. The selected
        roof only chooses a roof-specific base image when one is set. */
-    var mapPins = inlineHistoryPinsForMap(events, roofId, hasCustomBaseMap);
+    var mapPins = inlineHistoryPinsForMap(events, mapRoofId, hasCustomBaseMap);
     var latestEvents = events.slice(0, 8);
-    var roofLabel = roof.label || "Roof";
     var hasMapBase = hasCustomBaseMap || orthoOverlay || outlines.length || mapPins.length || roofAssets.length;
+    var sourceRoofLabel = (mapRoof && mapRoof.label) || "Roof";
+    var fallbackSourceHtml = '<b>' + esc(sourceRoofLabel) + '</b> (building-wide fallback)';
     var mapLabel = hasCustomBaseMap ?
-      'Roof map using <b>' + esc(roofLabel) + '</b>\'s saved base image.' :
-      'Building-wide roof map' + (orthoOverlay ? ' using the saved drone orthophoto.' : '.');
+      (baseMap.sourceRoof && !baseMap.fromSelectedRoof ?
+        'Roof map using base map from ' + fallbackSourceHtml + '.' :
+        'Roof map using <b>' + esc(sourceRoofLabel) + '</b>\'s saved base image.') :
+      'Building-wide roof map' + (orthoOverlay ? ' using ' +
+        (baseMap.sourceRoof && !baseMap.fromSelectedRoof ? 'base map from ' + fallbackSourceHtml + '.' :
+          (baseMap.syntheticOrtho ? '<b>' + esc(sourceRoofLabel) + '</b>\'s saved RoofMapper orthophoto.' :
+            'the saved drone orthophoto.')) : '.');
+    var hiddenPinDisclosure = inlineHiddenPinDisclosure(events, mapRoofId, hasCustomBaseMap);
+    if (baseMap.syntheticOrthoError){
+      hiddenPinDisclosure = (hiddenPinDisclosure ? hiddenPinDisclosure + " " : "") +
+        "Saved RoofMapper orthophoto bounds could not be reconstructed (" + baseMap.syntheticOrthoError + "), so GPS findings are not shown on the image.";
+    }
     var eventCountLabel = latestEvents.length && latestEvents.length < events.length ?
       'Showing ' + latestEvents.length + ' of ' + events.length + ' prior events' :
       (events.length ? events.length + ' prior event' + (events.length === 1 ? '' : 's') : '');
     var mapHtml = hasMapBase ?
       '<div style="margin:8px 0 12px">' +
         '<p class="hint" style="margin:0 0 6px">' + mapLabel + '</p>' +
+        (hiddenPinDisclosure ? '<p class="hint" style="margin:0 0 6px;color:#8A5A00">' + esc(hiddenPinDisclosure) + '</p>' : '') +
         '<div id="wo-inline-building-map" style="height:min(38vh,320px);border-radius:6px;overflow:hidden;border:1px solid var(--line)"></div>' +
       '</div>' :
       '<p class="hint">No saved roof base map, outline, feature, or pin is available for this building yet.</p>';
@@ -1253,7 +1326,7 @@ async function refreshInlineBuildingHistory(){
       '</div>' +
       '<div>' + eventsHtml + '</div>';
     if (hasMapBase){
-      renderBuildingMap(mapPins, hasCustomBaseMap ? roof : null, (ctx.building && ctx.building.location) || val("location"),
+      renderBuildingMap(mapPins, hasCustomBaseMap ? mapRoof : null, (ctx.building && ctx.building.location) || val("location"),
         orthoOverlay, roofAssets, ctx.buildingId, outlines, { mapElementId: "wo-inline-building-map", readOnly: true });
     }
   }catch(e){
