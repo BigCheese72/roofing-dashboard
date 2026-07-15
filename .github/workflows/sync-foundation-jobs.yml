@@ -1,4 +1,4 @@
-# Nightly Foundation → Firestore job sync.
+# Work-day Foundation → Firestore job sync (hourly, 7 AM–4 PM Central).
 #
 # Mirrors every ACTIVE Foundation (construction accounting) job into the
 # `foundation_jobs` Firestore collection, so the work-order job picker and
@@ -17,15 +17,27 @@
 # (This is a DEDICATED secret, separate from POLLER_SHARED_SECRET, so the
 # Foundation sync and the inspection-report poller rotate independently.)
 #
-# Until both exist, this workflow fails with 401 and the nightly sync stays
+# Until both exist, this workflow fails with 401 and the scheduled sync stays
 # off -- the correct, fail-closed default. A signed-in user with foundation.read
 # can still trigger an on-demand sync from the app, unaffected by this.
+#
+# IMPORTANT: GitHub only runs `schedule` (and shows `workflow_dispatch`) for a
+# workflow that lives on the repo's DEFAULT branch (`main`). This file is on
+# `dev` while Foundation is held for prod, so it does NOT auto-run yet -- it
+# starts firing once it rides to `main` with the Foundation prod promotion.
+# Until then, use the on-demand "sync now" path (a foundation.read user POSTing
+# {"action":"sync"} to /.netlify/functions/foundation-sync).
 name: Sync Foundation jobs
 
 on:
   schedule:
-    # 07:00 UTC daily ≈ 1–2 AM Central — overnight, off business hours.
-    - cron: "0 7 * * *"
+    # Hourly on the hour during the work day, 7 AM–4 PM Central.
+    # GitHub Actions cron is UTC and does NOT observe daylight saving, so this
+    # is pinned to Central SUMMER time (CDT, UTC-5): 12:00–21:00 UTC = 7 AM–4 PM
+    # CDT (10 runs/day). In CST/winter (UTC-6) the same expression effectively
+    # runs 6 AM–3 PM Central -- switch to "0 13-22 * * *" in November to keep it
+    # on 7 AM–4 PM, and back to "0 12-21 * * *" in March.
+    - cron: "0 12-21 * * *"
   workflow_dispatch:
     inputs:
       target:

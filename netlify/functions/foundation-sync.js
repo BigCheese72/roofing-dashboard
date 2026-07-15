@@ -1,4 +1,4 @@
-// Foundation → Firestore nightly sync (Phase 2). Mirrors every active job
+// Foundation → Firestore sync (Phase 2). Mirrors every active job
 // from Foundation (construction accounting) into a client-readable Firestore
 // cache (`foundation_jobs`), so the work-order job picker and auto-fill read
 // a fast local collection instead of hitting the accounting DB on every
@@ -9,8 +9,8 @@
 // ---------------------------------------------------------------------
 // Two, and only two, callers are allowed, decided BEFORE any Foundation read
 // or Firestore write:
-//   1. The automated nightly caller — GitHub Actions cron, holding
-//      FOUNDATION_SYNC_SECRET in the `x-foundation-sync-key` header (secret in
+//   1. The automated scheduled caller — GitHub Actions cron (work-day hourly),
+//      holding FOUNDATION_SYNC_SECRET in the `x-foundation-sync-key` header (secret in
 //      a header, never the URL). Compared with a constant-time equality that
 //      fails closed if the env var is unset or under 32 chars. This is the
 //      SAME model as the inspection-report poller (.github/workflows/
