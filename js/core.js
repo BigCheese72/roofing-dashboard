@@ -1441,12 +1441,17 @@ async function runCompanyCamPhotoBackfill(){
    on. Every privileged control below now shows or hides purely off
    isAdmin/claims, with no manual step in between. */
 function updateAdminUI(){
-  var settingsBar = document.getElementById("admin-settings-bar");
-  if (settingsBar){
-    settingsBar.style.display = isAdmin ? "" : "none";
-    var sel = document.getElementById("adminPhotoSize");
-    if (isAdmin && sel) sel.value = globalPhotoSizePref;
-    if (isAdmin && typeof updateWarrantyReviewBadge === "function") updateWarrantyReviewBadge();
+  /* All admin/maintenance controls live on the dedicated Admin page (#view-admin,
+     reached via tab-admin) instead of an always-visible bar. Show the tab only
+     for admins; keep the global photo-size select in sync; and if admin was just
+     revoked while the Admin page is open, bounce back to Edit. */
+  var adminTab = document.getElementById("tab-admin");
+  if (adminTab) adminTab.style.display = isAdmin ? "" : "none";
+  var sel = document.getElementById("adminPhotoSize");
+  if (isAdmin && sel) sel.value = globalPhotoSizePref;
+  if (isAdmin && typeof updateWarrantyReviewBadge === "function") updateWarrantyReviewBadge();
+  if (!isAdmin && typeof currentViewName !== "undefined" && currentViewName === "admin"){
+    showView("edit");
   }
   /* Saved view access control (Mark) -- Import Work Order File and, per
      saved work order, Delete, are admin-only (Export was removed
@@ -3018,7 +3023,7 @@ function showView(v){
   /* "home" has no header tab (reached via "+ New", the empty-state button
      in Building History, or tapping the logo) — every other view still
      keeps its tab exactly as before. */
-  ["home","edit","preview","saved","history","reports","roofmapper","dpr"].forEach(function(name){
+  ["home","edit","preview","saved","history","reports","roofmapper","dpr","admin"].forEach(function(name){
     var viewEl = document.getElementById("view-" + name);
     if (viewEl) viewEl.style.display = (name === v ? "" : "none");
     var tabEl = document.getElementById("tab-" + name);
