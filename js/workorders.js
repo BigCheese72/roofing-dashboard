@@ -1069,6 +1069,8 @@ function renderHomeTiles(){
       '<span class="home-tile-label">' + esc(WORK_ORDER_TYPE_LABELS[t] || t) + '</span></button>';
   });
   tiles.push(
+    '<button class="home-tile home-tile-secondary" onclick="showView(\'dpr\')">' +
+      '<span class="home-tile-icon">📅</span><span class="home-tile-label">Daily Progress Report</span></button>',
     '<button class="home-tile home-tile-secondary" onclick="showView(\'roofmapper\')">' +
       '<span class="home-tile-icon">🗺️</span><span class="home-tile-label">RoofMapper</span></button>',
     '<button class="home-tile home-tile-secondary" onclick="showView(\'history\')">' +
