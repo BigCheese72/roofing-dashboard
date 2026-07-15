@@ -676,19 +676,31 @@ async function resolvePhotoImg(p){
     return dataUrl;
   }catch(e){ return null; }
 }
+/* A photo slot with nothing to show, upload, or recover -- no img, no
+   storageRef, no imgFallback/thumb, no localId. Dropped rather than
+   re-persisted as an empty doc. Strict: any of those signals keeps it. */
+function photoSlotIsEmpty(p){
+  return !!p && !p.img && !p.storageRef && !p.imgFallback && !p.thumb && !p.localId;
+}
+/* The photo's Storage object index parsed out of its storageRef path
+   (workorders/<id>/<index>.jpg). Storage paths are index-based, so this is how
+   we tell which object a photo points at, independent of its array slot. */
+function photoStorageIndex(p){
+  var m = p && p.storageRef && /^workorders\/[^/]+\/(\d+)\.jpg$/.exec(p.storageRef);
+  return m ? +m[1] : null;
+}
 async function cloudSaveOrder(o){
   if (!fdb) throw new Error("cloud not available");
   var main = {};
   Object.keys(o).forEach(function(k){ if (k !== "photos") main[k] = (o[k] == null ? "" : o[k]); });
   var ph = o.photos || [];
-  main.photoCount = ph.length;
+  /* Drop dead slots (photoSlotIsEmpty) rather than re-persist them; compact
+     survivors to a contiguous 0..n-1. photoCount reflects the compacted set. */
+  var writePhotos = ph.filter(function(p){ return !photoSlotIsEmpty(p); });
+  var droppedEmpty = ph.length - writePhotos.length;
+  main.photoCount = writePhotos.length;
   main.savedAt = Date.now();
   var ref = fdb.collection("workorders").doc(o.id);
-  var prevCount = 0;
-  try{
-    var snap = await ref.get();
-    if (snap.exists && snap.data().photoCount) prevCount = snap.data().photoCount;
-  }catch(e){}
   await ref.set(main);
   /* Photos off base64/localStorage onto Storage (Mark's "photos gone in
      PDFs" bug, and the storage-is-full/pruning mess it grew out of -- see
@@ -730,28 +742,44 @@ async function cloudSaveOrder(o){
      "Save-time photo data-loss guard" in DEV_NOTES.md. */
   var uploadFailures = 0, preservedCount = 0, failedPhotoNums = [];
   var ops = [];
-  for (var i = 0; i < ph.length; i++){
-    var p = ph[i];
+  /* Every Storage object index a surviving photo still points at after this
+     save. Cleanup below is REFERENCE-AWARE -- it never deletes an object a
+     photo still references -- instead of the old naive trailing index range,
+     which destroyed a DIFFERENT photo's confirmed-good bytes on any
+     remove/reorder (the live prod corruption fixed in the b0a57fe hotfix). */
+  var referencedStorage = {};
+  for (var i = 0; i < writePhotos.length; i++){
+    var p = writePhotos[i];
     var storageRef = p.storageRef || null;
     var existingImg = null; // base64 backup already in Firestore -- carried forward as-is unless this save uploads a fresh replacement
-    var uploadAttemptedAndFailed = false;
+    /* Trust the positional existing-doc lookup only when this save did NOT
+       move photos: no dead slot dropped ahead of anything AND this photo's
+       Storage object already sits at its slot index. Under a shift, doc p<i>
+       may belong to a different photo, so its base64/storageRef must not be
+       adopted here. */
+    var positionStable = droppedEmpty === 0 && (!storageRef || photoStorageIndex(p) === i);
     if (p.img){
       try{ storageRef = await uploadPhotoToStorage(o.id, i, p.img); }
-      catch(e){ uploadFailures++; failedPhotoNums.push(i + 1); uploadAttemptedAndFailed = true; console.warn("photo upload failed, will retry on next save", e); }
+      catch(e){ uploadFailures++; failedPhotoNums.push(i + 1); console.warn("photo upload failed, will retry on next save", e); }
+    } else if (storageRef && photoStorageIndex(p) !== i){
+      /* A surviving photo whose Storage object sits at a different index than
+         its new slot (a photo was removed/reordered ahead of it). Re-home the
+         bytes: fetch from the old path and re-upload at index i so Storage
+         index, doc index and array index agree again. If the fetch fails
+         (offline / already gone), keep the old storageRef untouched -- the
+         reference-aware cleanup never deletes an object a photo still points
+         at, so nothing is lost. */
+      try{
+        var moved = await resolvePhotoImg(p); // fetches old path, sets p.img
+        if (moved) storageRef = await uploadPhotoToStorage(o.id, i, moved);
+      }catch(e){ console.warn("couldn't realign photo storage (keeping existing ref — no bytes deleted)", e); }
     }
-    if (!p.img || !storageRef){
-      /* Look up the existing cloud doc whenever this save isn't supplying
-         a fresh, successfully-uploaded image for this photo. Covers both
-         the dangerous case (no storageRef survives at all -- see the
-         preserve/preservedCount logic below) and the routine one: a photo
-         that already has a storageRef and whose base64 the client never
-         loaded (cloudFetchOrder doesn't hydrate it for display). Caught
-         by testing against real data: without this, a plain .set() below
-         silently dropped the existing base64 backup on every ordinary
-         edit->save of an already-migrated photo -- nothing was lost from
-         Storage, but it defeated the deliberate cooling-off period (both
-         copies kept until the migration is fully trusted) the backup was
-         there for. */
+    if ((!p.img || !storageRef) && positionStable){
+      /* CRITICAL DATA-LOSS GUARD: on a stable save, a photo with neither fresh
+         img nor a surviving storageRef is checked against what the cloud
+         already holds, and real existing data is PRESERVED rather than
+         overwritten with nulls. Runs only when positionStable so a shifted
+         save can't cross-wire p<i> with a different photo's doc. */
       try{
         var existingSnap = await ref.collection("photos").doc("p" + i).get();
         if (existingSnap.exists){
@@ -763,6 +791,10 @@ async function cloudSaveOrder(o){
           }
         }
       }catch(e){ console.warn("couldn't check existing photo before save (proceeding without it — no data was overwritten)", e); }
+    }
+    if (storageRef){
+      var refIdx = photoStorageIndex({ storageRef: storageRef });
+      if (refIdx !== null) referencedStorage[refIdx] = true;
     }
     /* ccPhotoId  : set when this photo was IMPORTED FROM CompanyCam.
        ccFeedPhotoId: set when this photo was PUSHED TO CompanyCam's photo feed
@@ -783,10 +815,26 @@ async function cloudSaveOrder(o){
     if (existingImg) photoDoc.img = existingImg;
     ops.push(ref.collection("photos").doc("p" + i).set(photoDoc));
   }
-  for (var j = ph.length; j < prevCount; j++){
-    ops.push(ref.collection("photos").doc("p" + j).delete());
-    ops.push(deletePhotoFromStorage(o.id, j));
-  }
+  /* Cleanup, ENUMERATED not count-bounded. Read what photo docs actually exist
+     and delete any that aren't part of this save's compacted set
+     (p0..p{writeCount-1}). The old cleanup deleted only up to the parent's
+     photoCount field -- so once that field drifted below the real doc count
+     (concurrent multi-device saves), "orphan" docs above it survived every
+     save forever, including a delete-everything save (Mark's "delete all,
+     still 4"). Storage is freed reference-awarely: an object a surviving photo
+     still points at is never deleted, whatever index it lives at. */
+  try{
+    var existingDocs = await ref.collection("photos").get();
+    existingDocs.forEach(function(d){
+      var m = /^p(\d+)$/.exec(d.id);
+      var docIdx = m ? +m[1] : null;
+      if (!(docIdx !== null && docIdx < writePhotos.length)) ops.push(d.ref.delete());
+      var data = d.data() || {};
+      var sm = data.storageRef && /\/(\d+)\.jpg$/.exec(data.storageRef);
+      var storageIdx = sm ? +sm[1] : docIdx;
+      if (storageIdx !== null && !referencedStorage[storageIdx]) ops.push(deletePhotoFromStorage(o.id, storageIdx));
+    });
+  }catch(e){ console.warn("photo cleanup enumeration failed (proceeding — nothing overwritten)", e); }
   await Promise.all(ops);
   if (uploadFailures > 0){
     throw new Error(uploadFailures + " photo" + (uploadFailures === 1 ? "" : "s") +
