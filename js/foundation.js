@@ -58,8 +58,14 @@ async function fdnLoadJobs(force) {
   var snap = await fdb.collection("foundation_jobs").limit(5000).get();
   var jobs = [];
   snap.forEach(function (d) { jobs.push(d.data()); });
-  // Newest-started first, matching the server's default ordering.
-  jobs.sort(function (a, b) { return String(b.job_start_date || "").localeCompare(String(a.job_start_date || "")); });
+  // Descending by job number (highest / newest job # first). Numeric-aware so
+  // "17053" sorts above "9999"; falls back to a string compare for any
+  // non-numeric job_no.
+  jobs.sort(function (a, b) {
+    var na = Number(a.job_no), nb = Number(b.job_no);
+    if (isFinite(na) && isFinite(nb) && na !== nb) return nb - na;
+    return String(b.job_no || "").localeCompare(String(a.job_no || ""));
+  });
   fdnCache = jobs;
   return fdnCache;
 }
