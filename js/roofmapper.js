@@ -1353,7 +1353,7 @@ function rmBuildInheritedScaleRecord(src, factor){
 function rmEdgeDimensionMeta(outline, edgeIndex, distFt){
   var measured = rmGetMeasuredEdge(outline, edgeIndex);
   if (measured){
-    if (!rmIsFiniteNumber(distFt)){
+    if (!rmIsFiniteNumber(distFt) || !rmIsFiniteNumber(measured.measuredFt) || measured.measuredFt <= 0){
       return {
         measured: true,
         conflict: false,
