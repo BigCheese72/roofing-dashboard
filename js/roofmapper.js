@@ -2282,6 +2282,8 @@ function rmSearchThisArea(){
 function rmOnShow(){
   if (rmState.map) setTimeout(function(){ rmState.map.invalidateSize(); }, 60);
   rmRenderLocalSaves();
+  rmRenderPendingSaveStatus();
+  rmFlushPendingBuildingSaves(); /* back in RoofMapper with signal? finish the job */
 }
 function rmSetStatus(msg, kind, extraHtml){
   var el = document.getElementById("rm-status");
@@ -5754,7 +5756,18 @@ async function rmSaveSplitSectionsToBuilding(buildingId){
     await rmLoadLinkedAssets();
     rmUpdateExportHint();
     rmUpdateControlVisibility();
-  }catch(e){ toast("Couldn't save the split sections: " + e.message); }
+  }catch(e){
+    /* Same data-loss class as rmSaveOutlineToBuilding()'s catch: these
+       sections come from a FRESH trace that exists nowhere else yet, so a
+       failed write here used to lose it. Keep the source outline on the
+       device so he can Load it and re-split/re-save once he has signal.
+       Deliberately NOT auto-retried: replaying a multi-section write (new
+       roof ids, labels, dup-renames) isn't idempotent the way a single-
+       outline append is, so it's a manual retry by design.
+       (rmSplitSavedRoof()'s catch below needs no fail-safe -- that roof is
+       already saved on the building, so a failed split loses nothing.) */
+    rmFailSafeSaveOutline(rmState.outline, { reason: "split", error: e });
+  }
 }
 /* Splitting a roof that's ALREADY saved/linked -- the gap the previous
    pass deliberately left ("replacing one real roof's history with several
@@ -5896,6 +5909,12 @@ async function rmSaveOutlineToBuilding(buildingId, roofId){
   if (!rmState.outline){ toast("Generate a roof outline first."); return; }
   if (!rmConfirmSiteBoundarySave()) return;
   toast("Saving…");
+  /* Captured BEFORE the save assigns a fresh entry id below. If this outline
+     was loaded back off the device from a previous failed save (rmLoadLocal
+     Outline()), this is that fail-safe copy's id -- so a successful save here
+     can retire the device copy AND its pending retry, and the trace never
+     ends up on the building twice. See rmResolveFailSafeCopy(). */
+  var priorOutlineId = rmState.outline.id || null;
   try{
     var snap = await fdb.collection("buildings").doc(buildingId).get();
     var bld = snap.exists ? snap.data() : {};
@@ -5907,9 +5926,27 @@ async function rmSaveOutlineToBuilding(buildingId, roofId){
        first roof is unambiguous. */
     var roof = roofs.find(function(r){ return r.id === roofId; }) || roofs[0];
     rmRefreshOutlineMeasurementModel(rmState.outline);
-    if (!await rmEnsureSyntheticOrthoFrameForSave(buildingId, roof, true)) return false;
-    var entry = Object.assign({}, rmState.outline, rmOutlineStorageFields(rmState.outline, null), { id: genId("rmo") });
-    roof.roof_outlines = (roof.roof_outlines || []).concat([entry]);
+    if (!await rmEnsureSyntheticOrthoFrameForSave(buildingId, roof, true)){
+      rmFailSafeSaveOutline(rmState.outline, {
+        reason: "synthetic-ortho-refused",
+        toastMessage: "Save refused so this roof would not be saved against the wrong image. Your traced outline is saved on THIS DEVICE."
+      });
+      return false;
+    }
+    /* Normally a fresh id (append-only: every save is a new roof_outlines[]
+       entry, newest is current). The ONE exception is a trace that's already
+       sitting on the device from a failed save -- it keeps its id, so a retry
+       updates that one pending outline instead of becoming a second copy of
+       the same roof. See rmPendingIdFor(). */
+    var entry = Object.assign({}, rmState.outline, rmOutlineStorageFields(rmState.outline, null), { id: rmPendingIdFor(rmState.outline) || genId("rmo") });
+    /* Replay guard. entry.id is brand new on the normal path, so this always
+       appends exactly as before. It can only match when we're re-saving a trace
+       that was pending from a failed attempt -- and if that attempt's write
+       actually DID land (response lost on a flaky link), appending again would
+       put the same roof on the building twice. Replace instead. */
+    var existingIdx = (roof.roof_outlines || []).findIndex(function(o){ return o && o.id === entry.id; });
+    if (existingIdx >= 0) roof.roof_outlines[existingIdx] = entry;
+    else roof.roof_outlines = (roof.roof_outlines || []).concat([entry]);
     /* Record the saved id back onto the in-memory outline so a later
        rmCalibrateEdge() call can find+update this exact saved entry
        instead of only updating the on-screen copy. See "Self-scaling
@@ -5918,6 +5955,13 @@ async function rmSaveOutlineToBuilding(buildingId, roofId){
     var roofIdx = roofs.findIndex(function(r){ return r.id === roof.id; });
     roofs[roofIdx] = roof;
     await saveBuildingRoofs(buildingId, roofs);
+    /* The write landed. If this trace was sitting on the device from an
+       earlier failed save, retire that copy and its pending retry now --
+       otherwise the same outline could later be re-loaded and saved again
+       (duplicate on the building) or re-pushed by the retry queue. No-op
+       for the normal path, where nothing was ever queued. */
+    rmResolveFailSafeCopy(priorOutlineId);
+    rmResolveFailSafeCopy(entry.id);
     toast("Roof outline saved — add features to it right here ✓");
     closeRmSaveModal();
     rmClearSplitState(); /* this outline is now itself a saved roof -- any pending split of it (a different way of saving the same shape) no longer applies */
@@ -5978,7 +6022,20 @@ async function rmSaveOutlineToBuilding(buildingId, roofId){
        image before any image-frame geometry was committed. */
     if (rmState.kmlOverlayActive) await rmPersistKmlGroundOverlayBaseMap(buildingId, roof.id);
     return true;
-  }catch(e){ toast("Couldn't save: " + e.message); return false; }
+  }catch(e){
+    /* THE data-loss fix (Mark, 2026-07-14, live on a production roof: a long
+       trace was dropped when this save failed on weak signal and all he got
+       was a 3-second toast). NEVER let a traced outline die here. Keep it on
+       the device, queue it to retry against this exact building/roof the
+       moment signal returns, and say so LOUDLY and persistently. */
+    rmFailSafeSaveOutline(rmState.outline, {
+      buildingId: buildingId,
+      roofId: roofId || null,
+      buildingName: (typeof bld !== "undefined" && bld && bld.name) ? bld.name : "",
+      error: e
+    });
+    return false;
+  }
 }
 /* THE fix for "RoofMapper can't reopen a saved roof" -- Mark refreshed,
    went back into RoofMapper for a roof Building History shows intact and
@@ -6142,7 +6199,14 @@ async function rmCreateBuildingAndSave(){
     if (!ids.buildingId) throw new Error("couldn't create building (need internet connection)");
     if (rmSplitState.savingAll) await rmSaveSplitSectionsToBuilding(ids.buildingId);
     else await rmSaveOutlineToBuilding(ids.buildingId);
-  }catch(e){ toast("Couldn't create building: " + e.message); }
+  }catch(e){
+    /* Same data-loss class as rmSaveOutlineToBuilding()'s catch: if the
+       building itself couldn't be created (offline / no fdb), the trace was
+       previously dropped with a toast. There's no building to queue a retry
+       against yet, so this is a device-only save -- the notice tells him to
+       Load it and save it once he has signal. */
+    rmFailSafeSaveOutline(rmState.outline, { reason: "no-building", error: e });
+  }
 }
 
 /* ---- Phase 2: inline feature placement (drains, HVAC, scuppers, etc.) on
@@ -7052,6 +7116,304 @@ function rmLoadLocalOutlines(){
 function rmSaveLocalOutlines(list){
   try{ localStorage.setItem(RM_LOCAL_KEY, JSON.stringify(list)); }catch(e){ toast("Couldn't save locally: " + e.message); }
 }
+
+/* ================= roof-outline save fail-safe (DATA-LOSS GUARD) =================
+   Mark, 2026-07-14, live on a production roof: he traced a long outline, hit
+   Save, the write to the building failed (weak signal), and the trace was GONE
+   -- the only notice was a 3-second toast that vanished. The save path had no
+   fallback and no retry: saveBuildingRoofs() (js/core.js) is a bare network
+   .set(), and the offline sync queue there covers WORK ORDERS only.
+
+   Two independent guarantees, so a trace can never die on the roof again:
+
+   1. THE TRACE ALWAYS SURVIVES. Every save path that can lose a fresh outline
+      now falls back to the existing on-device store (RM_LOCAL_KEY, the same
+      one the "Saved On This Device" panel reads) instead of dropping it. This
+      alone is sufficient -- everything below is convenience on top of it.
+
+   2. IT RETRIES ITSELF. When we know the target building, the outline is also
+      queued here and re-pushed automatically the moment signal returns, the
+      same way work orders already behave.
+
+   WHY A SEPARATE QUEUE FROM core.js's SYNC_QUEUE_KEY (asked for, deliberately
+   not done): that queue is work-order-shaped, not generic. tryFlushSyncQueue()
+   resolves every entry via loadDb().orders[id] and calls cloudSaveOrder() /
+   syncPinCorrectionsToHistory() / logReportAndHistoryEvent() on it -- and,
+   critically, any entry it can't find in db.orders it SILENTLY DROPS from the
+   queue ("if (!stored){ markSynced(id); continue; }"). Putting a roof outline
+   in there would hit that branch and quietly delete the retry -- reintroducing
+   the exact silent-loss bug this fix exists to kill. Making it polymorphic
+   means surgery on the live, working work-order sync path while production is
+   up. Not worth it: this queue reuses the proven PATTERN (localStorage record,
+   attempt counting, backoff, flush on 'online'/refocus) with zero blast radius
+   on work orders.
+
+   REPLAY SAFETY (no double-save): a queued retry re-reads the building and
+   skips the write if an outline with this same stable id is already on the
+   roof -- so a write that actually landed but whose response never made it
+   back over a flaky link is never appended twice. A successful save likewise
+   retires both the queue entry and the device copy. */
+var RM_PENDING_KEY = "roofmapper-pending-building-saves-v1";
+var RM_PENDING_MAX_ATTEMPTS = 6;
+
+function rmLoadPendingSaves(){
+  try{ return JSON.parse(localStorage.getItem(RM_PENDING_KEY) || "{}"); }catch(e){ return {}; }
+}
+function rmSavePendingSaves(q){
+  try{ localStorage.setItem(RM_PENDING_KEY, JSON.stringify(q)); }
+  catch(e){ console.warn("pending roof-save queue write failed", e); }
+}
+function rmMarkPendingSaveFailed(outlineId, err){
+  var q = rmLoadPendingSaves();
+  if (!q[outlineId]) return;
+  q[outlineId].attempts = (q[outlineId].attempts || 0) + 1;
+  q[outlineId].lastError = (err && err.message) ? err.message : String(err);
+  q[outlineId].lastAttemptAt = Date.now();
+  rmSavePendingSaves(q);
+  rmRenderPendingSaveStatus();
+}
+function rmClearPendingSave(outlineId){
+  if (!outlineId) return;
+  var q = rmLoadPendingSaves();
+  if (q[outlineId]){ delete q[outlineId]; rmSavePendingSaves(q); }
+  rmRenderPendingSaveStatus();
+}
+/* Retires a fail-safe device copy (and any pending retry for it) once its
+   outline is confirmed on the building -- whether that confirmation came from
+   the auto-retry or from him loading it and saving it by hand. Only ever
+   touches copies THIS fail-safe created (savedByFailSafe); an outline he
+   deliberately saved with the "Save on this Device" button is his, and is
+   never silently deleted out from under him. */
+function rmResolveFailSafeCopy(outlineId){
+  if (!outlineId) return;
+  /* Device copy FIRST, then the queue entry. rmRenderPendingSaveStatus() reads
+     a fail-safe copy with no queue entry as "device-only, still needs saving",
+     so clearing the queue first would leave that alarming banner up for an
+     outline that just saved successfully. */
+  var list = rmLoadLocalOutlines();
+  var next = list.filter(function(o){ return !(o && o.savedByFailSafe && o.id === outlineId); });
+  if (next.length !== list.length){
+    rmSaveLocalOutlines(next);
+    rmRenderLocalSaves();
+  }
+  rmClearPendingSave(outlineId);
+  rmRenderPendingSaveStatus();
+}
+/* Is this outline already carrying a fail-safe id from an EARLIER failed save?
+   If so, the next attempt has to reuse that same id rather than mint a fresh
+   one -- otherwise every retry of the same trace becomes a new "outline" with
+   its own device copy and its own queue entry, and they all eventually land on
+   the building as duplicates of each other. Returns null for a first-time save
+   (fresh id, normal path) and for re-saving a new version of an already-saved
+   outline (which is a genuinely new append-only entry, by design). */
+function rmPendingIdFor(outline){
+  if (!outline || !outline.id) return null;
+  if (rmLoadPendingSaves()[outline.id]) return outline.id;
+  var onDevice = rmLoadLocalOutlines().some(function(o){
+    return o && o.savedByFailSafe && o.id === outline.id;
+  });
+  return onDevice ? outline.id : null;
+}
+/* The fallback itself. Called from every save-path catch that could otherwise
+   drop a fresh trace. Never throws -- it is the last line of defense, so a
+   failure in here must not be able to take the outline down with it. */
+function rmFailSafeSaveOutline(outline, opts){
+  opts = opts || {};
+  if (!outline) return null;
+  try{
+    var outlineId = rmPendingIdFor(outline) || genId("rmo");
+    outline.id = outlineId; /* stable id: ties the device copy to its retry */
+    var rec = Object.assign({}, outline, {
+      id: outlineId,
+      createdAt: outline.createdAt || Date.now(),
+      savedByFailSafe: true,
+      failSafeAt: Date.now(),
+      failSafeReason: opts.reason || "save-failed",
+      pendingBuildingId: opts.buildingId || null,
+      pendingBuildingName: opts.buildingName || ""
+    });
+    if (typeof rec.areaSqFt !== "number") rec.areaSqFt = 0; /* rmRenderLocalSaves() calls .toFixed() on this */
+    /* Replace-not-duplicate: a repeated failure for the same outline updates
+       its one device copy rather than stacking up copies of the same trace. */
+    var list = rmLoadLocalOutlines().filter(function(o){ return !(o && o.id === outlineId); });
+    list.unshift(rec);
+    rmSaveLocalOutlines(list.slice(0, 50));
+    rmRenderLocalSaves();
+
+    if (opts.buildingId){
+      var q = rmLoadPendingSaves();
+      var existing = q[outlineId];
+      q[outlineId] = {
+        outlineId: outlineId,
+        buildingId: opts.buildingId,
+        roofId: opts.roofId || null,
+        buildingName: opts.buildingName || "",
+        outline: outline,
+        queuedAt: (existing && existing.queuedAt) || Date.now(),
+        attempts: (existing && existing.attempts) || 0,
+        lastError: (opts.error && opts.error.message) ? opts.error.message : (opts.error ? String(opts.error) : null),
+        lastAttemptAt: Date.now()
+      };
+      rmSavePendingSaves(q);
+    }
+    rmRenderPendingSaveStatus();
+    /* Toast for the immediate moment; the sticky bar above is what actually
+       has to survive him looking away. */
+    toast(opts.toastMessage || "Couldn't reach the server — your roof is saved on THIS DEVICE ✓");
+    var bar = document.getElementById("roof-sync-status-bar");
+    if (bar && bar.scrollIntoView) bar.scrollIntoView({ block: "nearest" });
+    return rec;
+  }catch(e){
+    /* Truly nothing left to fall back to (e.g. localStorage itself is full or
+       blocked). Say so as loudly as the platform allows -- an alert() blocks,
+       which is exactly right here: this is the one case where the trace really
+       is about to be lost, and he needs to know BEFORE he walks off the roof. */
+    console.error("roof-outline fail-safe could not persist the trace", e);
+    try{ alert("URGENT: this roof outline could NOT be saved to the building OR to this device (" +
+      (e && e.message ? e.message : "unknown error") + ").\n\nDo not close this page. " +
+      "Export the outline (PDF/DXF) now, or free up space on the device and save again."); }catch(_){}
+    return null;
+  }
+}
+/* Sticky, persistent, unmissable -- the whole point (a 3-second toast is what
+   let the original loss happen). Stays up until the outline is actually on the
+   building. Split into two states because they need different actions from him:
+   queued (we know the building, it will retry itself) vs. device-only (we never
+   got a building, so he has to Load it and save it). */
+function rmRenderPendingSaveStatus(){
+  var host = document.getElementById("roof-sync-status-bar");
+  if (!host) return;
+  var q = rmLoadPendingSaves();
+  var ids = Object.keys(q);
+  var deviceOnly = rmLoadLocalOutlines().filter(function(o){
+    return o && o.savedByFailSafe && !q[o.id];
+  });
+  if (!ids.length && !deviceOnly.length){
+    host.style.display = "none";
+    host.innerHTML = "";
+    return;
+  }
+  host.style.display = "";
+  var parts = [];
+  var stuck = ids.filter(function(id){ return (q[id].attempts || 0) >= RM_PENDING_MAX_ATTEMPTS; });
+  var retrying = ids.filter(function(id){ return (q[id].attempts || 0) < RM_PENDING_MAX_ATTEMPTS; });
+  var online = (typeof navigator === "undefined" || !navigator) ? true : navigator.onLine !== false;
+  if (retrying.length){
+    parts.push('<div><b>⚠️ Couldn\'t reach the server — ' + retrying.length + ' roof outline' +
+      (retrying.length === 1 ? " is" : "s are") + ' saved on THIS DEVICE.</b><br>' +
+      (online ? "Trying to finish saving " : "You're offline. We'll finish saving ") +
+      retrying.map(function(id){
+        return esc(q[id].buildingName || "the building");
+      }).join(", ") + (online ? " now…" : " to the building automatically when you have signal.") +
+      ' Your trace is safe either way — don\'t re-trace it.' +
+      ' <button class="btn" style="padding:2px 8px;font-size:12px" onclick="rmFlushPendingBuildingSaves()">Retry now</button></div>');
+  }
+  if (stuck.length){
+    parts.push('<div style="margin-top:6px"><b>⚠️ ' + stuck.length + ' roof outline' +
+      (stuck.length === 1 ? "" : "s") + " couldn't be saved to the building after repeated tries.</b><br>" +
+      'Your trace is SAFE on this device — do not re-trace it. When you have a solid signal, ' +
+      'open <b>Saved On This Device</b> below, tap <b>Load</b>, then <b>Save Outline to Building</b>. ' +
+      '<button class="btn" style="padding:2px 8px;font-size:12px" onclick="rmFlushPendingBuildingSaves()">Retry now</button></div>');
+  }
+  if (deviceOnly.length){
+    parts.push('<div style="margin-top:6px"><b>⚠️ ' + deviceOnly.length + ' roof outline' +
+      (deviceOnly.length === 1 ? " is" : "s are") + ' saved on THIS DEVICE only, not on a building yet.</b><br>' +
+      'Your trace is safe — don\'t re-trace it. When you have signal, open <b>Saved On This Device</b> below, ' +
+      'tap <b>Load</b>, then <b>Save Outline to Building</b> to finish saving it.</div>');
+  }
+  host.innerHTML = parts.join("");
+}
+/* Can we even attempt the cloud write right now? Deliberately tolerant of a
+   missing fdb/navigator rather than assuming them: this file is loaded whole
+   into a bare vm sandbox by the test suite (see tests/reportScaleProvenance
+   .test.js), and a bare `!fdb` there is a ReferenceError, not false. */
+function rmCanReachCloud(){
+  if (typeof fdb === "undefined" || !fdb) return false;
+  if (typeof navigator !== "undefined" && navigator && navigator.onLine === false) return false;
+  return true;
+}
+/* Auto-retry. Idempotent by construction: re-reads the building and only
+   appends if this exact outline id isn't already on the roof, so replaying a
+   write that actually landed is a no-op rather than a duplicate. */
+var rmPendingFlushInFlight = false;
+async function rmFlushPendingBuildingSaves(){
+  if (rmPendingFlushInFlight || !rmCanReachCloud()) return;
+  var q = rmLoadPendingSaves();
+  var ids = Object.keys(q);
+  if (!ids.length) return;
+  rmPendingFlushInFlight = true;
+  try{
+    for (var i = 0; i < ids.length; i++){
+      var id = ids[i];
+      var item = q[id];
+      /* Unlike the work-order queue, a malformed/targetless entry is NOT
+         silently dropped -- the device copy is the source of truth and stays
+         put; we just stop pretending we can auto-retry it. */
+      if (!item || !item.buildingId || !item.outline){ rmClearPendingSave(id); continue; }
+      try{
+        var snap = await fdb.collection("buildings").doc(item.buildingId).get();
+        var bld = snap.exists ? snap.data() : {};
+        var roofs = getBuildingRoofs(bld);
+        var target = item;
+        var roof = roofs.find(function(r){ return r.id === target.roofId; }) || roofs[0];
+        if (!roof) throw new Error("couldn't find that roof on the building");
+        var outlines = roof.roof_outlines || [];
+        var alreadyThere = outlines.some(function(o){ return o && o.id === target.outlineId; });
+        if (!alreadyThere){
+          roof.roof_outlines = outlines.concat([Object.assign({}, item.outline, { id: item.outlineId })]);
+          var idx = roofs.findIndex(function(r){ return r.id === roof.id; });
+          roofs[idx] = roof;
+          await saveBuildingRoofs(item.buildingId, roofs);
+        }
+        /* Confirmed on the building: retire the retry AND the device copy, so
+           the same trace can't be saved a second time later. */
+        rmResolveFailSafeCopy(item.outlineId);
+        toast("Roof outline finished saving to " + (item.buildingName || "the building") + " ✓");
+      }catch(e){
+        rmMarkPendingSaveFailed(id, e);
+      }
+    }
+  } finally {
+    rmPendingFlushInFlight = false;
+  }
+}
+/* Same triggers the work-order queue already uses -- kept local to RoofMapper
+   so core.js's sync path is untouched. */
+window.addEventListener("online", function(){ rmRenderPendingSaveStatus(); rmFlushPendingBuildingSaves(); });
+window.addEventListener("offline", function(){ rmRenderPendingSaveStatus(); });
+document.addEventListener("visibilitychange", function(){
+  if (document.visibilityState === "visible") rmFlushPendingBuildingSaves();
+});
+var rmPendingPollTimer = setInterval(function(){
+  var q = rmLoadPendingSaves();
+  var ids = Object.keys(q);
+  if (!ids.length) return;
+  /* Backoff, same shape as core.js's scheduleSyncPoll(): 5s, 10s, 20s... capped
+     at 2 min, so a genuinely dead connection isn't hammered. */
+  var maxAttempts = ids.reduce(function(m, id){ return Math.max(m, q[id].attempts || 0); }, 0);
+  var delayMs = Math.min(5000 * Math.pow(2, maxAttempts), 120000);
+  var lastTry = ids.reduce(function(min, id){ return Math.min(min, (q[id].lastAttemptAt || 0)); }, Infinity);
+  if (lastTry === Infinity || Date.now() - lastTry >= delayMs) rmFlushPendingBuildingSaves();
+}, 5000);
+/* No-op in a browser (DOM timers have no unref); in Node -- where the test
+   suite loads this whole file into a vm -- it stops this poll from holding the
+   process open after the tests finish. */
+if (rmPendingPollTimer && typeof rmPendingPollTimer.unref === "function") rmPendingPollTimer.unref();
+/* Don't let him walk away thinking it saved. core.js has the same guard for
+   unsynced work orders; browsers show their own generic text either way. */
+window.addEventListener("beforeunload", function(e){
+  if (Object.keys(rmLoadPendingSaves()).length){ e.preventDefault(); e.returnValue = ""; }
+});
+/* An outline left unsaved in a PREVIOUS session (he closed the app on the roof
+   and drove home) has to be shouting the moment the app opens -- not only once
+   he happens to navigate back into RoofMapper. The bar lives outside the view,
+   so render it at startup regardless of which view he lands on. */
+(function rmInitPendingSaveStatus(){
+  function go(){ rmRenderPendingSaveStatus(); rmFlushPendingBuildingSaves(); }
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", go);
+  else go();
+})();
+
 function rmSaveLocally(){
   if (!rmState.outline){ toast("Generate a roof outline first."); return; }
   if (!rmConfirmSiteBoundarySave()) return;
@@ -7065,11 +7427,20 @@ function rmRenderLocalSaves(){
   var list = rmLoadLocalOutlines();
   var panel = document.getElementById("rm-local-panel");
   var host = document.getElementById("rm-local-list");
+  if (!panel || !host) return;
   if (!list.length){ panel.style.display = "none"; return; }
   panel.style.display = "";
   host.innerHTML = list.map(function(o){
-    return '<div class="rm-local-item"><div class="info"><b>' + esc(rmOutlineTitle(o)) + '</b>' +
-      o.areaSqFt.toFixed(0) + ' sq ft · ' + new Date(o.createdAt).toLocaleDateString() + '</div>' +
+    /* An outline that landed here because its save to the building FAILED is
+       called out as such -- it isn't a casual local copy, it's unfinished work
+       that still needs to get onto a building. */
+    var badge = o.savedByFailSafe
+      ? '<span style="color:#D64545;font-weight:600">⚠️ Not saved to ' +
+        esc(o.pendingBuildingName || "a building") + ' yet — </span>'
+      : "";
+    var area = (typeof o.areaSqFt === "number" ? o.areaSqFt : 0).toFixed(0);
+    return '<div class="rm-local-item"><div class="info"><b>' + esc(rmOutlineTitle(o)) + '</b>' + badge +
+      area + ' sq ft · ' + new Date(o.createdAt).toLocaleDateString() + '</div>' +
       '<button class="btn" onclick="rmLoadLocalOutline(\'' + o.id + '\')">Load</button>' +
       '<button class="btn danger" onclick="rmDeleteLocalOutline(\'' + o.id + '\')">Delete</button></div>';
   }).join("");
@@ -7078,6 +7449,13 @@ function rmLoadLocalOutline(id){
   var o = rmLoadLocalOutlines().find(function(x){ return x.id === id; });
   if (!o) return;
   rmCancelTrace();
+  /* Strip the fail-safe's own bookkeeping so it never rides along into the
+     roof_outlines[] entry a subsequent save writes to Firestore. The id is
+     deliberately KEPT: rmSaveOutlineToBuilding() reads it as priorOutlineId to
+     retire this device copy (and its pending retry) once the save lands. */
+  o = Object.assign({}, o);
+  delete o.savedByFailSafe; delete o.failSafeAt; delete o.failSafeReason;
+  delete o.pendingBuildingId; delete o.pendingBuildingName;
   rmState.outline = o;
   rmClearLinkedFeatures(); /* a locally-saved outline has no building link -- clear any previous one */
   var map = rmEnsureMap();
@@ -7094,8 +7472,13 @@ function rmLoadLocalOutline(id){
   toast("Loaded saved outline — ready to save to a building or export.");
 }
 function rmDeleteLocalOutline(id){
+  /* Deleting the device copy is him discarding the trace on purpose -- so drop
+     any pending auto-retry for it too, rather than having it reappear on the
+     building later. */
+  rmClearPendingSave(id);
   rmSaveLocalOutlines(rmLoadLocalOutlines().filter(function(x){ return x.id !== id; }));
   rmRenderLocalSaves();
+  rmRenderPendingSaveStatus();
 }
 
 /* Mobile: auto-hide the header on scroll-down, show again on scroll-up --

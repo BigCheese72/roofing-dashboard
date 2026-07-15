@@ -573,6 +573,11 @@ test("RoofMapper saves KML outline while refusing unsafe image-frame map replace
       savedRoofs = roofs;
       building.roofs = roofs;
     },
+    rmPendingIdFor(){ return null; },
+    rmResolveFailSafeCopy(){},
+    rmFailSafeSaveOutline(){
+      throw new Error("fail-safe should not run on this successful KML save");
+    },
     closeRmSaveModal(){},
     rmClearSplitState(){},
     rmRenderRoofSwitcher(){},
