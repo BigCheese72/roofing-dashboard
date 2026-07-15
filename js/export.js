@@ -276,6 +276,22 @@ function reportDistinctRoofIds(o){
    still never THROWS (a bad Firestore read must not crash Preview/PDF
    generation entirely -- the roof plan is a valuable addition to the
    report, not a hard requirement for it to render at all). */
+/* Classifies a roof's latest outline for the report roof plan (issue #44).
+   - world-coordinate ring (>=3 pts): drawable to scale.
+   - image-frame-only (PR #43 / #40 synthetic-ortho shape: ring:[] + imageRing,
+     imageFrame:"roof_base_map"/tracedOnOrtho): INCLUDED but planUnavailable --
+     the report still quotes its area/perimeter, so it must be NAMED with a
+     notice, never dropped. It can't be drawn to scale here: imageRing x/y are
+     image-fractional and anisotropic, and the source image's pixel aspect
+     isn't stored on the outline, so drawing it would distort the roof. */
+function rmReportOutlineDrawability(outline){
+  if (!outline) return { include: false, planUnavailable: false };
+  var hasWorldRing = Array.isArray(outline.ring) && outline.ring.length >= 3;
+  if (hasWorldRing) return { include: true, planUnavailable: false };
+  var hasImageFrame = outline.imageFrame === "roof_base_map" || outline.tracedOnOrtho === true ||
+    (Array.isArray(outline.imageRing) && outline.imageRing.length >= 3);
+  return { include: hasImageFrame, planUnavailable: hasImageFrame };
+}
 async function rmFetchReportRoofOutlines(o){
   var bldName = (o.jobName || "").trim();
   if (!fdb || !bldName) return { roofEntries: [], error: null };
@@ -295,12 +311,14 @@ async function rmFetchReportRoofOutlines(o){
       if (!roof) return;
       var outlines = roof.roof_outlines || [];
       var outline = outlines[outlines.length - 1];
-      if (!outline || !outline.ring || outline.ring.length < 3) return;
+      var draw = rmReportOutlineDrawability(outline);
+      if (!draw.include) return;
       out.push({
         roofId: id,
         roofLabel: roof.label || (o.roofLabels && o.roofLabels[id]) || "Roof",
         outline: outline,
-        assets: (roof.roof_assets || []).filter(function(a){ return typeof a.lat === "number" && typeof a.lng === "number"; })
+        assets: (roof.roof_assets || []).filter(function(a){ return typeof a.lat === "number" && typeof a.lng === "number"; }),
+        planUnavailable: draw.planUnavailable
       });
     });
     return { roofEntries: out, error: null };
@@ -688,6 +706,12 @@ function rmDeconflictLabels(items, svgW, svgH, obstacles){
    linked roof outline -- the report renders exactly as it always did). */
 function rmBuildReportRoofPlanSvg(roofEntries){
   if (!roofEntries || !roofEntries.length) return null;
+  /* Only roofs with a real world-coordinate ring can be projected to scale.
+     Image-frame-only roofs (issue #44) carry planUnavailable and are named
+     via a notice by the caller, not drawn here. If nothing is drawable there
+     is no plan SVG at all -- the caller still renders every roof's notice. */
+  roofEntries = roofEntries.filter(function(r){ var d = rmReportOutlineDrawability(r.outline); return d.include && !d.planUnavailable; });
+  if (!roofEntries.length) return null;
   var allRingPts = [];
   roofEntries.forEach(function(r){ allRingPts = allRingPts.concat(r.outline.ring); });
   var origin = rmGeomRingCentroid(allRingPts);
@@ -883,9 +907,18 @@ function renderLeakReportDoc(o){
   var roofPlanEntries = rmReportRoofPlanEntriesFor();
   if (roofPlanEntries.length){
     var plan = rmBuildReportRoofPlanSvg(roofPlanEntries);
-    if (plan){
-      h += "<h3 class='cond'>Roof Plan</h3>" +
-        "<div style='border:1px solid #CFD8DC;border-radius:6px;overflow:hidden'>" + plan.svg + "</div>";
+    var planUnavailableRoofs = roofPlanEntries.filter(function(r){ return r.planUnavailable; });
+    if (plan || planUnavailableRoofs.length){
+      h += "<h3 class='cond'>Roof Plan</h3>";
+      if (plan) h += "<div style='border:1px solid #CFD8DC;border-radius:6px;overflow:hidden'>" + plan.svg + "</div>";
+      /* A roof that can't be drawn to scale (traced on a non-georeferenced
+         image, issue #44) is NAMED here rather than silently omitted -- the
+         report still quotes its measurements below. */
+      planUnavailableRoofs.forEach(function(r){
+        h += "<p style='margin:8px 0;color:#B45309'>" +
+          (roofPlanEntries.length > 1 ? "<b>" + esc(r.roofLabel) + "</b> — " : "") +
+          "Roof plan not available: this roof was traced on a non-georeferenced image, so its outline can't be drawn to scale. The measurements below are still valid.</p>";
+      });
       /* Field-measurement history -- archived/superseded entries and the
          tech's conflict-resolution decision, not just the active number.
          One list per roof that actually has any measurement history;
@@ -1323,19 +1356,28 @@ async function generateLeakReportPdf(o, roofPlanData){
      drawings that could drift apart. */
   if (roofPlanData && roofPlanData.length){
     var plan = rmBuildReportRoofPlanSvg(roofPlanData);
-    if (plan){
-      try{
-        var planCanvas = await rmRasterizeSvgToCanvas(plan.svg, plan.width, plan.height);
-        var planDataUrl = planCanvas.toDataURL("image/png");
-        heading("Roof Plan");
-        var availW = W - M * 2;
-        var planW = availW, planH = availW * plan.height / plan.width;
-        var maxPlanH = 380;
-        if (planH > maxPlanH){ planH = maxPlanH; planW = maxPlanH * plan.width / plan.height; }
-        if (y + planH > H - M){ doc.addPage(); y = M; }
-        doc.addImage(planDataUrl, "PNG", M, y, planW, planH);
-        y += planH + 18;
-      }catch(e){ console.warn("Couldn't rasterize roof plan for PDF:", e); }
+    var planUnavailableRoofs = roofPlanData.filter(function(r){ return r.planUnavailable; });
+    if (plan || planUnavailableRoofs.length){
+      heading("Roof Plan");
+      if (plan){
+        try{
+          var planCanvas = await rmRasterizeSvgToCanvas(plan.svg, plan.width, plan.height);
+          var planDataUrl = planCanvas.toDataURL("image/png");
+          var availW = W - M * 2;
+          var planW = availW, planH = availW * plan.height / plan.width;
+          var maxPlanH = 380;
+          if (planH > maxPlanH){ planH = maxPlanH; planW = maxPlanH * plan.width / plan.height; }
+          if (y + planH > H - M){ doc.addPage(); y = M; }
+          doc.addImage(planDataUrl, "PNG", M, y, planW, planH);
+          y += planH + 18;
+        }catch(e){ console.warn("Couldn't rasterize roof plan for PDF:", e); }
+      }
+      /* Name any roof we can't draw to scale (issue #44) -- measurements
+         still print below; the plan just can't be rendered for it. */
+      planUnavailableRoofs.forEach(function(r){
+        wrappedTextPdf((roofPlanData.length > 1 ? r.roofLabel + " — " : "") +
+          "Roof plan not available: this roof was traced on a non-georeferenced image, so its outline can't be drawn to scale. The measurements below are still valid.");
+      });
 
       var historyRows = [];
       roofPlanData.forEach(function(r){
