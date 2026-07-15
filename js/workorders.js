@@ -1172,51 +1172,120 @@ async function inlineResolveBuildingBaseMap(roofs, selectedRoofId){
 }
 function inlineAllHistoryPins(events){
   var allPins = [];
-  (events || []).forEach(function(e){ (e.pins || []).forEach(function(p){
-    allPins.push(Object.assign({ eventDate: e.date }, p));
+  (events || []).forEach(function(e, eventIndex){ (e.pins || []).forEach(function(p, pinIndex){
+    p = p || {};
+    if (!(typeof p.lat === "number" && typeof p.lng === "number") &&
+        !(typeof p.x === "number" && typeof p.y === "number")) return;
+    allPins.push(Object.assign({}, p, {
+      eventDate: e.date,
+      _inlineKey: eventIndex + ":" + pinIndex
+    }));
   }); });
   return allPins;
 }
-function inlineHistoryPinsForMap(events, roofId, hasCustomBaseMap){
-  var allPins = inlineAllHistoryPins(events);
-  return hasCustomBaseMap ?
-    allPins.filter(function(p){ return (p.roofId || "roof_default") === roofId &&
-      typeof p.x === "number" && typeof p.y === "number"; }) :
-    allPins.filter(function(p){ return (p.roofId || "roof_default") === roofId &&
-      typeof p.lat === "number" && typeof p.lng === "number"; });
+function inlineHistorySetCoverage(full, rendered, disclosureFn){
+  var shown = {};
+  rendered.forEach(function(item){ shown[item._inlineKey] = true; });
+  var disclosed = full.filter(function(item){ return !shown[item._inlineKey]; });
+  return {
+    full: full,
+    rendered: rendered,
+    disclosed: disclosed,
+    disclosure: disclosureFn ? disclosureFn(disclosed) : ""
+  };
 }
-function inlineHiddenPinDisclosure(events, roofId, hasCustomBaseMap){
-  if (!hasCustomBaseMap) return "";
-  var allPins = inlineAllHistoryPins(events);
-  var hiddenGps = 0, hiddenOtherRoof = 0;
-  allPins.forEach(function(p){
+function inlineHistoryPinCoverage(events, roofId, hasCustomBaseMap, roofs){
+  var full = inlineAllHistoryPins(events);
+  var rendered = full.filter(function(p){
+    var pinRoofId = p.roofId || "roof_default";
+    return hasCustomBaseMap ?
+      (pinRoofId === roofId && typeof p.x === "number" && typeof p.y === "number") :
+      (pinRoofId === roofId && typeof p.lat === "number" && typeof p.lng === "number");
+  });
+  return inlineHistorySetCoverage(full, rendered, function(disclosed){
+    return inlineHiddenPinDisclosure(disclosed, roofId, hasCustomBaseMap, roofs);
+  });
+}
+function inlineHistoryPinsForMap(events, roofId, hasCustomBaseMap){
+  return inlineHistoryPinCoverage(events, roofId, hasCustomBaseMap).rendered;
+}
+function inlineHiddenPinDisclosure(disclosedPins, roofId, hasCustomBaseMap, roofs){
+  var hiddenGps = 0, hiddenOtherRoof = 0, hiddenUnassigned = 0, hiddenXY = 0;
+  var multiRoof = (roofs || []).length > 1;
+  /* Pins are written in either x/y image space or lat/lng GPS space. These
+     checks keep the disclosure tied to the stored coordinate frame. */
+  (disclosedPins || []).forEach(function(p){
     var pinRoofId = p.roofId || "roof_default";
     var hasXY = typeof p.x === "number" && typeof p.y === "number";
     var hasGps = typeof p.lat === "number" && typeof p.lng === "number";
-    var shownHere = pinRoofId === roofId && hasXY;
-    if (shownHere) return;
-    if (pinRoofId !== roofId && hasXY) hiddenOtherRoof++;
-    else if (hasGps) hiddenGps++;
+    if (pinRoofId === "roof_default" && roofId !== "roof_default" && multiRoof) hiddenUnassigned++;
+    else if (pinRoofId !== roofId) hiddenOtherRoof++;
+    else if (hasCustomBaseMap && hasGps) hiddenGps++;
+    else if (!hasCustomBaseMap && hasXY) hiddenXY++;
   });
   var notes = [];
+  if (hiddenOtherRoof) notes.push(hiddenOtherRoof + " finding" + (hiddenOtherRoof === 1 ? "" : "s") +
+    " pinned to other roofs " + (hiddenOtherRoof === 1 ? "is" : "are") + " not shown here");
+  if (hiddenUnassigned) notes.push(hiddenUnassigned + " legacy unassigned finding" + (hiddenUnassigned === 1 ? "" : "s") +
+    " " + (hiddenUnassigned === 1 ? "needs" : "need") + " roof assignment from the bulk-reassign pass before " +
+    (hiddenUnassigned === 1 ? "it can" : "they can") + " be shown on this roof");
   if (hiddenGps) notes.push(hiddenGps + " GPS-placed finding" + (hiddenGps === 1 ? "" : "s") +
     " can't be shown on a non-georeferenced drawing");
-  if (hiddenOtherRoof) notes.push(hiddenOtherRoof + " finding" + (hiddenOtherRoof === 1 ? "" : "s") +
-    " pinned to other roof drawings " + (hiddenOtherRoof === 1 ? "is" : "are") + " not shown here");
+  if (hiddenXY) notes.push(hiddenXY + " image-placed finding" + (hiddenXY === 1 ? "" : "s") +
+    " can't be shown on the satellite map");
+  return notes.length ? notes.join(". ") + "." : "";
+}
+function inlineAllRoofAssets(roofs){
+  var allAssets = [];
+  (roofs || []).forEach(function(r, roofIndex){
+    (r.roof_assets || []).forEach(function(a, assetIndex){
+      a = a || {};
+      if (!(typeof a.lat === "number" && typeof a.lng === "number") &&
+          !(typeof a.x === "number" && typeof a.y === "number")) return;
+      allAssets.push(Object.assign({}, a, {
+        _roofId: r.id || "roof_default",
+        _roofLabel: r.label || "Roof",
+        _roofBaseMapSynthetic: !!r.roof_base_map_synthetic,
+        _roofBaseMapType: r.roof_base_map_type || null,
+        _inlineKey: (r.id || roofIndex) + ":" + assetIndex
+      }));
+    });
+  });
+  return allAssets;
+}
+function inlineHistoryAssetCoverage(roofs, roof, hasCustomBaseMap){
+  roof = roof || {};
+  var selectedRoofId = roof.id || "roof_default";
+  var full = inlineAllRoofAssets(roofs);
+  var rendered = full.filter(function(a){
+    return hasCustomBaseMap ?
+      (a._roofId === selectedRoofId && typeof a.x === "number" && typeof a.y === "number") :
+      (typeof a.lat === "number" && typeof a.lng === "number");
+  });
+  return inlineHistorySetCoverage(full, rendered, function(disclosed){
+    return inlineHiddenAssetDisclosure(disclosed, selectedRoofId, hasCustomBaseMap);
+  });
+}
+function inlineHiddenAssetDisclosure(disclosedAssets, roofId, hasCustomBaseMap){
+  var hiddenGps = 0, hiddenOtherRoof = 0, hiddenXY = 0;
+  (disclosedAssets || []).forEach(function(a){
+    var hasXY = typeof a.x === "number" && typeof a.y === "number";
+    var hasGps = typeof a.lat === "number" && typeof a.lng === "number";
+    if (hasCustomBaseMap && a._roofId !== roofId) hiddenOtherRoof++;
+    else if (hasCustomBaseMap && hasGps) hiddenGps++;
+    else if (!hasCustomBaseMap && hasXY) hiddenXY++;
+  });
+  var notes = [];
+  if (hiddenOtherRoof) notes.push(hiddenOtherRoof + " feature" + (hiddenOtherRoof === 1 ? "" : "s") +
+    " from other roof drawings " + (hiddenOtherRoof === 1 ? "is" : "are") + " not shown here");
+  if (hiddenGps) notes.push(hiddenGps + " GPS-placed feature" + (hiddenGps === 1 ? "" : "s") +
+    " can't be shown on a non-georeferenced drawing");
+  if (hiddenXY) notes.push(hiddenXY + " image-placed feature" + (hiddenXY === 1 ? "" : "s") +
+    " can't be shown on the satellite map");
   return notes.length ? notes.join(". ") + "." : "";
 }
 function inlineHistoryAssetsForMap(roofs, roof, hasCustomBaseMap){
-  roof = roof || {};
-  if (roof.id || hasCustomBaseMap) return roof.roof_assets || [];
-  return (roofs || []).reduce(function(acc, r){
-    (r.roof_assets || []).forEach(function(a){
-      acc.push(Object.assign({}, a, {
-        _roofBaseMapSynthetic: !!r.roof_base_map_synthetic,
-        _roofBaseMapType: r.roof_base_map_type || null
-      }));
-    });
-    return acc;
-  }, []);
+  return inlineHistoryAssetCoverage(roofs, roof, hasCustomBaseMap).rendered;
 }
 function inlineHistoryOutlines(roofs, hasCustomBaseMap, selectedRoof){
   if (hasCustomBaseMap){
@@ -1279,27 +1348,30 @@ async function refreshInlineBuildingHistory(){
     var mapRoofId = roofId;
     var hasCustomBaseMap = !!baseMap.customBld;
     var orthoOverlay = baseMap.orthoOverlay;
-    var roofAssets = inlineHistoryAssetsForMap(ctx.roofs, mapRoof, hasCustomBaseMap);
+    var pinCoverage = inlineHistoryPinCoverage(events, mapRoofId, hasCustomBaseMap, ctx.roofs);
+    var assetCoverage = inlineHistoryAssetCoverage(ctx.roofs, mapRoof, hasCustomBaseMap);
+    var roofAssets = assetCoverage.rendered;
     var outlines = inlineHistoryOutlines(ctx.roofs, hasCustomBaseMap, mapRoof);
-    /* Inline Building History stays building-wide in the timeline, while the
-       map pins/assets stay scoped to the selected roof so a fallback or
-       sibling roof never masquerades as the roof the tech opened. */
-    var mapPins = inlineHistoryPinsForMap(events, mapRoofId, hasCustomBaseMap);
+    /* Render mode decides only what can be plotted. Disclosure is always
+       derived from the full history set minus this rendered set. */
+    var mapPins = pinCoverage.rendered;
     var latestEvents = events.slice(0, 8);
-    var hasMapBase = hasCustomBaseMap || orthoOverlay || outlines.length || mapPins.length || roofAssets.length;
+    var hiddenDisclosure = [pinCoverage.disclosure, assetCoverage.disclosure].filter(Boolean).join(" ");
+    var hasMapBase = hasCustomBaseMap || orthoOverlay || outlines.length || mapPins.length ||
+      roofAssets.length || pinCoverage.disclosed.length || assetCoverage.disclosed.length;
     var sourceRoofLabel = (mapRoof && mapRoof.label) || "Roof";
     var mapLabel = hasCustomBaseMap ?
-      'Roof map using <b>' + esc(sourceRoofLabel) + '</b>\'s saved base image.' :
+      'Roof map using <b>' + esc(sourceRoofLabel) + '</b>\'s saved base image' +
+        (baseMap.syntheticOrtho ? ' (RoofMapper image, not georeferenced).' : '.') :
       'Building-wide roof map showing <b>' + esc(sourceRoofLabel) + '</b>\'s GPS findings' +
         (orthoOverlay ? ' on the saved drone orthophoto.' : '.');
-    var hiddenPinDisclosure = inlineHiddenPinDisclosure(events, mapRoofId, hasCustomBaseMap);
     var eventCountLabel = latestEvents.length && latestEvents.length < events.length ?
       'Showing ' + latestEvents.length + ' of ' + events.length + ' prior events' :
       (events.length ? events.length + ' prior event' + (events.length === 1 ? '' : 's') : '');
     var mapHtml = hasMapBase ?
       '<div style="margin:8px 0 12px">' +
         '<p class="hint" style="margin:0 0 6px">' + mapLabel + '</p>' +
-        (hiddenPinDisclosure ? '<p class="hint" style="margin:0 0 6px;color:#8A5A00">' + esc(hiddenPinDisclosure) + '</p>' : '') +
+        (hiddenDisclosure ? '<p class="hint" style="margin:0 0 6px;color:#8A5A00">' + esc(hiddenDisclosure) + '</p>' : '') +
         '<div id="wo-inline-building-map" style="height:min(38vh,320px);border-radius:6px;overflow:hidden;border:1px solid var(--line)"></div>' +
       '</div>' :
       '<p class="hint">No saved roof base map, outline, feature, or pin is available for this building yet.</p>';
