@@ -8161,7 +8161,35 @@ Report-side safeguard (js/export.js `filledFindings`): a finding is shown if it
 has text **or any photos** — a photographed-but-uncaptioned finding no longer
 silently vanishes and drags its photos out of the report.
 
-Still open (later phases): the multi-device **clobber** itself (an auto-flushed
-stale copy overwriting a newer cloud — needs a savedAt/version guard), and the
-storage engine (bytes → IndexedDB, upload-on-add). See the photo-storage
-workstream.
+Still open (later phases): the storage engine (bytes → IndexedDB, upload-on-add).
+See the photo-storage workstream.
+
+## Multi-device clobber guard (Phase 0b)
+
+The cause of the PC↔phone tug-of-war that resurrected deleted photos and wiped
+re-adds: `tryFlushSyncQueue()` auto-pushes a device's queued copy whenever it
+comes online (the `window "online"` / visibility-change listeners). If that
+copy is STALE — another device saved to the cloud after this copy was loaded —
+the push silently overwrote the newer cloud version. Nothing compared versions.
+
+Fix: optimistic concurrency on `savedAt`.
+- `cloudFetchOrder()` stamps `o._cloudBaseSavedAt = o.savedAt` — the cloud
+  version this copy descends from. It survives local caching (`stripPhotoBytes`
+  does `Object.assign`) and edits (`saveOrder` carries it forward across
+  `collect()`, which otherwise rebuilds the order without it).
+- `cloudSaveOrder()` re-reads the cloud doc's `savedAt` before overwriting. If
+  it has advanced **past** the base, it throws a `__conflict` error instead of
+  clobbering. `base === 0` (a new / never-synced order) is unguarded — there's
+  nothing to conflict with. A read failure never blocks the save (best-effort).
+  On success the base advances to the just-written `savedAt` so the same device
+  never false-conflicts with its own write.
+- Conflict handling is the opposite of a transient failure: both the direct
+  save (`saveOrder`) and the queue flush (`tryFlushSyncQueue`) **drop the queue
+  entry** (`markSynced`, not `markSyncFailed`) rather than retry forever — the
+  local copy stays in `db.orders` for the tech to reopen — and toast that a
+  newer version exists on another device. This is what stops the stale-copy
+  loop.
+
+Last-writer-wins by `savedAt`; cross-device clock skew is a known minor risk
+(a server timestamp would be more robust — later). Does NOT merge concurrent
+edits: the newer cloud wins and the older copy is surfaced, not silently lost.
