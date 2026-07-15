@@ -42,6 +42,11 @@ async function openBuildingPicker(){
      never holds up the (usually much faster) existing-buildings list. See
      "Change Order building picker" in DEV_NOTES.md. */
   bpSearchCompanyCam("");
+  /* The job list (Foundation-sourced cache) is the primary section of this
+     same picker -- primed independently so it never blocks (or is blocked by)
+     the buildings/CompanyCam loads. Guarded so this file has no hard dependency
+     on js/foundation.js. */
+  if (typeof fdnPrimePicker === "function") fdnPrimePicker();
 }
 function closeBuildingPicker(){
   document.getElementById("bp-modal").style.display = "none";
@@ -843,7 +848,7 @@ function populateWarrantyGuidelines(){
       "<b style='color:#D64545'>Typically Not Warrantable</b>" + list(WARRANTY_GUIDELINES.notWarrantable) +
     "</div>";
 }
-var FIELD_IDS = ["jobName","location","serviceDate","jobNo","billTo","billContact","billPhone",
+var FIELD_IDS = ["jobName","location","serviceDate","jobNo","projectManager","billTo","billContact","billPhone",
   "siteContact","technician","roofSystem","reportedArea","warrantable","nonWarrantable","summary",
   "woCost","woManHours","woMaterials","woDescription","woPONumber","woDateCompleted","repairDescription",
   "mfgServiceNo"];
@@ -864,6 +869,17 @@ function collect(){
   o.photos = photos.slice();
   o.companyCamProjectId = ccLinkedProjectId || null;
   o.companyCamProjectName = ccLinkedProjectName || "";
+  /* Foundation (construction accounting) job linkage — set when a Foundation
+     job was picked (js/foundation.js). Kept as its own field (not derived from
+     jobNo) so the WO's admin-only labor-hours card can look hours up by the
+     exact Foundation job_no even if the human edits the visible Job No. after.
+     Persisted on the WO by cloudSaveOrder (copies all keys), AND onto the
+     BUILDING doc by ensureCustomerAndBuilding() — customerNo + address ride
+     along so the building carries the full accounting identity/anchor (#76). */
+  o.foundationJobNo = (typeof fdnLinkedJobNo !== "undefined" && fdnLinkedJobNo) ? fdnLinkedJobNo : null;
+  o.foundationJobName = (typeof fdnLinkedJobName !== "undefined" && fdnLinkedJobName) ? fdnLinkedJobName : "";
+  o.foundationCustomerNo = (typeof fdnLinkedCustomerNo !== "undefined" && fdnLinkedCustomerNo) ? fdnLinkedCustomerNo : null;
+  o.foundationAddress = (typeof fdnLinkedAddress !== "undefined" && fdnLinkedAddress) ? fdnLinkedAddress : "";
   o.roofId = currentRoofId || null;
   /* Multi-roof Inspection only -- null for every other case (a single roof
      selected, or a work order type that doesn't support this at all yet),
@@ -912,6 +928,10 @@ function fill(o){
   photos.forEach(function(p){ if (p.finding_id === undefined) p.finding_id = null; });
   ccLinkedProjectId = o.companyCamProjectId || null;
   ccLinkedProjectName = o.companyCamProjectName || "";
+  /* Restore the Foundation job linkage and refresh its dependent UI (the link
+     line + the admin-only labor card). Guarded so this file has no hard
+     dependency on js/foundation.js being present. */
+  if (typeof fdnSetLinkedJob === "function") fdnSetLinkedJob(o.foundationJobNo || null, o.foundationJobName || "", o.foundationCustomerNo || null, o.foundationAddress || "");
   /* Whatever Job No. this order carries is now the LOADED order's number, not
      something this session auto-filled -- so the Change Order autofill below
      must treat it as a human's value and never overwrite it. Reset on every
@@ -1069,6 +1089,8 @@ function renderHomeTiles(){
       '<span class="home-tile-label">' + esc(WORK_ORDER_TYPE_LABELS[t] || t) + '</span></button>';
   });
   tiles.push(
+    '<button class="home-tile home-tile-secondary" onclick="showView(\'dpr\')">' +
+      '<span class="home-tile-icon">📅</span><span class="home-tile-label">Daily Progress Report</span></button>',
     '<button class="home-tile home-tile-secondary" onclick="showView(\'roofmapper\')">' +
       '<span class="home-tile-icon">🗺️</span><span class="home-tile-label">RoofMapper</span></button>',
     '<button class="home-tile home-tile-secondary" onclick="showView(\'history\')">' +

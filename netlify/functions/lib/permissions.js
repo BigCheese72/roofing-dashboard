@@ -57,6 +57,8 @@ const PERMISSION_KEYS = [
   "changeorder.approve_report",
   "doc.generate",
   "doc.email_customer",
+  "dpr.create",
+  "dpr.view",
   "billing.view",
   "billing.edit",
   "companycam.link",
@@ -136,6 +138,8 @@ const SEED_ROLES = [
       "changeorder.approve_report": true,
       "doc.generate": true,
       "doc.email_customer": true,
+      "dpr.create": true,
+      "dpr.view": true,
       "billing.view": true,
       "billing.edit": true,
       "buildings.archive": true,
@@ -170,6 +174,8 @@ const SEED_ROLES = [
       "changeorder.draft": true,
       "changeorder.approve_report": "proj",
       "doc.generate": true,
+      "dpr.create": true,
+      "dpr.view": true,
       "billing.view": "proj",
       "attachments.archive": "proj",
       "attachments.supersede": "proj",
@@ -200,6 +206,8 @@ const SEED_ROLES = [
       "changeorder.approve_report": true,
       "doc.generate": true,
       "doc.email_customer": true,
+      "dpr.create": true,
+      "dpr.view": true,
       "billing.view": true,
       "buildings.archive": true,
       "buildings.void": true,
@@ -235,6 +243,8 @@ const SEED_ROLES = [
       "changeorder.approve_report": "proj",
       "doc.generate": true,
       "doc.email_customer": "proj",
+      "dpr.create": true,
+      "dpr.view": true,
       "billing.view": "proj",
       "companycam.link": "proj",
       "feedback.submit": true
@@ -258,6 +268,7 @@ const SEED_ROLES = [
       "capture.signature": true,
       "changeorder.draft": true,
       "doc.generate": true,
+      "dpr.view": true,
       "billing.view": true,
       "feedback.submit": true
     })
@@ -283,6 +294,8 @@ const SEED_ROLES = [
       "attachments.supersede": "own",
       "changeorder.draft": true,
       "doc.generate": true,
+      "dpr.create": true,
+      "dpr.view": true,
       "companycam.link": true,
       "feedback.submit": true
     })
@@ -300,6 +313,7 @@ const SEED_ROLES = [
       "internal.notes.view": true,
       "doc.generate": true,
       "doc.email_customer": true,
+      "dpr.view": true,
       "billing.view": true,
       "billing.edit": true,
       "feedback.submit": true

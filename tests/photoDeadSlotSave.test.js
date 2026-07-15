@@ -28,11 +28,13 @@ function P(id, i){ return "workorders/" + id + "/" + i + ".jpg"; }
 /* Fake Firestore for one work-order doc + its photos subcollection, plus
    stubbed Storage upload/delete/resolve. `existingPhotos` seeds the docs the
    cloud already holds (so the preserve/existing-doc lookup has something to
-   read); `resolveOk` toggles whether re-home fetches succeed (online) or
-   return null (offline). */
+   read); `storageBytes` models the shared index-keyed Storage namespace for
+   collision tests; `resolveOk` toggles whether re-home fetches succeed
+   (online) or return null (offline). */
 function makeCtx(opts){
   opts = opts || {};
   const store = { main: { photoCount: opts.prevCount || 0 }, photos: Object.assign({}, opts.existingPhotos || {}) };
+  const storageBytes = opts.storageBytes ? Object.assign({}, opts.storageBytes) : null;
   const rec = { photoSets: [], docDeletes: [], storageDeletes: [], uploads: [], resolves: [] };
 
   const photosCol = {
@@ -40,6 +42,17 @@ function makeCtx(opts){
       get: async () => ({ exists: Object.prototype.hasOwnProperty.call(store.photos, docId), data: () => store.photos[docId] }),
       set: async (d) => { store.photos[docId] = d; rec.photoSets.push({ docId: docId, doc: d }); },
       delete: async () => { delete store.photos[docId]; rec.docDeletes.push(docId); }
+    }),
+    get: async () => ({
+      forEach: (cb) => {
+        Object.keys(store.photos).forEach((docId) => {
+          cb({
+            id: docId,
+            data: () => store.photos[docId],
+            ref: { delete: async () => { delete store.photos[docId]; rec.docDeletes.push(docId); } }
+          });
+        });
+      }
     })
   };
   const ref = {
@@ -52,11 +65,20 @@ function makeCtx(opts){
     Date: { now: () => 1234567890 },
     console: { warn(){}, log(){} },
     fdb: { collection: () => ({ doc: () => ref }) },
-    uploadPhotoToStorage: async (woId, i, bytes) => { rec.uploads.push({ i: i, bytes: bytes }); return P(woId, i); },
+    uploadPhotoToStorage: async (woId, i, bytes) => {
+      rec.uploads.push({ i: i, bytes: bytes });
+      if (storageBytes) storageBytes[i] = bytes;
+      return P(woId, i);
+    },
     deletePhotoFromStorage: async (woId, i) => { rec.storageDeletes.push(i); },
     resolvePhotoImg: async (p) => {
       rec.resolves.push(p.storageRef);
       if (opts.resolveOk === false) return null;         // offline: can't fetch
+      if (storageBytes){
+        const idx = Number((/\/(\d+)\.jpg$/.exec(p.storageRef || "") || [])[1]);
+        p.img = storageBytes[idx] || null;
+        return p.img;
+      }
       p.img = "data:image/jpeg;base64,REHOMED_" + p.storageRef;
       return p.img;
     }
@@ -141,6 +163,30 @@ test("SAGA REGRESSION: removing a MIDDLE photo does not delete a later photo's b
   assert.equal(ctx.__store.photos.p1.storageRef, P("wo", 1), "C re-homed to 1");
 });
 
+test("SAGA REGRESSION: swapping cloud-only photos snapshots bytes before re-home uploads", async () => {
+  const ctx = makeCtx({
+    prevCount: 2,
+    storageBytes: { 0: "data:image/jpeg;base64,A_BYTES", 1: "data:image/jpeg;base64,B_BYTES" },
+    existingPhotos: { p0: { i: 0, storageRef: P("wo", 0) }, p1: { i: 1, storageRef: P("wo", 1) } }
+  });
+  const o = { id: "wo", photos: [
+    { caption: "B", storageRef: P("wo", 1), img: null },
+    { caption: "A", storageRef: P("wo", 0), img: null }
+  ]};
+
+  await ctx.cloudSaveOrder(o);
+
+  assert.equal(ctx.__store.photos.p0.caption, "B");
+  assert.equal(ctx.__store.photos.p1.caption, "A");
+  assert.deepEqual(ctx.__rec.resolves, [P("wo", 1), P("wo", 0)], "both old locations fetched before uploads");
+  assert.deepEqual(ctx.__rec.uploads, [
+    { i: 0, bytes: "data:image/jpeg;base64,B_BYTES" },
+    { i: 1, bytes: "data:image/jpeg;base64,A_BYTES" }
+  ], "each destination receives its original photo bytes");
+  assert.equal(ctx.__store.photos.p0.storageRef, P("wo", 0));
+  assert.equal(ctx.__store.photos.p1.storageRef, P("wo", 1));
+});
+
 test("offline re-home failure keeps old refs and deletes NO referenced bytes", async () => {
   const ctx = makeCtx({
     resolveOk: false, // simulate can't-reach-Storage
@@ -159,7 +205,9 @@ test("offline re-home failure keeps old refs and deletes NO referenced bytes", a
   assert.equal(ctx.__store.photos.p1.storageRef, P("wo", 2), "C keeps its original ref when offline");
   assert.equal(ctx.__rec.storageDeletes.includes(1), false, "B's bytes not deleted");
   assert.equal(ctx.__rec.storageDeletes.includes(2), false, "C's bytes not deleted");
-  assert.deepEqual(ctx.__rec.storageDeletes.sort(), [0], "only removed photo A's freed index 0 is deleted");
+  ctx.__rec.storageDeletes.forEach((idx) => {
+    assert.equal([1, 2].includes(idx), false, "must not delete a survivor's old storage index " + idx);
+  });
 });
 
 test("an order whose only photo is a dead slot saves cleanly (no throw, slot dropped)", async () => {

@@ -203,6 +203,23 @@ document can be downloaded/viewed from" — confirmed against their API docs) st
    new pin-source logic was needed for this case. Getting the bounds is the hard part —
    see `tools/geotiff_to_webmap.py` below.
 
+**base-map anchor (base maps follow the job site, not the billTo+jobName key).**
+A base map lives per-roof under a building doc keyed `bld_ + slug(billTo + "_" + jobName)`.
+That fragments a physical site: open a form for the same place under a different customer
+or a differently-typed job name and it resolves to a *different* building doc, so the base
+map made earlier "isn't there." Mark's requirement: once a base map is made it stays with
+the site and shows in **any** form opened for it. Step 1 (`lookupProspectiveBuildingBaseMap`
+/ `photosRoofsForCompanyCamProject` in js/photos.js) anchors resolution on the **linked
+CompanyCam project** — the durable per-site identity: try the primary building's own roofs
+first, and if it has no base map, borrow one from any building sharing this
+`companyCamProjectId` (a single-field equality query, automatic Firestore index — no
+composite to deploy). Read-only across buildings — nothing is re-keyed or moved. A borrowed
+map is labeled honestly (`viaCompanyCam` → "from this site's linked CompanyCam project").
+Later steps: a Foundation-job anchor (needs `foundationJobNo` first persisted onto the
+building via a Foundation-job→WO link — not yet wired), and optional building-identity
+consolidation (workorders.js `buildingIdFor`, Codex lane). Issue #39 (resolve building-wide
+across roofs) already shipped separately.
+
 A building shows **one map** overall — either the satellite/drone_ortho lat/lng view,
 or a roof_plan/sketch x/y view, never both, since x/y and lat/lng can't merge onto one
 Leaflet CRS without the manual anchoring the spec explicitly excludes from this phase.
@@ -2753,12 +2770,95 @@ var, never in the browser or the repo. **Not promoted to production** — held f
   trimmed `job_no` match, the `description`→`name` mapping, and that pay columns + the password
   never reach a response. `firebase-admin` and `mssql` are both stubbed, so it runs offline; the
   fake driver exercises the real builders/mappers end-to-end through the handler.
-- **Not built yet — Phase 2 (left as code comments in `foundation.js`, not scaffolding):**
-  scheduled nightly sync of active jobs into Firestore (so the job picker / WO auto-fill read a
-  fast local cache, not a live DB call per keystroke), WO auto-fill of customer/PM/address from a
-  selected Foundation job, DPR PM from `project_manager_no`, and admin-only labor hours on the WO
-  for holders of `foundation.read`. The clean hooks already exist (`fetchJobs`/`fetchJobHours` +
-  the mappers); don't build the sync/writes until Phase 2 is speced.
+- **Phase 1 CONNECTION VALIDATED (2026-07-15, live from the dev deploy):** `action=jobs` returned
+  500 jobs from a Netlify Function — so the Lambda runtime **can** open outbound TCP to
+  `sql.foundationsoft.com:9000` (no separate proxy host needed), and `action=job_hours` returned
+  real labor with the trimmed match working across a sample of jobs (17053 itself just has no
+  labor logged). See the Phase 2 section below for what's built on top.
+
+### Foundation Phase 2a — nightly job sync into Firestore (dev-only, HELD for sign-off)
+
+Mirrors every **active** Foundation job into a client-readable Firestore cache so the work-order
+job picker and auto-fill read a fast local collection instead of hitting the accounting DB on
+every keystroke. Read-only against Foundation; the only writes are to Firestore.
+
+- **`netlify/functions/foundation-sync.js`** — `action=sync`. Identity-first, fail-closed, and the
+  sync key is **not** a skeleton key. Two callers only: the automated nightly cron (holds
+  `FOUNDATION_SYNC_SECRET` in the `x-foundation-sync-key` header, compared with `timingSafeEqual`,
+  fails closed if unset or < 32 chars) **or** a signed-in human with `foundation.read` (on-demand
+  "sync now"). Anyone else → opaque 401; a signed-in user without the permission → 403; any action
+  other than `sync` from the automated caller → 403. Supports `dryRun`. It calls the existing
+  `foundationDb.fetchJobs()` directly (no self-HTTP) with **limit 0 = no `TOP` cap**, since Watkins
+  has more than 500 active jobs, and upserts them via the Admin SDK in batches of 400.
+- **`.github/workflows/sync-foundation-jobs.yml`** — work-day hourly cron (`0 12-21 * * *` =
+  7 AM–4 PM Central/CDT; GitHub cron is UTC with no DST, so it shifts to 6 AM–3 PM in CST/winter —
+  flip to `0 13-22` in November). POSTs `{"action":"sync"}` to the **dev** deploy with the secret
+  header. Mirrors `poll-inspection-reports.yml` exactly — **not** a Netlify Scheduled Function
+  (those can't attach a header and carry no forgery-proof signal; see the `netlify.toml` end
+  comment). Production is synced only by a deliberate manual `workflow_dispatch` with
+  `target=production`. **GitHub only runs `schedule`/`workflow_dispatch` from the DEFAULT branch
+  (`main`)**, so this does not auto-run while it lives on `dev` — it starts firing when it rides to
+  `main` with the Foundation prod promotion. Until then, use the on-demand "sync now" path (a
+  `foundation.read` user POSTing `{"action":"sync"}` to `/.netlify/functions/foundation-sync`).
+- **Firestore collection `foundation_jobs`** (doc id = sanitized `job_no`). Rule: **read = any
+  signed-in user**, **write = false** (Admin-SDK only). The cached doc is the identifying subset —
+  `job_no`/`job_number`/`name`/`customer_no`/`project_manager_no`/address/city/state/zip/dates +
+  `synced_at`. The **contract value is deliberately dropped** before caching (`mapJobForCache`);
+  it's the one financially-sensitive job field and the picker doesn't need it, so it stays behind
+  `foundation.read` on the live connector. Labor hours are **never** cached (see Phase 2c).
+  `foundation_sync_meta/last` records each run's `synced_at` + counts.
+- **Least-privilege rationale for a broadly-readable cache:** the identifying fields are no more
+  sensitive than the already-open `buildings` collection, and picking a job is a normal WO
+  operation, so any signed-in user can read the cache. The genuinely sensitive data (contract,
+  hours) is excluded from the cache and stays server-side.
+- **Required secret** `FOUNDATION_SYNC_SECRET` (≥ 32 chars) must be set in **both** Netlify
+  (Environment variables) and GitHub (Actions secrets), same value — dedicated, separate from
+  `POLLER_SHARED_SECRET`, so the two automated jobs rotate independently. Until both are set the
+  nightly sync stays off (fail-closed); the human "sync now" path is unaffected.
+- **Tests** (`tests/foundationSync.test.js`): the gate (401 opaque / 403 no-permission / 403
+  skeleton-key / DB+Firestore untouched on rejection), the no-`TOP`-cap pull, contract dropped from
+  the cache, `dryRun` writes nothing, and the doc-id sanitizer. `firebase-admin` + `mssql` stubbed;
+  runs the real builders/cache-mapping/batched-upsert offline end-to-end.
+
+### Foundation Phase 2b + 2c — WO job picker, auto-fill, admin-only hours (client, dev-only)
+
+Client half, in **`js/foundation.js`** (loaded after `companycam.js` in index.html):
+
+- **2b — job picker + auto-fill (ONE unified "Select Job" picker).** The job list is a section of
+  the SINGLE picker (the existing `#bp-modal`), not a separate modal — "Foundation" appears
+  nowhere in the UI (it's just "jobs" by # / name). The `#bp-modal` now has three sections:
+  **Jobs** (`#bp-job-list`, the `foundation_jobs` cache — the primary list), **Already in this app**
+  (`#bp-list`, existing buildings), and **From CompanyCam** (`#bp-cc-list`). One "🔍 Select Job"
+  button opens it; one search box filters all three (`bpFilter(); bpDebouncedCcSearch();
+  fdnFilterPicker();`); `openBuildingPicker()` primes the jobs section via `fdnPrimePicker()`.
+  Reads the cache directly from Firestore (capped 5000, cached per session, filtered client-side) —
+  NOT the live connector, so any signed-in user can use it. On select (`fdnSelectJob`): auto-fills
+  `jobName` ← name, `location` ← composed address, `jobNo` ← job number, new `projectManager`
+  field ← `project_manager_no`, and `billTo` ← **customer CODE** (`customer_no`; the jobs table has
+  no display name — a customers-table join is a small follow-up). **If the picked job also exists
+  as an app building** (matched by name via `fdnFindMatchingBuilding` against `bpCache`), it carries
+  that building's richer context — `roofSystem` + the CompanyCam link — on top, and such rows show a
+  "✓ in app" tag. The job linkage is stored on the WO as `foundationJobNo`/`foundationJobName`
+  (`collect()`/`fill()` via `fdnSetLinkedJob`; persisted by `cloudSaveOrder`). `projectManager` was
+  added to `FIELD_IDS` so it round-trips.
+- **2c — admin-only labor hours.** A WO linked to a Foundation job shows the
+  `#wo-foundation-labor-card`, populated by `fdnRefreshLaborCard()`, which fetches hours LIVE from
+  `foundation.js?action=job_hours` (server-gated on `foundation.read`). The card renders **only if
+  that fetch is authorized** — a 401/403 (or any error) leaves it hidden. So it self-gates to
+  exactly the `foundation.read` holders (owner/admin/service_manager/ops_manager) with no
+  client-side permission grid, and correctly shows for service_manager/ops_manager even though the
+  client `isAdmin` flag (owner||admin) is narrower. **Hours are never cached** — always live.
+- **Verified in-browser** (static server, mocked Firestore + hours): page boots with no console
+  errors, the picker lists jobs and filters, select auto-fills all fields (`location` composed as
+  "1 Main, Smithton, IL 62285", PM = NATE, billTo = GBHBLD), the link line shows, and the labor
+  card renders the total + entries table. Full auth-gated data flow is smoke-tested on the dev
+  deploy (like Phase 1).
+
+### Foundation — DPR PM (still blocked, not built)
+
+- **DPR PM** — blocked until the Daily Progress Report (PR #65) lands on dev; then wire the DPR's
+  PM from the WO's `projectManager` / a job's `project_manager_no`. Left as a clean hook (the PM
+  field + the `foundationJobNo` linkage already exist on the WO).
 
 ## Outlook / Microsoft 365 integration (Phase 0: auth + mailbox read, shipped dev-only)
 
@@ -6968,7 +7068,8 @@ console clean throughout.
 | `GRAPH_CLIENT_ID` | `outlook.js` / `lib/graphAuth.js` | yes, for the Outlook/M365 integration to work | App registration (client) id. |
 | `GRAPH_CLIENT_SECRET` | `outlook.js` / `lib/graphAuth.js` | yes, for the Outlook/M365 integration to work | App registration client secret. Time-limited, will be rotated before go-live — treat as a secret, never commit it. |
 | `GRAPH_MAILBOX` | `outlook.js` / `lib/graphAuth.js` | yes, for the Outlook/M365 integration to work | Mailbox this app reads, e.g. `marks@watkinsroofing.net`. Must be a member of the Exchange Application Access Policy's allowed group — see "Outlook / Microsoft 365 integration" above. |
-| `FOUNDATION_SQL_PASSWORD` | `foundation.js` / `lib/foundationDb.js` | yes, for the Foundation (construction accounting) integration to work | Password for the read-only `roofops` SQL login on `sql.foundationsoft.com:9000`. **Secret** — treat as such, never commit it. The rest of the connection (server/port/database/user) is non-secret and hardcoded. Set on all deploy contexts. See "Foundation (construction accounting) integration" above. |
+| `FOUNDATION_SQL_PASSWORD` | `foundation.js` / `foundation-sync.js` / `lib/foundationDb.js` | yes, for the Foundation (construction accounting) integration to work | Password for the read-only `roofops` SQL login on `sql.foundationsoft.com:9000`. **Secret** — treat as such, never commit it. The rest of the connection (server/port/database/user) is non-secret and hardcoded. Set on all deploy contexts. See "Foundation (construction accounting) integration" above. |
+| `FOUNDATION_SYNC_SECRET` | `foundation-sync.js` + `.github/workflows/sync-foundation-jobs.yml` | yes, for the **scheduled Foundation→Firestore sync** (Phase 2a, work-day hourly) to run automatically | Shared secret (**≥ 32 chars**) authenticating the GitHub Actions cron caller, compared server-side with `timingSafeEqual`. Must be set to the **same value in BOTH** Netlify (Environment variables) and GitHub (Settings → Secrets and variables → Actions). Dedicated to this sync — separate from `POLLER_SHARED_SECRET`. Until both are set the nightly sync stays off (fail-closed); the on-demand "sync now" path (a signed-in user with `foundation.read`) is unaffected. **Secret** — never commit it. |
 
 ### Email (Resend) — designated test recipient, and known blocker
 
@@ -8026,3 +8127,100 @@ the building inheritance, and "never auto-create").
   history beyond photos/documents.
 - **RoofOps Admin / Customer Portal**: separate modules, out of scope for this repo
   for now.
+
+## Photo-save data integrity (cloudSaveOrder) — Phase 0
+
+Three defects fixed at the one function every save funnels through:
+
+1. **Reference-aware Storage deletion + re-home** (the live prod corruption, first
+   shipped as hotfix `b0a57fe`). Storage paths are index-based
+   (`workorders/<id>/<index>.jpg`). The old cleanup deleted removed photos by a
+   naive trailing index range (`for j = ph.length; j < prevCount`) — but a
+   surviving cloud-backed photo keeps its *original*-index `storageRef`, so
+   removing N photos freed the N highest indices and deleted a *different*
+   surviving photo's confirmed-good bytes. Now: survivors are compacted and
+   **re-homed** (fetch old path → re-upload at new index so index/doc/array
+   agree), and Storage deletion is **reference-aware** — an object any surviving
+   photo still points at is never deleted, whatever index it's at. Offline
+   re-home keeps the old ref and deletes nothing.
+
+2. **Dead-slot drop.** A slot with no bytes anywhere (`photoSlotIsEmpty`: no
+   img/storageRef/imgFallback/thumb/localId) is dropped instead of re-persisted
+   as an empty doc that Preview flags forever.
+
+3. **Enumerated cleanup, not `photoCount`-bounded** (the orphan bug — Mark's
+   "delete all, still 4"). `cloudFetchOrder` counts the actual photo *documents*
+   in the subcollection, but the old cleanup only deleted docs up to the parent
+   `photoCount` field. Concurrent multi-device saves drift that field below the
+   real doc count, leaving "orphan" docs above it that survive every save —
+   including a delete-everything save. Cleanup now **reads what docs actually
+   exist** (`ref.collection("photos").get()`) and deletes any not in the
+   compacted set, so orphans can't persist.
+
+Report-side safeguard (js/export.js `filledFindings`): a finding is shown if it
+has text **or any photos** — a photographed-but-uncaptioned finding no longer
+silently vanishes and drags its photos out of the report.
+
+Still open (later phases): the storage engine (bytes → IndexedDB, upload-on-add).
+See the photo-storage workstream.
+
+## Multi-device clobber guard (Phase 0b)
+
+The cause of the PC↔phone tug-of-war that resurrected deleted photos and wiped
+re-adds: `tryFlushSyncQueue()` auto-pushes a device's queued copy whenever it
+comes online (the `window "online"` / visibility-change listeners). If that
+copy is STALE — another device saved to the cloud after this copy was loaded —
+the push silently overwrote the newer cloud version. Nothing compared versions.
+
+Fix: optimistic concurrency on `savedAt`.
+- `cloudFetchOrder()` stamps `o._cloudBaseSavedAt = o.savedAt` — the cloud
+  version this copy descends from. It survives local caching (`stripPhotoBytes`
+  does `Object.assign`) and edits (`saveOrder` carries it forward across
+  `collect()`, which otherwise rebuilds the order without it).
+- `cloudSaveOrder()` re-reads the cloud doc's `savedAt` before overwriting. If
+  it has advanced **past** the base, it throws a `__conflict` error instead of
+  clobbering. `base === 0` (a new / never-synced order) is unguarded — there's
+  nothing to conflict with. A read failure never blocks the save (best-effort).
+  On success the base advances to the just-written `savedAt` so the same device
+  never false-conflicts with its own write.
+- Conflict handling is the opposite of a transient failure: both the direct
+  save (`saveOrder`) and the queue flush (`tryFlushSyncQueue`) **drop the queue
+  entry** (`markSynced`, not `markSyncFailed`) rather than retry forever — the
+  local copy stays in `db.orders` for the tech to reopen — and toast that a
+  newer version exists on another device. This is what stops the stale-copy
+  loop.
+
+Last-writer-wins by `savedAt`; cross-device clock skew is a known minor risk
+(a server timestamp would be more robust — later). Does NOT merge concurrent
+edits: the newer cloud wins and the older copy is surfaced, not silently lost.
+
+## Photo bytes in IndexedDB (Phase 1)
+
+localStorage's ~5 MB ceiling was the origin of the whole storage saga: full
+base64 photo bytes were cached there (in each order's `photos[].img`), so a
+batch of photos on one order overflowed it. Bytes now live in **IndexedDB**
+(local, tens of MB+) and Firebase **Storage** (cloud); localStorage keeps only
+metadata + thumb + `storageRef` + `localId`.
+
+- **1a — `resolvePhotoImg` IDB fallback.** It now tries the IDB backup by
+  `localId` (freshest local copy, no network) before Storage — the single
+  chokepoint export / lightbox / cloud re-home all use, so every read path can
+  rehydrate a photo whose bytes were dropped from localStorage.
+- **1b — strip on write + offload.** `leanDbReplacer` (a `JSON.stringify`
+  replacer in `saveDb`) OMITS a photo's `img` from the localStorage string once
+  its bytes are safely elsewhere — confirmed in IDB (`_idbBacked`) or in Storage
+  (`storageRef`). A replacer only shapes the output string, so the in-memory
+  `photos[]` the gallery is showing is never mutated. Un-backed photos keep
+  their `img` (the only copy). The condition is only ever true for photo objects
+  (only they carry `_idbBacked`/`storageRef`), so a Change Order signature's
+  `img` is untouched. `_idbBacked` is set at capture time
+  (`addPhotosFromFiles`/`Camera`, after the `idbPutPhoto` write is CONFIRMED —
+  never before) and `offloadPhotoBytesToIdb()` (run after `saveOrder`'s local
+  save) sweeps up bytes cached before this session. Deliberately does NOT set
+  `photosStripped` (that flag forces a cloud refetch on load); an offloaded
+  order keeps its thumbs, loads locally, and rehydrates from IDB on demand.
+  IDB-unavailable → no-op, falls back to the old keep-in-localStorage + quota
+  evict behavior.
+
+Still open: **Phase 2** upload-on-add (get bytes to Storage as you shoot, so
+they're cloud-durable, not just IDB-durable) and **Phase 3** proactive eviction.

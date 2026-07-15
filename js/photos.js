@@ -175,9 +175,18 @@ async function lookupProspectiveBuildingRoofInfo(){
   if (!bldName) return null;
   var custId = custName ? ("cust_" + slugify(custName)) : null;
   var bldId = "bld_" + slugify((custId || "nocust") + "_" + bldName);
+  /* The linked CompanyCam project is the durable, site-level anchor (it maps
+     1:1 to a physical job site/address) — carried alongside the roofs so the
+     base-map resolver can follow a site across forms whose customer/job-name
+     resolve to a different building doc. Prefer the building's own saved link,
+     then the current work order's, then the in-memory linked project. */
+  var woCcId = (o.companyCamProjectId || (typeof ccLinkedProjectId !== "undefined" ? ccLinkedProjectId : null)) || null;
   try{
     var snap = await fdb.collection("buildings").doc(bldId).get();
-    var result = !snap.exists ? { buildingId: bldId, roofs: [] } : { buildingId: bldId, roofs: getBuildingRoofs(snap.data()) };
+    var result = !snap.exists
+      ? { buildingId: bldId, roofs: [], companyCamProjectId: woCcId }
+      : { buildingId: bldId, roofs: getBuildingRoofs(snap.data()),
+          companyCamProjectId: (snap.data().companyCamProjectId || woCcId) };
     lastLookupRoofInfo = result; /* see the var's own comment -- collect() denormalizes roof LABELS from this */
     return result;
   }catch(e){ return null; }
@@ -224,9 +233,50 @@ function photosResolveBuildingBaseMap(roofs, selectedRoofId){
 async function lookupProspectiveBuildingBaseMap(){
   try{
     var info = await lookupProspectiveBuildingRoofInfo();
-    if (!info || !info.roofs.length) return null;
-    return photosResolveBuildingBaseMap(info.roofs, currentRoofId);
+    /* 1) The billTo+jobName building's own roofs -- if it already has a base
+       map, that's the one, exactly as before. */
+    if (info && info.roofs.length){
+      var primary = photosResolveBuildingBaseMap(info.roofs, currentRoofId);
+      if (primary) return primary;
+    }
+    /* 2) CompanyCam-project anchor (Mark: once a base map is made it follows
+       the job SITE, into any form opened for it -- not just forms that happen
+       to share the billTo+jobName key). The same physical site can resolve to a
+       different building doc when the customer or job name is entered
+       differently; the durable link tying them together is the CompanyCam
+       project. When the primary building has no base map of its own, borrow one
+       from any building sharing this CompanyCam project. Non-destructive: it
+       only READS across buildings, nothing is re-keyed or moved. See "base-map
+       anchor" in DEV_NOTES.md. */
+    var ccId = info && info.companyCamProjectId;
+    if (ccId){
+      var ccRoofs = await photosRoofsForCompanyCamProject(ccId, info && info.buildingId);
+      if (ccRoofs.length){
+        var viaCc = photosResolveBuildingBaseMap(ccRoofs, currentRoofId);
+        if (viaCc){
+          viaCc.fromSelectedRoof = false; // it's from another building entirely
+          viaCc.viaCompanyCam = true;     // so the honesty label says whose it is
+          return viaCc;
+        }
+      }
+    }
+    return null;
   }catch(e){ return null; }
+}
+/* All roofs across every building linked to this CompanyCam project, minus the
+   one we've already checked. A single-field equality query, so Firestore's
+   automatic index covers it -- no composite index to deploy. */
+async function photosRoofsForCompanyCamProject(companyCamProjectId, excludeBuildingId){
+  if (!fdb || !companyCamProjectId) return [];
+  try{
+    var qs = await fdb.collection("buildings").where("companyCamProjectId", "==", companyCamProjectId).get();
+    var roofs = [];
+    qs.forEach(function(d){
+      if (excludeBuildingId && d.id === excludeBuildingId) return;
+      getBuildingRoofs(d.data()).forEach(function(r){ roofs.push(r); });
+    });
+    return roofs;
+  }catch(e){ return []; }
 }
 function boundsToLatLngBounds(b){
   return [[b.south, b.west], [b.north, b.east]];
@@ -351,7 +401,9 @@ async function openPinModal(findingId){
          selected roof's own -- never present another roof's image as this
          roof's without saying so (issue #39). */
       var whose = customBaseMap.fromSelectedRoof ? "" :
-        " (from " + customBaseMap.sourceRoofLabel + " — building-wide)";
+        (customBaseMap.viaCompanyCam
+          ? " (from this site's linked CompanyCam project)"
+          : " (from " + customBaseMap.sourceRoofLabel + " — building-wide)");
       document.getElementById("pin-hint").textContent = (f.pin ?
         "Existing pin on the " + customBaseMap.type.replace("_"," ") + " — drag to move." :
         "Tap the " + customBaseMap.type.replace("_"," ") + " to place the pin.") + whose;
@@ -476,7 +528,8 @@ async function openPinModalSatellite(f, findingId, orthoOverlay, opts){
   if (opts.gpsPinKeptOffBaseMap){
     var skipped = opts.gpsPinKeptOffBaseMap;
     hint += " Showing satellite: this finding's pin is a GPS location, which can't be plotted on " +
-      (skipped.fromSelectedRoof ? "this roof's" : (skipped.sourceRoofLabel + "'s")) + " " +
+      (skipped.fromSelectedRoof ? "this roof's" :
+        (skipped.viaCompanyCam ? "the linked CompanyCam project's" : (skipped.sourceRoofLabel + "'s"))) + " " +
       String(skipped.type || "drawing").replace("_", " ") + ". Clear the pin to place it on the drawing instead.";
   }
   document.getElementById("pin-hint").textContent = hint;
@@ -1048,8 +1101,11 @@ function addPhotosFromFiles(files, findingId){
            instant a photo exists, before Save is ever tapped -- see the
            block comment on idbPutPhoto() in js/core.js. Fire-and-forget on
            purpose: never delay the tech seeing the photo in the gallery
-           waiting on this. */
-        idbPutPhoto(r.localId, r.img);
+           waiting on this. Once the IDB write is CONFIRMED, flag the photo
+           _idbBacked so saveDb (leanDbReplacer) can drop its bytes from
+           localStorage -- this is what lets a big batch of photos stop
+           overflowing the ~5MB cache (Phase 1). */
+        idbPutPhoto(r.localId, r.img).then(function(){ r._idbBacked = true; }).catch(function(){});
       });
       renderPhotos();
       if (findingId){
@@ -1185,8 +1241,10 @@ function addPhotosFromCamera(files, findingId){
           photos.push(r);
           /* Offline-first (Mark, 2026-07-12) -- see the block comment on
              idbPutPhoto() in js/core.js. Fire-and-forget, never blocks the
-             gallery/auto-pin flow below on it. */
-          idbPutPhoto(r.localId, r.img);
+             gallery/auto-pin flow below on it. Flag _idbBacked once the IDB
+             write is confirmed so saveDb can drop the bytes from localStorage
+             (Phase 1). IIFE binds this iteration's photo (var-scoped loop). */
+          (function(pp){ idbPutPhoto(pp.localId, pp.img).then(function(){ pp._idbBacked = true; }).catch(function(){}); })(r);
           if (findingId){
             /* Exactly one of these actually does anything -- each checks
                its own array (findings[] vs inspectionChecklist[]) and
@@ -1336,6 +1394,65 @@ function removePhoto(i){
      IndexedDB backup instead of leaving it forever. Safe to fire-and-
      forget: nothing downstream depends on this completing. */
   if (removed && removed.localId) idbDeletePhoto(removed.localId);
+}
+/* Replace a photo IN PLACE at its existing slot, rather than appending a
+   fresh one to the end. This is the recovery path for a dead slot (an image
+   whose bytes were lost — see photoSlotIsEmpty/ensurePhotosLoadedForExport):
+   the tech picks a replacement and it lands in the SAME position, keeping the
+   slot's caption and finding assignment instead of leaving a blank behind and
+   adding a stray photo at the bottom. Same decode/resize/compress pipeline as
+   addPhotosFromFiles(); GPS comes from the NEW image's EXIF (the old slot had
+   no usable data anyway). Opens its own one-shot file picker so it can be
+   wired to a single per-slot button. */
+function replacePhotoAt(i){
+  if (i < 0 || i >= photos.length) return;
+  var input = document.createElement("input");
+  input.type = "file";
+  input.accept = "image/*";
+  input.style.display = "none";
+  input.onchange = function(){
+    var file = input.files && input.files[0];
+    if (file) processReplacementPhoto(i, file);
+    if (input.parentNode) input.parentNode.removeChild(input);
+  };
+  document.body.appendChild(input);
+  input.click();
+}
+function processReplacementPhoto(i, file){
+  var old = photos[i] || {};
+  var reader = new FileReader();
+  reader.onload = function(){
+    var exifGps = dataUrlExifGps(reader.result);
+    var img = new Image();
+    img.onload = function(){
+      var preset = photoPreset();
+      var MAX = preset.max, w = img.width, h = img.height;
+      if (w > MAX || h > MAX){
+        if (w >= h){ h = Math.round(h * MAX / w); w = MAX; }
+        else { w = Math.round(w * MAX / h); h = MAX; }
+      }
+      var c = document.createElement("canvas");
+      c.width = w; c.height = h;
+      c.getContext("2d").drawImage(img, 0, 0, w, h);
+      /* Keep the slot's caption + finding assignment; the new image supplies
+         everything else. A brand-new localId so it can't collide with the
+         dead slot's orphaned IndexedDB key. */
+      photos[i] = { caption: old.caption || "", img: c.toDataURL("image/jpeg", preset.q),
+        thumb: makeThumbDataUrl(img), w: w, h: h,
+        finding_id: old.finding_id || null, gps: exifGps, localId: makeLocalPhotoId() };
+      idbPutPhoto(photos[i].localId, photos[i].img);
+      renderPhotos();
+      if (photos[i].finding_id){
+        if (findingById(photos[i].finding_id)) renderFindings();
+        if (inspectionChecklistItemById(photos[i].finding_id)) renderInspectionChecklist();
+      }
+      toast("Photo " + (i + 1) + " replaced");
+    };
+    img.onerror = function(){ toast("Couldn't read that photo"); };
+    img.src = reader.result;
+  };
+  reader.onerror = function(){ toast("Couldn't read that photo"); };
+  reader.readAsDataURL(file);
 }
 /* Swaps two photos in place — works identically for a device-uploaded photo
    or a CompanyCam import, since both end up in the same photos[] shape

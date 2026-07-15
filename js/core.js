@@ -667,6 +667,14 @@ async function fetchPhotoFromStorage(workOrderId, photoIndex){
    which work order p actually belongs to. */
 async function resolvePhotoImg(p){
   if (p.img) return p.img;
+  /* Bytes may live ONLY in IndexedDB -- a locally-added photo not yet uploaded
+     whose localStorage copy was offloaded to keep the ~5MB cache lean (Phase 1).
+     Try the on-device IDB backup by localId first: it's the freshest local copy
+     and needs no network. Closes the gap where resolvePhotoImg looked only in
+     Storage, so an IDB-only photo couldn't be shown or exported. */
+  if (p.localId){
+    try{ var local = await idbGetPhoto(p.localId); if (local){ p.img = local; return local; } }catch(e){}
+  }
   if (!p.storageRef) return null;
   var m = /^workorders\/([^/]+)\/(\d+)\.jpg$/.exec(p.storageRef);
   if (!m) return null;
@@ -676,18 +684,15 @@ async function resolvePhotoImg(p){
     return dataUrl;
   }catch(e){ return null; }
 }
-/* A photo slot with nothing to show, nothing to upload, and nothing to recover
-   -- no in-memory bytes (img), no Storage pointer (storageRef), no display
-   fallback (imgFallback/thumb), no local IndexedDB backup handle (localId).
-   These get dropped rather than re-persisted as empty docs. Strict on purpose:
-   any of those signals means it's NOT dropped. */
+/* A photo slot with nothing to show, upload, or recover -- no img, no
+   storageRef, no imgFallback/thumb, no localId. Dropped rather than
+   re-persisted as an empty doc. Strict: any of those signals keeps it. */
 function photoSlotIsEmpty(p){
   return !!p && !p.img && !p.storageRef && !p.imgFallback && !p.thumb && !p.localId;
 }
 /* The photo's Storage object index parsed out of its storageRef path
    (workorders/<id>/<index>.jpg). Storage paths are index-based, so this is how
-   we tell which Storage object a photo actually points at, independent of where
-   it sits in the array. null for a photo with no/malformed storageRef. */
+   we tell which object a photo points at, independent of its array slot. */
 function photoStorageIndex(p){
   var m = p && p.storageRef && /^workorders\/[^/]+\/(\d+)\.jpg$/.exec(p.storageRef);
   return m ? +m[1] : null;
@@ -697,19 +702,31 @@ async function cloudSaveOrder(o){
   var main = {};
   Object.keys(o).forEach(function(k){ if (k !== "photos") main[k] = (o[k] == null ? "" : o[k]); });
   var ph = o.photos || [];
-  /* Drop dead slots (see photoSlotIsEmpty) rather than re-persist them, and
-     compact what survives to a contiguous 0..n-1. photoCount reflects the
-     compacted set so the cleanup below knows the real range. */
+  /* Drop dead slots (photoSlotIsEmpty) rather than re-persist them; compact
+     survivors to a contiguous 0..n-1. photoCount reflects the compacted set. */
   var writePhotos = ph.filter(function(p){ return !photoSlotIsEmpty(p); });
   var droppedEmpty = ph.length - writePhotos.length;
   main.photoCount = writePhotos.length;
   main.savedAt = Date.now();
   var ref = fdb.collection("workorders").doc(o.id);
-  var prevCount = 0;
-  try{
-    var snap = await ref.get();
-    if (snap.exists && snap.data().photoCount) prevCount = snap.data().photoCount;
-  }catch(e){}
+  /* MULTI-DEVICE CLOBBER GUARD (optimistic concurrency). Refuse to overwrite a
+     cloud doc that has advanced past the version THIS copy descends from
+     (o._cloudBaseSavedAt, stamped at fetch). Without it, a stale copy
+     auto-flushed from one device silently overwrote a newer save from another
+     -- the PC<->phone tug-of-war that resurrected deleted photos and wiped
+     re-adds. base 0 = a new/never-synced order -> not guarded (nothing to
+     conflict with). A read failure here never blocks the save (best-effort).
+     See "Multi-device clobber guard" in DEV_NOTES.md. */
+  var base = o._cloudBaseSavedAt || 0;
+  if (base){
+    var cloudSavedAt = 0, gotCloud = false;
+    try{ var curSnap = await ref.get(); cloudSavedAt = curSnap.exists ? (curSnap.data().savedAt || 0) : 0; gotCloud = true; }catch(e){}
+    if (gotCloud && cloudSavedAt > base){
+      var ce = new Error("This work order was updated on another device. Reopen it to get the latest version before saving — your changes on this screen weren't uploaded, so they don't overwrite the newer copy.");
+      ce.__conflict = true;
+      throw ce;
+    }
+  }
   await ref.set(main);
   /* Photos off base64/localStorage onto Storage (Mark's "photos gone in
      PDFs" bug, and the storage-is-full/pruning mess it grew out of -- see
@@ -751,48 +768,53 @@ async function cloudSaveOrder(o){
      "Save-time photo data-loss guard" in DEV_NOTES.md. */
   var uploadFailures = 0, preservedCount = 0, failedPhotoNums = [];
   var ops = [];
-  /* Every Storage object index some surviving photo still points at after this
-     save. Cleanup below is REFERENCE-AWARE -- it deletes only Storage objects
-     no photo points at anymore -- instead of the old naive trailing index
-     range. That old range deleted objects that shifted, still-referenced
-     photos pointed at, silently destroying a DIFFERENT photo's confirmed-good
-     bytes on any remove/reorder (index-based Storage paths). THAT is the live
-     prod corruption this fixes: deleting N photos freed the N highest indices,
-     and any surviving photo whose storageRef pointed there went dead. See
-     "Storage index realignment" in DEV_NOTES.md. */
+  /* Every Storage object index a surviving photo still points at after this
+     save. Cleanup below is REFERENCE-AWARE -- it never deletes an object a
+     photo still references -- instead of the old naive trailing index range,
+     which destroyed a DIFFERENT photo's confirmed-good bytes on any
+     remove/reorder (the live prod corruption fixed in the b0a57fe hotfix). */
   var referencedStorage = {};
+  /* Re-home fetches must happen before any upload overwrites an index in the
+     shared workorders/<id>/<n>.jpg namespace. Otherwise a swap like
+     [A@0, B@1] -> [B, A] can upload B into index 0 before A has read its old
+     bytes from index 0. Snapshot the bytes into p.img first; failed snapshots
+     keep their old storageRef and are protected by referencedStorage below. */
+  for (var ri = 0; ri < writePhotos.length; ri++){
+    var rp = writePhotos[ri];
+    var rpStorageRef = rp.storageRef || null;
+    if (!rp.img && rpStorageRef && photoStorageIndex(rp) !== ri){
+      try{ await resolvePhotoImg(rp); }
+      catch(e){ console.warn("couldn't snapshot photo before storage realign (keeping existing ref)", e); }
+    }
+  }
   for (var i = 0; i < writePhotos.length; i++){
     var p = writePhotos[i];
     var storageRef = p.storageRef || null;
     var existingImg = null; // base64 backup already in Firestore -- carried forward as-is unless this save uploads a fresh replacement
-    /* Trust the positional existing-doc lookup only when this save did NOT move
-       photos: no dead slot dropped ahead of anything AND this photo's Storage
-       object already sits at its slot index. Under a shift, doc p<i> may belong
-       to a different photo, so its base64/storageRef must not be adopted here. */
+    /* Trust the positional existing-doc lookup only when this save did NOT
+       move photos: no dead slot dropped ahead of anything AND this photo's
+       Storage object already sits at its slot index. Under a shift, doc p<i>
+       may belong to a different photo, so its base64/storageRef must not be
+       adopted here. */
     var positionStable = droppedEmpty === 0 && (!storageRef || photoStorageIndex(p) === i);
     if (p.img){
       try{ storageRef = await uploadPhotoToStorage(o.id, i, p.img); }
       catch(e){ uploadFailures++; failedPhotoNums.push(i + 1); console.warn("photo upload failed, will retry on next save", e); }
     } else if (storageRef && photoStorageIndex(p) !== i){
       /* A surviving photo whose Storage object sits at a different index than
-         its new slot (a photo was removed/reordered ahead of it). Re-home the
-         bytes: fetch from the old path and re-upload at index i so Storage
-         index, doc index and array index agree again. If the fetch fails
-         (offline / already gone), keep the old storageRef untouched -- the
-         reference-aware cleanup below never deletes an object a photo still
-         points at, so nothing is lost. */
-      try{
-        var moved = await resolvePhotoImg(p); // fetches old path, sets p.img
-        if (moved) storageRef = await uploadPhotoToStorage(o.id, i, moved);
-      }catch(e){ console.warn("couldn't realign photo storage (keeping existing ref — no bytes deleted)", e); }
+         its new slot (a photo was removed/reordered ahead of it). The
+         pre-pass above already tried to snapshot its bytes into p.img before
+         any upload could overwrite the old index. If it is still img-less
+         here, keep the old storageRef untouched -- cleanup is reference-aware,
+         so the bytes are not deleted and the slots simply stay out of
+         alignment until a later online save can re-home them. */
     }
     if ((!p.img || !storageRef) && positionStable){
-      /* CRITICAL DATA-LOSS GUARD (see the block comment above): on a stable
-         save, a photo with neither fresh img nor a surviving storageRef is
-         checked against what the cloud already holds, and real existing data is
-         PRESERVED rather than overwritten with nulls. Runs only when
-         positionStable so a shifted save can't cross-wire p<i> with a different
-         photo's doc. */
+      /* CRITICAL DATA-LOSS GUARD: on a stable save, a photo with neither fresh
+         img nor a surviving storageRef is checked against what the cloud
+         already holds, and real existing data is PRESERVED rather than
+         overwritten with nulls. Runs only when positionStable so a shifted
+         save can't cross-wire p<i> with a different photo's doc. */
       try{
         var existingSnap = await ref.collection("photos").doc("p" + i).get();
         if (existingSnap.exists){
@@ -828,18 +850,33 @@ async function cloudSaveOrder(o){
     if (existingImg) photoDoc.img = existingImg;
     ops.push(ref.collection("photos").doc("p" + i).set(photoDoc));
   }
-  /* Stale DOCS beyond the compacted length -- safe to delete (Firestore doc
-     only, no bytes). */
-  for (var j = writePhotos.length; j < prevCount; j++){
-    ops.push(ref.collection("photos").doc("p" + j).delete());
-  }
-  /* Orphaned STORAGE, reference-aware: delete only objects in the previously
-     used range that NO surviving photo still points at. An object a photo still
-     references is never deleted, whatever index it lives at. */
-  for (var k = 0; k < prevCount; k++){
-    if (!referencedStorage[k]) ops.push(deletePhotoFromStorage(o.id, k));
-  }
+  /* Cleanup, ENUMERATED not count-bounded. Read what photo docs actually exist
+     and delete any that aren't part of this save's compacted set
+     (p0..p{writeCount-1}). The old cleanup deleted only up to the parent's
+     photoCount field -- so once that field drifted below the real doc count
+     (concurrent multi-device saves), "orphan" docs above it survived every
+     save forever, including a delete-everything save (Mark's "delete all,
+     still 4"). Storage is freed reference-awarely: an object a surviving photo
+     still points at is never deleted, whatever index it lives at. */
+  try{
+    var existingDocs = await ref.collection("photos").get();
+    existingDocs.forEach(function(d){
+      var m = /^p(\d+)$/.exec(d.id);
+      var docIdx = m ? +m[1] : null;
+      if (!(docIdx !== null && docIdx < writePhotos.length)) ops.push(d.ref.delete());
+      var data = d.data() || {};
+      var sm = data.storageRef && /\/(\d+)\.jpg$/.exec(data.storageRef);
+      var storageIdx = sm ? +sm[1] : docIdx;
+      if (storageIdx !== null && !referencedStorage[storageIdx]) ops.push(deletePhotoFromStorage(o.id, storageIdx));
+    });
+  }catch(e){ console.warn("photo cleanup enumeration failed (proceeding — nothing overwritten)", e); }
   await Promise.all(ops);
+  /* This device is now in sync with the cloud at main.savedAt -- advance the
+     local base so its OWN subsequent saves don't false-conflict against the
+     version it just wrote. Runs before the throws below so a partial-upload
+     retry still starts from the right base. */
+  o._cloudBaseSavedAt = main.savedAt;
+  try{ var sdb = loadDb(); if (sdb.orders[o.id]){ sdb.orders[o.id]._cloudBaseSavedAt = main.savedAt; saveDb(sdb); } }catch(e){}
   if (uploadFailures > 0){
     throw new Error(uploadFailures + " photo" + (uploadFailures === 1 ? "" : "s") +
       " (photo " + failedPhotoNums.join(", ") + ") couldn't be uploaded to cloud storage. Your work order and these photos are safe on this device — tap “Retry now” on the sync banner (or Save again) to finish uploading them; they will NOT be dropped locally until they're in the cloud.");
@@ -869,6 +906,10 @@ async function cloudFetchOrder(id){
   if (!snap.exists) return null;
   var o = snap.data();
   o.id = id;
+  /* The cloud version this copy descends from -- the base for the multi-device
+     clobber guard in cloudSaveOrder(). Preserved through local caching
+     (stripPhotoBytes copies it) and edits (saveOrder carries it forward). */
+  o._cloudBaseSavedAt = o.savedAt || 0;
   var photosArr = [];
   try{
     var ps = await ref.collection("photos").get();
@@ -981,6 +1022,18 @@ async function ensureCustomerAndBuilding(o){
       updatedAt: Date.now()
     };
     if (o.companyCamProjectId) patch.companyCamProjectId = o.companyCamProjectId;
+    /* Foundation (construction-accounting) job link — the durable per-site
+       identity from the system of record, persisted onto the building exactly
+       like companyCamProjectId so every form for this site inherits it and the
+       base-map resolver can follow the site by Foundation job (Step 3). Set by
+       the Foundation job picker (issue #76, js/workorders.js) via collect();
+       these lines are inert until that lands. Only ever ADD the link (never
+       null it out here) so a stray unlinked save can't wipe a building's job
+       reference. foundationAddress snapshots the accounting address even if the
+       tech later edits the form's location field. */
+    if (o.foundationJobNo) patch.foundationJobNo = o.foundationJobNo;
+    if (o.foundationCustomerNo) patch.foundationCustomerNo = o.foundationCustomerNo;
+    if (o.foundationAddress) patch.foundationAddress = o.foundationAddress;
     if (!snap.exists){
       patch.createdAt = Date.now();
       /* roof_base_map_type/url/bounds are set later via admin.js's
@@ -1167,6 +1220,22 @@ async function authHeaders(){
     try{ h["Authorization"] = "Bearer " + (await currentAuthUser.getIdToken()); }catch(e){}
   }
   return h;
+}
+/* Read-only search over active Foundation (construction-accounting) jobs, for
+   the Foundation job picker (issue #76, js/workorders.js). Returns the mapped
+   job list [{ job_no, name, customer_no, project_manager_no, address, city,
+   state, zip }] or [] on any failure, so the picker degrades to "no matches"
+   rather than throwing. The connector is read-only; this never writes. */
+async function fetchFoundationJobs(search){
+  try{
+    var qs = search ? ("&search=" + encodeURIComponent(String(search).slice(0, 100))) : "";
+    var r = await fetch("/.netlify/functions/foundation?action=jobs" + qs, {
+      method: "GET", headers: await authHeaders()
+    });
+    if (!r.ok) return [];
+    var out = await r.json().catch(function(){ return null; });
+    return (out && Array.isArray(out.jobs)) ? out.jobs : [];
+  }catch(e){ return []; }
 }
 async function callAdminApi(body){
   var r = await fetch("/.netlify/functions/admin", {
@@ -2209,9 +2278,24 @@ function loadDb(){
   }catch(e){}
   return { orders:{}, index:[] };
 }
+/* Serialization replacer that keeps the localStorage cache lean (Phase 1): a
+   photo's full base64 img is OMITTED from what's written to localStorage once
+   its bytes are safely elsewhere -- confirmed in IndexedDB (_idbBacked) or in
+   Storage (storageRef). Un-backed photos keep their img (the only copy). A
+   replacer only shapes the OUTPUT string; the in-memory photo objects are never
+   mutated, so the open gallery still has its bytes. The condition is only ever
+   true for photo objects (only they carry _idbBacked/storageRef), so unrelated
+   img fields -- e.g. a Change Order signature's -- are untouched. localStorage's
+   ~5MB ceiling is what started the storage saga; IndexedDB holds the bytes and
+   resolvePhotoImg() rehydrates on demand. See "Photo bytes in IndexedDB" in
+   DEV_NOTES.md. */
+function leanDbReplacer(key, value){
+  if (key === "img" && this && (this._idbBacked === true || this.storageRef)) return undefined;
+  return value;
+}
 function saveDb(db){
   try{
-    localStorage.setItem(STORE_KEY, JSON.stringify(db));
+    localStorage.setItem(STORE_KEY, JSON.stringify(db, leanDbReplacer));
     return true;
   }catch(e){
     var isQuota = e && (e.name === "QuotaExceededError" || String(e.message).toLowerCase().indexOf("quota") > -1);
@@ -2219,7 +2303,7 @@ function saveDb(db){
        save is never permanently blocked while there's evictable data. Only the
        current order and still-unsynced photos keep their bytes. */
     if (isQuota && evictCloudBackedPhotoBytes(db)){
-      try{ localStorage.setItem(STORE_KEY, JSON.stringify(db)); return true; }
+      try{ localStorage.setItem(STORE_KEY, JSON.stringify(db, leanDbReplacer)); return true; }
       catch(e2){ e = e2; }
     }
     if (isQuota){
@@ -2331,6 +2415,33 @@ async function idbRecoverPhotoBytes(o){
     }
   }
   return o;
+}
+/* Offload already-cached photo bytes into IndexedDB so the next saveDb (via
+   leanDbReplacer) can drop them from localStorage -- clears bloat from photos
+   cached before this session / before they were flagged. For each order photo
+   that still carries img + localId but isn't marked _idbBacked, confirm the
+   bytes are in IDB, THEN flag it (never flag before the write is confirmed, so
+   a photo whose IDB write fails keeps its localStorage copy). Best-effort and
+   idempotent; a no-op when IndexedDB isn't usable (bytes just stay as before).
+   Newly-added photos are flagged at capture time (addPhotosFromFiles); this
+   handles the rest. */
+async function offloadPhotoBytesToIdb(){
+  if (typeof window === "undefined" || !window.indexedDB) return false;
+  var db = loadDb();
+  var orders = db.orders || {};
+  var changed = false;
+  for (var id in orders){
+    var o = orders[id];
+    var ph = o && o.photos;
+    if (!ph || !ph.length) continue;
+    for (var i = 0; i < ph.length; i++){
+      var p = ph[i];
+      if (!p || !p.img || p._idbBacked || !p.localId) continue;
+      try{ await idbPutPhoto(p.localId, p.img); p._idbBacked = true; changed = true; }catch(e){}
+    }
+  }
+  if (changed) saveDb(db); // leanDbReplacer now drops the freshly-flagged bytes
+  return changed;
 }
 
 /* ================= offline-first: sync queue =================
@@ -2449,7 +2560,18 @@ async function tryFlushSyncQueue(){
         markSynced(id);
         if (typeof renderSaved === "function") renderSaved();
       }catch(e){
-        markSyncFailed(id, e);
+        if (e && e.__conflict){
+          /* The cloud holds a newer version than this device's QUEUED copy.
+             Don't keep trying to overwrite it -- that's exactly the stale-copy
+             clobber loop that resurrected deleted photos. Remove it from the
+             queue (the local copy stays in db.orders for the tech to reopen)
+             and tell them, rather than retrying forever. */
+          markSynced(id);
+          toast("A newer version of “" + (q[id].jobLabel || id) + "” was saved on another device — this device's older copy wasn't uploaded. Reopen it to get the latest.");
+          if (typeof renderSaved === "function") renderSaved();
+        } else {
+          markSyncFailed(id, e);
+        }
       }
     }
   } finally {
@@ -2571,6 +2693,11 @@ function saveOrder(opts){
   }
   currentId = o.id;
   var db = loadDb();
+  /* Carry the clobber-guard base forward across collect() (which rebuilds the
+     order from the form and doesn't know about it). The previously-stored copy
+     -- placed here by an earlier save or by loadOrder() -- holds the base this
+     edit descends from. A brand-new order has none (0 -> unguarded). */
+  o._cloudBaseSavedAt = (db.orders[o.id] && db.orders[o.id]._cloudBaseSavedAt) || 0;
   db.orders[o.id] = o;
   db.index = db.index.filter(function(e){ return e.id !== o.id; });
   db.index.unshift({ id:o.id, jobName:o.jobName || "(untitled)", jobNo:o.jobNo,
@@ -2578,6 +2705,10 @@ function saveOrder(opts){
   pruneCachedPhotoDrafts(db);
   var localOk = saveDb(db);
   if (localOk) drawSaved();
+  /* Offload any not-yet-flagged cached bytes into IndexedDB so localStorage
+     stays lean (Phase 1). Fire-and-forget: never delays the save, and it
+     re-persists a leaner db itself only if it moved anything. */
+  if (localOk) offloadPhotoBytesToIdb();
   /* localOnly (see debouncedLocalAutosave() below) is the "persist
      continuously, not just on submit" half of offline-first -- pure local
      safety net, deliberately never touches the network or the sync queue
@@ -2617,6 +2748,17 @@ function saveOrder(opts){
       renderSaved();
       return true;
     }).catch(function(e){
+      if (e && e.__conflict){
+        /* A newer version exists in the cloud (another device saved since this
+           copy was loaded). Retrying would only keep losing to it, so DON'T
+           keep it queued -- drop it from the sync queue (the local copy stays
+           in db.orders for the tech to reopen) and say so plainly. This is the
+           opposite of a transient failure. */
+        markSynced(o.id);
+        toast(e.message);
+        renderSaved();
+        return localOk;
+      }
       /* A cloud-save failure must never be silent, even on a quiet autosave
          (e.g. ccImport()'s post-import saveOrder({quiet:true})) -- quiet
          only means "don't announce success," never "hide a real failure."
@@ -2848,8 +2990,9 @@ function showView(v){
   /* "home" has no header tab (reached via "+ New", the empty-state button
      in Building History, or tapping the logo) — every other view still
      keeps its tab exactly as before. */
-  ["home","edit","preview","saved","history","reports","roofmapper"].forEach(function(name){
-    document.getElementById("view-" + name).style.display = (name === v ? "" : "none");
+  ["home","edit","preview","saved","history","reports","roofmapper","dpr"].forEach(function(name){
+    var viewEl = document.getElementById("view-" + name);
+    if (viewEl) viewEl.style.display = (name === v ? "" : "none");
     var tabEl = document.getElementById("tab-" + name);
     if (tabEl) tabEl.classList.toggle("active", name === v);
   });
@@ -2859,6 +3002,7 @@ function showView(v){
   if (v === "history") renderHistoryList();
   if (v === "reports"){ renderReportsList(); if (isAdmin){ loadFeedbackBacklog(); loadAuditLogBacklog(); } }
   if (v === "roofmapper") rmOnShow();
+  if (v === "dpr" && typeof dprOnShow === "function") dprOnShow();
   window.scrollTo(0,0);
   if (v === "edit" && pendingPinFindingId){
     var fid = pendingPinFindingId;

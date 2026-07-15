@@ -1,0 +1,103 @@
+# Work-day Foundation → Firestore job sync (hourly, 7 AM–4 PM Central).
+#
+# Mirrors every ACTIVE Foundation (construction accounting) job into the
+# `foundation_jobs` Firestore collection, so the work-order job picker and
+# auto-fill read a fast local cache instead of the accounting DB. Read-only
+# against Foundation; the only writes are to Firestore.
+#
+# This uses the SAME authenticated-caller model as poll-inspection-reports.yml:
+# a GitHub Actions cron POSTs with a shared secret in a header, compared with
+# timingSafeEqual on the server (netlify/functions/foundation-sync.js).
+# Deliberately NOT a Netlify Scheduled Function — those cannot attach a header
+# and carry no forgery-proof signal (see netlify.toml).
+#
+# SETUP -- both values must match, and both must be at least 32 characters:
+#   1. Netlify > Site configuration > Environment variables > FOUNDATION_SYNC_SECRET
+#   2. GitHub  > Settings > Secrets and variables > Actions > FOUNDATION_SYNC_SECRET
+# (This is a DEDICATED secret, separate from POLLER_SHARED_SECRET, so the
+# Foundation sync and the inspection-report poller rotate independently.)
+#
+# Until both exist, this workflow fails with 401 and the scheduled sync stays
+# off -- the correct, fail-closed default. A signed-in user with foundation.read
+# can still trigger an on-demand sync from the app, unaffected by this.
+#
+# IMPORTANT: GitHub only runs `schedule` (and shows `workflow_dispatch`) for a
+# workflow that lives on the repo's DEFAULT branch (`main`). This file is on
+# `dev` while Foundation is held for prod, so it does NOT auto-run yet -- it
+# starts firing once it rides to `main` with the Foundation prod promotion.
+# Until then, use the on-demand "sync now" path (a foundation.read user POSTing
+# {"action":"sync"} to /.netlify/functions/foundation-sync).
+name: Sync Foundation jobs
+
+on:
+  schedule:
+    # Hourly on the hour during the work day, 7 AM–4 PM Central.
+    # GitHub Actions cron is UTC and does NOT observe daylight saving, so this
+    # is pinned to Central SUMMER time (CDT, UTC-5): 12:00–21:00 UTC = 7 AM–4 PM
+    # CDT (10 runs/day). In CST/winter (UTC-6) the same expression effectively
+    # runs 6 AM–3 PM Central -- switch to "0 13-22 * * *" in November to keep it
+    # on 7 AM–4 PM, and back to "0 12-21 * * *" in March.
+    - cron: "0 12-21 * * *"
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Which deploy to sync"
+        required: true
+        default: dev
+        type: choice
+        options: [dev, production]
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sync active Foundation jobs into Firestore
+        env:
+          FOUNDATION_SYNC_SECRET: ${{ secrets.FOUNDATION_SYNC_SECRET }}
+          # Scheduled runs sync dev. Promote to production deliberately, by
+          # running this workflow manually with target=production -- an
+          # automated cron should not be the thing that first touches prod
+          # (Foundation is held for prod sign-off).
+          TARGET: ${{ github.event.inputs.target || 'dev' }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${FOUNDATION_SYNC_SECRET:-}" ]; then
+            echo "::error::FOUNDATION_SYNC_SECRET is not set as a GitHub Actions secret."
+            echo "The nightly sync is disabled until it is set here AND in Netlify (same value, >= 32 chars)."
+            exit 1
+          fi
+
+          if [ "$TARGET" = "production" ]; then
+            BASE="https://leak-work-orders.netlify.app"
+          else
+            BASE="https://dev--leak-work-orders.netlify.app"
+          fi
+          echo "Syncing $BASE"
+
+          # -sS: quiet but still show errors. The secret goes in a header, never
+          # in the URL and never echoed. Only the HTTP status and the response
+          # body (a summary: active_jobs / written / skipped) are printed.
+          HTTP=$(curl -sS -o response.json -w '%{http_code}' \
+            -X POST "$BASE/.netlify/functions/foundation-sync" \
+            -H 'Content-Type: application/json' \
+            -H "x-foundation-sync-key: ${FOUNDATION_SYNC_SECRET}" \
+            -d '{"action":"sync"}')
+
+          echo "HTTP $HTTP"
+          cat response.json || true
+          echo
+
+          if [ "$HTTP" = "401" ] || [ "$HTTP" = "403" ]; then
+            echo "::error::Sync was rejected ($HTTP). FOUNDATION_SYNC_SECRET here does not match Netlify's, or is under 32 characters."
+            exit 1
+          fi
+          if [ "$HTTP" != "200" ]; then
+            echo "::error::Sync failed with HTTP $HTTP (see response above)."
+            exit 1
+          fi
+
+          echo "Sync completed."

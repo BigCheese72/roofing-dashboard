@@ -1,6 +1,14 @@
 "use strict";
 /* ================= document build ================= */
-function filledFindings(){ return findings.filter(function(f){ return f.condition || f.location; }); }
+/* A finding shows in the report if it has any text OR any photos attached.
+   The has-photos clause is a safeguard (Mark): a finding a tech photographed
+   but hasn't captioned yet must NOT silently vanish from the report and drag
+   its photos out with it -- better to print the finding (blank text is a
+   visible prompt to fill it) than to drop documented photos. */
+function findingHasPhotos(f){
+  return !!(f && f.id && (photos || []).some(function(p){ return p && p.finding_id === f.id; }));
+}
+function filledFindings(){ return findings.filter(function(f){ return f.condition || f.location || findingHasPhotos(f); }); }
 function filledRepairs(){ return repairs.filter(function(r){ return r.repair || r.location; }); }
 function filledRepairItems(){ return repairItems.filter(function(it){ return it.qty || it.notes; }); }
 function filledPhotos(){ return photos.filter(function(p){ return p.img || (p.caption||"").trim(); }); }
@@ -190,7 +198,16 @@ function rmReportRoofPlanEntriesFor(){
 }
 async function goToPreview(){
   var photoCheck = await ensurePhotosLoadedForExport();
-  if (!photoCheck.ok) alert(photosMissingWarning(photoCheck.missingCount));
+  if (!photoCheck.ok){
+    /* Preview is intentionally non-blocking (unlike generatePdf) -- the tech
+       may want to look before deciding. For a genuinely dead slot, offer the
+       one-tap cleanup; whether they take it or not, continue to Preview. */
+    if (photoCheck.reason === "dead"){
+      if (!offerRemoveDeadPhotos(photoCheck)) alert(deadPhotosWarning(photoCheck.deadNums));
+    } else {
+      alert(photosMissingWarning(photoCheck.missingCount));
+    }
+  }
   var roofPlanResult = await rmFetchReportRoofOutlines(collect());
   if (roofPlanResult.error) toast("Roof plan couldn't be loaded: " + roofPlanResult.error);
   rmReportRoofPlanData = { woId: currentId, entries: roofPlanResult.roofEntries };
@@ -1220,42 +1237,123 @@ function ccDocumentName(o){
    photo count still matches (a mismatch means photos were added/removed
    since whatever got cached, so position no longer reliably corresponds
    to the same photo -- safer to report it unresolved than guess wrong). */
+/* Makes sure every photo has real bytes before a report is built, and --
+   crucially -- distinguishes WHY a photo has none, because the three cases
+   need opposite handling:
+
+     1. RESOLVABLE  -- bytes live in Storage (storageRef) or on-device
+        (IndexedDB backup, i.e. added-but-not-yet-uploaded). Pulled in
+        silently; the report proceeds. A local-backup recovery is the
+        "still uploading" case: we don't block on the upload finishing,
+        we just use the copy already on the device.
+     2. LOAD FAILURE -- a real pointer exists (a storageRef, or the cloud
+        copy has bytes) but it wouldn't load right now (offline, fetch
+        error). Transient: hard-stop and tell the tech to retry, because
+        the photo is NOT gone.
+     3. DEAD -- confirmed no bytes anywhere (no storageRef, no local
+        backup, and the cloud has none either). The image is genuinely
+        lost; offer one-tap removal so the blank slot stops blocking the
+        report forever (the storage-quota eviction saga). We only ever
+        declare this while ONLINE and able to confirm against the cloud --
+        offline, an unconfirmable slot is treated as case 2, never removed.
+
+   Returns { ok:true } or { ok:false, reason:"load"|"dead", ... }. */
 async function ensurePhotosLoadedForExport(){
   var missing = (photos || []).filter(function(p){ return !p.img; });
   if (!missing.length) return { ok: true };
 
-  var stillMissingAfterStorage = [];
+  var loadFailed = [];      // case 2: has a pointer but won't load now
+  var deadCandidates = [];  // case 3 candidates: no local pointer at all
+  var recovered = 0, pending = 0;
+
   for (var mi = 0; mi < missing.length; mi++){
-    var resolved = missing[mi].storageRef ? await resolvePhotoImg(missing[mi]) : null;
-    if (!resolved) stillMissingAfterStorage.push(missing[mi]);
-  }
-  if (!stillMissingAfterStorage.length){
-    renderPhotos();
-    return { ok: true, recovered: missing.length };
+    var p = missing[mi];
+    if (p.storageRef){
+      if (await resolvePhotoImg(p)) recovered++; else loadFailed.push(p);
+    } else if (p.localId){
+      var localBytes = await idbGetPhoto(p.localId);
+      if (localBytes){ p.img = localBytes; pending++; }
+      else deadCandidates.push(p);
+    } else {
+      deadCandidates.push(p);
+    }
   }
 
-  if (!currentId || !fdb) return { ok: false, missingCount: stillMissingAfterStorage.length };
-  try{
-    var cloudCopy = await cloudFetchOrder(currentId);
-    if (!cloudCopy || !cloudCopy.photos || cloudCopy.photos.length !== photos.length){
-      return { ok: false, missingCount: stillMissingAfterStorage.length };
+  /* A candidate with no local pointer might still have bytes in the cloud
+     we simply never hydrated (a stripped local cache). Confirm against the
+     cloud before ever calling one dead. If the cloud can't be reached,
+     stay cautious: treat as a transient load failure, never as dead. */
+  if (deadCandidates.length){
+    if (currentId && fdb){
+      try{
+        var cloudCopy = await cloudFetchOrder(currentId);
+        if (cloudCopy && cloudCopy.photos){
+          var stillDead = [];
+          for (var di = 0; di < deadCandidates.length; di++){
+            var dp = deadCandidates[di];
+            var idx = photos.indexOf(dp);
+            var match = idx >= 0 ? cloudCopy.photos[idx] : null;
+            if (match && match.img){ dp.img = match.img; recovered++; }
+            else if (match && match.storageRef){
+              dp.storageRef = match.storageRef;
+              if (await resolvePhotoImg(dp)) recovered++; else loadFailed.push(dp);
+            } else stillDead.push(dp);
+          }
+          deadCandidates = stillDead;
+        } else {
+          loadFailed = loadFailed.concat(deadCandidates); deadCandidates = [];
+        }
+      }catch(e){
+        loadFailed = loadFailed.concat(deadCandidates); deadCandidates = [];
+      }
+    } else {
+      loadFailed = loadFailed.concat(deadCandidates); deadCandidates = [];
     }
-    var stillMissing = 0;
-    photos.forEach(function(p, i){
-      if (p.img) return;
-      var match = cloudCopy.photos[i];
-      if (match && match.img) p.img = match.img;
-      else stillMissing++;
-    });
-    if (stillMissing > 0) return { ok: false, missingCount: stillMissing };
-    renderPhotos();
-    return { ok: true, recovered: missing.length };
-  }catch(e){ return { ok: false, missingCount: missing.length, error: e.message }; }
+  }
+
+  if (recovered || pending) renderPhotos();
+  if (pending){
+    toast("Using the on-device copy of " + pending + " photo" + (pending === 1 ? "" : "s") +
+      " still finishing upload…");
+    if (typeof tryFlushSyncQueue === "function") tryFlushSyncQueue(); // fire-and-forget: finish the upload in the background
+  }
+
+  if (loadFailed.length) return { ok: false, reason: "load", missingCount: loadFailed.length };
+  if (deadCandidates.length){
+    var deadNums = deadCandidates.map(function(p){ return photos.indexOf(p) + 1; })
+      .filter(function(n){ return n > 0; });
+    return { ok: false, reason: "dead", deadPhotos: deadCandidates, deadNums: deadNums };
+  }
+  return { ok: true, recovered: recovered, pending: pending };
 }
 function photosMissingWarning(missingCount){
   return "⚠️ " + missingCount + " photo" + (missingCount === 1 ? "" : "s") + " couldn't be loaded" +
     (fdb ? " from the cloud" : " — no internet connection") + ". Stopped rather than produce a report " +
     "with missing images. Check your connection and reopen this work order, or re-add the missing photo(s), then try again.";
+}
+function deadPhotosWarning(nums){
+  var many = nums.length !== 1;
+  return "⚠️ Photo" + (many ? "s " + nums.join(", ") + " are" : " " + nums[0] + " is") +
+    " empty — the image data was lost and can't be recovered. Remove " +
+    (many ? "them" : "it") + " (or re-add) before creating the report.";
+}
+/* Confirms and removes the genuinely-dead slots ensurePhotosLoadedForExport
+   found, so they stop blocking the report. Removal is in-memory (the next
+   save drops the empty docs cloud-side too — see cloudSaveOrder). Highest
+   index first so earlier indices stay valid as the array shrinks. Returns
+   true if the slots were removed, false if the tech declined. */
+function offerRemoveDeadPhotos(photoCheck){
+  var nums = photoCheck.deadNums || [];
+  var many = nums.length !== 1;
+  var msg = "Photo" + (many ? "s " + nums.join(", ") + " are" : " " + nums[0] + " is") +
+    " empty — the image was lost and can't be recovered.\n\nRemove " +
+    (many ? "them" : "it") + " and continue?";
+  if (!confirm(msg)) return false;
+  var idxs = (photoCheck.deadPhotos || []).map(function(p){ return photos.indexOf(p); })
+    .filter(function(n){ return n >= 0; }).sort(function(a, b){ return b - a; });
+  idxs.forEach(function(i){ removePhoto(i); });
+  toast(idxs.length + " empty photo" + (idxs.length === 1 ? "" : "s") + " removed");
+  return true;
 }
 async function generatePdf(){
   if (!(window.jspdf && window.jspdf.jsPDF && window.jspdf.jsPDF.API && window.jspdf.jsPDF.API.autoTable)){
@@ -1264,8 +1362,18 @@ async function generatePdf(){
   }
   var photoCheck = await ensurePhotosLoadedForExport();
   if (!photoCheck.ok){
-    alert(photosMissingWarning(photoCheck.missingCount));
-    return null;
+    /* A genuinely dead slot can be cleared and the report still produced;
+       a transient load failure keeps the original hard stop (the photo
+       isn't gone -- refusing to ship a report with a hole in it). */
+    if (photoCheck.reason === "dead"){
+      if (!offerRemoveDeadPhotos(photoCheck)){
+        alert(deadPhotosWarning(photoCheck.deadNums));
+        return null;
+      }
+    } else {
+      alert(photosMissingWarning(photoCheck.missingCount));
+      return null;
+    }
   }
   /* Last chance to inherit the building's CompanyCam link before collect()
      snapshots it. generatePdf() is the single chokepoint every PDF-producing
