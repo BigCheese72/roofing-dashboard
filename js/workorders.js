@@ -1245,6 +1245,9 @@ function inlineHistoryPinCoverage(events, roofId, hasCustomBaseMap){
     return inlineHiddenPinDisclosure(disclosed, roofId, hasCustomBaseMap);
   });
 }
+function inlineHistoryPinsForMap(events, roofId, hasCustomBaseMap){
+  return inlineHistoryPinCoverage(events, roofId, hasCustomBaseMap).rendered;
+}
 function inlineHiddenPinDisclosure(disclosedPins, roofId, hasCustomBaseMap){
   var hiddenGps = 0, hiddenOtherRoof = 0, hiddenUnassigned = 0, hiddenXY = 0;
   /* Pins are written in either x/y image space or lat/lng GPS space. These
