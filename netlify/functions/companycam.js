@@ -27,6 +27,7 @@
 // throws 401 if you're nobody; requirePermission() is the role-gate and is
 // deliberately NOT used here.
 const { uploadDocumentToCompanyCam } = require("./lib/companyCamDocuments");
+const { uploadPhotoToCompanyCam } = require("./lib/companyCamPhotos");
 const { verifyCaller } = require("./lib/authGuard");
 
 function resp(code, obj) {
@@ -113,6 +114,40 @@ exports.handler = async function (event) {
           return resp(code, { error: result.error });
         }
         return resp(200, { ok: true, document: result.document });
+      }
+
+      // Pushes ONE work-order photo into the linked project's PHOTO FEED,
+      // map-pinned -- see lib/companyCamPhotos.js for the API contract and,
+      // more importantly, for why this does NOT require opening the Storage
+      // bucket (short-lived per-object V4 signed URL; the bucket stays
+      // deny-all).
+      //
+      // Sits INSIDE the same requireAuth() gate as every other action in this
+      // file -- deliberately not a new exception. It is a normal field
+      // operation (a tech sends a work order; its photos land in CompanyCam),
+      // so it is AUTHENTICATION-gated like upload_document, not
+      // permission-gated. It also cannot create a project: it can only push
+      // into a project id the caller already has linked.
+      //
+      // "Photo isn't in Storage yet" comes back as 200 { ok:false, skipped:true }
+      // rather than an error status: it is an expected, self-healing state (the
+      // next send picks it up), and one such photo must not fail the batch the
+      // client is pushing.
+      if (body.action === "upload_photo") {
+        const result = await uploadPhotoToCompanyCam({
+          projectId: body.project_id,
+          workOrderId: body.workOrderId,
+          photoIndex: body.photoIndex,
+          coordinates: body.coordinates || null,
+          capturedAt: body.captured_at,
+          description: body.description || ""
+        });
+        if (result.skipped) return resp(200, { ok: false, skipped: true, reason: result.reason || "skipped" });
+        if (!result.ok) {
+          const code = /not set/.test(result.error) ? 500 : (/Missing|Invalid/.test(result.error) ? 400 : 502);
+          return resp(code, { error: result.error });
+        }
+        return resp(200, { ok: true, photoId: result.photoId, coordinates: result.coordinates || null });
       }
       return resp(400, { error: "Unknown action" });
     } catch (e) {

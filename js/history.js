@@ -1119,12 +1119,201 @@ async function uploadPdfToCompanyCam(doc, o){
     return { ok: false, error: e.message };
   }
 }
+/* ================= CompanyCam PHOTO FEED push =================
+   The PDF above lands in CompanyCam as a DOCUMENT. That's the record, but
+   nobody browses documents -- CompanyCam users live in the project's photo
+   feed and on its map. So every photo on a work order also gets pushed into
+   the linked project's feed as a real, map-pinned CompanyCam photo. Both
+   pushes happen; neither replaces the other.
+
+   DEV_NOTES.md (2026-07-09) deferred this as impossible because "CompanyCam's
+   photo-upload API requires a publicly-fetchable URL for every photo, and the
+   app has no image hosting." Half of that is still true and always will be:
+   the Storage bucket is DENY-ALL and must stay that way. What changed is that
+   photos now live in Storage at a known path, so the server can mint a
+   short-lived, single-object V4 SIGNED url for CompanyCam to fetch -- public
+   enough for one fetch, by one party, for one object, for a bounded time, with
+   the bucket still sealed. See netlify/functions/lib/companyCamPhotos.js.
+
+   NEVER creates a project. Pushes only when one is already LINKED -- the same
+   rule the PDF push has always followed. */
+
+/* A coordinate is only usable if it's real. (0,0) is what a BROKEN coordinate
+   looks like in this app's live data -- there's a whole tools/audit_null_island.js
+   because of it -- and a photo confidently pinned in the Gulf of Guinea is worse
+   than an honestly unpinned one. */
+function ccValidLatLng(c){
+  if (!c) return null;
+  var lat = Number(c.lat), lng = Number(c.lng !== undefined && c.lng !== null ? c.lng : c.lon);
+  if (!isFinite(lat) || !isFinite(lng)) return null;
+  if (lat === 0 && lng === 0) return null;
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
+  return { lat: lat, lng: lng };
+}
+/* A photo attached to a finding (or to an inspection checklist item -- they pin
+   identically, see buildPinsForHistoryEvent()) inherits that pin's roof
+   coordinates. */
+function ccPinForFinding(o, findingId){
+  if (!findingId) return null;
+  var f = (o.findings || []).find(function(x){ return x && x.id === findingId; });
+  if (f && f.pin){ var a = ccValidLatLng(f.pin); if (a) return a; }
+  var item = (o.inspectionChecklist || []).find(function(x){ return x && x.id === findingId; });
+  if (item && item.pin){ var b = ccValidLatLng(item.pin); if (b) return b; }
+  return null;
+}
+/* THE COORDINATE PRIORITY, and why it is what it is:
+
+     1. photo.pin      -- a pin placed on the photo ITSELF. No capture path sets
+                          this today; it's honoured first so that if one ever
+                          does, it wins without another edit here.
+     2. FINDING pin    -- tech-placed and tech-CONFIRMED on the roof.
+     3. photo.gps      -- the phone's GPS at capture.
+     4. site location  -- the job/building location (the bottom "Photo
+                          Documentation" section's photos, which have no
+                          coordinate of their own).
+
+   NOTE FOR MARK -- a deliberate, flagged decision. The spec listed the order as
+   "photo.pin / GPS EXIF / finding pin / building location" in one place, and
+   asserted "finding-pin > photo GPS > building location" in the test spec. Those
+   two disagree about GPS vs finding pin, so this had to pick one. It follows the
+   TEST spec (finding pin ABOVE photo GPS), because that is what this codebase
+   already believes everywhere else: photo GPS is treated as an initial GUESS for
+   pin placement and explicitly "never trusted as final without a tech confirming"
+   (see companycam.js's action=photos mapping, and openPinModal()), consumer GPS
+   is ~10-30ft off, and on the real Tri-Delta report 11 of 12 photos had no GPS
+   at all. A finding pin is the tech's confirmed answer; the GPS is the question.
+   If raw GPS should win instead, swap the two lines below -- it's a one-line
+   change, and the test that asserts this order will fail loudly and say so. */
+function ccBestPhotoCoordinate(p, o, siteLatLng){
+  if (!p) return null;
+  return ccValidLatLng(p.pin) ||
+    ccPinForFinding(o, p.finding_id) ||
+    ccValidLatLng(p.gps) ||
+    ccValidLatLng(siteLatLng) ||
+    null;
+}
+/* The job's location, for photos that carry no coordinate of their own.
+   Resolved at most ONCE per push run (geocoding is a network call), and only if
+   some photo actually needs it. If it can't be resolved, the photo is still
+   pushed -- just without coordinates -- and the SERVER then falls back to the
+   linked CompanyCam project's OWN coordinates, which is the truest available
+   answer to "where is this job" (see companyCamPhotos.js). A photo with no pin
+   still belongs in the feed; we never invent a location for it. */
+async function ccSiteLatLng(o){
+  var addr = o.location || o.jobName || "";
+  if (!addr || typeof geocodeAddress !== "function") return null;
+  try{ return ccValidLatLng(await geocodeAddress(addr)); }
+  catch(e){ return null; }
+}
+/* Photos carry no capture timestamp of their own, and captured_at is REQUIRED by
+   CompanyCam -- the service date is the honest answer (it's the day the photo
+   was taken on site), falling back to now. */
+function ccPhotoCapturedAt(o){
+  var t = o.serviceDate ? Date.parse(o.serviceDate + "T12:00:00") : NaN;
+  return isFinite(t) ? t : Date.now();
+}
+function ccPhotoDescription(p, o){
+  var bits = [];
+  if (p.caption) bits.push(p.caption);
+  var f = (o.findings || []).find(function(x){ return x && x.id === p.finding_id; });
+  if (f && f.condition) bits.push(f.condition);
+  if (!bits.length) bits.push("Work order photo");
+  if (o.jobNo) bits.push("WO " + o.jobNo);
+  return bits.join(" \u2014 ").slice(0, 500);
+}
+/* Persists the CompanyCam feed photo id onto the photo's Firestore doc. This is
+   the IDEMPOTENCY record -- it is the reason re-sending a work order (or
+   re-downloading its PDF, or re-sharing it) doesn't spam the project feed with
+   duplicate copies of the same photo. Merge-write only: it never touches
+   img/storageRef/caption/anything else on the doc. */
+async function ccPersistFeedPhotoId(workOrderId, photoIndex, ccFeedPhotoId){
+  if (!fdb) return;
+  try{
+    await fdb.collection("workorders").doc(workOrderId)
+      .collection("photos").doc("p" + photoIndex)
+      .set({ ccFeedPhotoId: ccFeedPhotoId }, { merge: true });
+  }catch(e){ /* the in-memory flag still guards this session; the next save persists it */ }
+}
+/* Pushes every eligible photo on the work order into the linked project's feed.
+
+   SKIPS, and why each one matters:
+     - p.ccPhotoId    : this photo was IMPORTED FROM CompanyCam. Pushing it back
+                        would duplicate CompanyCam's own photo into its own feed.
+                        Never.
+     - p.ccFeedPhotoId: already pushed by an earlier save/send. Idempotency.
+     - not in Storage : the server reports { skipped } (a legacy pre-migration
+                        photo, or a save whose upload hasn't landed yet). Not an
+                        error -- the next send picks it up for free.
+
+   One photo's failure never aborts the rest. */
+async function pushPhotosToCompanyCamFeed(o){
+  if (!o.companyCamProjectId) return { skipped: true };
+  var photos = o.photos || [];
+  var r = { ok: true, pushed: 0, alreadyPushed: 0, imported: 0, notStored: 0, failed: 0, error: "" };
+  if (!photos.length) return r;
+
+  var site = null, siteResolved = false;
+  for (var i = 0; i < photos.length; i++){
+    var p = photos[i];
+    if (!p) continue;
+    if (p.ccPhotoId){ r.imported++; continue; }
+    if (p.ccFeedPhotoId){ r.alreadyPushed++; continue; }
+    if (!siteResolved){ site = await ccSiteLatLng(o); siteResolved = true; }
+    var coord = ccBestPhotoCoordinate(p, o, site);
+    try{
+      var out = await ccApiPost({
+        action: "upload_photo",
+        project_id: o.companyCamProjectId,
+        workOrderId: o.id,
+        photoIndex: i,
+        coordinates: coord ? { lat: coord.lat, lon: coord.lng } : null,
+        captured_at: ccPhotoCapturedAt(o),
+        description: ccPhotoDescription(p, o)
+      });
+      if (out && out.ok && out.photoId){
+        p.ccFeedPhotoId = String(out.photoId);
+        r.pushed++;
+        await ccPersistFeedPhotoId(o.id, i, p.ccFeedPhotoId);
+      } else if (out && out.skipped){
+        r.notStored++;
+      } else {
+        r.failed++;
+      }
+    }catch(e){
+      r.failed++;
+      if (!r.error) r.error = e.message;
+    }
+  }
+  if (r.failed) r.ok = false;
+  return r;
+}
 async function uploadLinkedPdfToCompanyCam(doc, o, doneLabel){
   if (!o.companyCamProjectId) return { skipped: true };
   toast(doneLabel + ". Saving PDF to CompanyCam\u2026");
   var ccUp = await uploadPdfToCompanyCam(doc, o);
   if (ccUp.ok) toast(doneLabel + " \u2014 PDF saved to CompanyCam project \u2713");
   else if (!ccUp.skipped) toast(doneLabel + " \u2014 CompanyCam PDF upload failed: " + ccUp.error);
+
+  /* The photo-feed push rides the SAME linked-project path as the PDF, so every
+     action that already saves a PDF to CompanyCam (Send, Share, Download -- see
+     their call sites below) now also lands the photos, with no separate wiring
+     per call site to forget.
+
+     Deliberately AFTER the PDF, and deliberately non-fatal: the PDF is the record
+     of the job and must never be held hostage to a photo push, and the user's
+     actual action (email sent / file downloaded / sheet shared) has ALREADY
+     succeeded by the time we are here. A photo-push failure is reported, retried
+     on the next send, and never turns a successful send into a failed one. It also
+     never changes what this function RETURNS to logReportAndHistoryEvent(), which
+     still describes the PDF and only the PDF. */
+  try{
+    var feed = await pushPhotosToCompanyCamFeed(o);
+    if (feed && feed.pushed) toast(feed.pushed + " photo" + (feed.pushed === 1 ? "" : "s") + " added to the CompanyCam feed \u2713");
+    if (feed && feed.failed) toast(feed.failed + " photo" + (feed.failed === 1 ? "" : "s") + " couldn\u2019t be added to CompanyCam \u2014 they retry on the next send.");
+    ccUp.photoFeed = feed;
+  }catch(e){
+    ccUp.photoFeed = { ok: false, error: e.message };
+  }
   return ccUp;
 }
 function summarizeRows(rows, keyA, keyB){

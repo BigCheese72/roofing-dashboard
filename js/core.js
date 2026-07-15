@@ -764,9 +764,20 @@ async function cloudSaveOrder(o){
         }
       }catch(e){ console.warn("couldn't check existing photo before save (proceeding without it — no data was overwritten)", e); }
     }
+    /* ccPhotoId  : set when this photo was IMPORTED FROM CompanyCam.
+       ccFeedPhotoId: set when this photo was PUSHED TO CompanyCam's photo feed
+       (see pushPhotosToCompanyCamFeed() in js/history.js). They are opposite
+       directions and must not be confused.
+
+       ccFeedPhotoId MUST be carried through this save. This .set() is a full
+       overwrite, not a merge -- so omitting it here would silently erase the
+       push record on the very next save of the work order, and the next
+       send would re-push every photo and duplicate the whole set into the
+       project feed. The flag IS the idempotency. */
     var photoDoc = {
       caption: p.caption || "", w: p.w || 0, h: p.h || 0, i: i,
       finding_id: p.finding_id || null, ccPhotoId: p.ccPhotoId || null, gps: p.gps || null,
+      ccFeedPhotoId: p.ccFeedPhotoId || null,
       storageRef: storageRef, thumb: p.thumb || null
     };
     if (existingImg) photoDoc.img = existingImg;
@@ -848,8 +859,15 @@ async function cloudFetchOrder(id){
          for why that signal has to stay exactly what it is). Only
          populated when thumb is missing -- once a photo has a real thumb
          (freshly captured, or backfilled), this is never touched. */
+      /* ccFeedPhotoId is hydrated here for the same reason it's written in
+         cloudSaveOrder(): it's the record that this photo has ALREADY been
+         pushed into the linked CompanyCam project's photo feed. Without it on
+         the client-side photo object, re-opening a work order and re-sending it
+         would push every photo a second time -- see pushPhotosToCompanyCamFeed()
+         in js/history.js. */
       photosArr[v.i] = { caption: v.caption || "", img: v.storageRef ? null : (v.img || null), w: v.w || 0, h: v.h || 0,
         finding_id: v.finding_id || null, ccPhotoId: v.ccPhotoId || null, gps: v.gps || null,
+        ccFeedPhotoId: v.ccFeedPhotoId || null,
         storageRef: v.storageRef || null, thumb: v.thumb || null,
         imgFallback: (!v.thumb && v.storageRef) ? (v.img || null) : null };
     });
