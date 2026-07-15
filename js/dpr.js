@@ -49,6 +49,11 @@ var dprPhotos = [];      /* [{ caption, img, thumb, w, h, gps, storageRef, local
 var dprHeadcountAutoVal = "";  /* last headcount we auto-filled — lets a manual edit stick (same trick as CO job-no autofill) */
 var dprBldCache = null;  /* buildings list for the inline picker (lazy) */
 var dprLoadSeq = 0;      /* guards against a slow same-day fetch clobbering a newer selection */
+/* The section a foreman traces for the day's worked area lives on dprState.section:
+   { roofId, mode:"geo"|"image", ring:[{lat,lng}] | imageRing:[{x,y}], imageFrameUrl,
+     areaSqFt, createdAt }. dprTrace is the TRANSIENT tracing session (map + in-progress
+     points), separate from the saved section. */
+var dprTrace = null;
 
 /* Roles allowed to CREATE/SUBMIT a DPR. Display/UX gate only — the real
    enforcement is the daily_progress_reports Firestore rules (dpr.create
@@ -116,6 +121,7 @@ function dprOnShow(){
   dprEnsureListeners();
   dprRenderCrew();
   dprRenderPhotos();
+  dprRenderSectionStatus();
   dprHideHistory();
 }
 function dprTodayStr(){
@@ -432,6 +438,7 @@ function dprCollect(){
     hoursWorked: val("dpr-hours"),
     squares: val("dpr-squares"),
     summary: val("dpr-summary"),
+    section: dprState.section || null,   /* the roof area traced for today (progress overlay) */
     photos: dprPhotos.slice()
     /* LATER-PHASE HOOKS (not built in Phase 1): delays{}, quantities[], jsa{},
        incidents[], equipment[], visitors[] — each will be a radio-gated block
@@ -457,6 +464,7 @@ function dprFill(o){
   dprHeadcountAutoVal = String(o.headcount || "");
   dprCrew = (o.crew || []).map(function(c){ return { name: c.name || "" }; });
   dprPhotos = (o.photos || []).map(function(p){ return Object.assign({}, p); });
+  dprState.section = o.section || null;
   /* Refresh roofs for the roof picker if we have the building loaded. */
   if (dprState.buildingId && fdb){
     fdb.collection("buildings").doc(dprState.buildingId).get().then(function(snap){
@@ -468,6 +476,7 @@ function dprFill(o){
   }
   dprRenderCrew();
   dprRenderPhotos();
+  dprRenderSectionStatus();
 }
 
 /* ================= save (client-direct Firestore write, permission-gated by rules) ================= */
@@ -567,9 +576,11 @@ function dprNewReport(){
   setVal("dpr-date", dprTodayStr());
   var notice = document.getElementById("dpr-continue-notice");
   if (notice) notice.style.display = "none";
+  dprState.section = null;
   dprRenderRoofPicker();
   dprRenderCrew();
   dprRenderPhotos();
+  dprRenderSectionStatus();
   var results = document.getElementById("dpr-bld-results");
   if (results) results.innerHTML = "";
   window.scrollTo(0, 0);
@@ -584,8 +595,19 @@ async function dprShowHistory(){
   var panel = document.getElementById("dpr-history-panel");
   var host = document.getElementById("dpr-history-list");
   if (!panel || !host) return;
+  /* Toggle: a second tap closes it (the panel is at the bottom of a long form,
+     so tapping History with no visible movement read as "nothing happened"). */
+  if (panel.style.display !== "none" && panel.dataset.dprOpen === "1"){
+    panel.style.display = "none";
+    panel.dataset.dprOpen = "0";
+    return;
+  }
   panel.style.display = "";
+  panel.dataset.dprOpen = "1";
   host.innerHTML = '<p class="hint">Loading…</p>';
+  /* Always give visible feedback — scroll the panel into view so a phone tap
+     doesn't silently reveal a card below the fold. */
+  try{ panel.scrollIntoView({ behavior: "smooth", block: "start" }); }catch(e){ panel.scrollIntoView(); }
   if (!fdb){ host.innerHTML = '<p class="hint">History needs an internet connection.</p>'; return; }
   try{
     var qs = await fdb.collection("daily_progress_reports").orderBy("date", "desc").limit(100).get();
@@ -606,7 +628,7 @@ async function dprShowHistory(){
 }
 function dprHideHistory(){
   var panel = document.getElementById("dpr-history-panel");
-  if (panel) panel.style.display = "none";
+  if (panel){ panel.style.display = "none"; panel.dataset.dprOpen = "0"; }
 }
 async function dprOpenReport(id){
   if (!fdb) return;
@@ -624,6 +646,311 @@ async function dprOpenReport(id){
     window.scrollTo(0, 0);
     toast("Report opened");
   }catch(e){ toast("Couldn't open that report: " + e.message); }
+}
+
+/* ================= roof section tracing (daily progress on the base map) =================
+   The foreman traces the section of roof worked that day. Reuses the SAME idea as
+   RoofMapper (tap corners on a base map) but is fully self-contained here —
+   RoofMapper's trace pipeline is bound to its own singleton map + DOM and is
+   owned by another contributor, so this replicates just the ~40 lines of Leaflet
+   tracing rather than calling into it. Only pure shared globals are reused:
+   getBuildingRoofs (core), geocodeAddress + boundsToLatLngBounds + SAT_MAX_NATIVE_ZOOM
+   (photos/core), and Leaflet (L) itself.
+
+   Trace surface (per Mark): the selected roof's custom base map if it has one
+   (roof_plan / sketch → flat image mode; drone_ortho → georeferenced), else
+   satellite centered on the job. Storage mirrors RoofMapper's two regimes so a
+   section redraws consistently: lat/lng ring for geo modes, 0-1 fractional
+   imageRing (+ the base-map url as a guard) for flat images.
+
+   Accumulation (per Mark): each day's section stays on ITS OWN DPR doc — the
+   building's permanent roof_outlines are never touched. The Progress Map view
+   pulls every DPR for the building and stacks their sections, newest brightest,
+   so you can see what got done when. */
+var DPR_SECTION_COLORS = ["#E8600A", "#1E88E5", "#43A047", "#8E24AA", "#F4511E", "#00897B", "#C0CA33", "#5E35B1"];
+
+function dprSelectedRoofObj(){
+  var roofs = dprState.roofs || [];
+  var id = dprSelectedRoofId();
+  return roofs.find(function(r){ return r.id === id; }) || roofs[0] || null;
+}
+function dprRoofBaseMap(roof){
+  /* Returns {kind:"image"|"ortho"|null, url, bounds}. Mirrors the read model
+     used across the app (photosRoofHasBaseMap / inline history). */
+  if (!roof || !roof.roof_base_map_url) return { kind: null };
+  var t = roof.roof_base_map_type;
+  if (t === "roof_plan" || t === "sketch") return { kind: "image", url: roof.roof_base_map_url };
+  if (t === "drone_ortho" && roof.roof_base_map_bounds)
+    return { kind: "ortho", url: roof.roof_base_map_url, bounds: roof.roof_base_map_bounds };
+  return { kind: null };
+}
+/* Planar (equirectangular) area estimate in ft² for a lat/lng ring — good enough
+   for a roof-sized polygon; used for geo-mode sections only (a flat roof_plan
+   image has no known real-world scale, so image-mode area stays null). */
+function dprRingAreaSqFt(ring){
+  if (!ring || ring.length < 3) return null;
+  var pts = ring.slice();
+  if (pts.length > 1){
+    var a0 = pts[0], aN = pts[pts.length - 1];
+    if (a0.lat === aN.lat && a0.lng === aN.lng) pts = pts.slice(0, -1); /* drop closing dup */
+  }
+  if (pts.length < 3) return null;
+  var latRef = pts.reduce(function(s, p){ return s + p.lat; }, 0) / pts.length;
+  var mLat = 111320, mLng = 111320 * Math.cos(latRef * Math.PI / 180);
+  var xy = pts.map(function(p){ return { x: p.lng * mLng, y: p.lat * mLat }; });
+  var area = 0;
+  for (var i = 0; i < xy.length; i++){
+    var j = (i + 1) % xy.length;
+    area += xy[i].x * xy[j].y - xy[j].x * xy[i].y;
+  }
+  return Math.abs(area / 2) * 10.7639;
+}
+
+function dprEnsureSectionModal(){
+  var existing = document.getElementById("dpr-section-modal");
+  if (existing) return existing;
+  var modal = document.createElement("div");
+  modal.id = "dpr-section-modal";
+  modal.style.cssText = "display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:10000";
+  modal.innerHTML =
+    '<div style="position:absolute;inset:16px;background:#fff;border-radius:8px;display:flex;flex-direction:column;overflow:hidden">' +
+      '<div style="display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid #ddd">' +
+        '<b id="dpr-section-title" style="font-size:16px;flex:1">Trace Today\'s Section</b>' +
+        '<button class="btn" onclick="dprSectionCancel()">✕ Close</button>' +
+      '</div>' +
+      '<p class="hint" id="dpr-section-hint" style="margin:8px 14px 0"></p>' +
+      '<div id="dpr-section-map" style="flex:1;margin:8px 14px;min-height:220px;background:#ECEFF1;border-radius:6px"></div>' +
+      '<div class="btnrow" id="dpr-section-tracebtns" style="margin:0 14px 12px">' +
+        '<button class="btn" onclick="dprSectionUndo()">↩ Undo point</button>' +
+        '<button class="btn danger" onclick="dprSectionClearPoints()">Clear</button>' +
+        '<span style="flex:1"></span>' +
+        '<button class="btn primary" id="dpr-section-finish" onclick="dprSectionFinish()" disabled>✓ Save Section</button>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(modal);
+  return modal;
+}
+
+async function dprOpenSectionTrace(){
+  if (!dprCanCreate()){ toast("Your role can view reports but can't edit them."); return; }
+  var modal = dprEnsureSectionModal();
+  document.getElementById("dpr-section-title").textContent = "Trace Today's Section";
+  document.getElementById("dpr-section-tracebtns").style.display = "";
+  modal.style.display = "";
+  lockBodyScroll();
+  var roof = dprSelectedRoofObj();
+  var hint = document.getElementById("dpr-section-hint");
+  hint.textContent = "Loading map…";
+  try{
+    var ctx = await dprSetupSectionMap("dpr-section-map", roof, { readOnly: false });
+    dprTrace = { active: true, points: [], map: ctx.map, mode: ctx.mode, frameUrl: ctx.frameUrl,
+      w: ctx.w, h: ctx.h, markers: [], poly: null };
+    hint.textContent = ctx.mode === "image"
+      ? "Tap the corners of the area worked today on the roof plan, all the way around."
+      : "Tap the corners of the area worked today. Need at least 3 points.";
+    /* Seed from an existing section so re-opening edits rather than restarts. */
+    if (dprState.section && dprState.section.mode === ctx.mode &&
+        (ctx.mode !== "image" || dprState.section.imageFrameUrl === ctx.frameUrl)){
+      var seed = ctx.mode === "image"
+        ? (dprState.section.imageRing || []).map(function(p){ return dprFractionToLatLng(p, ctx); })
+        : (dprState.section.ring || []).map(function(p){ return L.latLng(p.lat, p.lng); });
+      /* drop a closing dup if present */
+      if (seed.length > 1 && seed[0].lat === seed[seed.length - 1].lat && seed[0].lng === seed[seed.length - 1].lng) seed.pop();
+      seed.forEach(function(ll){ dprTrace.points.push(ll); });
+    }
+    ctx.map.on("click", function(e){ dprSectionAddPoint(e.latlng); });
+    dprSectionRenderPreview();
+    setTimeout(function(){ try{ ctx.map.invalidateSize(); }catch(e){} }, 60);
+  }catch(e){
+    hint.textContent = "Couldn't load the map: " + e.message;
+  }
+}
+
+/* Sets up a Leaflet map on the given div for the roof's base map (or satellite).
+   Resolves { map, mode:"geo"|"image", frameUrl, w, h }. Shared by trace + progress. */
+async function dprSetupSectionMap(divId, roof, opts){
+  opts = opts || {};
+  var div = document.getElementById(divId);
+  if (!div) throw new Error("map container missing");
+  div.innerHTML = ""; /* Leaflet refuses to reuse a container */
+  var base = dprRoofBaseMap(roof);
+  if (base.kind === "image"){
+    /* Flat roof plan / sketch — no geodata. CRS.Simple, image placed 0..h × 0..w. */
+    var dims = await dprLoadImageDims(base.url);
+    var map = L.map(divId, { crs: L.CRS.Simple, minZoom: -5, zoomControl: true, attributionControl: false });
+    var bounds = [[0, 0], [dims.h, dims.w]];
+    L.imageOverlay(base.url, bounds).addTo(map);
+    map.fitBounds(bounds);
+    return { map: map, mode: "image", frameUrl: base.url, w: dims.w, h: dims.h };
+  }
+  var map2 = L.map(divId, { zoomControl: true, attributionControl: false });
+  L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+    { maxZoom: 22, maxNativeZoom: SAT_MAX_NATIVE_ZOOM, attribution: "Tiles © Esri" }).addTo(map2);
+  if (base.kind === "ortho"){
+    var llb = boundsToLatLngBounds(base.bounds);
+    L.imageOverlay(base.url, llb).addTo(map2);
+    map2.fitBounds(llb);
+    return { map: map2, mode: "geo", frameUrl: null, w: null, h: null };
+  }
+  /* Satellite: center on existing roof geometry, else geocode the job, else a wide view. */
+  var center = dprRoofExistingCenter(roof);
+  if (center){ map2.setView([center.lat, center.lng], 20); }
+  else {
+    var geo = null;
+    try{ geo = await geocodeAddress(val("dpr-location") || val("dpr-jobName")); }catch(e){}
+    if (geo){ map2.setView([geo.lat, geo.lng], 20); }
+    else { map2.setView([39.8, -98.6], 4); toast("Couldn't locate the address — pan/zoom to the roof, then trace."); }
+  }
+  return { map: map2, mode: "geo", frameUrl: null, w: null, h: null };
+}
+function dprLoadImageDims(url){
+  return new Promise(function(resolve, reject){
+    var img = new Image();
+    img.onload = function(){ resolve({ w: img.naturalWidth || img.width, h: img.naturalHeight || img.height }); };
+    img.onerror = function(){ reject(new Error("base map image failed to load")); };
+    img.src = url;
+  });
+}
+function dprRoofExistingCenter(roof){
+  if (!roof) return null;
+  var outs = roof.roof_outlines || [];
+  for (var i = 0; i < outs.length; i++){
+    var o = outs[i];
+    if (o && o.center && typeof o.center.lat === "number") return o.center;
+    if (o && o.ring && o.ring.length && typeof o.ring[0].lat === "number") return o.ring[0];
+  }
+  return null;
+}
+/* Image mode: click latlng is (lat∈0..h, lng∈0..w) → fraction; and back. */
+function dprLatLngToFraction(latlng, ctx){ return { x: latlng.lng / ctx.w, y: latlng.lat / ctx.h }; }
+function dprFractionToLatLng(f, ctx){ return L.latLng(f.y * ctx.h, f.x * ctx.w); }
+
+function dprSectionAddPoint(latlng){
+  if (!dprTrace || !dprTrace.active) return;
+  dprTrace.points.push(latlng);
+  dprSectionRenderPreview();
+}
+function dprSectionUndo(){
+  if (!dprTrace) return;
+  dprTrace.points.pop();
+  dprSectionRenderPreview();
+}
+function dprSectionClearPoints(){
+  if (!dprTrace) return;
+  dprTrace.points = [];
+  dprSectionRenderPreview();
+}
+function dprSectionRenderPreview(){
+  if (!dprTrace || !dprTrace.map) return;
+  var map = dprTrace.map;
+  dprTrace.markers.forEach(function(m){ map.removeLayer(m); });
+  dprTrace.markers = [];
+  if (dprTrace.poly){ map.removeLayer(dprTrace.poly); dprTrace.poly = null; }
+  dprTrace.points.forEach(function(ll){
+    dprTrace.markers.push(L.circleMarker(ll, { radius: 5, color: "#E8600A", weight: 2, fillColor: "#fff", fillOpacity: 1 }).addTo(map));
+  });
+  if (dprTrace.points.length >= 2){
+    dprTrace.poly = L.polygon(dprTrace.points, { color: "#E8600A", weight: 2, fillOpacity: 0.25 }).addTo(map);
+  }
+  var finish = document.getElementById("dpr-section-finish");
+  if (finish) finish.disabled = dprTrace.points.length < 3;
+}
+function dprSectionFinish(){
+  if (!dprTrace || dprTrace.points.length < 3){ toast("Tap at least 3 corners first."); return; }
+  var pts = dprTrace.points;
+  var section = { roofId: dprSelectedRoofId(), mode: dprTrace.mode, createdAt: Date.now(), areaSqFt: null };
+  if (dprTrace.mode === "image"){
+    section.imageFrameUrl = dprTrace.frameUrl;
+    section.imageRing = pts.map(function(ll){ return dprLatLngToFraction(ll, dprTrace); });
+    /* close the ring */
+    section.imageRing.push(Object.assign({}, section.imageRing[0]));
+  } else {
+    var ring = pts.map(function(ll){ return { lat: ll.lat, lng: ll.lng }; });
+    ring.push({ lat: ring[0].lat, lng: ring[0].lng });
+    section.ring = ring;
+    section.areaSqFt = Math.round(dprRingAreaSqFt(ring) || 0) || null;
+  }
+  dprState.section = section;
+  dprSectionCancel();
+  dprRenderSectionStatus();
+  toast("Section saved to today's report" + (section.areaSqFt ? " (~" + section.areaSqFt + " sq ft)" : "") + " — remember to Save the report");
+}
+function dprSectionCancel(){
+  var modal = document.getElementById("dpr-section-modal");
+  if (modal) modal.style.display = "none";
+  unlockBodyScroll();
+  if (dprTrace && dprTrace.map){ try{ dprTrace.map.remove(); }catch(e){} }
+  dprTrace = null;
+}
+function dprClearSection(){
+  if (!dprState.section) return;
+  if (!confirm("Remove the traced section from today's report?")) return;
+  dprState.section = null;
+  dprRenderSectionStatus();
+  toast("Section removed — Save the report to persist that.");
+}
+function dprRenderSectionStatus(){
+  var host = document.getElementById("dpr-section-status");
+  if (!host) return;
+  var s = dprState.section;
+  if (!s){
+    host.innerHTML = '<span class="hint">No section traced yet.</span>';
+    return;
+  }
+  var area = s.areaSqFt ? " · ~" + s.areaSqFt + " sq ft" : "";
+  host.innerHTML = '<span style="color:#2E7D32">✓ Section traced' + esc(area) + '</span> ' +
+    '<button class="btn" onclick="dprOpenSectionTrace()">Edit</button> ' +
+    '<button class="btn danger" onclick="dprClearSection()">Remove</button>';
+}
+
+/* Progress Map — every DPR section for this building, stacked newest-brightest. */
+async function dprShowProgressMap(){
+  var buildingId = dprState.buildingId || dprBuildingId(val("dpr-billTo"), val("dpr-jobName"));
+  if (!buildingId){ toast("Pick or type the job first so I know which building's progress to show."); return; }
+  if (!fdb){ toast("The progress map needs an internet connection."); return; }
+  var modal = dprEnsureSectionModal();
+  document.getElementById("dpr-section-title").textContent = "Progress Map — all days";
+  document.getElementById("dpr-section-tracebtns").style.display = "none";
+  document.getElementById("dpr-section-hint").textContent = "Loading progress…";
+  modal.style.display = "";
+  lockBodyScroll();
+  try{
+    var roof = dprSelectedRoofObj();
+    var ctx = await dprSetupSectionMap("dpr-section-map", roof, { readOnly: true });
+    setTimeout(function(){ try{ ctx.map.invalidateSize(); }catch(e){} }, 60);
+    var qs = await fdb.collection("daily_progress_reports")
+      .where("buildingId", "==", buildingId).get();
+    var reports = [];
+    qs.forEach(function(d){ var r = d.data(); if (r && r.section) reports.push(r); });
+    reports.sort(function(a, b){ return String(a.date).localeCompare(String(b.date)); });
+    if (!reports.length){
+      document.getElementById("dpr-section-hint").textContent = "No sections traced for this job yet.";
+      return;
+    }
+    var drawn = 0, allPts = [];
+    reports.forEach(function(r, idx){
+      var s = r.section;
+      var latlngs = null;
+      if (s.mode === "image" && ctx.mode === "image" && s.imageFrameUrl === ctx.frameUrl){
+        latlngs = (s.imageRing || []).map(function(p){ return dprFractionToLatLng(p, ctx); });
+      } else if (s.mode === "geo" && ctx.mode === "geo"){
+        latlngs = (s.ring || []).map(function(p){ return L.latLng(p.lat, p.lng); });
+      }
+      if (!latlngs || latlngs.length < 3) return;
+      var color = DPR_SECTION_COLORS[idx % DPR_SECTION_COLORS.length];
+      var recent = idx >= reports.length - 1; /* newest brightest */
+      var poly = L.polygon(latlngs, { color: color, weight: 2, fillOpacity: recent ? 0.45 : 0.2 }).addTo(ctx.map);
+      poly.bindTooltip((r.date || "") + (r.foreman ? " · " + r.foreman : ""), { permanent: false });
+      latlngs.forEach(function(ll){ allPts.push(ll); });
+      drawn++;
+    });
+    document.getElementById("dpr-section-hint").textContent = drawn +
+      " day" + (drawn === 1 ? "" : "s") + " of progress shown" +
+      (ctx.mode === "image" ? " (roof plan)" : "") + ".";
+    if (allPts.length){ try{ ctx.map.fitBounds(L.latLngBounds(allPts).pad(0.2)); }catch(e){} }
+  }catch(e){
+    document.getElementById("dpr-section-hint").textContent = "Couldn't load the progress map: " + e.message;
+  }
 }
 
 /* ================= progressive-disclosure scaffolding =================
@@ -710,7 +1037,8 @@ async function generateDprPdf(o){
   heading("Crew & Production");
   kvTable([
     ["Crew On Site", (o.crew || []).map(function(c){ return c.name; }).filter(Boolean).join(", ")],
-    ["Headcount", o.headcount], ["Hours Worked", o.hoursWorked], ["Approx. Squares Applied", o.squares]
+    ["Headcount", o.headcount], ["Hours Worked", o.hoursWorked], ["Approx. Squares Applied", o.squares],
+    ["Roof Section Traced", o.section ? (o.section.areaSqFt ? "Yes · ~" + o.section.areaSqFt + " sq ft" : "Yes") : ""]
   ]);
 
   if (o.summary && o.summary.trim()){

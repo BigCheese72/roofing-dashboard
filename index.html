@@ -821,6 +821,18 @@
         <div class="fld"><textarea id="dpr-summary" rows="5" placeholder="General summary of the day's progress…"></textarea></div>
       </div>
 
+      <div class="card" id="dpr-section-card">
+        <h2 class="cond">Roof Section Worked Today</h2>
+        <p class="hint" style="margin:0 0 8px">Trace the area of roof you completed today — on the building's roof plan /
+          drone image if it has one, otherwise satellite. Each day's section stacks up on the base map, so the crew and
+          office can see progress over time.</p>
+        <div class="btnrow" style="margin:0 0 8px">
+          <button class="btn primary" onclick="dprOpenSectionTrace()">✏️ Trace Today's Section</button>
+          <button class="btn" onclick="dprShowProgressMap()">📊 Progress Map (all days)</button>
+        </div>
+        <div id="dpr-section-status"></div>
+      </div>
+
       <div class="card" id="dpr-capture-row">
         <h2 class="cond">Photos</h2>
         <p class="hint" style="margin:0 0 8px">Photos taken through the day. Each gets a caption and prints into the report PDF.</p>

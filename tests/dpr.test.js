@@ -41,6 +41,7 @@ function makeSandbox(){
     toast(){},
     esc(s){ return String(s == null ? "" : s); },
     getBuildingRoofs(){ return [{ id: "roof_default", label: "Roof 1" }]; },
+    L: { latLng(lat, lng){ return { lat: lat, lng: lng }; } },   // minimal Leaflet stub for coord helpers
     setTimeout, clearTimeout
   };
   vm.createContext(sandbox);
@@ -168,4 +169,56 @@ test("create gate: owner and field/foreman roles can submit; office-only roles c
     assert.strictEqual(s.dprCanCreate(), false, "should NOT create: " + role);
     assert.strictEqual(s.dprCanView(), true, "should still view: " + role);
   });
+});
+
+// ---------------- 4. roof section geometry ----------------
+
+test("dprRingAreaSqFt estimates a real-world square within tolerance", () => {
+  const s = makeSandbox();
+  // ~30.9m per 0.000278° lat; build a small square near 40°N and check ft² order.
+  const d = 0.000278; // ~30.9 m
+  const ring = [
+    { lat: 40.0, lng: -80.0 }, { lat: 40.0 + d, lng: -80.0 },
+    { lat: 40.0 + d, lng: -80.0 + d }, { lat: 40.0, lng: -80.0 + d },
+    { lat: 40.0, lng: -80.0 } // closed
+  ];
+  const area = s.dprRingAreaSqFt(ring);
+  // ~30.9m x ~23.7m (lng compressed by cos40) ≈ 730 m² ≈ 7800 ft²; assert sane band.
+  assert.ok(area > 4000 && area < 12000, "area out of expected band: " + area);
+});
+
+test("dprRingAreaSqFt returns null for a degenerate ring", () => {
+  const s = makeSandbox();
+  assert.strictEqual(s.dprRingAreaSqFt([{ lat: 1, lng: 1 }, { lat: 1, lng: 1 }]), null);
+  assert.strictEqual(s.dprRingAreaSqFt(null), null);
+});
+
+test("image-mode fraction round-trips through the base-map coordinate helpers", () => {
+  const s = makeSandbox();
+  const ctx = { w: 1000, h: 600 };
+  const latlng = { lat: 300, lng: 250 };            // a click on the flat image (lat=y px, lng=x px)
+  const f = s.dprLatLngToFraction(latlng, ctx);
+  assert.deepStrictEqual([f.x, f.y], [0.25, 0.5]);   // fractions 0..1
+  const back = s.dprFractionToLatLng(f, ctx);
+  assert.deepStrictEqual([back.lat, back.lng], [300, 250]); // same pixel
+});
+
+test("a traced section survives collect() and fill()", () => {
+  const s = makeSandbox();
+  s.setVal("dpr-jobName", "North Warehouse");
+  s.setVal("dpr-billTo", "Acme");
+  s.setVal("dpr-date", "2026-07-15");
+  s.dprState.section = { roofId: "roof_default", mode: "geo",
+    ring: [{ lat: 40, lng: -80 }, { lat: 40.1, lng: -80 }, { lat: 40.1, lng: -79.9 }, { lat: 40, lng: -80 }],
+    areaSqFt: 1234, createdAt: 111 };
+  const out = s.dprCollect();
+  assert.strictEqual(out.section.mode, "geo");
+  assert.strictEqual(out.section.areaSqFt, 1234);
+  assert.strictEqual(out.section.ring.length, 4);
+
+  // round-trips through fill (o.section -> dprState.section -> collect)
+  const s2 = makeSandbox();
+  s2.setVal("dpr-jobName", "North Warehouse"); s2.setVal("dpr-billTo", "Acme"); s2.setVal("dpr-date", "2026-07-15");
+  s2.dprFill(out);
+  assert.strictEqual(s2.dprCollect().section.areaSqFt, 1234);
 });
