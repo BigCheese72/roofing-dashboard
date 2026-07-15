@@ -208,5 +208,29 @@ service cloud.firestore {
     match /ingested_email_attachments/{idemId} {
       allow read, write: if false;
     }
+
+    // Foundation (construction accounting) jobs cache — Phase 2. A nightly
+    // sync (netlify/functions/foundation-sync.js, via the GitHub Actions cron
+    // in .github/workflows/sync-foundation-jobs.yml) mirrors every ACTIVE
+    // Foundation job here so the work-order job picker/auto-fill read a fast
+    // local collection instead of the accounting DB. Readable by any signed-in
+    // user — these are identifying fields (job name, customer, PM, address),
+    // no more sensitive than the already-open `buildings` data, and the picker
+    // is a normal work-order operation. The financially-sensitive bits are
+    // deliberately NOT here: the contract value is dropped before caching
+    // (mapJobForCache), and labor hours are never cached at all (they stay
+    // behind foundation.read on the live foundation.js connector). Writes are
+    // Admin-SDK only (the sync); no client may write, ever.
+    match /foundation_jobs/{jobId} {
+      allow read: if request.auth != null;
+      allow write: if false;
+    }
+
+    // Last-run summary for the Foundation sync (synced_at, counts). Lets the
+    // app show "jobs last synced ..."; written only by the sync via Admin SDK.
+    match /foundation_sync_meta/{metaId} {
+      allow read: if request.auth != null;
+      allow write: if false;
+    }
   }
 }

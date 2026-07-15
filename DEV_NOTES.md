@@ -2770,12 +2770,60 @@ var, never in the browser or the repo. **Not promoted to production** — held f
   trimmed `job_no` match, the `description`→`name` mapping, and that pay columns + the password
   never reach a response. `firebase-admin` and `mssql` are both stubbed, so it runs offline; the
   fake driver exercises the real builders/mappers end-to-end through the handler.
-- **Not built yet — Phase 2 (left as code comments in `foundation.js`, not scaffolding):**
-  scheduled nightly sync of active jobs into Firestore (so the job picker / WO auto-fill read a
-  fast local cache, not a live DB call per keystroke), WO auto-fill of customer/PM/address from a
-  selected Foundation job, DPR PM from `project_manager_no`, and admin-only labor hours on the WO
-  for holders of `foundation.read`. The clean hooks already exist (`fetchJobs`/`fetchJobHours` +
-  the mappers); don't build the sync/writes until Phase 2 is speced.
+- **Phase 1 CONNECTION VALIDATED (2026-07-15, live from the dev deploy):** `action=jobs` returned
+  500 jobs from a Netlify Function — so the Lambda runtime **can** open outbound TCP to
+  `sql.foundationsoft.com:9000` (no separate proxy host needed), and `action=job_hours` returned
+  real labor with the trimmed match working across a sample of jobs (17053 itself just has no
+  labor logged). See the Phase 2 section below for what's built on top.
+
+### Foundation Phase 2a — nightly job sync into Firestore (dev-only, HELD for sign-off)
+
+Mirrors every **active** Foundation job into a client-readable Firestore cache so the work-order
+job picker and auto-fill read a fast local collection instead of hitting the accounting DB on
+every keystroke. Read-only against Foundation; the only writes are to Firestore.
+
+- **`netlify/functions/foundation-sync.js`** — `action=sync`. Identity-first, fail-closed, and the
+  sync key is **not** a skeleton key. Two callers only: the automated nightly cron (holds
+  `FOUNDATION_SYNC_SECRET` in the `x-foundation-sync-key` header, compared with `timingSafeEqual`,
+  fails closed if unset or < 32 chars) **or** a signed-in human with `foundation.read` (on-demand
+  "sync now"). Anyone else → opaque 401; a signed-in user without the permission → 403; any action
+  other than `sync` from the automated caller → 403. Supports `dryRun`. It calls the existing
+  `foundationDb.fetchJobs()` directly (no self-HTTP) with **limit 0 = no `TOP` cap**, since Watkins
+  has more than 500 active jobs, and upserts them via the Admin SDK in batches of 400.
+- **`.github/workflows/sync-foundation-jobs.yml`** — nightly cron (`0 7 * * *`, ~1–2 AM Central)
+  that POSTs `{"action":"sync"}` to the **dev** deploy with the secret header. Mirrors
+  `poll-inspection-reports.yml` exactly — **not** a Netlify Scheduled Function (those can't attach
+  a header and carry no forgery-proof signal; see the `netlify.toml` end comment). Production is
+  synced only by a deliberate manual `workflow_dispatch` with `target=production`.
+- **Firestore collection `foundation_jobs`** (doc id = sanitized `job_no`). Rule: **read = any
+  signed-in user**, **write = false** (Admin-SDK only). The cached doc is the identifying subset —
+  `job_no`/`job_number`/`name`/`customer_no`/`project_manager_no`/address/city/state/zip/dates +
+  `synced_at`. The **contract value is deliberately dropped** before caching (`mapJobForCache`);
+  it's the one financially-sensitive job field and the picker doesn't need it, so it stays behind
+  `foundation.read` on the live connector. Labor hours are **never** cached (see Phase 2c).
+  `foundation_sync_meta/last` records each run's `synced_at` + counts.
+- **Least-privilege rationale for a broadly-readable cache:** the identifying fields are no more
+  sensitive than the already-open `buildings` collection, and picking a job is a normal WO
+  operation, so any signed-in user can read the cache. The genuinely sensitive data (contract,
+  hours) is excluded from the cache and stays server-side.
+- **Required secret** `FOUNDATION_SYNC_SECRET` (≥ 32 chars) must be set in **both** Netlify
+  (Environment variables) and GitHub (Actions secrets), same value — dedicated, separate from
+  `POLLER_SHARED_SECRET`, so the two automated jobs rotate independently. Until both are set the
+  nightly sync stays off (fail-closed); the human "sync now" path is unaffected.
+- **Tests** (`tests/foundationSync.test.js`): the gate (401 opaque / 403 no-permission / 403
+  skeleton-key / DB+Firestore untouched on rejection), the no-`TOP`-cap pull, contract dropped from
+  the cache, `dryRun` writes nothing, and the doc-id sanitizer. `firebase-admin` + `mssql` stubbed;
+  runs the real builders/cache-mapping/batched-upsert offline end-to-end.
+
+### Foundation Phase 2b/2c/DPR — not built yet (next)
+
+- **2b — WO job picker + auto-fill** (client): a "Foundation Job" picker reading `foundation_jobs`,
+  auto-filling customer/address/name/job# and a new `projectManager` WO field on select.
+- **2c — admin-only labor hours on the WO** (client): a WO card that calls the existing
+  `foundation.js?action=job_hours` and renders only if the server authorizes (`foundation.read`) —
+  hours are never cached.
+- **DPR PM** — blocked until the Daily Progress Report (PR #65) lands on dev; then wire the DPR's
+  PM from `project_manager_no`. Left as a clean hook.
 
 ## Outlook / Microsoft 365 integration (Phase 0: auth + mailbox read, shipped dev-only)
 
@@ -6985,7 +7033,8 @@ console clean throughout.
 | `GRAPH_CLIENT_ID` | `outlook.js` / `lib/graphAuth.js` | yes, for the Outlook/M365 integration to work | App registration (client) id. |
 | `GRAPH_CLIENT_SECRET` | `outlook.js` / `lib/graphAuth.js` | yes, for the Outlook/M365 integration to work | App registration client secret. Time-limited, will be rotated before go-live — treat as a secret, never commit it. |
 | `GRAPH_MAILBOX` | `outlook.js` / `lib/graphAuth.js` | yes, for the Outlook/M365 integration to work | Mailbox this app reads, e.g. `marks@watkinsroofing.net`. Must be a member of the Exchange Application Access Policy's allowed group — see "Outlook / Microsoft 365 integration" above. |
-| `FOUNDATION_SQL_PASSWORD` | `foundation.js` / `lib/foundationDb.js` | yes, for the Foundation (construction accounting) integration to work | Password for the read-only `roofops` SQL login on `sql.foundationsoft.com:9000`. **Secret** — treat as such, never commit it. The rest of the connection (server/port/database/user) is non-secret and hardcoded. Set on all deploy contexts. See "Foundation (construction accounting) integration" above. |
+| `FOUNDATION_SQL_PASSWORD` | `foundation.js` / `foundation-sync.js` / `lib/foundationDb.js` | yes, for the Foundation (construction accounting) integration to work | Password for the read-only `roofops` SQL login on `sql.foundationsoft.com:9000`. **Secret** — treat as such, never commit it. The rest of the connection (server/port/database/user) is non-secret and hardcoded. Set on all deploy contexts. See "Foundation (construction accounting) integration" above. |
+| `FOUNDATION_SYNC_SECRET` | `foundation-sync.js` + `.github/workflows/sync-foundation-jobs.yml` | yes, for the **nightly Foundation→Firestore sync** (Phase 2a) to run automatically | Shared secret (**≥ 32 chars**) authenticating the GitHub Actions cron caller, compared server-side with `timingSafeEqual`. Must be set to the **same value in BOTH** Netlify (Environment variables) and GitHub (Settings → Secrets and variables → Actions). Dedicated to this sync — separate from `POLLER_SHARED_SECRET`. Until both are set the nightly sync stays off (fail-closed); the on-demand "sync now" path (a signed-in user with `foundation.read`) is unaffected. **Secret** — never commit it. |
 
 ### Email (Resend) — designated test recipient, and known blocker
 
