@@ -93,6 +93,49 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // Daily Progress Reports (DPR — Phase 1, see js/dpr.js). BRAND NEW
+    // collection: production's code never touches it, so — unlike the legacy
+    // wide-open field collections above — this one is gated from day one with
+    // zero production risk (same reasoning as the Auth Phase 1 blocks below).
+    //
+    // read  = any signed-in user (view = crew + office; the app's login gate
+    //         already blocks anonymous access, this enforces it at the data
+    //         layer too).
+    // create/update = owner, OR a role whose LIVE roles/{role} doc grants
+    //         dpr.create (resolved via get(), exactly like the audit_logs read
+    //         gate below and requirePermission() server-side). This is the real
+    //         enforcement of "create/submit = field/foreman roles." NOTE: the
+    //         roles collection must be re-seeded (netlify/functions/auth.js
+    //         seed_roles, owner-only) once for the dpr.create grants in
+    //         permissions.js to go live for non-owner users — the owner passes
+    //         regardless, so field testing is never blocked.
+    // delete  = nobody via the client (Admin SDK only), matching every other
+    //         report-bearing collection here.
+    //
+    // Doc id is deterministic (dpr_<buildingId>_<YYYY-MM-DD>) so there is
+    // structurally one report per job per day — see dprDocId() in js/dpr.js.
+    match /daily_progress_reports/{dprId} {
+      allow read: if request.auth != null;
+      allow create, update: if request.auth != null && (
+        request.auth.token.owner == true ||
+        (request.auth.token.role != null &&
+          get(/databases/$(database)/documents/roles/$(request.auth.token.role)).data.permissions['dpr.create'] == true)
+      );
+      allow delete: if false;
+
+      // Subcollections do NOT inherit the parent match block's rules (see the
+      // workorders/photos precedent above), so the DPR's photo docs need their
+      // own explicit rule — same gate as the parent report.
+      match /photos/{photoId} {
+        allow read: if request.auth != null;
+        allow write: if request.auth != null && (
+          request.auth.token.owner == true ||
+          (request.auth.token.role != null &&
+            get(/databases/$(database)/documents/roles/$(request.auth.token.role)).data.permissions['dpr.create'] == true)
+        );
+      }
+    }
+
     match /building_history_events/{eventId} {
       allow read, create, update: if true;
       allow delete: if false;

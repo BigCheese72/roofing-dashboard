@@ -58,6 +58,7 @@
   <button class="tab cond" id="tab-history" onclick="showView('history')" title="Building History">🏢<span class="tab-label"> Building History</span></button>
   <button class="tab cond" id="tab-reports" onclick="showView('reports')" title="Reports">📋<span class="tab-label"> Reports</span></button>
   <button class="tab cond" id="tab-roofmapper" onclick="showView('roofmapper')" title="RoofMapper">🗺️<span class="tab-label"> RoofMapper</span></button>
+  <button class="tab cond" id="tab-dpr" onclick="showView('dpr')" title="Daily Progress Report">📅<span class="tab-label"> Daily Report</span></button>
   <!-- No admin toggle here on purpose (removed 2026-07-12) -- privileged
        controls throughout this app are shown or hidden based on the
        signed-in user's real role/claims (isAdmin, recomputed automatically
@@ -775,6 +776,103 @@
     </div><!-- /rm-desktop-sidebar -->
   </div>
 
+  <!-- ================= Daily Progress Report (DPR) — Phase 1 =================
+       A distinct field-facing section (NOT a work-order type). One report per
+       job per day; multiple crews contribute to the same day's report. All the
+       logic lives in js/dpr.js; this is just the form shell. -->
+  <div id="view-dpr" style="display:none">
+    <div id="dpr-signin-gate" class="card" style="display:none">
+      <p class="hint">Sign in to view and submit daily progress reports.</p>
+    </div>
+    <div id="dpr-body">
+      <div class="btnrow">
+        <button class="btn primary" id="dpr-save-btn" onclick="dprSave()">Save Report</button>
+        <button class="btn" id="dpr-sign-btn" onclick="dprRequestSignature()">✍️ Sign &amp; Lock</button>
+        <button class="btn" onclick="dprDownloadPdf()">Download PDF</button>
+        <button class="btn" onclick="dprShowHistory()">History</button>
+        <button class="btn" onclick="dprNewReport()">➕ New</button>
+      </div>
+      <p class="hint" id="dpr-readonly-hint" style="display:none">View only — your role can browse daily progress reports but can't submit them.</p>
+      <p id="dpr-lock-banner" style="display:none;margin:0 0 10px;padding:8px 12px;background:#FFF3E0;border:1px solid #E8600A;border-radius:6px;color:#8a3b00;font-weight:600"></p>
+
+      <div class="card">
+        <h2 class="cond">Daily Progress Report</h2>
+        <p class="hint" id="dpr-continue-notice" style="display:none;color:#2E7D32"></p>
+        <div class="btnrow" style="margin:0 0 8px">
+          <input type="text" id="dpr-bld-search" placeholder="🔍 Find an existing building…" style="flex:1;min-width:180px" oninput="dprSearchBuildings()">
+          <span class="hint" style="margin:0">Pick an existing job to auto-fill customer &amp; address — or just type a new one below.</span>
+        </div>
+        <div id="dpr-bld-results"></div>
+        <div class="fld" style="max-width:320px">
+          <label>Foreman <span class="hint" style="font-weight:400">— who's filling this out</span></label>
+          <input type="text" id="dpr-foreman" list="dl-dprForeman" placeholder="Start typing a name…"
+            onblur="rememberFieldValue('dprForeman', this.value)">
+        </div>
+        <div class="grid">
+          <div class="fld"><label>Job Name</label><input type="text" id="dpr-jobName" list="dl-dprJobName" onblur="rememberFieldValue('jobName', this.value)"></div>
+          <div class="fld"><label>Customer (Bill To)</label><input type="text" id="dpr-billTo" list="dl-dprBillTo" onblur="rememberFieldValue('billTo', this.value)"></div>
+          <div class="fld"><label>Location</label><input type="text" id="dpr-location" list="dl-dprLocation" onblur="rememberFieldValue('location', this.value)"></div>
+          <div class="fld"><label>Job No.</label><input type="text" id="dpr-jobNo" list="dl-dprJobNo" placeholder="Auto-fills from the job"></div>
+          <div class="fld"><label>Date</label><input type="date" id="dpr-date"></div>
+          <div class="fld"><label>Roof System</label><input type="text" id="dpr-roofSystem" list="dl-roofSystem"></div>
+        </div>
+        <div id="dpr-roof-picker" style="display:none"></div>
+      </div>
+
+      <div class="card">
+        <h2 class="cond">Crew &amp; Hours</h2>
+        <div id="dpr-crew-list"></div>
+        <div class="btnrow"><button class="btn" onclick="dprAddCrewRow()">+ Add Crew Member</button></div>
+        <div class="grid" style="margin-top:10px">
+          <div class="fld"><label>Headcount</label><input type="number" id="dpr-headcount" min="0" step="1"></div>
+          <div class="fld"><label>Hours Worked</label><input type="number" id="dpr-hours" min="0" step="0.25"></div>
+          <div class="fld"><label>Approx. Squares Applied</label><input type="number" id="dpr-squares" min="0" step="0.5"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2 class="cond">Summary</h2>
+        <div class="fld"><textarea id="dpr-summary" rows="5" placeholder="General summary of the day's progress…"></textarea></div>
+      </div>
+
+      <div class="card" id="dpr-section-card">
+        <h2 class="cond">Roof Section Worked Today</h2>
+        <p class="hint" style="margin:0 0 8px">Trace the area of roof you completed today — on the building's roof plan /
+          drone image if it has one, otherwise satellite. Each day's section stacks up on the base map, so the crew and
+          office can see progress over time.</p>
+        <div class="btnrow" style="margin:0 0 8px">
+          <button class="btn primary" onclick="dprOpenSectionTrace()">✏️ Trace Today's Section</button>
+          <button class="btn" onclick="dprShowProgressMap()">📊 Progress Map (all days)</button>
+        </div>
+        <div id="dpr-section-status"></div>
+      </div>
+
+      <div class="card" id="dpr-capture-row">
+        <h2 class="cond">Photos</h2>
+        <p class="hint" style="margin:0 0 8px">Photos taken through the day. Each gets a caption and prints into the report PDF.</p>
+        <div class="btnrow" style="margin:0">
+          <button class="btn primary" onclick="document.getElementById('dprCamInput').click()">📷 Take Photo</button>
+          <button class="btn" onclick="document.getElementById('dprLibInput').click()">+ Add Photos</button>
+        </div>
+        <input type="file" id="dprCamInput" accept="image/*" capture="environment" style="display:none"
+          onchange="dprAddPhotosFromCamera(this.files); this.value='';">
+        <input type="file" id="dprLibInput" accept="image/*" multiple style="display:none"
+          onchange="dprAddPhotosFromFiles(this.files); this.value='';">
+        <div id="dpr-photos-host"></div>
+      </div>
+
+      <!-- LATER-PHASE HOOKS: radio-gated cards (delays, quantities, JSA,
+           incidents, equipment, visitors) drop in here as additional
+           <div class="card"> blocks, each revealed via dprGate() on a Yes/No
+           radio (see js/dpr.js). Nothing built in Phase 1. -->
+
+      <div class="card" id="dpr-history-panel" style="display:none">
+        <h2 class="cond">Daily Progress Reports</h2>
+        <div id="dpr-history-list"></div>
+      </div>
+    </div>
+  </div>
+
 </div>
 
 <div id="cc-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)closeCC()">
@@ -1235,6 +1333,20 @@
 <datalist id="dl-repairItemNotes"></datalist>
 <datalist id="dl-photoCaption"></datalist>
 <datalist id="dl-assetLabel"></datalist>
+<!-- Foremen roster for the Daily Progress Report's Foreman field. Populated
+     from DPR_FOREMEN in js/dpr.js (see dprPopulateForemen()). Empty until
+     Mark provides the roster — the field works as free text meanwhile, and
+     also remembers typed values via field-history autocomplete. -->
+<datalist id="dl-dprForeman"></datalist>
+<!-- DPR field pick-lists, populated from real records (existing buildings +
+     prior daily reports) by dprPopulateDataLists() in js/dpr.js — distinct
+     from the work-order form's device-history datalists so the two don't
+     clobber each other. -->
+<datalist id="dl-dprJobName"></datalist>
+<datalist id="dl-dprBillTo"></datalist>
+<datalist id="dl-dprLocation"></datalist>
+<datalist id="dl-dprJobNo"></datalist>
+<datalist id="dl-dprCrew"></datalist>
 
 <!-- Modularized (see DEV_NOTES.md) -- index.html is now just markup + these
      script tags in order. Plain globals, not ES modules: this app's
@@ -1256,6 +1368,7 @@
 <script src="js/history.js"></script>
 <script src="js/workorders.js"></script>
 <script src="js/roofmapper.js"></script>
+<script src="js/dpr.js"></script>
 <!-- Help Center / tooltips / first-run walkthrough (see js/help.js). Loaded
      last among the modules since it wraps showView() from the outside and
      needs that + every other global already defined; builds its own DOM at

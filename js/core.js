@@ -2824,8 +2824,9 @@ function showView(v){
   /* "home" has no header tab (reached via "+ New", the empty-state button
      in Building History, or tapping the logo) — every other view still
      keeps its tab exactly as before. */
-  ["home","edit","preview","saved","history","reports","roofmapper"].forEach(function(name){
-    document.getElementById("view-" + name).style.display = (name === v ? "" : "none");
+  ["home","edit","preview","saved","history","reports","roofmapper","dpr"].forEach(function(name){
+    var viewEl = document.getElementById("view-" + name);
+    if (viewEl) viewEl.style.display = (name === v ? "" : "none");
     var tabEl = document.getElementById("tab-" + name);
     if (tabEl) tabEl.classList.toggle("active", name === v);
   });
@@ -2835,6 +2836,7 @@ function showView(v){
   if (v === "history") renderHistoryList();
   if (v === "reports"){ renderReportsList(); if (isAdmin){ loadFeedbackBacklog(); loadAuditLogBacklog(); } }
   if (v === "roofmapper") rmOnShow();
+  if (v === "dpr" && typeof dprOnShow === "function") dprOnShow();
   window.scrollTo(0,0);
   if (v === "edit" && pendingPinFindingId){
     var fid = pendingPinFindingId;
