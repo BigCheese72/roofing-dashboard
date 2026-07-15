@@ -873,9 +873,13 @@ function collect(){
      job was picked (js/foundation.js). Kept as its own field (not derived from
      jobNo) so the WO's admin-only labor-hours card can look hours up by the
      exact Foundation job_no even if the human edits the visible Job No. after.
-     Persisted automatically by cloudSaveOrder (copies all keys). */
+     Persisted on the WO by cloudSaveOrder (copies all keys), AND onto the
+     BUILDING doc by ensureCustomerAndBuilding() — customerNo + address ride
+     along so the building carries the full accounting identity/anchor (#76). */
   o.foundationJobNo = (typeof fdnLinkedJobNo !== "undefined" && fdnLinkedJobNo) ? fdnLinkedJobNo : null;
   o.foundationJobName = (typeof fdnLinkedJobName !== "undefined" && fdnLinkedJobName) ? fdnLinkedJobName : "";
+  o.foundationCustomerNo = (typeof fdnLinkedCustomerNo !== "undefined" && fdnLinkedCustomerNo) ? fdnLinkedCustomerNo : null;
+  o.foundationAddress = (typeof fdnLinkedAddress !== "undefined" && fdnLinkedAddress) ? fdnLinkedAddress : "";
   o.roofId = currentRoofId || null;
   /* Multi-roof Inspection only -- null for every other case (a single roof
      selected, or a work order type that doesn't support this at all yet),
@@ -927,7 +931,7 @@ function fill(o){
   /* Restore the Foundation job linkage and refresh its dependent UI (the link
      line + the admin-only labor card). Guarded so this file has no hard
      dependency on js/foundation.js being present. */
-  if (typeof fdnSetLinkedJob === "function") fdnSetLinkedJob(o.foundationJobNo || null, o.foundationJobName || "");
+  if (typeof fdnSetLinkedJob === "function") fdnSetLinkedJob(o.foundationJobNo || null, o.foundationJobName || "", o.foundationCustomerNo || null, o.foundationAddress || "");
   /* Whatever Job No. this order carries is now the LOADED order's number, not
      something this session auto-filled -- so the Change Order autofill below
      must treat it as a human's value and never overwrite it. Reset on every
