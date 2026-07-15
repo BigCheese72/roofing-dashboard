@@ -255,3 +255,35 @@ test("a traced section survives collect() and fill()", () => {
   s2.dprFill(out);
   assert.strictEqual(s2.dprCollect().section.areaSqFt, 1234);
 });
+
+// ---------------- 5. sign-off + lock hooks ----------------
+
+test("sign-off state round-trips through collect/fill and drives dprIsLocked", () => {
+  const s = makeSandbox();
+  assert.strictEqual(s.dprIsLocked(), false, "fresh report is unlocked");
+  s.setVal("dpr-jobName", "North"); s.setVal("dpr-billTo", "Acme"); s.setVal("dpr-date", "2026-07-15");
+  s.dprState.signoff = { signed: true, locked: true, signedByName: "Jose Garcia", signedAt: 111 };
+  const o = s.dprCollect();
+  assert.strictEqual(o.signoff.locked, true);
+  assert.strictEqual(o.signoff.signedByName, "Jose Garcia");
+  assert.strictEqual(s.dprIsLocked(), true);
+
+  // loading a signed doc into a fresh module locks it; loading an unsigned one unlocks it
+  const s2 = makeSandbox();
+  s2.setVal("dpr-jobName", "North"); s2.setVal("dpr-billTo", "Acme"); s2.setVal("dpr-date", "2026-07-15");
+  s2.dprFill(o);
+  assert.strictEqual(s2.dprIsLocked(), true);
+  s2.dprFill(Object.assign({}, o, { signoff: null }));
+  assert.strictEqual(s2.dprIsLocked(), false);
+});
+
+test("a locked report blocks edits at the entry points", () => {
+  const s = makeSandbox();
+  s.dprState.signoff = { locked: true };
+  const beforeCrew = s.dprCrew.length;
+  s.dprAddCrewRow("Nope");
+  assert.strictEqual(s.dprCrew.length, beforeCrew, "crew add is blocked when locked");
+  s.dprState.section = { mode: "geo", ring: [{ lat: 1, lng: 1 }] };
+  s.dprClearSection();
+  assert.ok(s.dprState.section, "section clear is blocked when locked");
+});

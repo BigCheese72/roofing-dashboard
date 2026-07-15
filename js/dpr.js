@@ -201,6 +201,7 @@ function dprOnShow(){
   dprRenderCrew();
   dprRenderPhotos();
   dprRenderSectionStatus();
+  dprApplySignoffLock();
   dprHideHistory();
 }
 function dprTodayStr(){
@@ -367,11 +368,13 @@ async function dprLoadForBuildingDate(){
 
 /* ================= crew roster + headcount ================= */
 function dprAddCrewRow(name){
+  if (dprIsLocked()){ toast("This report is signed and locked."); return; }
   dprCrew.push({ name: name || "" });
   dprRenderCrew();
   dprSyncHeadcount();
 }
 function dprRemoveCrewRow(idx){
+  if (dprIsLocked()) return;
   dprCrew.splice(idx, 1);
   dprRenderCrew();
   dprSyncHeadcount();
@@ -419,6 +422,7 @@ function dprSyncHeadcount(){
 function dprAddPhotosFromFiles(files){ dprIngestPhotos(files, false); }
 function dprAddPhotosFromCamera(files){ dprIngestPhotos(files, true); }
 function dprIngestPhotos(files, useDeviceGps){
+  if (dprIsLocked()){ toast("This report is signed and locked."); return; }
   var list = Array.prototype.slice.call(files || []);
   if (!list.length) return;
   var gpsPromise = useDeviceGps ? captureDeviceGps() : Promise.resolve({ ok: false });
@@ -463,10 +467,12 @@ function dprIngestPhotos(files, useDeviceGps){
   });
 }
 function dprRemovePhoto(idx){
+  if (dprIsLocked()) return;
   dprPhotos.splice(idx, 1);
   dprRenderPhotos();
 }
 function dprMovePhoto(idx, dir){
+  if (dprIsLocked()) return;
   var j = idx + dir;
   if (j < 0 || j >= dprPhotos.length) return;
   var tmp = dprPhotos[idx]; dprPhotos[idx] = dprPhotos[j]; dprPhotos[j] = tmp;
@@ -521,6 +527,7 @@ function dprCollect(){
     squares: val("dpr-squares"),
     summary: val("dpr-summary"),
     section: dprState.section || null,   /* the roof area traced for today (progress overlay) */
+    signoff: dprState.signoff || null,   /* signature + lock state (see sign-off/lock hooks below) */
     photos: dprPhotos.slice()
     /* LATER-PHASE HOOKS (not built in Phase 1): delays{}, quantities[], jsa{},
        incidents[], equipment[], visitors[] — each will be a radio-gated block
@@ -548,6 +555,8 @@ function dprFill(o){
   dprCrew = (o.crew || []).map(function(c){ return { name: c.name || "" }; });
   dprPhotos = (o.photos || []).map(function(p){ return Object.assign({}, p); });
   dprState.section = o.section || null;
+  dprState.signoff = o.signoff || null;
+  dprApplySignoffLock();
   /* Refresh roofs for the roof picker if we have the building loaded. */
   if (dprState.buildingId && fdb){
     fdb.collection("buildings").doc(dprState.buildingId).get().then(function(snap){
@@ -571,6 +580,7 @@ function dprValidate(o){
 }
 async function dprSave(){
   if (!dprCanCreate()){ toast("Your role can view daily progress reports but can't submit them."); return; }
+  if (dprIsLocked()){ toast("This report is signed and locked — it can't be edited."); return; }
   var o = dprCollect();
   var problem = dprValidate(o);
   if (problem){ toast(problem); return; }
@@ -671,10 +681,12 @@ function dprNewReport(){
   var notice = document.getElementById("dpr-continue-notice");
   if (notice) notice.style.display = "none";
   dprState.section = null;
+  dprState.signoff = null;
   dprRenderRoofPicker();
   dprRenderCrew();
   dprRenderPhotos();
   dprRenderSectionStatus();
+  dprApplySignoffLock();
   var results = document.getElementById("dpr-bld-results");
   if (results) results.innerHTML = "";
   window.scrollTo(0, 0);
@@ -827,6 +839,7 @@ function dprEnsureSectionModal(){
 
 async function dprOpenSectionTrace(){
   if (!dprCanCreate()){ toast("Your role can view reports but can't edit them."); return; }
+  if (dprIsLocked()){ toast("This report is signed and locked."); return; }
   var modal = dprEnsureSectionModal();
   document.getElementById("dpr-section-title").textContent = "Trace Today's Section";
   document.getElementById("dpr-section-tracebtns").style.display = "";
@@ -1057,6 +1070,7 @@ function dprSectionCancel(){
   dprTrace = null;
 }
 function dprClearSection(){
+  if (dprIsLocked()){ toast("This report is signed and locked."); return; }
   if (!dprState.section) return;
   if (!confirm("Remove the traced section from today's report?")) return;
   dprState.section = null;
@@ -1124,6 +1138,109 @@ async function dprShowProgressMap(){
     if (allPts.length){ try{ ctx.map.fitBounds(L.latLngBounds(allPts).pad(0.2)); }catch(e){} }
   }catch(e){
     document.getElementById("dpr-section-hint").textContent = "Couldn't load the progress map: " + e.message;
+  }
+}
+
+/* ================= sign-off + lock — INTEGRATION HOOKS ONLY =================
+   The signature pad, "send to a selectable person," the CompanyCam copy, and
+   CC↔Foundation matching are being built in a PARALLEL session and live in
+   other files (companycam.js, the signature flow, backend). This module owns
+   ONLY the DPR side: the lock state, read-only enforcement once locked, and a
+   single stable entry point + decoupled DOM events the other work plugs into.
+   Nothing here opens a signature pad, sends anything, or touches CompanyCam.
+
+   CONTRACT for the parallel session (no function-name coupling either way):
+   - To sign + lock a DPR: call  dprApplySignoff({ signedByName, signatureRef })
+     — it persists the signature, marks the report locked, saves, applies the
+     read-only UI, then dispatches a `dpr:signed` event.
+   - To drive the signature pad from the DPR's "Sign & Lock" button: listen for
+     the `dpr:request-signature` event, set detail.handled = true, capture the
+     signature, then call detail.applySignoff({...}).
+   - After lock, react to the `dpr:signed` event (detail: { id, buildingId,
+     companyCamProjectId, doc, buildPdf }) to send the copy, push to CompanyCam,
+     and match/lock CC + Foundation to the job. `buildPdf(doc)` returns the DPR
+     jsPDF doc (same one Download uses). The building already carries
+     companyCamProjectId; a Foundation job id can be stamped onto `doc` here too.
+   The DPR doc's `signoff` field is the source of truth:
+     { signed, locked, signedByName, signedAt, signatureRef,
+       distributedAt?, distributedTo?, ccPushedAt?, foundationJobId? }  */
+function dprIsLocked(){ return !!(dprState.signoff && dprState.signoff.locked); }
+var DPR_LOCK_READONLY_FIELDS = ["dpr-foreman", "dpr-jobName", "dpr-billTo", "dpr-location",
+  "dpr-jobNo", "dpr-roofSystem", "dpr-date", "dpr-headcount", "dpr-hours", "dpr-squares",
+  "dpr-summary", "dpr-bld-search"];
+function dprApplySignoffLock(){
+  var locked = dprIsLocked();
+  var s = dprState.signoff || {};
+  var banner = document.getElementById("dpr-lock-banner");
+  if (banner){
+    banner.style.display = locked ? "" : "none";
+    if (locked){
+      banner.textContent = "🔒 Signed & locked" +
+        (s.signedByName ? " by " + s.signedByName : "") +
+        (s.signedAt ? " on " + new Date(s.signedAt).toLocaleDateString() : "") +
+        " — this report can no longer be edited.";
+    }
+  }
+  /* Save + the sign button disappear when locked; view-only actions (History,
+     Download PDF, Progress Map, New) stay. */
+  var saveBtn = document.getElementById("dpr-save-btn");
+  if (saveBtn) saveBtn.style.display = (locked || !dprCanCreate()) ? "none" : "";
+  var signBtn = document.getElementById("dpr-sign-btn");
+  if (signBtn) signBtn.style.display = (locked || !dprCanCreate()) ? "none" : "";
+  /* Freeze the always-on inputs. Crew/photo/section edits are additionally
+     blocked at their entry points (dprIsLocked guards below), which also covers
+     the dynamically-rendered rows. */
+  DPR_LOCK_READONLY_FIELDS.forEach(function(id){
+    var el = document.getElementById(id);
+    if (el) el.readOnly = locked;
+  });
+  var capRow = document.getElementById("dpr-capture-row");
+  if (capRow && locked) capRow.style.display = "none";
+  else if (capRow && dprCanCreate()) capRow.style.display = "";
+}
+/* The single entry point the parallel session calls to sign + lock a report. */
+async function dprApplySignoff(signoff){
+  if (!dprCanCreate()){ toast("Only field/foreman roles can sign off a report."); return false; }
+  if (dprIsLocked()){ toast("This report is already signed and locked."); return false; }
+  var o = dprCollect();
+  var problem = dprValidate(o);
+  if (problem){ toast(problem); return false; }
+  if (!fdb){ toast("No internet — can't sign and lock the report right now."); return false; }
+  var prev = dprState.signoff;
+  dprState.signoff = Object.assign({ signed: true, locked: true, signedAt: Date.now() }, signoff || {});
+  o.signoff = dprState.signoff;
+  try{
+    if (typeof ensureCustomerAndBuilding === "function"){ try{ await ensureCustomerAndBuilding(o); }catch(e){} }
+    await dprCloudSave(o);
+    dprState.id = o.id;
+  }catch(e){ dprState.signoff = prev || null; toast(dprSaveErrMsg(e)); return false; }
+  dprApplySignoffLock();
+  toast("Report signed and locked ✓");
+  dprDispatchSignoffEvent("dpr:signed", o);
+  return true;
+}
+function dprDispatchSignoffEvent(name, o){
+  try{
+    document.dispatchEvent(new CustomEvent(name, { detail: {
+      id: o.id, buildingId: o.buildingId, companyCamProjectId: o.companyCamProjectId || null,
+      doc: o, buildPdf: generateDprPdf
+    } }));
+  }catch(e){ /* CustomEvent unsupported — non-fatal, the report is still saved+locked */ }
+}
+/* Wired to the DPR "✍️ Sign & Lock" button. Hands off to the parallel session's
+   signature pad via a cancelable event; until that ships, it says so. */
+function dprRequestSignature(){
+  if (dprIsLocked()){ toast("This report is already signed and locked."); return; }
+  if (!dprCanCreate()){ toast("Only field/foreman roles can sign a report."); return; }
+  var o = dprCollect();
+  var problem = dprValidate(o);
+  if (problem){ toast(problem); return; }
+  var ev = null;
+  try{ ev = new CustomEvent("dpr:request-signature", { cancelable: true,
+    detail: { id: o.id, doc: o, applySignoff: dprApplySignoff, handled: false } }); }catch(e){}
+  if (ev) document.dispatchEvent(ev);
+  if (!ev || !ev.detail.handled){
+    toast("Signature & lock is being added in a separate update — this button activates once that ships.");
   }
 }
 
