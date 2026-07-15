@@ -185,13 +185,16 @@
       </div>
       <div class="btnrow" style="margin:0 0 12px">
         <button class="btn" onclick="openBuildingPicker()">🔍 Select Existing Building</button>
-        <span class="hint" style="margin:0">Picks an existing customer/building's info into the fields below — or just type a new one in directly.</span>
+        <button class="btn" onclick="openFoundationPicker()">🏗️ Foundation Job</button>
+        <span class="hint" style="margin:0">Pick an existing building, or a Foundation job to auto-fill customer / PM / address — or just type a new one in directly.</span>
       </div>
+      <div id="fdn-link-info" class="hint" style="margin:0 0 10px;display:none"></div>
       <div class="grid">
         <div class="fld"><label>Job Name</label><input type="text" id="jobName" list="dl-jobName" onblur="rememberFieldValue('jobName', this.value); refreshInspectionRoofPickerIfNeeded();"></div>
         <div class="fld"><label>Location</label><input type="text" id="location" list="dl-location" onblur="rememberFieldValue('location', this.value)"></div>
         <div class="fld"><label>Date of Service</label><input type="text" id="serviceDate"></div>
         <div class="fld"><label>Job No.</label><input type="text" id="jobNo"></div>
+        <div class="fld"><label>Project Manager</label><input type="text" id="projectManager" list="dl-projectManager"></div>
         <div class="fld"><label>Bill To</label><input type="text" id="billTo" list="dl-billTo" onblur="rememberFieldValue('billTo', this.value); refreshInspectionRoofPickerIfNeeded();"></div>
         <div class="fld"><label>Billing Contact</label><input type="text" id="billContact" list="dl-contactName" onblur="rememberFieldValue('contactName', this.value)"></div>
         <div class="fld"><label>Contact Phone</label><input type="text" id="billPhone" list="dl-contactPhone" onblur="rememberFieldValue('contactPhone', this.value)"></div>
@@ -217,6 +220,15 @@
       </div>
       <div class="fld" id="wo-reportedarea-fld"><label>Reported Leak Area</label>
         <textarea id="reportedArea" rows="3"></textarea></div>
+    </div>
+
+    <!-- Foundation labor hours (admin-grade). Hidden by default; populated only
+         when the linked Foundation job's hours come back authorized from the
+         server (foundation.read) — see js/foundation.js fdnRefreshLaborCard().
+         Hours are fetched live from the Foundation connector, never cached. -->
+    <div class="card" id="wo-foundation-labor-card" style="display:none">
+      <h2 class="cond">🏗️ Foundation Labor Hours</h2>
+      <div id="wo-foundation-labor-body" class="hint">Loading…</div>
     </div>
 
     <div class="card" id="wo-inspection-card" style="display:none">
@@ -882,6 +894,24 @@
   </div>
 </div>
 
+<!-- Foundation job picker (Phase 2). Reads the client-readable foundation_jobs
+     cache (populated by the nightly sync) and, on select, auto-fills the WO's
+     job name / customer / PM / address / job no. Mirrors the Select-Existing-
+     Building picker above -- see js/foundation.js. -->
+<div id="fdn-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)closeFoundationPicker()">
+  <div style="background:#fff;max-width:640px;margin:4vh auto;border-radius:8px;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;width:94%">
+    <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
+      <b class="cond" style="font-size:17px">Select a Foundation Job</b>
+      <span style="flex:1"></span>
+      <button class="btn" onclick="closeFoundationPicker()">Close</button>
+    </div>
+    <div style="padding:14px 16px;overflow:auto">
+      <input type="text" id="fdn-search" placeholder="Search by job name, number, customer, PM, or city…" style="width:100%;margin-bottom:10px;box-sizing:border-box" oninput="fdnFilter()">
+      <div id="fdn-list" class="hint">Loading…</div>
+    </div>
+  </div>
+</div>
+
 <!-- Move/reassign a roof to a different building (Mark: traced a roof onto
      the wrong building, no way out). Deliberately a SEPARATE, smaller modal
      from #bp-modal above rather than a reuse -- bpSelectBuilding() is
@@ -1220,6 +1250,7 @@
      these modules, so it must load dead last, after all seven. -->
 <script src="js/core.js"></script>
 <script src="js/companycam.js"></script>
+<script src="js/foundation.js"></script>
 <script src="js/export.js"></script>
 <script src="js/photos.js"></script>
 <script src="js/history.js"></script>
