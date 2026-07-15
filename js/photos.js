@@ -1390,6 +1390,65 @@ function removePhoto(i){
      forget: nothing downstream depends on this completing. */
   if (removed && removed.localId) idbDeletePhoto(removed.localId);
 }
+/* Replace a photo IN PLACE at its existing slot, rather than appending a
+   fresh one to the end. This is the recovery path for a dead slot (an image
+   whose bytes were lost — see photoSlotIsEmpty/ensurePhotosLoadedForExport):
+   the tech picks a replacement and it lands in the SAME position, keeping the
+   slot's caption and finding assignment instead of leaving a blank behind and
+   adding a stray photo at the bottom. Same decode/resize/compress pipeline as
+   addPhotosFromFiles(); GPS comes from the NEW image's EXIF (the old slot had
+   no usable data anyway). Opens its own one-shot file picker so it can be
+   wired to a single per-slot button. */
+function replacePhotoAt(i){
+  if (i < 0 || i >= photos.length) return;
+  var input = document.createElement("input");
+  input.type = "file";
+  input.accept = "image/*";
+  input.style.display = "none";
+  input.onchange = function(){
+    var file = input.files && input.files[0];
+    if (file) processReplacementPhoto(i, file);
+    if (input.parentNode) input.parentNode.removeChild(input);
+  };
+  document.body.appendChild(input);
+  input.click();
+}
+function processReplacementPhoto(i, file){
+  var old = photos[i] || {};
+  var reader = new FileReader();
+  reader.onload = function(){
+    var exifGps = dataUrlExifGps(reader.result);
+    var img = new Image();
+    img.onload = function(){
+      var preset = photoPreset();
+      var MAX = preset.max, w = img.width, h = img.height;
+      if (w > MAX || h > MAX){
+        if (w >= h){ h = Math.round(h * MAX / w); w = MAX; }
+        else { w = Math.round(w * MAX / h); h = MAX; }
+      }
+      var c = document.createElement("canvas");
+      c.width = w; c.height = h;
+      c.getContext("2d").drawImage(img, 0, 0, w, h);
+      /* Keep the slot's caption + finding assignment; the new image supplies
+         everything else. A brand-new localId so it can't collide with the
+         dead slot's orphaned IndexedDB key. */
+      photos[i] = { caption: old.caption || "", img: c.toDataURL("image/jpeg", preset.q),
+        thumb: makeThumbDataUrl(img), w: w, h: h,
+        finding_id: old.finding_id || null, gps: exifGps, localId: makeLocalPhotoId() };
+      idbPutPhoto(photos[i].localId, photos[i].img);
+      renderPhotos();
+      if (photos[i].finding_id){
+        if (findingById(photos[i].finding_id)) renderFindings();
+        if (inspectionChecklistItemById(photos[i].finding_id)) renderInspectionChecklist();
+      }
+      toast("Photo " + (i + 1) + " replaced");
+    };
+    img.onerror = function(){ toast("Couldn't read that photo"); };
+    img.src = reader.result;
+  };
+  reader.onerror = function(){ toast("Couldn't read that photo"); };
+  reader.readAsDataURL(file);
+}
 /* Swaps two photos in place — works identically for a device-uploaded photo
    or a CompanyCam import, since both end up in the same photos[] shape
    (caption/img/w/h/finding_id, +ccPhotoId/gps for CompanyCam ones). The
