@@ -676,12 +676,43 @@ async function resolvePhotoImg(p){
     return dataUrl;
   }catch(e){ return null; }
 }
+/* A photo slot with nothing to show, nothing to upload, and nothing to
+   recover -- no in-memory bytes (img), no Storage pointer (storageRef), no
+   display fallback (imgFallback/thumb), and no local IndexedDB backup
+   handle (localId). This is the terminal state a photo reaches once its
+   bytes are gone (the storage-quota eviction saga): cloudFetchOrder
+   rehydrates it as img:null/storageRef:null with no localId, and every
+   save used to faithfully RE-persist it as an empty photoDoc -- so the
+   blank could never be gotten rid of and Preview flagged it forever.
+   cloudSaveOrder now drops these instead of resurrecting them. Strict on
+   purpose: a photo carrying ANY of those signals is NOT dropped (it can
+   still be shown or recovered) -- it flows through the normal save path
+   and, if it turns out to be unrecoverable, is surfaced for one-tap
+   removal at Preview (ensurePhotosLoadedForExport). See "Dead photo
+   slots" in DEV_NOTES.md. */
+function photoSlotIsEmpty(p){
+  return !!p && !p.img && !p.storageRef && !p.imgFallback && !p.thumb && !p.localId;
+}
+/* The photo's Storage object index, parsed out of its storageRef path
+   (workorders/<id>/<index>.jpg). Storage paths are index-based, so this
+   is how we tell which Storage object a photo actually points at,
+   independent of where the photo currently sits in the array. Returns
+   null for a photo with no/malformed storageRef. */
+function photoStorageIndex(p){
+  var m = p && p.storageRef && /^workorders\/[^/]+\/(\d+)\.jpg$/.exec(p.storageRef);
+  return m ? +m[1] : null;
+}
 async function cloudSaveOrder(o){
   if (!fdb) throw new Error("cloud not available");
   var main = {};
   Object.keys(o).forEach(function(k){ if (k !== "photos") main[k] = (o[k] == null ? "" : o[k]); });
   var ph = o.photos || [];
-  main.photoCount = ph.length;
+  /* Drop dead slots (see photoSlotIsEmpty) rather than re-persist them,
+     and compact what survives to a contiguous 0..n-1. photoCount reflects
+     the compacted set so the cleanup below knows the real range. */
+  var writePhotos = ph.filter(function(p){ return !photoSlotIsEmpty(p); });
+  var droppedEmpty = ph.length - writePhotos.length;
+  main.photoCount = writePhotos.length;
   main.savedAt = Date.now();
   var ref = fdb.collection("workorders").doc(o.id);
   var prevCount = 0;
@@ -730,28 +761,50 @@ async function cloudSaveOrder(o){
      "Save-time photo data-loss guard" in DEV_NOTES.md. */
   var uploadFailures = 0, preservedCount = 0;
   var ops = [];
-  for (var i = 0; i < ph.length; i++){
-    var p = ph[i];
+  /* Every Storage object index some surviving photo still points at after
+     this save. Cleanup below deletes Storage objects reference-awarely --
+     ONLY those no photo points at anymore -- instead of the old naive
+     trailing index range that would delete a still-referenced object and
+     silently destroy a DIFFERENT photo's bytes on any remove/reorder (the
+     real engine of the photo-loss saga). See "Storage index realignment"
+     in DEV_NOTES.md. */
+  var referencedStorage = {};
+  for (var i = 0; i < writePhotos.length; i++){
+    var p = writePhotos[i];
     var storageRef = p.storageRef || null;
     var existingImg = null; // base64 backup already in Firestore -- carried forward as-is unless this save uploads a fresh replacement
-    var uploadAttemptedAndFailed = false;
+    /* Trust the positional existing-doc lookup only when this save did NOT
+       move photos: no dead slot was dropped ahead of anything AND this
+       photo's Storage object already sits at its slot index. Under a shift
+       doc p<i> may belong to a different photo, so its base64/storageRef
+       must not be adopted here. */
+    var positionStable = droppedEmpty === 0 && (!storageRef || photoStorageIndex(p) === i);
     if (p.img){
       try{ storageRef = await uploadPhotoToStorage(o.id, i, p.img); }
-      catch(e){ uploadFailures++; uploadAttemptedAndFailed = true; console.warn("photo upload failed, will retry on next save", e); }
+      catch(e){ uploadFailures++; console.warn("photo upload failed, will retry on next save", e); }
+    } else if (storageRef && photoStorageIndex(p) !== i){
+      /* A surviving photo whose Storage object sits at a different index
+         than its new slot (a dead slot was dropped ahead of it, or it was
+         reordered). Re-home the bytes to match: fetch from the old path
+         and re-upload at index i so Storage index, doc index and array
+         index agree again. If the fetch fails (offline / already gone),
+         keep the old storageRef untouched -- the reference-aware cleanup
+         below never deletes an object a photo still points at, so nothing
+         is lost; the slots simply stay out of alignment until a save that
+         can reach Storage. */
+      try{
+        var moved = await resolvePhotoImg(p); // fetches old path, sets p.img
+        if (moved) storageRef = await uploadPhotoToStorage(o.id, i, moved);
+      }catch(e){ console.warn("couldn't realign photo storage (keeping existing ref — no bytes deleted)", e); }
     }
-    if (!p.img || !storageRef){
-      /* Look up the existing cloud doc whenever this save isn't supplying
-         a fresh, successfully-uploaded image for this photo. Covers both
-         the dangerous case (no storageRef survives at all -- see the
-         preserve/preservedCount logic below) and the routine one: a photo
-         that already has a storageRef and whose base64 the client never
-         loaded (cloudFetchOrder doesn't hydrate it for display). Caught
-         by testing against real data: without this, a plain .set() below
-         silently dropped the existing base64 backup on every ordinary
-         edit->save of an already-migrated photo -- nothing was lost from
-         Storage, but it defeated the deliberate cooling-off period (both
-         copies kept until the migration is fully trusted) the backup was
-         there for. */
+    if ((!p.img || !storageRef) && positionStable){
+      /* CRITICAL DATA-LOSS GUARD (see the block comment above): on a stable
+         save, a photo with neither fresh img nor a surviving storageRef is
+         checked against what the cloud already holds, and real existing
+         data is PRESERVED rather than overwritten with nulls. Runs only
+         when positionStable so a shifted save can't cross-wire p<i> with a
+         different photo's doc; a shifted photo relies on its own re-homed
+         bytes, and a genuinely ref-less survivor is surfaced at Preview. */
       try{
         var existingSnap = await ref.collection("photos").doc("p" + i).get();
         if (existingSnap.exists){
@@ -763,6 +816,10 @@ async function cloudSaveOrder(o){
           }
         }
       }catch(e){ console.warn("couldn't check existing photo before save (proceeding without it — no data was overwritten)", e); }
+    }
+    if (storageRef){
+      var refIdx = photoStorageIndex({ storageRef: storageRef });
+      if (refIdx !== null) referencedStorage[refIdx] = true;
     }
     /* ccPhotoId  : set when this photo was IMPORTED FROM CompanyCam.
        ccFeedPhotoId: set when this photo was PUSHED TO CompanyCam's photo feed
@@ -783,9 +840,18 @@ async function cloudSaveOrder(o){
     if (existingImg) photoDoc.img = existingImg;
     ops.push(ref.collection("photos").doc("p" + i).set(photoDoc));
   }
-  for (var j = ph.length; j < prevCount; j++){
+  /* Stale DOCS: any photo doc beyond the compacted length is a leftover
+     from a larger previous save -- safe to delete (Firestore doc only, no
+     bytes). */
+  for (var j = writePhotos.length; j < prevCount; j++){
     ops.push(ref.collection("photos").doc("p" + j).delete());
-    ops.push(deletePhotoFromStorage(o.id, j));
+  }
+  /* Orphaned STORAGE: reference-aware. Sweep every index in the
+     previously-used range and delete ONLY objects no surviving photo
+     still points at -- the dropped dead slots and the old pre-realign
+     locations, never a live photo's bytes. */
+  for (var k = 0; k < prevCount; k++){
+    if (!referencedStorage[k]) ops.push(deletePhotoFromStorage(o.id, k));
   }
   await Promise.all(ops);
   if (uploadFailures > 0){
@@ -1800,9 +1866,19 @@ function renderPhotos(){
     d.ondragstart = function(){ photoDragStart(i); };
     d.ondragover = photoDragOver;
     d.ondrop = function(e){ photoDrop(e, i); };
+    /* A photo with no full-resolution bytes anywhere -- no in-memory img,
+       no Storage pointer, no display fallback -- can't go into a report
+       (a bare thumb isn't enough). Flag it plainly and offer an in-place
+       Replace so the slot is fixable without hunting, instead of the tech
+       hitting the vaguer "couldn't be loaded" wall only at Preview. A
+       normal cloud-backed photo (storageRef present, img not yet resolved)
+       is NOT flagged. */
+    var missingImg = !p.img && !p.storageRef && !p.imgFallback;
     d.innerHTML =
       '<div class="photo-row"><b>Photo ' + (i+1) + '</b>' +
+      (missingImg ? '<span class="hint" style="color:#D64545;font-weight:600;margin-left:6px">⚠️ Image missing</span>' : '') +
       ((p.thumb || p.imgFallback || p.img) ? '<img class="thumb" src="' + (p.thumb || p.imgFallback || p.img) + '" onclick="openPhotoLightbox(' + i + ')" title="Tap to enlarge">' : '') +
+      (missingImg ? '<button class="btn" onclick="replacePhotoAt(' + i + ')" title="Pick a replacement image for this slot (keeps its caption and finding)">Replace</button>' : '') +
       '<input type="text" style="flex:1" placeholder="Caption" data-i="' + i + '" value="' + esc(p.caption) + '" list="dl-photoCaption" onblur="rememberFieldValue(\'photoCaption\', this.value)">' +
       '<div class="photo-move-btns">' +
         '<button class="btn" onclick="movePhoto(' + i + ', -1)"' + (i === 0 ? " disabled" : "") + ' title="Move up">▲</button>' +

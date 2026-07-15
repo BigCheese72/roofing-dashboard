@@ -7964,3 +7964,60 @@ the building inheritance, and "never auto-create").
   history beyond photos/documents.
 - **RoofOps Admin / Customer Portal**: separate modules, out of scope for this repo
   for now.
+
+## Dead photo slots
+
+A "dead slot" is a photo whose image bytes are gone everywhere: no in-memory
+`img`, no Storage pointer (`storageRef`), no display fallback (`imgFallback`/
+`thumb`), and no local IndexedDB backup handle (`localId`). It's the terminal
+state after the storage-quota eviction saga — `cloudFetchOrder` rehydrates the
+lost photo as `img:null`/`storageRef:null` with no `localId`.
+
+The bug it caused: every save used to faithfully **re-persist** that empty slot
+as an empty `photoDoc`. A "Saved to cloud ✓" was truthful (nothing *failed* to
+upload), yet Preview's fail-safe kept reporting "N photos couldn't be loaded"
+forever, because the blank could never be gotten rid of. Re-adding photos only
+*appended* working ones; the dead slots stayed.
+
+Fix, two halves:
+- **Save** (`cloudSaveOrder`, `photoSlotIsEmpty` in js/core.js): dead slots are
+  **dropped**, not re-written. Strict test on purpose — a slot with *any* of the
+  signals above (even just a thumb, or a `localId` that might still recover) is
+  NOT dropped; it flows through the normal path and is surfaced at Preview.
+- **Preview** (`ensurePhotosLoadedForExport` in js/export.js): three-way instead
+  of one scary message — recover Storage/on-device bytes silently; keep the hard
+  stop for a *transient* load failure (a real pointer that won't fetch right
+  now); and for a **confirmed** dead slot offer one-tap removal (`offerRemove
+  DeadPhotos`) then continue. A slot is only ever called dead while ONLINE and
+  able to confirm against the cloud — offline, an unconfirmable slot is treated
+  as a transient load failure, never removed. `replacePhotoAt` (js/photos.js)
+  lets the tech drop a fresh image into the same slot (keeping its caption +
+  finding) instead of appending a stray one; dead slots are flagged inline in
+  the gallery with an "⚠️ Image missing" badge + Replace button.
+
+## Storage index realignment
+
+Photo Storage paths are **index-based**: `workorders/<id>/<index>.jpg`, and
+`resolvePhotoImg` parses the index back out of `storageRef`. That made photo
+*deletion* dangerous: `cloudSaveOrder` used to clean up removed photos with a
+naive trailing index range (`for j = ph.length; j < prevCount`) calling
+`deletePhotoFromStorage(id, j)`. Because array position and Storage index drift
+apart the moment any non-last photo is removed or reordered, that range would
+delete a Storage object a **different, surviving** photo still pointed at —
+silently destroying its bytes (a primary engine of the photo-loss saga; also how
+a later photo could go dead right after you removed an earlier one).
+
+Fix (js/core.js `cloudSaveOrder`):
+- Surviving photos are **compacted** to a contiguous `0..n-1`, and any photo
+  whose Storage object is at the wrong index is **re-homed** — fetch the bytes
+  from the old path and re-upload at its new index — so Storage index, doc index
+  and array index agree again. If the fetch fails (offline), the old `storageRef`
+  is kept untouched.
+- Storage deletion is now **reference-aware**: after the save, only Storage
+  objects that NO surviving photo still points at (`referencedStorage`) are
+  deleted — never a live photo's bytes, whatever index it lives at. This is what
+  makes remove / reorder / dead-slot-drop all safe.
+- The positional existing-doc preserve lookup (the CRITICAL DATA-LOSS GUARD) runs
+  only on a **stable** save (nothing shifted), so a compacted save can't
+  cross-wire `p<i>` with a different photo's doc; a shifted photo relies on its
+  own re-homed bytes instead.
