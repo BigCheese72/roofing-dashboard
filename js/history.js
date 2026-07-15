@@ -1113,7 +1113,7 @@ async function uploadPdfToCompanyCam(doc, o){
     var base64 = doc.output("datauristring").split("base64,")[1] || "";
     if (!base64) throw new Error("couldn't encode PDF");
     await ccApiPost({ action: "upload_document", project_id: o.companyCamProjectId,
-      name: pdfFileName(), attachment: base64 });
+      name: (typeof ccDocumentName === "function" ? ccDocumentName(o) : pdfFileName()), attachment: base64 });
     return { ok: true };
   }catch(e){
     return { ok: false, error: e.message };

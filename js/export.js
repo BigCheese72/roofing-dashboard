@@ -1167,6 +1167,24 @@ function pdfFileName(){
     .replace(/[^A-Za-z0-9_-]+/g, "_").replace(/_+/g, "_").replace(/^_|_$/g, "");
   return (base || prefix) + ".pdf";
 }
+/* Name used for the PDF saved into the linked CompanyCam project (Mark,
+   2026-07-15: "the save pdf on CC should include the job number ... like
+   leak_17362, or repair_17362"). Deterministic {type}_{jobNo} -- both a
+   readable label in the project's Documents AND the stable key that lets the
+   re-send REPLACE the prior version instead of piling up duplicates (issue #54).
+   Falls back to the job name when there's no job number. */
+function ccDocumentTypeSlug(woType){
+  return ({ "Leak / Service": "leak", "Repair": "repair", "Inspection": "inspection",
+    "Warranty": "warranty", "Change Order": "changeorder" })[woType] || "workorder";
+}
+function ccDocumentName(o){
+  o = o || collect();
+  var slug = ccDocumentTypeSlug(o.woType);
+  var jobNo = String(o.jobNo || "").replace(/[^A-Za-z0-9-]+/g, "");
+  var tail = jobNo || String(o.jobName || "").replace(/[^A-Za-z0-9]+/g, "_").replace(/^_|_$/g, "");
+  var base = (slug + (tail ? "_" + tail : "")).replace(/_+/g, "_").replace(/^_|_$/g, "");
+  return (base || slug) + ".pdf";
+}
 /* Routes to a fully separate PDF builder per work order type — a Change
    Order is a work-authorization document, not a leak inspection report,
    so it gets its own generateChangeOrderPdf() rather than a bolted-on
