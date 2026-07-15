@@ -1198,6 +1198,9 @@ function rmMeasurementInvalidationKeepsScale(reason){
     reason === "vertex_edit" || reason === "square_up" ||
     reason === "resnap_neighbors" || reason === "align_outline";
 }
+function rmMeasurementInvalidationMovedEdge(reason){
+  return reason !== "superseded_by_remeasure";
+}
 function rmMeasurementScaleStillApplied(m){
   return !!(m && (!m.invalidatedAt || rmMeasurementInvalidationKeepsScale(m.invalidatedReason)));
 }
@@ -1404,7 +1407,7 @@ function rmBuildCaptureSource(outline){
 function rmBuildScaleSource(outline, captureSource){
   var measured = rmLatestAppliedMeasuredEdge(outline);
   if (measured){
-    var measurementStale = !!measured.invalidatedAt;
+    var measurementStale = !!measured.invalidatedAt && rmMeasurementInvalidationMovedEdge(measured.invalidatedReason);
     return {
       kind: "measured",
       label: measurementStale ? "tape-measured scale on this roof; edge has since been edited" : "tape-measured edge on this roof",
