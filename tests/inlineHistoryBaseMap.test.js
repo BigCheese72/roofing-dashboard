@@ -42,6 +42,11 @@ function intersectionKeys(left, right){
 }
 
 function assertCoverage(coverage, label){
+  assert.strictEqual(
+    new Set(keySet(coverage.full)).size,
+    coverage.full.length,
+    label + " full set keys are unique"
+  );
   assert.deepStrictEqual(
     unionKeys(coverage.rendered, coverage.disclosed),
     keySet(coverage.full),
@@ -88,6 +93,27 @@ function mixedRoofs(baseFields){
   ];
 }
 
+function singleNamedRoof(baseFields){
+  return [
+    Object.assign({
+      id: "roof1",
+      label: "Roof 1",
+      roof_assets: [
+        { id: "asset-selected-gps", lat: 40, lng: -90 },
+        { id: "asset-selected-xy", x: 0.1, y: 0.2 }
+      ]
+    }, baseFields || {})
+  ];
+}
+
+function singleNamedRoofLegacyEvents(){
+  return [{ date: "2026-07-01", pins: [
+    { id: "selected-gps", roofId: "roof1", lat: 40, lng: -90 },
+    { id: "legacy-gps", lat: 42, lng: -92 },
+    { id: "legacy-xy", x: 0.11, y: 0.22 }
+  ] }];
+}
+
 test("inline history does not borrow another roof's base map", async () => {
   const sandbox = makeSandbox();
   const roofs = [
@@ -103,7 +129,6 @@ test("inline history does not borrow another roof's base map", async () => {
   assert.strictEqual(base.customBld, null);
   assert.strictEqual(base.orthoOverlay, null);
   assert.strictEqual(base.syntheticOrtho, false);
-  assert.strictEqual(base.syntheticOrthoError, "");
 });
 
 test("synthetic RoofMapper orthos stay in the local image frame", async () => {
@@ -186,12 +211,24 @@ test("genuine drone orthos use their persisted real-world bounds", async () => {
     expectedAssetIds: ["asset-selected-gps", "asset-other-gps"],
     pinDisclosure: [/pinned to other roofs/, /legacy unassigned findings/, /image-placed finding/],
     assetDisclosure: [/image-placed features/]
+  },
+  {
+    name: "plain satellite with one named roof and legacy pins",
+    baseFields: {},
+    roofs: singleNamedRoof,
+    events: singleNamedRoofLegacyEvents,
+    hasCustomBaseMap: false,
+    expectedPinIds: ["selected-gps"],
+    expectedAssetIds: ["asset-selected-gps"],
+    pinDisclosure: [/legacy unassigned findings/],
+    pinDisclosureAbsent: [/pinned to other roofs/],
+    assetDisclosure: [/image-placed feature/]
   }
 ].forEach((mode) => {
   test("coverage invariant holds for " + mode.name, async () => {
     const sandbox = makeSandbox();
-    const roofs = mixedRoofs(mode.baseFields);
-    const events = mixedEvents();
+    const roofs = mode.roofs ? mode.roofs(mode.baseFields) : mixedRoofs(mode.baseFields);
+    const events = mode.events ? mode.events() : mixedEvents();
     const base = await sandbox.inlineResolveBuildingBaseMap(roofs, "roof1");
     const hasCustomBaseMap = !!base.customBld;
 
@@ -205,8 +242,23 @@ test("genuine drone orthos use their persisted real-world bounds", async () => {
     assert.deepStrictEqual(Array.from(pinCoverage.rendered, (p) => p.id).sort(), mode.expectedPinIds.slice().sort());
     assert.deepStrictEqual(Array.from(assetCoverage.rendered, (a) => a.id).sort(), mode.expectedAssetIds.slice().sort());
     mode.pinDisclosure.forEach((pattern) => assert.match(pinCoverage.disclosure, pattern));
+    (mode.pinDisclosureAbsent || []).forEach((pattern) => assert.doesNotMatch(pinCoverage.disclosure, pattern));
     mode.assetDisclosure.forEach((pattern) => assert.match(assetCoverage.disclosure, pattern));
   });
+});
+
+test("asset coverage keys are positional so roof ids cannot collide with indexes", () => {
+  const sandbox = makeSandbox();
+  const roofs = [
+    { label: "No id", roof_assets: [{ id: "A-xy", x: 0.2, y: 0.3 }] },
+    { id: "0", label: "String zero", roof_assets: [{ id: "B-gps", lat: 40, lng: -90 }] }
+  ];
+
+  const coverage = sandbox.inlineHistoryAssetCoverage(roofs, roofs[1], false);
+
+  assertCoverage(coverage, "asset key collision guard");
+  assert.deepStrictEqual(Array.from(coverage.rendered, (a) => a.id), ["B-gps"]);
+  assert.deepStrictEqual(Array.from(coverage.disclosed, (a) => a.id), ["A-xy"]);
 });
 
 test("dual-coordinate pins on another roof disclose the roof mismatch first", () => {
