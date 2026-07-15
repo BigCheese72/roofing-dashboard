@@ -1,27 +1,32 @@
 "use strict";
-/* ================= Foundation (construction accounting) — client =================
+/* ================= Job list (Foundation-sourced) — client =================
 
-   Phase 2 client half. Two things:
+   The "Foundation" wording is internal only — in the UI this is just "jobs"
+   (by # / name). Two things:
 
-   1. JOB PICKER + AUTO-FILL. Reads the client-readable `foundation_jobs`
-      Firestore cache (populated nightly by netlify/functions/foundation-sync.js)
-      and, on select, auto-fills the work-order form — mirroring the existing
-      "Select Existing Building" picker (bpSelectBuilding in js/workorders.js).
-      The picker reads the CACHE, not the live connector, so any signed-in user
-      can use it (the cache holds only identifying fields — no contract value,
-      no hours). See firestore.rules `foundation_jobs`.
+   1. JOB LIST INSIDE THE "SELECT JOB" PICKER. Reads the client-readable
+      `foundation_jobs` Firestore cache (populated by the scheduled sync,
+      netlify/functions/foundation-sync.js) and renders as the primary section
+      of the ONE picker (the bp-modal in index.html — same modal that shows the
+      app's own buildings and CompanyCam). On select, auto-fills the work-order
+      form; if the job also exists as an app building, it carries that
+      building's extra context too. The picker reads the CACHE, not the live
+      connector, so any signed-in user can use it (the cache holds only
+      identifying fields — no contract value, no hours). See firestore.rules
+      `foundation_jobs`.
 
-   2. ADMIN-ONLY LABOR HOURS. A WO linked to a Foundation job shows a labor-hours
-      card, but hours are NEVER cached — they're fetched live from
-      netlify/functions/foundation.js (action=job_hours), which is gated on the
+   2. ADMIN-ONLY LABOR HOURS. A WO linked to a job shows a labor-hours card,
+      but hours are NEVER cached — they're fetched live from
+      netlify/functions/foundation.js (action=job_hours), gated on the
       `foundation.read` permission server-side. The card renders ONLY if that
       fetch is authorized (attempt-fetch, hide on 401/403), so it self-gates to
       exactly the foundation.read holders (owner/admin/service_manager/
       ops_manager) with no client-side permission grid needed.
 
    Depends on globals from earlier-loaded scripts: `fdb` (Firestore),
-   `authHeaders`/`toast` (js/core.js), `setVal` (js/workorders.js). All are
-   resolved at call time, not parse time. */
+   `authHeaders`/`toast` (js/core.js), `setVal`/`bpCache`/`closeBuildingPicker`
+   (js/workorders.js), `ccLinkedProjectId`/`renderCCLinkInfo` (companycam.js).
+   All resolved at call time, not parse time. */
 
 // Linkage for the currently-open work order. Read by collect() in
 // js/workorders.js (guarded) so it persists on the WO doc.
@@ -44,21 +49,9 @@ function fdnComposeAddress(j) {
   return [j.address, line2].filter(Boolean).join(", ");
 }
 
-function openFoundationPicker() {
-  var modal = document.getElementById("fdn-modal");
-  if (modal) modal.style.display = "";
-  var input = document.getElementById("fdn-search");
-  if (input) input.value = "";
-  fdnLoadAndRender();
-}
-function closeFoundationPicker() {
-  var modal = document.getElementById("fdn-modal");
-  if (modal) modal.style.display = "none";
-}
-
-// Loads foundation_jobs once per session (unless forced) and renders. The cap
-// mirrors the buildings picker's bounded read; the nightly sync writes every
-// active job, and 5000 comfortably covers Watkins' active count.
+// Loads the jobs cache once per session (unless forced). The cap mirrors the
+// buildings picker's bounded read; the scheduled sync writes every active job,
+// and 5000 comfortably covers Watkins' active count (~522).
 async function fdnLoadJobs(force) {
   if (fdnCache && !force) return fdnCache;
   if (typeof fdb === "undefined" || !fdb) throw new Error("Not connected");
@@ -71,51 +64,72 @@ async function fdnLoadJobs(force) {
   return fdnCache;
 }
 
-async function fdnLoadAndRender() {
-  var list = document.getElementById("fdn-list");
-  if (list) list.innerHTML = "Loading…";
+// The job list is ONE section of the single "Select Job" picker (the bp-modal
+// in index.html), alongside the app's own buildings and CompanyCam. There is
+// no separate modal. openBuildingPicker() (js/workorders.js) calls this to
+// prime the jobs section; the shared search box re-filters it on every
+// keystroke via fdnFilterPicker().
+async function fdnPrimePicker() {
+  var host = document.getElementById("bp-job-list");
+  if (host) { host.className = "hint"; host.textContent = "Loading jobs…"; }
   try {
     await fdnLoadJobs(false);
-    fdnFilter();
+    fdnFilterPicker();
   } catch (e) {
-    if (list) list.innerHTML = "Couldn't load Foundation jobs. " + fdnEsc((e && e.message) || "");
+    if (host) { host.className = "hint"; host.textContent = "Couldn't load jobs: " + fdnEsc((e && e.message) || ""); }
   }
 }
 
-function fdnFilter() {
+function fdnFilterPicker() {
   var q = "";
-  var input = document.getElementById("fdn-search");
+  var input = document.getElementById("bp-search");
   if (input) q = String(input.value || "").trim().toLowerCase();
   var all = fdnCache || [];
   fdnFiltered = !q ? all.slice(0, 300) : all.filter(function (j) {
     return [j.name, j.job_no, j.job_number, j.customer_no, j.project_manager_no, j.city]
       .some(function (v) { return String(v || "").toLowerCase().indexOf(q) !== -1; });
   }).slice(0, 300);
-  fdnRender();
+  fdnRenderPicker();
 }
 
-function fdnRender() {
-  var list = document.getElementById("fdn-list");
-  if (!list) return;
+function fdnRenderPicker() {
+  var host = document.getElementById("bp-job-list");
+  if (!host) return;
   if (!(fdnCache || []).length) {
-    list.innerHTML = "No Foundation jobs cached yet. The nightly sync may not have run — an admin can run it, or check back after tonight.";
+    host.className = "hint";
+    host.textContent = "No jobs cached yet — an admin can run a sync (the list also refreshes automatically during the work day).";
     return;
   }
-  if (!fdnFiltered.length) { list.innerHTML = "No matching jobs."; return; }
-  list.innerHTML = fdnFiltered.map(function (j) {
-    var sub = [j.job_no ? "#" + j.job_no : "", j.customer_no, j.project_manager_no ? "PM " + j.project_manager_no : "", j.city]
-      .filter(Boolean).map(fdnEsc).join(" · ");
-    return '<div class="rowcard" style="cursor:pointer" onclick="fdnSelectJob(' +
-      JSON.stringify(String(j.job_no)).replace(/"/g, "&quot;") + ')">' +
-      '<b>' + fdnEsc(j.name || "(unnamed job)") + '</b><br>' +
-      '<span class="hint" style="margin:0">' + sub + '</span></div>';
+  if (!fdnFiltered.length) { host.className = "hint"; host.textContent = "No matching jobs."; return; }
+  host.className = "";
+  host.innerHTML = fdnFiltered.map(function (j) {
+    var parts = [j.customer_no, j.project_manager_no ? "PM " + j.project_manager_no : "", j.city].filter(Boolean);
+    if (fdnFindMatchingBuilding(j)) parts.push("✓ in app");
+    var meta = parts.map(fdnEsc).join(" · ");
+    return '<div class="bld-item" onclick="fdnSelectJob(' +
+      JSON.stringify(String(j.job_no)).replace(/"/g, "&quot;") + ')"><div class="info">' +
+      '<div class="name">' + fdnEsc(j.name || "(unnamed job)") +
+      (j.job_no ? ' <span class="hint">#' + fdnEsc(j.job_no) + '</span>' : "") + '</div>' +
+      '<div class="meta">' + meta + '</div></div>' +
+      '<button class="btn">Select</button></div>';
   }).join("");
 }
 
-// On select: auto-fill the WO fields, mirroring bpSelectBuilding(). Bill To is
-// filled with Foundation's customer CODE (customer_no) — the jobs table has no
-// customer display name; surfacing the friendly name would need a customers-
-// table join (a small follow-up). The tech reviews before saving.
+// Best-effort link from a job to an already-created app building, matched on
+// job name (the app keys buildings by customer+name, not job number). Used to
+// carry the building's extra context on select, and to tag "✓ in app" rows.
+function fdnFindMatchingBuilding(job) {
+  if (typeof bpCache === "undefined" || !bpCache) return null;
+  var jn = String((job && job.name) || "").trim().toLowerCase();
+  if (!jn) return null;
+  return bpCache.find(function (b) { return String(b.name || "").trim().toLowerCase() === jn; }) || null;
+}
+
+// On select: auto-fill the WO fields. Bill To is filled with the customer CODE
+// (customer_no) — the jobs table has no customer display name; the friendly
+// name would need a customers-table join (a small follow-up). If the job is
+// ALSO an existing app building, carry that building's richer context (roof
+// system + CompanyCam link) on top. The tech reviews before saving.
 function fdnSelectJob(jobNo) {
   var j = (fdnCache || []).find(function (x) { return String(x.job_no) === String(jobNo); });
   if (!j) return;
@@ -126,9 +140,20 @@ function fdnSelectJob(jobNo) {
     setVal("projectManager", j.project_manager_no || "");
     if (j.customer_no) setVal("billTo", j.customer_no);
   }
+  var b = fdnFindMatchingBuilding(j);
+  if (b) {
+    if (b.roofSystem && typeof setVal === "function") setVal("roofSystem", b.roofSystem);
+    // Carry the building's CompanyCam link, but never clobber an explicit link
+    // the tech already made this session (mirrors bpSelectBuilding).
+    if (b.companyCamProjectId && typeof ccLinkedProjectId !== "undefined" && !ccLinkedProjectId) {
+      ccLinkedProjectId = b.companyCamProjectId;
+      ccLinkedProjectName = b.companyCamProjectName || "";
+      if (typeof renderCCLinkInfo === "function") renderCCLinkInfo();
+    }
+  }
   fdnSetLinkedJob(j.job_no, j.name || "");
-  closeFoundationPicker();
-  if (typeof toast === "function") toast("Loaded Foundation job “" + (j.name || j.job_no) + "” — review the fields below before saving");
+  if (typeof closeBuildingPicker === "function") closeBuildingPicker();
+  if (typeof toast === "function") toast("Loaded job “" + (j.name || j.job_no) + "” — review the fields below before saving");
 }
 
 // Central setter for the WO's Foundation linkage: updates the module vars (read
@@ -146,7 +171,7 @@ function renderFdnLinkInfo() {
   if (!el) return;
   if (fdnLinkedJobNo) {
     el.style.display = "";
-    el.innerHTML = "🏗️ Foundation job linked: <b>" + fdnEsc(fdnLinkedJobName || fdnLinkedJobNo) +
+    el.innerHTML = "🔗 Linked job: <b>" + fdnEsc(fdnLinkedJobName || fdnLinkedJobNo) +
       "</b> (#" + fdnEsc(fdnLinkedJobNo) + ") — <a href=\"#\" onclick=\"fdnUnlinkJob();return false;\">unlink</a>";
   } else {
     el.style.display = "none";
