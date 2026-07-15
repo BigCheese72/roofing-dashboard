@@ -2815,15 +2815,39 @@ every keystroke. Read-only against Foundation; the only writes are to Firestore.
   the cache, `dryRun` writes nothing, and the doc-id sanitizer. `firebase-admin` + `mssql` stubbed;
   runs the real builders/cache-mapping/batched-upsert offline end-to-end.
 
-### Foundation Phase 2b/2c/DPR — not built yet (next)
+### Foundation Phase 2b + 2c — WO job picker, auto-fill, admin-only hours (client, dev-only)
 
-- **2b — WO job picker + auto-fill** (client): a "Foundation Job" picker reading `foundation_jobs`,
-  auto-filling customer/address/name/job# and a new `projectManager` WO field on select.
-- **2c — admin-only labor hours on the WO** (client): a WO card that calls the existing
-  `foundation.js?action=job_hours` and renders only if the server authorizes (`foundation.read`) —
-  hours are never cached.
+Client half, in **`js/foundation.js`** (loaded after `companycam.js` in index.html):
+
+- **2b — job picker + auto-fill.** A "🏗️ Foundation Job" button beside "Select Existing Building"
+  opens `#fdn-modal`, which reads the client-readable `foundation_jobs` cache directly from
+  Firestore (`fdb.collection("foundation_jobs")`, capped at 5000, cached per session, filtered
+  client-side) — NOT the live connector, so any signed-in user can use it. On select
+  (`fdnSelectJob`), it auto-fills the WO the same way `bpSelectBuilding` does: `jobName` ← name,
+  `location` ← composed address, `jobNo` ← job number, and a **new `projectManager` field** ←
+  `project_manager_no`. `billTo` is filled with Foundation's **customer CODE** (`customer_no`) —
+  the jobs table has no customer display name; a friendly name would need a customers-table join
+  (small follow-up). The Foundation linkage is stored on the WO as `foundationJobNo` /
+  `foundationJobName` (added in `collect()`, restored in `fill()` via `fdnSetLinkedJob`; persisted
+  automatically by `cloudSaveOrder`). `projectManager` was added to `FIELD_IDS` so it round-trips.
+- **2c — admin-only labor hours.** A WO linked to a Foundation job shows the
+  `#wo-foundation-labor-card`, populated by `fdnRefreshLaborCard()`, which fetches hours LIVE from
+  `foundation.js?action=job_hours` (server-gated on `foundation.read`). The card renders **only if
+  that fetch is authorized** — a 401/403 (or any error) leaves it hidden. So it self-gates to
+  exactly the `foundation.read` holders (owner/admin/service_manager/ops_manager) with no
+  client-side permission grid, and correctly shows for service_manager/ops_manager even though the
+  client `isAdmin` flag (owner||admin) is narrower. **Hours are never cached** — always live.
+- **Verified in-browser** (static server, mocked Firestore + hours): page boots with no console
+  errors, the picker lists jobs and filters, select auto-fills all fields (`location` composed as
+  "1 Main, Smithton, IL 62285", PM = NATE, billTo = GBHBLD), the link line shows, and the labor
+  card renders the total + entries table. Full auth-gated data flow is smoke-tested on the dev
+  deploy (like Phase 1).
+
+### Foundation — DPR PM (still blocked, not built)
+
 - **DPR PM** — blocked until the Daily Progress Report (PR #65) lands on dev; then wire the DPR's
-  PM from `project_manager_no`. Left as a clean hook.
+  PM from the WO's `projectManager` / a job's `project_manager_no`. Left as a clean hook (the PM
+  field + the `foundationJobNo` linkage already exist on the WO).
 
 ## Outlook / Microsoft 365 integration (Phase 0: auth + mailbox read, shipped dev-only)
 

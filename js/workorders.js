@@ -843,7 +843,7 @@ function populateWarrantyGuidelines(){
       "<b style='color:#D64545'>Typically Not Warrantable</b>" + list(WARRANTY_GUIDELINES.notWarrantable) +
     "</div>";
 }
-var FIELD_IDS = ["jobName","location","serviceDate","jobNo","billTo","billContact","billPhone",
+var FIELD_IDS = ["jobName","location","serviceDate","jobNo","projectManager","billTo","billContact","billPhone",
   "siteContact","technician","roofSystem","reportedArea","warrantable","nonWarrantable","summary",
   "woCost","woManHours","woMaterials","woDescription","woPONumber","woDateCompleted","repairDescription",
   "mfgServiceNo"];
@@ -864,6 +864,13 @@ function collect(){
   o.photos = photos.slice();
   o.companyCamProjectId = ccLinkedProjectId || null;
   o.companyCamProjectName = ccLinkedProjectName || "";
+  /* Foundation (construction accounting) job linkage — set when a Foundation
+     job was picked (js/foundation.js). Kept as its own field (not derived from
+     jobNo) so the WO's admin-only labor-hours card can look hours up by the
+     exact Foundation job_no even if the human edits the visible Job No. after.
+     Persisted automatically by cloudSaveOrder (copies all keys). */
+  o.foundationJobNo = (typeof fdnLinkedJobNo !== "undefined" && fdnLinkedJobNo) ? fdnLinkedJobNo : null;
+  o.foundationJobName = (typeof fdnLinkedJobName !== "undefined" && fdnLinkedJobName) ? fdnLinkedJobName : "";
   o.roofId = currentRoofId || null;
   /* Multi-roof Inspection only -- null for every other case (a single roof
      selected, or a work order type that doesn't support this at all yet),
@@ -912,6 +919,10 @@ function fill(o){
   photos.forEach(function(p){ if (p.finding_id === undefined) p.finding_id = null; });
   ccLinkedProjectId = o.companyCamProjectId || null;
   ccLinkedProjectName = o.companyCamProjectName || "";
+  /* Restore the Foundation job linkage and refresh its dependent UI (the link
+     line + the admin-only labor card). Guarded so this file has no hard
+     dependency on js/foundation.js being present. */
+  if (typeof fdnSetLinkedJob === "function") fdnSetLinkedJob(o.foundationJobNo || null, o.foundationJobName || "");
   /* Whatever Job No. this order carries is now the LOADED order's number, not
      something this session auto-filled -- so the Change Order autofill below
      must treat it as a human's value and never overwrite it. Reset on every
