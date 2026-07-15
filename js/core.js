@@ -667,6 +667,14 @@ async function fetchPhotoFromStorage(workOrderId, photoIndex){
    which work order p actually belongs to. */
 async function resolvePhotoImg(p){
   if (p.img) return p.img;
+  /* Bytes may live ONLY in IndexedDB -- a locally-added photo not yet uploaded
+     whose localStorage copy was offloaded to keep the ~5MB cache lean (Phase 1).
+     Try the on-device IDB backup by localId first: it's the freshest local copy
+     and needs no network. Closes the gap where resolvePhotoImg looked only in
+     Storage, so an IDB-only photo couldn't be shown or exported. */
+  if (p.localId){
+    try{ var local = await idbGetPhoto(p.localId); if (local){ p.img = local; return local; } }catch(e){}
+  }
   if (!p.storageRef) return null;
   var m = /^workorders\/([^/]+)\/(\d+)\.jpg$/.exec(p.storageRef);
   if (!m) return null;
