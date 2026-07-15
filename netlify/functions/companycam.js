@@ -27,7 +27,8 @@
 // throws 401 if you're nobody; requirePermission() is the role-gate and is
 // deliberately NOT used here.
 const { uploadDocumentToCompanyCam } = require("./lib/companyCamDocuments");
-const { verifyCaller } = require("./lib/authGuard");
+const { uploadPhotoToCompanyCam, deletePushedPhotoFromCompanyCam } = require("./lib/companyCamPhotos");
+const { verifyCaller, requirePermission, getDb } = require("./lib/authGuard");
 
 function resp(code, obj) {
   return { statusCode: code, headers: { "Content-Type": "application/json" }, body: JSON.stringify(obj) };
@@ -113,6 +114,80 @@ exports.handler = async function (event) {
           return resp(code, { error: result.error });
         }
         return resp(200, { ok: true, document: result.document });
+      }
+
+      // Pushes ONE work-order photo into the linked project's PHOTO FEED,
+      // map-pinned -- see lib/companyCamPhotos.js for the API contract and,
+      // more importantly, for why this does NOT require opening the Storage
+      // bucket (short-lived per-object V4 signed URL; the bucket stays
+      // deny-all).
+      //
+      // Sits INSIDE the same requireAuth() gate as every other action in this
+      // file -- deliberately not a new exception. It is a normal field
+      // operation (a tech sends a work order; its photos land in CompanyCam),
+      // so it is AUTHENTICATION-gated like upload_document, not
+      // permission-gated. It also cannot create a project: it can only push
+      // into a project id the caller already has linked.
+      //
+      // "Photo isn't in Storage yet" comes back as 200 { ok:false, skipped:true }
+      // rather than an error status: it is an expected, self-healing state (the
+      // next send picks it up), and one such photo must not fail the batch the
+      // client is pushing.
+      if (body.action === "upload_photo") {
+        const result = await uploadPhotoToCompanyCam({
+          projectId: body.project_id,
+          workOrderId: body.workOrderId,
+          photoIndex: body.photoIndex,
+          coordinates: body.coordinates || null,
+          capturedAt: body.captured_at,
+          description: body.description || ""
+        });
+        if (result.skipped) return resp(200, { ok: false, skipped: true, reason: result.reason || "skipped" });
+        if (!result.ok) {
+          const code = /not set/.test(result.error) ? 500 : (/Missing|Invalid/.test(result.error) ? 400 : 502);
+          return resp(code, { error: result.error });
+        }
+        return resp(200, { ok: true, photoId: result.photoId, coordinates: result.coordinates || null });
+      }
+
+      // Removes ONE integration-pushed photo from a CompanyCam project's feed
+      // (undo-push). DESTRUCTIVE and integration-owned, so unlike every
+      // authentication-only action above this one is PERMISSION-gated to
+      // admin/owner (companycam.link -- the CompanyCam-management permission
+      // admin already holds; owner passes automatically). The photo id to
+      // delete is derived server-side from OUR stored ccFeedPhotoId -- the
+      // client never supplies a raw CompanyCam id -- so a user-taken photo can
+      // never be reached (see deletePushedPhotoFromCompanyCam). Every deletion
+      // is audit-logged (what/where/who/when).
+      if (body.action === "remove_pushed_photo") {
+        let caller;
+        try { caller = await requirePermission(event, "companycam.link"); }
+        catch (e) { return resp(e.statusCode || 403, { error: e.message || "Forbidden" }); }
+        const result = await deletePushedPhotoFromCompanyCam({
+          workOrderId: body.workOrderId,
+          photoIndex: body.photoIndex,
+          expectedFeedPhotoId: body.expectedFeedPhotoId || null
+        });
+        if (result.skipped) return resp(200, { ok: false, skipped: true, reason: result.reason });
+        if (!result.ok) {
+          const code = /not set/.test(result.error) ? 500 : (/Invalid/.test(result.error) ? 400 : 502);
+          return resp(code, { error: result.error });
+        }
+        try {
+          await getDb().collection("audit_logs").doc().set({
+            ts: Date.now(),
+            action: "companycam_photo_removed",
+            actorUid: caller.uid || null,
+            actorEmail: caller.email || null,
+            actorRole: caller.owner ? "owner" : (caller.role || null),
+            ccFeedPhotoId: result.deletedPhotoId,
+            projectId: result.projectId || null,
+            workOrderId: body.workOrderId,
+            photoIndex: body.photoIndex,
+            alreadyGone: !!result.alreadyGone
+          });
+        } catch (e) { /* the deletion already happened -- the audit write is best-effort, never blocks it */ }
+        return resp(200, { ok: true, deletedPhotoId: result.deletedPhotoId, projectId: result.projectId || null, alreadyGone: !!result.alreadyGone });
       }
       return resp(400, { error: "Unknown action" });
     } catch (e) {

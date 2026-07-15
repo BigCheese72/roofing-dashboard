@@ -764,9 +764,20 @@ async function cloudSaveOrder(o){
         }
       }catch(e){ console.warn("couldn't check existing photo before save (proceeding without it — no data was overwritten)", e); }
     }
+    /* ccPhotoId  : set when this photo was IMPORTED FROM CompanyCam.
+       ccFeedPhotoId: set when this photo was PUSHED TO CompanyCam's photo feed
+       (see pushPhotosToCompanyCamFeed() in js/history.js). They are opposite
+       directions and must not be confused.
+
+       ccFeedPhotoId MUST be carried through this save. This .set() is a full
+       overwrite, not a merge -- so omitting it here would silently erase the
+       push record on the very next save of the work order, and the next
+       send would re-push every photo and duplicate the whole set into the
+       project feed. The flag IS the idempotency. */
     var photoDoc = {
       caption: p.caption || "", w: p.w || 0, h: p.h || 0, i: i,
       finding_id: p.finding_id || null, ccPhotoId: p.ccPhotoId || null, gps: p.gps || null,
+      ccFeedPhotoId: p.ccFeedPhotoId || null,
       storageRef: storageRef, thumb: p.thumb || null
     };
     if (existingImg) photoDoc.img = existingImg;
@@ -794,6 +805,7 @@ async function cloudFetchIndex(){
     var v = d.data();
     arr.push({ id: d.id, jobName: v.jobName || "(untitled)", jobNo: v.jobNo || "",
       location: v.location || "", serviceDate: v.serviceDate || "", savedAt: v.savedAt || 0, cloud: true,
+      companyCamProjectId: v.companyCamProjectId || null,
       lastEmailedAt: v.lastEmailedAt || null, lastEmailedTo: v.lastEmailedTo || [] });
   });
   return arr;
@@ -848,8 +860,15 @@ async function cloudFetchOrder(id){
          for why that signal has to stay exactly what it is). Only
          populated when thumb is missing -- once a photo has a real thumb
          (freshly captured, or backfilled), this is never touched. */
+      /* ccFeedPhotoId is hydrated here for the same reason it's written in
+         cloudSaveOrder(): it's the record that this photo has ALREADY been
+         pushed into the linked CompanyCam project's photo feed. Without it on
+         the client-side photo object, re-opening a work order and re-sending it
+         would push every photo a second time -- see pushPhotosToCompanyCamFeed()
+         in js/history.js. */
       photosArr[v.i] = { caption: v.caption || "", img: v.storageRef ? null : (v.img || null), w: v.w || 0, h: v.h || 0,
         finding_id: v.finding_id || null, ccPhotoId: v.ccPhotoId || null, gps: v.gps || null,
+        ccFeedPhotoId: v.ccFeedPhotoId || null,
         storageRef: v.storageRef || null, thumb: v.thumb || null,
         imgFallback: (!v.thumb && v.storageRef) ? (v.img || null) : null };
     });
@@ -1214,6 +1233,54 @@ async function runThumbnailBackfill(){
     (failed ? ", " + failed + " FAILED (safe to retry — nothing was changed on those, run this again)" : "") + ".");
   if (failures.length) console.warn("Thumbnail backfill failures (safe to retry):", failures);
   return { backfilled: backfilled, failed: failed, failures: failures };
+}
+/* Retroactive CompanyCam photo-feed backfill (issue #55). #51 pushes a work
+   order's photos into its linked CompanyCam project feed on send/download/share
+   going forward; this walks EXISTING work orders and does the same for photos
+   that predate #51. Same owner-only, idempotent, safe-to-rerun shape as the
+   migration/thumbnail backfills above -- it reuses pushPhotosToCompanyCamFeed()
+   (js/history.js), so the per-photo idempotency (ccFeedPhotoId), imported-photo
+   guard (ccPhotoId), not-yet-in-Storage skip, and non-fatal-per-photo behavior
+   are exactly the same ones the normal send path already has. Running it twice
+   pushes nothing the second time. Never creates a CompanyCam project. */
+async function runCompanyCamPhotoBackfill(){
+  if (!currentAuthClaims || currentAuthClaims.owner !== true){ toast("Owner login required."); return; }
+  if (!fdb){ toast("Cloud not available."); return; }
+  if (typeof pushPhotosToCompanyCamFeed !== "function"){ toast("CompanyCam photo push isn't available."); return; }
+  toast("Scanning work orders for CompanyCam photo backfill…");
+  var index;
+  try{ index = await cloudFetchIndex(); }
+  catch(e){ toast("Scan failed: " + e.message); return; }
+
+  var linked = (index || []).filter(function(w){ return w.companyCamProjectId; });
+  if (!linked.length){
+    toast("No CompanyCam-linked work orders found — nothing to backfill.");
+    return { orders: 0, ordersTouched: 0, pushed: 0, alreadyPushed: 0, failed: 0, failures: [] };
+  }
+  if (!confirm(linked.length + " CompanyCam-linked work order" + (linked.length === 1 ? "" : "s") +
+    " will have their photos pushed into the linked project feed" + (linked.length === 1 ? "" : "s") +
+    ". Photos already in the feed are skipped automatically, and photos imported FROM CompanyCam are never pushed back — safe to run more than once. Proceed?")) return null;
+
+  var pushed = 0, alreadyPushed = 0, failed = 0, ordersTouched = 0, failures = [];
+  for (var i = 0; i < linked.length; i++){
+    toast("Backfilling CompanyCam photos — work order " + (i + 1) + " of " + linked.length + "…");
+    try{
+      var o = await cloudFetchOrder(linked[i].id);
+      if (!o) continue;
+      var r = await pushPhotosToCompanyCamFeed(o);
+      pushed += (r && r.pushed) || 0;
+      alreadyPushed += (r && r.alreadyPushed) || 0;
+      failed += (r && r.failed) || 0;
+      if (r && r.pushed) ordersTouched++;
+      if (r && r.failed) failures.push({ workOrderId: linked[i].id, error: r.error || "photo push failed" });
+    }catch(e){ failed++; failures.push({ workOrderId: linked[i].id, error: e.message }); }
+  }
+  toast(pushed + " photo" + (pushed === 1 ? "" : "s") + " added to CompanyCam across " +
+    ordersTouched + " work order" + (ordersTouched === 1 ? "" : "s") + " ✓" +
+    (alreadyPushed ? ", " + alreadyPushed + " already in the feed" : "") +
+    (failed ? ", " + failed + " FAILED (safe to retry — run this again)" : "") + ".");
+  if (failures.length) console.warn("CompanyCam photo backfill failures (safe to retry):", failures);
+  return { orders: linked.length, ordersTouched: ordersTouched, pushed: pushed, alreadyPushed: alreadyPushed, failed: failed, failures: failures };
 }
 /* Admin toggle button removed entirely (2026-07-12) -- there was nothing
    left for it to toggle. isAdmin has followed sign-in state and role
@@ -1702,6 +1769,15 @@ function renderPhotos(){
     host.innerHTML = '<p class="hint">No photos added yet.</p>';
     return;
   }
+  /* Admin "undo push": remove app-pushed photos from the linked CompanyCam
+     feed (they stay on the work order). Only shown when some photo is actually
+     in the feed. Deletion is Mark-triggered here, never automatic. */
+  if (isAdmin && photos.some(function(p){ return p && p.ccFeedPhotoId; })){
+    var ccBar = document.createElement("div");
+    ccBar.style.margin = "0 0 8px";
+    ccBar.innerHTML = '<button class="btn" onclick="removeAllPushedPhotosFromCC()" title="Remove every app-pushed photo on this work order from the CompanyCam feed (they stay on the work order)">⤺ Remove pushed photos from CompanyCam</button>';
+    host.appendChild(ccBar);
+  }
   var findingOptions = findings.map(function(f,fi){
     var label = "Finding #" + (fi+1) + (f.condition ? ": " + f.condition.slice(0,40) : "");
     return { id: f.id, label: label };
@@ -1732,6 +1808,7 @@ function renderPhotos(){
         '<button class="btn" onclick="movePhoto(' + i + ', -1)"' + (i === 0 ? " disabled" : "") + ' title="Move up">▲</button>' +
         '<button class="btn" onclick="movePhoto(' + i + ', 1)"' + (i === photos.length - 1 ? " disabled" : "") + ' title="Move down">▼</button>' +
       '</div>' +
+      (isAdmin && p.ccFeedPhotoId ? '<button class="btn" onclick="removePushedPhotoFromCC(' + i + ')" title="Remove this photo from the CompanyCam feed (it stays on the work order)">⤺ CC</button>' : '') +
       '<button class="btn danger" onclick="removePhoto(' + i + ')">✕</button></div>' +
       '<div class="photo-finding-row"><label>Finding:</label>' +
       '<select data-photo-finding="' + i + '">' +
@@ -1949,6 +2026,16 @@ function onWoTypeChange(){
   if (isInspection){ ensureInspectionChecklist(); renderInspectionChecklist(); renderInspectionRoofPicker(); }
   var ft = document.getElementById("wo-findings-title");
   if (ft) ft.textContent = isInspection ? "Roofing Inspection Findings" : "Roof Investigation Findings";
+  /* Building-level CompanyCam link control (#wo-cc-link-row): shown for the
+     findings-based types (Leak / Inspection / Warranty) whose per-finding capture
+     hid the global import row above -- so Inspection etc. finally have a visible
+     way to LINK CompanyCam at the building level. Change Order/Repair are covered
+     elsewhere (see ccBuildingLinkControlVisible in js/companycam.js). */
+  var ccLinkVisible = typeof ccBuildingLinkControlVisible === "function" && ccBuildingLinkControlVisible(val("woType"));
+  var ccRow = document.getElementById("wo-cc-link-row");
+  if (ccRow) ccRow.style.display = ccLinkVisible ? "" : "none";
+  var ccHint = document.getElementById("wo-cc-link-hint");
+  if (ccHint) ccHint.style.display = ccLinkVisible ? "" : "none";
 }
 
 /* ================= storage ================= */

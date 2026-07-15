@@ -67,7 +67,8 @@ const PERMISSION_KEYS = [
   "users.manage_admin",
   "users.transfer_owner",
   "feedback.submit",
-  "warranty.manage_reports"
+  "warranty.manage_reports",
+  "foundation.read"
 ];
 
 // Every key granted `true`, for roles whose spec is "everything" or
@@ -144,7 +145,8 @@ const SEED_ROLES = [
       "attachments.supersede": true,
       "audit.view": true,
       "feedback.submit": true,
-      "warranty.manage_reports": true
+      "warranty.manage_reports": true,
+      "foundation.read": true
     })
   },
   {
@@ -205,7 +207,8 @@ const SEED_ROLES = [
       "companycam.link": true,
       "audit.view": true,
       "feedback.submit": true,
-      "warranty.manage_reports": true
+      "warranty.manage_reports": true,
+      "foundation.read": true
     })
   },
   {
