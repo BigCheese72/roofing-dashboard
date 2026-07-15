@@ -728,7 +728,7 @@ async function cloudSaveOrder(o){
      ever tried, or one was tried and failed)" is the one condition that
      triggers a preserve-existing check, not just "no img provided." See
      "Save-time photo data-loss guard" in DEV_NOTES.md. */
-  var uploadFailures = 0, preservedCount = 0;
+  var uploadFailures = 0, preservedCount = 0, failedPhotoNums = [];
   var ops = [];
   for (var i = 0; i < ph.length; i++){
     var p = ph[i];
@@ -737,7 +737,7 @@ async function cloudSaveOrder(o){
     var uploadAttemptedAndFailed = false;
     if (p.img){
       try{ storageRef = await uploadPhotoToStorage(o.id, i, p.img); }
-      catch(e){ uploadFailures++; uploadAttemptedAndFailed = true; console.warn("photo upload failed, will retry on next save", e); }
+      catch(e){ uploadFailures++; failedPhotoNums.push(i + 1); uploadAttemptedAndFailed = true; console.warn("photo upload failed, will retry on next save", e); }
     }
     if (!p.img || !storageRef){
       /* Look up the existing cloud doc whenever this save isn't supplying
@@ -779,7 +779,7 @@ async function cloudSaveOrder(o){
   await Promise.all(ops);
   if (uploadFailures > 0){
     throw new Error(uploadFailures + " photo" + (uploadFailures === 1 ? "" : "s") +
-      " couldn't be uploaded to cloud storage. Work order data was saved — save again to retry the photo(s).");
+      " (photo " + failedPhotoNums.join(", ") + ") couldn't be uploaded to cloud storage. Your work order and these photos are safe on this device — tap “Retry now” on the sync banner (or Save again) to finish uploading them; they will NOT be dropped locally until they're in the cloud.");
   }
   if (preservedCount > 0){
     throw new Error(preservedCount + " photo" + (preservedCount === 1 ? "" : "s") +
@@ -1971,7 +1971,7 @@ function onWoTypeChange(){
       exportOrder() had a similar carve-out for the same reason before it
       was removed entirely -- see "Export button removed" in
       DEV_NOTES.md.) */
-var MAX_CACHED_PHOTO_DRAFTS = 10;
+var MAX_CACHED_PHOTO_DRAFTS = 5;
 /* photosStripped is the explicit, checkable fact that this specific cached
    copy is missing real image bytes -- Mark's real bug: loadOrder() used to
    infer "is this cache good enough" purely from a savedAt timestamp
@@ -1998,6 +1998,21 @@ function stripPhotoBytes(o){
 function orderHasCachedPhotoBytes(o){
   return !!(o && o.photos && o.photos.some(function(p){ return p && p.img; }));
 }
+/* Every photo that still has local bytes ALSO has a storageRef -- i.e. its bytes
+   are safely in Firebase Storage and the local copy is just a cache we can drop.
+   A photo with img but NO storageRef was never uploaded: its local bytes are the
+   ONLY copy, so eviction MUST keep it (data-loss guard, Mark's #1 rule). */
+function orderIsFullyCloudBacked(o){
+  return !!(o && o.photos) && o.photos.every(function(p){ return !p || !p.img || !!p.storageRef; });
+}
+/* An order is safe to evict photo bytes from ONLY if it's not the one open now,
+   not still waiting to sync, and every photo it holds is already in Storage. */
+function orderPhotoBytesAreEvictable(db, orderId, pending){
+  if (orderId === currentId) return false;
+  if (pending && pending[orderId]) return false;
+  var o = db.orders[orderId];
+  return orderHasCachedPhotoBytes(o) && orderIsFullyCloudBacked(o);
+}
 /* Local record has photos worth caring about (findings/captions/etc. that
    imply real images belong here) but this specific cached copy doesn't
    actually have the bytes -- the exact condition loadOrder() must never
@@ -2021,14 +2036,32 @@ function orderPhotosAreStrippedLocally(o){
   return o.photos.every(function(p){ return !p.img && !p.storageRef && !p.thumb; });
 }
 function pruneCachedPhotoDrafts(db){
-  var withPhotos = db.index.filter(function(e){
-    return e.id !== currentId && orderHasCachedPhotoBytes(db.orders[e.id]);
+  var pending = loadSyncQueue();
+  var evictable = db.index.filter(function(e){
+    return orderPhotoBytesAreEvictable(db, e.id, pending);
   }).sort(function(a, b){ return (b.savedAt || 0) - (a.savedAt || 0); });
-  if (withPhotos.length <= MAX_CACHED_PHOTO_DRAFTS) return false;
-  withPhotos.slice(MAX_CACHED_PHOTO_DRAFTS).forEach(function(e){
+  if (evictable.length <= MAX_CACHED_PHOTO_DRAFTS) return false;
+  evictable.slice(MAX_CACHED_PHOTO_DRAFTS).forEach(function(e){
     if (db.orders[e.id]) db.orders[e.id] = stripPhotoBytes(db.orders[e.id]);
   });
   return true;
+}
+/* Emergency eviction when localStorage is FULL: drop the bytes of every order
+   whose photos are safely in Storage (evictable), not just those over the cache
+   cap -- a save must never be permanently blocked by quota while there is
+   cloud-backed data we can free. Never touches the current order, a pending
+   (unsynced) order, or a never-uploaded photo -- those local bytes may be the
+   only copy. Returns whether anything was freed. */
+function evictCloudBackedPhotoBytes(db){
+  var pending = loadSyncQueue();
+  var freed = false;
+  db.index.forEach(function(e){
+    if (orderPhotoBytesAreEvictable(db, e.id, pending)){
+      db.orders[e.id] = stripPhotoBytes(db.orders[e.id]);
+      freed = true;
+    }
+  });
+  return freed;
 }
 function loadDb(){
   try{
@@ -2042,8 +2075,16 @@ function saveDb(db){
     localStorage.setItem(STORE_KEY, JSON.stringify(db));
     return true;
   }catch(e){
-    if (e && (e.name === "QuotaExceededError" || String(e.message).toLowerCase().indexOf("quota") > -1)){
-      toast("Storage is full — delete some old saved work orders (photos take the most room), then save again.");
+    var isQuota = e && (e.name === "QuotaExceededError" || String(e.message).toLowerCase().indexOf("quota") > -1);
+    /* Quota hit -> free every photo that's safely in the cloud and RETRY, so a
+       save is never permanently blocked while there's evictable data. Only the
+       current order and still-unsynced photos keep their bytes. */
+    if (isQuota && evictCloudBackedPhotoBytes(db)){
+      try{ localStorage.setItem(STORE_KEY, JSON.stringify(db)); return true; }
+      catch(e2){ e = e2; }
+    }
+    if (isQuota){
+      toast("Storage is full — finish syncing first (tap “Retry now” on the banner), or delete old saved work orders, then save again.");
     } else {
       toast("Save error: " + (e && e.message ? e.message : "storage unavailable"));
     }
