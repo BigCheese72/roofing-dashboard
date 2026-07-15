@@ -154,6 +154,28 @@ test("inline history does not borrow another roof's sketch base map", async () =
   );
 });
 
+test("inline history shows sibling base-map notice instead of empty state", async () => {
+  const sandbox = makeSandbox();
+  const roofs = [
+    { id: "roof1", label: "Roof 1" },
+    { id: "roof7", label: "Roof 7", roof_base_map_type: "sketch", roof_base_map_url: "roof7.jpg" }
+  ];
+  const base = await sandbox.inlineResolveBuildingBaseMap(roofs, "roof1");
+  const html = sandbox.inlineHistoryMapHtml(
+    false,
+    sandbox.inlineHistoryMapLabel(false, null, base, base.selectedRoof),
+    sandbox.inlineNoBaseMapNotice(roofs, "roof1", base.selectedRoof),
+    ""
+  );
+
+  assert.match(html, /No base map drawn for Roof 1\. Roof 7 has one - switch roofs to view it\./);
+  assert.doesNotMatch(
+    html,
+    /No saved roof base map, outline, feature, or pin is available for this building yet\./
+  );
+  assert.doesNotMatch(html, /wo-inline-building-map/);
+});
+
 test("inline history falls back to a sibling drone ortho with real bounds", async () => {
   const sandbox = makeSandbox();
   const bounds = { north: 41.1, south: 41.0, east: -87.9, west: -88.0 };

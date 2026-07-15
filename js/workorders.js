@@ -1307,6 +1307,9 @@ function inlineHiddenAssetDisclosure(disclosedAssets, roofId, hasCustomBaseMap){
     var hasXY = typeof a.x === "number" && typeof a.y === "number";
     var hasGps = typeof a.lat === "number" && typeof a.lng === "number";
     if (!hasCustomBaseMap && hasXY) hiddenXY++;
+    /* Other-roof disclosure applies only to selected-roof image maps. Satellite
+       mode renders GPS assets building-wide, so remaining satellite misses are
+       x/y-only image features caught above. */
     else if (a._roofId !== roofId) hiddenOtherRoof++;
     else if (hasCustomBaseMap && hasGps) hiddenGps++;
   });
@@ -1321,6 +1324,17 @@ function inlineHiddenAssetDisclosure(disclosedAssets, roofId, hasCustomBaseMap){
 }
 function inlineHistoryAssetsForMap(roofs, roof, hasCustomBaseMap){
   return inlineHistoryAssetCoverage(roofs, roof, hasCustomBaseMap).rendered;
+}
+function inlineHistoryMapHtml(hasMapVisual, mapLabel, noBaseMapNotice, hiddenDisclosure){
+  if (!hasMapVisual && !noBaseMapNotice && !hiddenDisclosure){
+    return '<p class="hint">No saved roof base map, outline, feature, or pin is available for this building yet.</p>';
+  }
+  return '<div style="margin:8px 0 12px">' +
+    (hasMapVisual ? '<p class="hint" style="margin:0 0 6px">' + mapLabel + '</p>' : '') +
+    (noBaseMapNotice ? '<p class="hint" style="margin:0 0 6px;color:#8A5A00">' + esc(noBaseMapNotice) + '</p>' : '') +
+    (hiddenDisclosure ? '<p class="hint" style="margin:0 0 6px;color:#8A5A00">' + esc(hiddenDisclosure) + '</p>' : '') +
+    (hasMapVisual ? '<div id="wo-inline-building-map" style="height:min(38vh,320px);border-radius:6px;overflow:hidden;border:1px solid var(--line)"></div>' : '') +
+  '</div>';
 }
 function inlineHistoryOutlines(roofs, hasCustomBaseMap, selectedRoof){
   if (hasCustomBaseMap){
@@ -1391,21 +1405,13 @@ async function refreshInlineBuildingHistory(){
     var mapPins = pinCoverage.rendered;
     var latestEvents = events.slice(0, 8);
     var hiddenDisclosure = [pinCoverage.disclosure, assetCoverage.disclosure].filter(Boolean).join(" ");
-    var hasMapBase = hasCustomBaseMap || orthoOverlay || outlines.length || mapPins.length ||
-      roofAssets.length || pinCoverage.disclosed.length || assetCoverage.disclosed.length;
     var mapLabel = inlineHistoryMapLabel(hasCustomBaseMap, orthoOverlay, baseMap, mapRoof);
     var noBaseMapNotice = !hasCustomBaseMap && !orthoOverlay ? inlineNoBaseMapNotice(ctx.roofs, roofId, baseMap.selectedRoof) : "";
+    var hasMapVisual = !!(hasCustomBaseMap || orthoOverlay || outlines.length || mapPins.length || roofAssets.length);
     var eventCountLabel = latestEvents.length && latestEvents.length < events.length ?
       'Showing ' + latestEvents.length + ' of ' + events.length + ' prior events' :
       (events.length ? events.length + ' prior event' + (events.length === 1 ? '' : 's') : '');
-    var mapHtml = hasMapBase ?
-      '<div style="margin:8px 0 12px">' +
-        '<p class="hint" style="margin:0 0 6px">' + mapLabel + '</p>' +
-        (noBaseMapNotice ? '<p class="hint" style="margin:0 0 6px;color:#8A5A00">' + esc(noBaseMapNotice) + '</p>' : '') +
-        (hiddenDisclosure ? '<p class="hint" style="margin:0 0 6px;color:#8A5A00">' + esc(hiddenDisclosure) + '</p>' : '') +
-        '<div id="wo-inline-building-map" style="height:min(38vh,320px);border-radius:6px;overflow:hidden;border:1px solid var(--line)"></div>' +
-      '</div>' :
-      '<p class="hint">No saved roof base map, outline, feature, or pin is available for this building yet.</p>';
+    var mapHtml = inlineHistoryMapHtml(hasMapVisual, mapLabel, noBaseMapNotice, hiddenDisclosure);
     var eventsHtml = latestEvents.length ?
       latestEvents.map(function(e){ return timelineEventHtml(e, ctx.buildingId, { readOnly: true }); }).join("") :
       '<div class="empty">No prior leak, inspection, or repair history is logged for this building yet.</div>';
@@ -1414,7 +1420,7 @@ async function refreshInlineBuildingHistory(){
       (eventCountLabel ? '<span class="evt-tag">' + eventCountLabel + '</span>' : '') +
       '</div>' +
       '<div>' + eventsHtml + '</div>';
-    if (hasMapBase){
+    if (hasMapVisual){
       renderBuildingMap(mapPins, hasCustomBaseMap ? mapRoof : null, (ctx.building && ctx.building.location) || val("location"),
         orthoOverlay, roofAssets, ctx.buildingId, outlines, { mapElementId: "wo-inline-building-map", readOnly: true });
     }
