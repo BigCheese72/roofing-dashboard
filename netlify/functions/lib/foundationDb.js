@@ -80,7 +80,13 @@ function buildConfig(password) {
 // matches the job number, the job name (description), or the customer.
 // job_no is a CHAR column in Foundation — trim it on the way out so the
 // value the app sees is clean (see the job_no padding gotcha below).
-function buildJobsQuery(search) {
+// `limit` controls the TOP clause: undefined/null keeps the default 500 cap
+// (the interactive search action wants a bounded page), a positive number
+// caps at that many (hard-ceilinged so a bad caller can't ask for millions),
+// and 0/negative means NO cap — the nightly sync uses that to mirror EVERY
+// active job into Firestore, since Watkins has more than 500 active jobs and
+// the cached picker must see all of them.
+function buildJobsQuery(search, limit) {
   const inputs = [];
   let where = "job_status = 'A'";
   const s = normalizeSearch(search);
@@ -91,7 +97,7 @@ function buildJobsQuery(search) {
       " OR description LIKE @search OR customer_no LIKE @search)";
   }
   const text =
-    "SELECT TOP 500" +
+    "SELECT " + topClause(limit) +
     " LTRIM(RTRIM(job_no)) AS job_no," +
     " LTRIM(RTRIM(job_number)) AS job_number," +
     " description," +
@@ -146,6 +152,20 @@ function normalizeSearch(search) {
 function normalizeJobNo(jobNo) {
   if (jobNo === undefined || jobNo === null) return "";
   return String(jobNo).trim().slice(0, 40);
+}
+// Builds the SQL TOP clause from a limit. undefined/null -> "TOP 500" (the
+// default page for the interactive search); a positive integer -> "TOP N"
+// hard-ceilinged at MAX_JOBS_LIMIT so a caller can't request an absurd count;
+// 0 or negative -> "" (no TOP, i.e. every matching row) for the full sync.
+// Integer-coerced and clamped, so the value is never interpolated as raw
+// caller text into the SQL.
+const DEFAULT_JOBS_LIMIT = 500;
+const MAX_JOBS_LIMIT = 20000;
+function topClause(limit) {
+  if (limit === undefined || limit === null) return "TOP " + DEFAULT_JOBS_LIMIT;
+  const n = Math.floor(Number(limit));
+  if (!isFinite(n) || n <= 0) return ""; // no cap — full sync
+  return "TOP " + Math.min(n, MAX_JOBS_LIMIT);
 }
 
 // Maps a dbo.jobs row to the shape the app consumes. Foundation stores the
@@ -249,9 +269,34 @@ async function runSelect(password, query) {
   return (result && result.recordset) || [];
 }
 
-async function fetchJobs(password, search) {
-  const rows = await runSelect(password, buildJobsQuery(search));
+async function fetchJobs(password, search, limit) {
+  const rows = await runSelect(password, buildJobsQuery(search, limit));
   return rows.map(mapJobRow);
+}
+
+// Projects a mapped job down to the fields that are safe + useful to mirror
+// into the client-readable Firestore cache (foundation_jobs). Deliberately
+// DROPS `original_contract` — the contract value is the one financially
+// sensitive field on a job, the WO auto-fill doesn't need it, and the cache
+// is readable by any signed-in user, so it stays server-only (still available
+// to foundation.read holders via the live foundation.js connector). This is
+// the single chokepoint deciding what leaves the server for the cache.
+function mapJobForCache(job) {
+  return {
+    job_no: job.job_no,
+    job_number: job.job_number,
+    name: job.name,
+    status: job.status,
+    customer_no: job.customer_no,
+    project_manager_no: job.project_manager_no,
+    address: job.address,
+    city: job.city,
+    state: job.state,
+    zip: job.zip,
+    job_location: job.job_location,
+    job_start_date: job.job_start_date,
+    completion_date: job.completion_date
+  };
 }
 
 async function fetchJobHours(password, jobNo) {
@@ -280,8 +325,10 @@ module.exports = {
   normalizeSearch,
   normalizeJobNo,
   mapJobRow,
+  mapJobForCache,
   mapHoursRow,
   sumHours,
+  topClause,
   // DB-hitting API (used by foundation.js; DB stubbed in tests)
   fetchJobs,
   fetchJobHours,
