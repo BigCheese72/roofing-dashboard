@@ -1150,15 +1150,38 @@ function ccValidLatLng(c){
   if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
   return { lat: lat, lng: lng };
 }
+/* A base-map (x/y) finding pin has NO lat/lng -- savePinFromModal() stores it as
+   fractional image coordinates ({x, y, lat:null, lng:null, imageFrame:"roof_base_map",
+   imageFrameUrl}) against the base image it was dropped on. If that image is a
+   GEOREFERENCED drone ortho (roof_base_map_type "drone_ortho" with real
+   roof_base_map_bounds), the x/y maps back to a true coordinate -- the inverse of
+   the ortho projection in js/roofmapper.js. A SYNTHETIC / sketch base map has no
+   real-world bounds (the whole Null Island lesson, #40), so its x/y can't become a
+   real coordinate: it returns null and the photo falls through to the job-site
+   floor rather than being pinned in the Gulf of Guinea. THIS is why a finding a
+   tech pinned on a drawing used to push its photo UNPINNED. */
+function ccLatLngFromImageFramePin(pin, roofs){
+  if (!pin || typeof pin.x !== "number" || typeof pin.y !== "number" || !pin.imageFrameUrl) return null;
+  var roof = (roofs || []).find(function(r){
+    return r && r.roof_base_map_url === pin.imageFrameUrl &&
+      r.roof_base_map_type === "drone_ortho" && r.roof_base_map_bounds;
+  });
+  if (!roof) return null;
+  var b = roof.roof_base_map_bounds;
+  if (!b || typeof b.north !== "number" || typeof b.south !== "number" ||
+      typeof b.east !== "number" || typeof b.west !== "number") return null;
+  return ccValidLatLng({ lat: b.north - pin.y * (b.north - b.south), lng: b.west + pin.x * (b.east - b.west) });
+}
 /* A photo attached to a finding (or to an inspection checklist item -- they pin
    identically, see buildPinsForHistoryEvent()) inherits that pin's roof
-   coordinates. */
-function ccPinForFinding(o, findingId){
+   coordinates: a real lat/lng pin directly, or a georeferenced base-map x/y pin
+   converted via ccLatLngFromImageFramePin(). */
+function ccPinForFinding(o, findingId, roofs){
   if (!findingId) return null;
   var f = (o.findings || []).find(function(x){ return x && x.id === findingId; });
-  if (f && f.pin){ var a = ccValidLatLng(f.pin); if (a) return a; }
+  if (f && f.pin){ var a = ccValidLatLng(f.pin) || ccLatLngFromImageFramePin(f.pin, roofs); if (a) return a; }
   var item = (o.inspectionChecklist || []).find(function(x){ return x && x.id === findingId; });
-  if (item && item.pin){ var b = ccValidLatLng(item.pin); if (b) return b; }
+  if (item && item.pin){ var b = ccValidLatLng(item.pin) || ccLatLngFromImageFramePin(item.pin, roofs); if (b) return b; }
   return null;
 }
 /* THE COORDINATE PRIORITY, and why it is what it is:
@@ -1184,10 +1207,11 @@ function ccPinForFinding(o, findingId){
    at all. A finding pin is the tech's confirmed answer; the GPS is the question.
    If raw GPS should win instead, swap the two lines below -- it's a one-line
    change, and the test that asserts this order will fail loudly and say so. */
-function ccBestPhotoCoordinate(p, o, siteLatLng){
+function ccBestPhotoCoordinate(p, o, siteLatLng, roofs){
   if (!p) return null;
   return ccValidLatLng(p.pin) ||
-    ccPinForFinding(o, p.finding_id) ||
+    ccLatLngFromImageFramePin(p.pin, roofs) ||
+    ccPinForFinding(o, p.finding_id, roofs) ||
     ccValidLatLng(p.gps) ||
     ccValidLatLng(siteLatLng) ||
     null;
@@ -1204,6 +1228,25 @@ async function ccSiteLatLng(o){
   if (!addr || typeof geocodeAddress !== "function") return null;
   try{ return ccValidLatLng(await geocodeAddress(addr)); }
   catch(e){ return null; }
+}
+/* The building's roofs (READ-ONLY), so a base-map x/y finding pin can be
+   georeferenced back to lat/lng by ccLatLngFromImageFramePin(). Derives the same
+   deterministic bld_/cust_ id the rest of the app uses (see
+   rmFetchReportRoofOutlines in js/export.js) and does exactly one .get() -- never
+   writes. Non-fatal: any miss (no building, no fdb, a throw) returns [] and photos
+   fall back to their own GPS / the job site, exactly as before. Resolved at most
+   once per push. */
+async function ccResolveBuildingRoofs(o){
+  try{
+    if (!fdb || typeof slugify !== "function" || typeof getBuildingRoofs !== "function") return [];
+    var bldName = (o.jobName || "").trim();
+    if (!bldName) return [];
+    var custId = (o.billTo || "").trim() ? ("cust_" + slugify(o.billTo)) : null;
+    var bldId = "bld_" + slugify((custId || "nocust") + "_" + bldName);
+    var snap = await fdb.collection("buildings").doc(bldId).get();
+    if (!snap || !snap.exists) return [];
+    return getBuildingRoofs(snap.data()) || [];
+  }catch(e){ return []; }
 }
 /* Photos carry no capture timestamp of their own, and captured_at is REQUIRED by
    CompanyCam -- the service date is the honest answer (it's the day the photo
@@ -1253,13 +1296,16 @@ async function pushPhotosToCompanyCamFeed(o){
   if (!photos.length) return r;
 
   var site = null, siteResolved = false;
+  /* Loaded once per push so georeferenced base-map x/y finding pins can resolve
+     to lat/lng (see ccLatLngFromImageFramePin). Non-fatal: [] on any miss. */
+  var roofs = await ccResolveBuildingRoofs(o);
   for (var i = 0; i < photos.length; i++){
     var p = photos[i];
     if (!p) continue;
     if (p.ccPhotoId){ r.imported++; continue; }
     if (p.ccFeedPhotoId){ r.alreadyPushed++; continue; }
     if (!siteResolved){ site = await ccSiteLatLng(o); siteResolved = true; }
-    var coord = ccBestPhotoCoordinate(p, o, site);
+    var coord = ccBestPhotoCoordinate(p, o, site, roofs);
     try{
       var out = await ccApiPost({
         action: "upload_photo",
