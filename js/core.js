@@ -766,6 +766,19 @@ async function cloudSaveOrder(o){
      which destroyed a DIFFERENT photo's confirmed-good bytes on any
      remove/reorder (the live prod corruption fixed in the b0a57fe hotfix). */
   var referencedStorage = {};
+  /* Re-home fetches must happen before any upload overwrites an index in the
+     shared workorders/<id>/<n>.jpg namespace. Otherwise a swap like
+     [A@0, B@1] -> [B, A] can upload B into index 0 before A has read its old
+     bytes from index 0. Snapshot the bytes into p.img first; failed snapshots
+     keep their old storageRef and are protected by referencedStorage below. */
+  for (var ri = 0; ri < writePhotos.length; ri++){
+    var rp = writePhotos[ri];
+    var rpStorageRef = rp.storageRef || null;
+    if (!rp.img && rpStorageRef && photoStorageIndex(rp) !== ri){
+      try{ await resolvePhotoImg(rp); }
+      catch(e){ console.warn("couldn't snapshot photo before storage realign (keeping existing ref)", e); }
+    }
+  }
   for (var i = 0; i < writePhotos.length; i++){
     var p = writePhotos[i];
     var storageRef = p.storageRef || null;
@@ -781,16 +794,12 @@ async function cloudSaveOrder(o){
       catch(e){ uploadFailures++; failedPhotoNums.push(i + 1); console.warn("photo upload failed, will retry on next save", e); }
     } else if (storageRef && photoStorageIndex(p) !== i){
       /* A surviving photo whose Storage object sits at a different index than
-         its new slot (a photo was removed/reordered ahead of it). Re-home the
-         bytes: fetch from the old path and re-upload at index i so Storage
-         index, doc index and array index agree again. If the fetch fails
-         (offline / already gone), keep the old storageRef untouched -- the
-         reference-aware cleanup never deletes an object a photo still points
-         at, so nothing is lost. */
-      try{
-        var moved = await resolvePhotoImg(p); // fetches old path, sets p.img
-        if (moved) storageRef = await uploadPhotoToStorage(o.id, i, moved);
-      }catch(e){ console.warn("couldn't realign photo storage (keeping existing ref — no bytes deleted)", e); }
+         its new slot (a photo was removed/reordered ahead of it). The
+         pre-pass above already tried to snapshot its bytes into p.img before
+         any upload could overwrite the old index. If it is still img-less
+         here, keep the old storageRef untouched -- cleanup is reference-aware,
+         so the bytes are not deleted and the slots simply stay out of
+         alignment until a later online save can re-home them. */
     }
     if ((!p.img || !storageRef) && positionStable){
       /* CRITICAL DATA-LOSS GUARD: on a stable save, a photo with neither fresh
