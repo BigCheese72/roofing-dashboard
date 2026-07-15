@@ -52,6 +52,46 @@ test("rmEdgeDimensionMeta uses a neutral badge when drawn distance is unknown", 
   assert.equal(meta.agreementUnknown, true);
 });
 
+test("rmEdgeDimensionMeta uses a neutral badge when measured distance is missing", () => {
+  const context = makeContext();
+  const outline = {
+    edgeMeasurements: [{ edgeIndex: 0, measuredFt: null, source: "measured" }]
+  };
+
+  const meta = context.rmEdgeDimensionMeta(outline, 0, 42.5);
+
+  assert.equal(meta.measured, true);
+  assert.equal(meta.conflict, false);
+  assert.equal(meta.bg, "#263238");
+  assert.equal(meta.prefix, "");
+  assert.equal(meta.border, true);
+  assert.equal(meta.labelFt, null);
+  assert.equal(meta.measuredFt, null);
+  assert.equal(meta.derivedFt, 42.5);
+  assert.equal(meta.labelIsMeasured, true);
+  assert.equal(meta.agreementUnknown, true);
+});
+
+test("rmEdgeDimensionMeta uses a neutral badge when measured distance is zero", () => {
+  const context = makeContext();
+  const outline = {
+    edgeMeasurements: [{ edgeIndex: 0, measuredFt: 0, source: "measured" }]
+  };
+
+  const meta = context.rmEdgeDimensionMeta(outline, 0, 42.5);
+
+  assert.equal(meta.measured, true);
+  assert.equal(meta.conflict, false);
+  assert.equal(meta.bg, "#263238");
+  assert.equal(meta.prefix, "");
+  assert.equal(meta.border, true);
+  assert.equal(meta.labelFt, 0);
+  assert.equal(meta.measuredFt, 0);
+  assert.equal(meta.derivedFt, 42.5);
+  assert.equal(meta.labelIsMeasured, true);
+  assert.equal(meta.agreementUnknown, true);
+});
+
 test("rmEdgeDimensionMeta still marks finite matching measurements as agreement", () => {
   const context = makeContext();
   const outline = {
