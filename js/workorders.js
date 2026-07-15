@@ -737,18 +737,35 @@ function pinImageFrameUrlForFinding(f){
   return ((roof.roof_base_map_type === "roof_plan" || roof.roof_base_map_type === "sketch") &&
     roof.roof_base_map_url) ? roof.roof_base_map_url : null;
 }
+function pinCoordIsNumber(value){
+  return typeof value === "number" && Number.isFinite(value);
+}
+function pinIsGpsOnly(pin){
+  return !!(pin &&
+    pinCoordIsNumber(pin.lat) &&
+    pinCoordIsNumber(pin.lng) &&
+    !pinCoordIsNumber(pin.x) &&
+    !pinCoordIsNumber(pin.y));
+}
 function savePinFromModal(){
   if (!pinMarker || !pinModalFindingId) return;
   var f = findingById(pinModalFindingId);
   if (!f) return;
   var ll = pinMarker.getLatLng();
   if (pinMapMode === "xy" && pinXYSize){
+    if (!pinInteracted && pinIsGpsOnly(f.pin)){
+      closePinModal();
+      toast("Pin left unchanged");
+      return;
+    }
+    var xySource = pinInteracted ? "tech_placed" :
+      ((f.pin && f.pin.source) || pinInitialSource || null);
     f.pin = {
       lat: null,
       lng: null,
       x: ll.lng / pinXYSize.w,
       y: ll.lat / pinXYSize.h,
-      source: "tech_placed",
+      source: xySource,
       imageFrame: "roof_base_map",
       imageFrameUrl: pinImageFrameUrlForFinding(f)
     };
