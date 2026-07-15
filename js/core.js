@@ -1883,6 +1883,20 @@ function renderAuditLogBacklog(){
     '</div>';
   }).join("");
 }
+/* Per-photo assignment options for a Repair work order's photo dropdown: the
+   Repairs Performed rows (repairs[]), tagged "repair:<original-row-index>" so
+   the value can't collide with a real finding id and the report ignores it.
+   Blank rows are skipped; numbering ("Repair #N") is contiguous over what's
+   shown. Pure/extracted for testing — see renderPhotos()'s isRepairWo branch. */
+function repairPhotoAssignOptions(repairs){
+  var out = [];
+  (repairs || []).forEach(function(r, ri){
+    if (r && (r.repair || r.location)){
+      out.push({ id: "repair:" + ri, label: "Repair #" + (out.length + 1) + (r.repair ? ": " + String(r.repair).slice(0, 40) : "") });
+    }
+  });
+  return out;
+}
 function renderPhotos(){
   var host = document.getElementById("photos-list");
   host.innerHTML = "";
@@ -1914,6 +1928,21 @@ function renderPhotos(){
       return { id: item.id, label: "Checklist: " + inspectionComponentLabel(item.key) };
     })
   );
+  /* A Repair work order has no findings (wo-findings-card is hidden — see
+     onWoTypeChange). Mark: on a Repair, the per-photo assignment should read
+     "Repair" and list the Repairs Performed rows entered in that section, not
+     an empty "Finding" dropdown. The selection persists in the same finding_id
+     field, tagged "repair:<row>" so it can't collide with a real finding id;
+     the report/PDF captions look up finding_id against findings only, so they
+     ignore these tags and stay unchanged (a form-organization aid, per the
+     agreed scope). repairs[] rows carry no stable id, so the tag keys off the
+     row's original index — a Repair WO's Repairs Performed list is small and
+     rarely reordered, and a stale tag only mislabels a photo in the form,
+     never touches data or the report. */
+  var isRepairWo = (typeof val === "function" && val("woType") === "Repair");
+  var assignLabel = isRepairWo ? "Repair" : "Finding";
+  var assignEmpty = isRepairWo ? "General / no specific repair" : "General / no specific finding";
+  var assignOptions = isRepairWo ? repairPhotoAssignOptions(repairs) : findingOptions;
   photos.forEach(function(p,i){
     var d = document.createElement("div");
     d.className = "photo-card";
@@ -1931,10 +1960,10 @@ function renderPhotos(){
       '</div>' +
       (isAdmin && p.ccFeedPhotoId ? '<button class="btn" onclick="removePushedPhotoFromCC(' + i + ')" title="Remove this photo from the CompanyCam feed (it stays on the work order)">⤺ CC</button>' : '') +
       '<button class="btn danger" onclick="removePhoto(' + i + ')">✕</button></div>' +
-      '<div class="photo-finding-row"><label>Finding:</label>' +
+      '<div class="photo-finding-row"><label>' + assignLabel + ':</label>' +
       '<select data-photo-finding="' + i + '">' +
-        '<option value="">General / no specific finding</option>' +
-        findingOptions.map(function(o){
+        '<option value="">' + assignEmpty + '</option>' +
+        assignOptions.map(function(o){
           return '<option value="' + esc(o.id) + '"' + (p.finding_id === o.id ? " selected" : "") + '>' + esc(o.label) + '</option>';
         }).join("") +
       '</select></div>' +
