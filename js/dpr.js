@@ -59,6 +59,26 @@ var dprLoadSeq = 0;      /* guards against a slow same-day fetch clobbering a ne
    {owner,role} claim, never the full permission grid. */
 var DPR_CREATE_ROLES = ["admin", "service_manager", "superintendent", "ops_manager", "project_manager", "field_tech"];
 
+/* Foremen roster for the "Foreman" field (who's filling out the report —
+   foremen complete these daily). Populated into the dl-dprForeman datalist so
+   the field becomes a pick-list with autocomplete. EMPTY until Mark provides
+   the roster — until then the field is plain free text AND remembers whatever
+   is typed (field-history 'dprForeman'), so it's fully usable today and only
+   gets better once names are added here.
+   TODO(Mark's roster): add foreman names, e.g. ["Jose Garcia", "Mark Ruiz", ...]. */
+var DPR_FOREMEN = [];
+function dprPopulateForemen(){
+  var dl = document.getElementById("dl-dprForeman");
+  if (!dl) return;
+  var names = DPR_FOREMEN.slice();
+  /* Merge in previously-typed foremen (roster first, then anything else the
+     crew has entered on this device), de-duped. */
+  try{
+    (getFieldHistory("dprForeman") || []).forEach(function(v){ if (names.indexOf(v) === -1) names.push(v); });
+  }catch(e){}
+  dl.innerHTML = names.map(function(v){ return "<option value='" + esc(v) + "'>"; }).join("");
+}
+
 function dprCanView(){
   /* View = crew + office = anyone signed in (the login gate already blocks the
      whole app until sign-in; this is belt-and-braces). */
@@ -92,6 +112,7 @@ function dprOnShow(){
   if (!dprCanView()){ return; }
   /* Default the date to today for a fresh report; never stomp an in-progress one. */
   if (!dprState.id && !val("dpr-date")) setVal("dpr-date", dprTodayStr());
+  dprPopulateForemen();
   dprEnsureListeners();
   dprRenderCrew();
   dprRenderPhotos();
@@ -400,6 +421,7 @@ function dprCollect(){
     buildingId: buildingId,
     roofId: dprSelectedRoofId(),
     date: dateStr,
+    foreman: val("dpr-foreman"),   /* who filled it out — foremen complete these daily */
     jobName: val("dpr-jobName"),
     billTo: val("dpr-billTo"),
     location: val("dpr-location"),
@@ -421,6 +443,7 @@ function dprFill(o){
   o = o || {};
   dprState.id = o.id || null;
   dprState.buildingId = o.buildingId || dprBuildingId(o.billTo, o.jobName);
+  setVal("dpr-foreman", o.foreman || "");
   setVal("dpr-jobName", o.jobName || "");
   setVal("dpr-billTo", o.billTo || "");
   setVal("dpr-location", o.location || "");
@@ -539,7 +562,7 @@ function dprNewReport(){
   dprCrew = [];
   dprPhotos = [];
   dprHeadcountAutoVal = "";
-  ["dpr-jobName", "dpr-billTo", "dpr-location", "dpr-jobNo", "dpr-headcount", "dpr-hours", "dpr-squares", "dpr-summary", "dpr-bld-search"].forEach(function(id){ setVal(id, ""); });
+  ["dpr-foreman", "dpr-jobName", "dpr-billTo", "dpr-location", "dpr-jobNo", "dpr-headcount", "dpr-hours", "dpr-squares", "dpr-summary", "dpr-bld-search"].forEach(function(id){ setVal(id, ""); });
   setVal("dpr-roofSystem", "");
   setVal("dpr-date", dprTodayStr());
   var notice = document.getElementById("dpr-continue-notice");
@@ -573,6 +596,7 @@ async function dprShowHistory(){
       return '<div class="bld-item" onclick="dprOpenReport(\'' + esc(r.id) + '\')"><div class="info">' +
         '<div class="name">' + esc(r.jobName || "(no job name)") + ' — ' + esc(r.date || "") + '</div>' +
         '<div class="meta">' + esc(r.billTo || "") +
+        (r.foreman ? ' · 👷 ' + esc(r.foreman) : "") +
         (r.headcount ? ' · ' + esc(String(r.headcount)) + ' crew' : "") +
         (r.squares ? ' · ' + esc(String(r.squares)) + ' sq' : "") +
         (r.photoCount ? ' · ' + esc(String(r.photoCount)) + ' 📷' : "") + '</div></div>' +
@@ -680,7 +704,7 @@ async function generateDprPdf(o){
   heading("Job Information");
   kvTable([
     ["Job Name", o.jobName], ["Customer", o.billTo], ["Location", o.location],
-    ["Job No.", o.jobNo], ["Roof System", o.roofSystem], ["Date", o.date]
+    ["Job No.", o.jobNo], ["Roof System", o.roofSystem], ["Date", o.date], ["Foreman", o.foreman]
   ]);
 
   heading("Crew & Production");

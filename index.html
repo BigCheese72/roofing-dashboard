@@ -789,6 +789,11 @@
           <span class="hint" style="margin:0">Pick an existing job to auto-fill customer &amp; address — or just type a new one below.</span>
         </div>
         <div id="dpr-bld-results"></div>
+        <div class="fld" style="max-width:320px">
+          <label>Foreman <span class="hint" style="font-weight:400">— who's filling this out</span></label>
+          <input type="text" id="dpr-foreman" list="dl-dprForeman" placeholder="Start typing a name…"
+            onblur="rememberFieldValue('dprForeman', this.value)">
+        </div>
         <div class="grid">
           <div class="fld"><label>Job Name</label><input type="text" id="dpr-jobName" list="dl-jobName" onblur="rememberFieldValue('jobName', this.value)"></div>
           <div class="fld"><label>Customer (Bill To)</label><input type="text" id="dpr-billTo" list="dl-billTo" onblur="rememberFieldValue('billTo', this.value)"></div>
@@ -1284,6 +1289,11 @@
 <datalist id="dl-repairItemNotes"></datalist>
 <datalist id="dl-photoCaption"></datalist>
 <datalist id="dl-assetLabel"></datalist>
+<!-- Foremen roster for the Daily Progress Report's Foreman field. Populated
+     from DPR_FOREMEN in js/dpr.js (see dprPopulateForemen()). Empty until
+     Mark provides the roster — the field works as free text meanwhile, and
+     also remembers typed values via field-history autocomplete. -->
+<datalist id="dl-dprForeman"></datalist>
 
 <!-- Modularized (see DEV_NOTES.md) -- index.html is now just markup + these
      script tags in order. Plain globals, not ES modules: this app's

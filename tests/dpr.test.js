@@ -95,7 +95,7 @@ test("collect() -> fill() -> collect() preserves the core report fields", () => 
   const s = makeSandbox();
   const original = {
     id: null, buildingId: null, roofId: "roof_default",
-    date: "2026-07-15",
+    date: "2026-07-15", foreman: "Jose Garcia",
     jobName: "North Warehouse", billTo: "Acme Roofing", location: "123 Main St",
     jobNo: "16153", roofSystem: "FA TPO",
     crew: [{ name: "Jose" }, { name: "Mark" }],
@@ -106,7 +106,7 @@ test("collect() -> fill() -> collect() preserves the core report fields", () => 
   s.dprFill(original);
   const out = s.dprCollect();
 
-  ["date", "jobName", "billTo", "location", "jobNo", "roofSystem",
+  ["date", "foreman", "jobName", "billTo", "location", "jobNo", "roofSystem",
    "headcount", "hoursWorked", "squares", "summary"].forEach((k) => {
     assert.strictEqual(out[k], original[k], "field mismatch: " + k);
   });
