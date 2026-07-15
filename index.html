@@ -335,6 +335,17 @@
         <button class="btn" onclick="document.getElementById('photoInput').click()">+ Add Photos</button>
         <button class="btn" onclick="openCC()">Import from CompanyCam</button>
       </div>
+      <!-- Building-level CompanyCam link, always available on the types whose
+           per-finding capture hides the global import row above (Leak,
+           Inspection, Warranty). Links ONCE at the building/address level -- the
+           project id lands on buildings/{id}.companyCamProjectId (collect() ->
+           save patch) so every report type for that building inherits it via
+           bpSelectBuilding(). Change Order has its own (#cc-link-info-co); Repair
+           uses the row above. Shown/hidden by onWoTypeChange(). -->
+      <div class="btnrow" id="wo-cc-link-row" style="display:none">
+        <button class="btn" onclick="openCC()">🔗 Link / Import from CompanyCam</button>
+      </div>
+      <p class="hint" id="wo-cc-link-hint" style="display:none;margin:2px 0 0">Links CompanyCam to this building once — it then shows on every leak, work order, change order, and inspection for this address.</p>
       <div id="cc-link-info"></div>
     </div>
 

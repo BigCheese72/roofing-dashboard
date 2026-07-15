@@ -2026,6 +2026,16 @@ function onWoTypeChange(){
   if (isInspection){ ensureInspectionChecklist(); renderInspectionChecklist(); renderInspectionRoofPicker(); }
   var ft = document.getElementById("wo-findings-title");
   if (ft) ft.textContent = isInspection ? "Roofing Inspection Findings" : "Roof Investigation Findings";
+  /* Building-level CompanyCam link control (#wo-cc-link-row): shown for the
+     findings-based types (Leak / Inspection / Warranty) whose per-finding capture
+     hid the global import row above -- so Inspection etc. finally have a visible
+     way to LINK CompanyCam at the building level. Change Order/Repair are covered
+     elsewhere (see ccBuildingLinkControlVisible in js/companycam.js). */
+  var ccLinkVisible = typeof ccBuildingLinkControlVisible === "function" && ccBuildingLinkControlVisible(val("woType"));
+  var ccRow = document.getElementById("wo-cc-link-row");
+  if (ccRow) ccRow.style.display = ccLinkVisible ? "" : "none";
+  var ccHint = document.getElementById("wo-cc-link-hint");
+  if (ccHint) ccHint.style.display = ccLinkVisible ? "" : "none";
 }
 
 /* ================= storage ================= */

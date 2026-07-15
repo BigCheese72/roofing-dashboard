@@ -383,6 +383,17 @@ async function ccImport(){
    displays it. Whichever host sits inside a hidden card simply isn't seen.
    See "Change Order CompanyCam link" in DEV_NOTES.md. */
 var CC_LINK_INFO_HOST_IDS = ["cc-link-info", "cc-link-info-co"];
+/* Whether the standalone building-level "Link / Import from CompanyCam" control
+   (#wo-cc-link-row) shows for a work-order type. It exists to give the types
+   whose per-finding capture HIDES the global import row (Leak, Inspection,
+   Warranty) a visible way to link CompanyCam at the building level. Change Order
+   has its own control (#cc-link-info-co); Repair keeps the global import row.
+   The link itself is building-level regardless of where it's initiated --
+   collect() writes companyCamProjectId for every type and it's saved onto the
+   building, so all report types for that address inherit it (bpSelectBuilding). */
+function ccBuildingLinkControlVisible(woType){
+  return woType !== "Change Order" && woType !== "Repair";
+}
 function renderCCLinkInfo(){
   var linkedHtml = !ccLinkedProjectId ? "" :
     '<div class="cc-link">\ud83d\udd17 Locked to CompanyCam project: <b>' + esc(ccLinkedProjectName || ccLinkedProjectId) + '</b>' +
