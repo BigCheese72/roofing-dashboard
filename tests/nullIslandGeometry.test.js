@@ -816,6 +816,75 @@ test("work order image-space pins persist their base image frame", () => {
   assert.equal(finding.pin.lng, null);
   assert.equal(finding.pin.x, 0.3);
   assert.equal(finding.pin.y, 0.4);
+  assert.equal(finding.pin.source, "tech_placed");
+  assert.equal(finding.pin.imageFrame, "roof_base_map");
+  assert.equal(finding.pin.imageFrameUrl, "https://example.test/base.jpg");
+});
+
+test("work order xy save leaves untouched GPS-only photo pins unchanged", () => {
+  const originalPin = { lat: 0, lng: -90.2, source: "photo_gps" };
+  const finding = { id: "finding-1", roofId: "roof-1", pin: originalPin };
+  const events = [];
+  const context = {
+    pinMarker: { getLatLng(){ return { lat: 80, lng: 120 }; } },
+    pinModalFindingId: "finding-1",
+    pinMapMode: "xy",
+    pinXYSize: { w: 400, h: 200, imageFrameUrl: "https://example.test/base.jpg" },
+    pinDeviceGpsUsed: false,
+    pinInitialSource: "photo_gps",
+    pinInteracted: false,
+    findingById(id){ return id === "finding-1" ? finding : null; },
+    renderFindings(){ events.push("render"); },
+    closePinModal(){ events.push("close"); },
+    toast(message){ events.push(message); }
+  };
+  loadFunctionBlock(
+    "js/workorders.js",
+    "function pinImageFrameUrlForFinding",
+    "function clearPinFromModal",
+    context
+  );
+
+  context.savePinFromModal();
+
+  assert.equal(finding.pin, originalPin);
+  assert.deepEqual(finding.pin, { lat: 0, lng: -90.2, source: "photo_gps" });
+  assert.deepEqual(events, ["close", "Pin left unchanged"]);
+});
+
+test("work order xy save preserves existing source without fabricating tech placement", () => {
+  const finding = {
+    id: "finding-1",
+    roofId: "roof-1",
+    pin: { lat: null, lng: null, x: 0.25, y: 0.25, source: "plan_imported" }
+  };
+  const context = {
+    pinMarker: { getLatLng(){ return { lat: 0, lng: 0 }; } },
+    pinModalFindingId: "finding-1",
+    pinMapMode: "xy",
+    pinXYSize: { w: 400, h: 200, imageFrameUrl: "https://example.test/base.jpg" },
+    pinDeviceGpsUsed: false,
+    pinInitialSource: "tech_placed",
+    pinInteracted: false,
+    findingById(id){ return id === "finding-1" ? finding : null; },
+    renderFindings(){},
+    closePinModal(){},
+    toast(){}
+  };
+  loadFunctionBlock(
+    "js/workorders.js",
+    "function pinImageFrameUrlForFinding",
+    "function clearPinFromModal",
+    context
+  );
+
+  context.savePinFromModal();
+
+  assert.equal(finding.pin.lat, null);
+  assert.equal(finding.pin.lng, null);
+  assert.equal(finding.pin.x, 0);
+  assert.equal(finding.pin.y, 0);
+  assert.equal(finding.pin.source, "plan_imported");
   assert.equal(finding.pin.imageFrame, "roof_base_map");
   assert.equal(finding.pin.imageFrameUrl, "https://example.test/base.jpg");
 });

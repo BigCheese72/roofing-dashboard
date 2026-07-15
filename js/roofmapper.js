@@ -1198,6 +1198,9 @@ function rmMeasurementInvalidationKeepsScale(reason){
     reason === "vertex_edit" || reason === "square_up" ||
     reason === "resnap_neighbors" || reason === "align_outline";
 }
+function rmMeasurementInvalidationMovedEdge(reason){
+  return reason !== "superseded_by_remeasure";
+}
 function rmMeasurementScaleStillApplied(m){
   return !!(m && (!m.invalidatedAt || rmMeasurementInvalidationKeepsScale(m.invalidatedReason)));
 }
@@ -1350,7 +1353,21 @@ function rmBuildInheritedScaleRecord(src, factor){
 function rmEdgeDimensionMeta(outline, edgeIndex, distFt){
   var measured = rmGetMeasuredEdge(outline, edgeIndex);
   if (measured){
-    var matches = !rmIsFiniteNumber(distFt) || Math.abs((measured.measuredFt || 0) - distFt) <= RM_EDGE_MEASURE_LABEL_TOLERANCE_FT;
+    if (!rmIsFiniteNumber(distFt)){
+      return {
+        measured: true,
+        conflict: false,
+        bg: "#263238",
+        prefix: "",
+        border: true,
+        labelFt: measured.measuredFt,
+        measuredFt: measured.measuredFt,
+        derivedFt: distFt,
+        labelIsMeasured: true,
+        agreementUnknown: true
+      };
+    }
+    var matches = Math.abs((measured.measuredFt || 0) - distFt) <= RM_EDGE_MEASURE_LABEL_TOLERANCE_FT;
     return {
       measured: true,
       conflict: !matches,
@@ -1404,7 +1421,7 @@ function rmBuildCaptureSource(outline){
 function rmBuildScaleSource(outline, captureSource){
   var measured = rmLatestAppliedMeasuredEdge(outline);
   if (measured){
-    var measurementStale = !!measured.invalidatedAt;
+    var measurementStale = !!measured.invalidatedAt && rmMeasurementInvalidationMovedEdge(measured.invalidatedReason);
     return {
       kind: "measured",
       label: measurementStale ? "tape-measured scale on this roof; edge has since been edited" : "tape-measured edge on this roof",
@@ -4764,6 +4781,18 @@ function rmShouldDrawWorldOutline(outline, roof){
   if (rmIsSyntheticImageGeometry(outline, roof) && outline.ring.some(rmIsNearNullIslandPoint)) return false;
   return true;
 }
+function rmImageNaturalDimensions(url){
+  return new Promise(function(res, rej){
+    var img = new Image();
+    img.onload = function(){ res({ w: img.naturalWidth, h: img.naturalHeight }); };
+    img.onerror = function(){ rej(new Error("couldn't reload the saved image")); };
+    img.src = url;
+  });
+}
+async function rmComputeOrthoBoundsForImageUrl(url){
+  var dims = await rmImageNaturalDimensions(url);
+  return rmComputeOrthoBounds(dims.w, dims.h);
+}
 function rmStartOrthoTrace(dataUrl, pixelW, pixelH){
   var map = rmEnsureMap();
   rmClearFootprintLayers(); /* same clean-slate as any other fresh capture start --
@@ -6107,13 +6136,7 @@ async function rmOpenRoofInMapper(buildingId, roofId){
          image URL no longer resolves) doesn't block the roof itself from
          opening -- the outline loads regardless, just without its photo. */
       try{
-        var dims = await new Promise(function(res, rej){
-          var img = new Image();
-          img.onload = function(){ res({ w: img.naturalWidth, h: img.naturalHeight }); };
-          img.onerror = function(){ rej(new Error("couldn't reload the saved image")); };
-          img.src = roof.roof_base_map_url;
-        });
-        var computed = rmComputeOrthoBounds(dims.w, dims.h);
+        var computed = await rmComputeOrthoBoundsForImageUrl(roof.roof_base_map_url);
         rmState.orthoOverlayLayer = L.imageOverlay(roof.roof_base_map_url, computed.latLngBounds).addTo(map);
         rmState.orthoActive = true;
         rmState.orthoSynthetic = true;

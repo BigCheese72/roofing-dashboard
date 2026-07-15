@@ -955,6 +955,84 @@ async function saveGlobalPhotoSizePref(){
    needing the separate dropdown in the global Photo Documentation
    section. Omitted (existing call sites) behaves exactly as before --
    finding_id: null, "General / no specific finding". */
+/* EXIF GPS extraction for LIBRARY IMPORTS (addPhotosFromFiles). A photo the
+   tech shot on their phone carries its location in EXIF, but our canvas resize
+   re-encodes the image and drops ALL EXIF -- so a photo that HAD a GPS fix used
+   to reach CompanyCam unpinned (Mark, 2026-07-15: "the photos I took then
+   uploaded directly to CC have gps coords, the same photos the app uploaded do
+   not"). Camera captures already carry device geolocation (addPhotosFromCamera);
+   this recovers the coordinate for imports by parsing the EXIF GPS IFD out of the
+   ORIGINAL file bytes BEFORE the resize throws them away. Pure, dependency-free,
+   fully non-fatal: any malformed/absent EXIF returns null and the photo imports
+   exactly as before. Rejects (0,0) and out-of-range, like everywhere else. */
+function rmExifGpsFromTiff(view, tiff){
+  var bo = view.getUint16(tiff);
+  var little = bo === 0x4949; /* "II" little-endian; "MM" (0x4D4D) big-endian */
+  if (!little && bo !== 0x4D4D) return null;
+  var u16 = function(o){ return view.getUint16(o, little); };
+  var u32 = function(o){ return view.getUint32(o, little); };
+  if (u16(tiff + 2) !== 0x002A) return null;
+  function entryFor(ifd, tag){
+    var n = u16(ifd);
+    for (var i = 0; i < n; i++){ var e = ifd + 2 + i * 12; if (u16(e) === tag) return e; }
+    return -1;
+  }
+  var gpsPtr = entryFor(tiff + u32(tiff + 4), 0x8825);
+  if (gpsPtr < 0) return null;
+  var gps = tiff + u32(gpsPtr + 8);
+  function ref(tag){ var e = entryFor(gps, tag); return e < 0 ? "" : String.fromCharCode(view.getUint8(e + 8)); }
+  function dms(tag){
+    var e = entryFor(gps, tag);
+    if (e < 0 || u32(e + 4) < 3) return null;
+    var base = tiff + u32(e + 8), out = 0, weight = [1, 1 / 60, 1 / 3600];
+    for (var i = 0; i < 3; i++){
+      var den = u32(base + i * 8 + 4);
+      out += (den ? u32(base + i * 8) / den : 0) * weight[i];
+    }
+    return out;
+  }
+  var lat = dms(0x0002), lng = dms(0x0004);
+  if (lat == null || lng == null) return null;
+  if (ref(0x0001) === "S") lat = -lat;
+  if (ref(0x0003) === "W") lng = -lng;
+  if (!isFinite(lat) || !isFinite(lng) || (lat === 0 && lng === 0)) return null;
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
+  return { lat: lat, lng: lng };
+}
+function parseExifGps(buffer){
+  try{
+    var view = new DataView(buffer);
+    if (view.byteLength < 12 || view.getUint16(0) !== 0xFFD8) return null; /* not a JPEG */
+    var offset = 2;
+    while (offset + 4 <= view.byteLength){
+      var marker = view.getUint16(offset);
+      if ((marker & 0xFF00) !== 0xFF00) return null;
+      if (marker === 0xFFE1){ /* APP1 -- Exif */
+        var exif = offset + 4;
+        if (exif + 6 <= view.byteLength && view.getUint32(exif) === 0x45786966 && view.getUint16(exif + 4) === 0){
+          return rmExifGpsFromTiff(view, exif + 6);
+        }
+        return null;
+      }
+      if (marker === 0xFFDA) return null; /* start of scan -- image data, no EXIF beyond here */
+      offset += 2 + view.getUint16(offset + 2); /* skip this segment */
+    }
+    return null;
+  }catch(e){ return null; }
+}
+/* Parses EXIF GPS from a data-URL's leading bytes (the APP1 Exif segment sits
+   right after SOI, so the first ~150KB always covers it -- no need to decode a
+   multi-MB image in full). */
+function dataUrlExifGps(dataUrl){
+  try{
+    var comma = String(dataUrl || "").indexOf(",");
+    if (comma < 0) return null;
+    var bin = atob(dataUrl.slice(comma + 1, comma + 1 + 200000));
+    var n = bin.length, bytes = new Uint8Array(n);
+    for (var i = 0; i < n; i++) bytes[i] = bin.charCodeAt(i);
+    return parseExifGps(bytes.buffer);
+  }catch(e){ return null; }
+}
 function addPhotosFromFiles(files, findingId){
   var list = Array.prototype.slice.call(files || []);
   if (!list.length) return;
@@ -983,6 +1061,10 @@ function addPhotosFromFiles(files, findingId){
   list.forEach(function(file, idx){
     var reader = new FileReader();
     reader.onload = function(){
+      /* EXIF GPS off the ORIGINAL bytes, before the canvas resize below strips
+         it (see parseExifGps). null when the photo has no location -- then it
+         behaves exactly as an import did before. */
+      var exifGps = dataUrlExifGps(reader.result);
       var img = new Image();
       img.onload = function(){
         var preset = photoPreset();
@@ -995,7 +1077,7 @@ function addPhotosFromFiles(files, findingId){
         c.width = w; c.height = h;
         c.getContext("2d").drawImage(img, 0, 0, w, h);
         results[idx] = { caption:"", img: c.toDataURL("image/jpeg", preset.q), thumb: makeThumbDataUrl(img), w: w, h: h,
-          finding_id: findingId || null, localId: makeLocalPhotoId() };
+          finding_id: findingId || null, gps: exifGps, localId: makeLocalPhotoId() };
         done();
       };
       img.onerror = function(){ toast("Couldn't read one of the photos"); done(); };
