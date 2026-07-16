@@ -34,7 +34,7 @@ function makeSandbox(opts){
       sandbox.repairs.forEach(function(r, i){
         ["repair", "location"].forEach(function(f){
           const el = { dataset: { i: String(i), f: f }, value: r[f] || "" };
-          el.addEventListener = function(type, fn){ handlers.push({ i: i, f: f, el: el, fn: fn }); };
+          el.addEventListener = function(type, fn){ handlers.push({ type: type, i: i, f: f, el: el, fn: fn }); };
           els.push(el);
         });
       });
@@ -50,6 +50,8 @@ function makeSandbox(opts){
     __genIdCounter: 0,
     genId(prefix){ return prefix + "_t" + (sandbox.__genIdCounter++); },
     openBaseMapPinPicker(){},
+    materials: [],
+    renderMaterials(){},
     document: {
       getElementById(id){
         if (id === "repairs-list") return host;
@@ -70,7 +72,7 @@ function makeSandbox(opts){
    listeners first, exactly as a real renderRepairs() call would). */
 function type(sandbox, i, f, text){
   sandbox.renderRepairs();
-  const matches = sandbox.__handlers.filter(function(h){ return h.i === i && h.f === f; });
+  const matches = sandbox.__handlers.filter(function(h){ return h.type === "input" && h.i === i && h.f === f; });
   assert.ok(matches.length, "no bound handler for row " + i + " field " + f);
   const h = matches[matches.length - 1];
   h.el.value = text;
