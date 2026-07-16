@@ -13,6 +13,7 @@
 // or insufficient token is rejected the same way regardless of anything
 // else in the request body.
 const { getDb, requirePermission, hostnameFromEvent } = require("./lib/authGuard");
+const { PERMISSION_KEYS, PERMISSION_SCOPES, isValidPermissionValue } = require("./lib/permissions");
 
 function resp(code, obj) {
   return { statusCode: code, headers: { "Content-Type": "application/json" }, body: JSON.stringify(obj) };
@@ -481,6 +482,100 @@ exports.handler = async function (event) {
       await db.collection("app_settings").doc("global").set(
         { photoSizePref: value, updatedAt: Date.now() }, { merge: true });
       return resp(200, { ok: true });
+    }
+
+    if (body.action === "list_roles") {
+      // Data source for the Roles & Permissions editor (Admin page).
+      // settings.security tier -- the seed grid grants it to the owner
+      // ONLY (admin is explicitly excluded), so this whole editor is
+      // owner-only today unless the owner deliberately grants
+      // settings.security to another role through this very editor.
+      // Roles are client-readable via firestore.rules anyway (not
+      // secret), but the editor loads through here so the key list and
+      // scope registry it renders come from the SAME code the validator
+      // below enforces -- no drift between what the grid shows and what
+      // the server will accept.
+      let caller;
+      try { caller = await requirePermission(event, "settings.security"); }
+      catch (e) { return resp(e.statusCode || 401, { error: e.message }); }
+
+      const snap = await db.collection("roles").get();
+      const roles = snap.docs.map(d => Object.assign({ id: d.id }, d.data()));
+      roles.sort((a, b) => (b.rank || 0) - (a.rank || 0));
+      return resp(200, { ok: true, roles, permissionKeys: PERMISSION_KEYS, permissionScopes: PERMISSION_SCOPES });
+    }
+
+    if (body.action === "set_role_permissions") {
+      // Writes ONE role's edited permission grid (Roles & Permissions
+      // editor's Save). Same settings.security tier as list_roles above.
+      // The roles collection is the LIVE enforcement source of truth
+      // (authGuard's getPermissionValue() re-reads it on every check), so
+      // this takes effect on the very next permission check -- which is
+      // exactly why every guardrail here is server-side, not just UI:
+      let caller;
+      try { caller = await requirePermission(event, "settings.security"); }
+      catch (e) { return resp(e.statusCode || 401, { error: e.message }); }
+
+      const roleId = String(body.roleId || "");
+      if (!roleId) return resp(400, { error: "Missing roleId" });
+      // Guardrail: the owner role is LOCKED to all-permissions, always.
+      // Not editable, not reducible, by anyone -- including the owner
+      // themself -- so there is no sequence of grid edits that can lock
+      // the owner out of this editor (or anything else).
+      if (roleId === "owner") {
+        return resp(403, { error: "The owner role is locked to all permissions and cannot be edited." });
+      }
+      const roleRef = db.collection("roles").doc(roleId);
+      const roleSnap = await roleRef.get();
+      if (!roleSnap.exists) return resp(404, { error: "Unknown role: " + roleId });
+
+      const incoming = (body.permissions && typeof body.permissions === "object" && !Array.isArray(body.permissions))
+        ? body.permissions : null;
+      if (!incoming) return resp(400, { error: "Missing permissions object" });
+      // Guardrail: only keys in the code-defined PERMISSION_KEYS registry
+      // may EVER appear in a role grid -- an unknown key is a hard reject
+      // (whole request, nothing written), not a silent strip, so a typo'd
+      // or stale client can't half-apply an edit without anyone noticing.
+      const unknownKeys = Object.keys(incoming).filter(k => PERMISSION_KEYS.indexOf(k) === -1);
+      if (unknownKeys.length) {
+        return resp(400, { error: "Unknown permission key(s): " + unknownKeys.join(", ") });
+      }
+      // Values: true/false, or a scope string PERMISSION_SCOPES explicitly
+      // allows for that specific key ("proj"/"own"/"billing") -- a scope on
+      // a boolean-only key is rejected, since enforcement code for that key
+      // wouldn't know what the scope means.
+      for (const k of Object.keys(incoming)) {
+        if (!isValidPermissionValue(k, incoming[k])) {
+          return resp(400, { error: "Invalid value for " + k + ": " + JSON.stringify(incoming[k]) });
+        }
+      }
+
+      // Merge onto the role's EXISTING grid (a partial body edits only the
+      // keys it names), then normalize to exactly the registry: every
+      // PERMISSION_KEYS key present (default false), any stale key from a
+      // since-removed registry entry dropped.
+      const existing = roleSnap.data().permissions || {};
+      const normalized = {};
+      PERMISSION_KEYS.forEach(k => {
+        normalized[k] = incoming[k] !== undefined ? incoming[k]
+          : (existing[k] !== undefined ? existing[k] : false);
+      });
+
+      // before/after in the audit entry is the DIFF (changed keys only),
+      // not two full ~38-key grids -- keeps the Audit Log view legible.
+      const changedBefore = {}, changedAfter = {};
+      PERMISSION_KEYS.forEach(k => {
+        const prev = existing[k] === undefined ? false : existing[k];
+        if (prev !== normalized[k]) { changedBefore[k] = prev; changedAfter[k] = normalized[k]; }
+      });
+      if (!Object.keys(changedAfter).length) {
+        return resp(200, { ok: true, changed: 0 });
+      }
+
+      await roleRef.set({ permissions: normalized, updatedAt: Date.now() }, { merge: true });
+      await writeAuditLog(db, caller, "role_permissions_changed", { collection: "roles", id: roleId },
+        changedBefore, changedAfter);
+      return resp(200, { ok: true, changed: Object.keys(changedAfter).length });
     }
 
     return resp(400, { error: "Unknown action" });
