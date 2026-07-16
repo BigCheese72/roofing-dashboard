@@ -919,6 +919,10 @@
           <div class="fld"><label>Roof System</label><input type="text" id="dpr-roofSystem" list="dl-roofSystem"></div>
         </div>
         <div id="dpr-roof-picker" style="display:none"></div>
+        <!-- The day's weather at the job — auto-pulled from Open-Meteo for the
+             job's location and saved with the report (js/dpr.js dprRefreshWeather).
+             Display-only, never blocks the report. -->
+        <p class="hint" id="dpr-weather" style="display:none;margin:8px 0 0"></p>
       </div>
 
       <div class="card">
