@@ -76,6 +76,17 @@ exports.handler = async function (event) {
       return resp(200, result);
     }
 
+    if (action === "schema_probe") {
+      // TEMPORARY (read-only): schema discovery for the DPR crew-hours
+      // integration — employee master + raw daily punch table. Behind the
+      // same foundation.read gate as everything else; the query shapes are
+      // WHITELISTED in lib/foundationDb.js (no arbitrary SQL, identifiers
+      // validated, pay/PII column names refused). REMOVE once
+      // action=employees / action=day_hours ship.
+      const rows = await foundationDb.runProbe(password, p);
+      return resp(200, { rows: rows });
+    }
+
     return resp(400, { error: "Unknown action" });
   } catch (e) {
     // Never leak the password or raw driver internals to the caller. Log

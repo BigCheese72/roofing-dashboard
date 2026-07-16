@@ -311,6 +311,68 @@ async function fetchJobHours(password, jobNo) {
   };
 }
 
+// ---------------------------------------------------------------------
+// TEMPORARY schema probe (read-only, admin-gated via foundation.js) — schema
+// discovery for the DPR crew-hours integration (employee master + raw daily
+// punch/timecard table). REMOVE once action=employees / action=day_hours ship.
+//
+// Same hard rules as everything above: SELECT-only, parameter-bound or
+// identifier-VALIDATED (never raw caller text), and pay/PII columns are
+// REFUSED by name pattern — this probe can list column NAMES (metadata, which
+// is how we learn what to avoid) but can never select pay or personal data.
+// ---------------------------------------------------------------------
+const PROBE_IDENT = /^[A-Za-z0-9_]{1,64}$/;
+const PROBE_BANNED_COLS = /pay|rate|salar|wage|amount|comp|ssn|social|birth|bank|routing|acct|account|phone|addr|email|marital|gender|race|ethnic|tax|fica|medic|futa|suta|401|deduct|garnish|union|insur/i;
+function probeIdent(v, kind) {
+  const s = String(v == null ? "" : v).trim();
+  if (!PROBE_IDENT.test(s)) throw new Error("probe: invalid " + kind);
+  return s;
+}
+function probeSafeCol(v) {
+  const s = probeIdent(v, "column");
+  if (PROBE_BANNED_COLS.test(s)) throw new Error("probe: column refused (pay/PII pattern): " + s);
+  return s;
+}
+// Builds one whitelisted probe query. No arbitrary SQL ever reaches here —
+// only these five fixed shapes, with validated identifiers slotted in.
+function buildProbeQuery(p) {
+  p = p || {};
+  const what = p.probe || "tables";
+  if (what === "tables") {
+    return { text: "SELECT t.name AS tbl, SUM(pt.rows) AS approx_rows FROM sys.tables t " +
+      "JOIN sys.partitions pt ON pt.object_id = t.object_id AND pt.index_id IN (0,1) " +
+      "GROUP BY t.name ORDER BY t.name", inputs: [] };
+  }
+  if (what === "columns") {
+    const t = probeIdent(p.table, "table"); // metadata only — names/types, no data
+    return { text: "SELECT COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH FROM INFORMATION_SCHEMA.COLUMNS " +
+      "WHERE TABLE_NAME = @t ORDER BY ORDINAL_POSITION", inputs: [{ name: "t", value: t }] };
+  }
+  if (what === "sample") {
+    const t = probeIdent(p.table, "table");
+    const cols = String(p.cols || "").split(",").map(probeSafeCol);
+    if (!cols.length) throw new Error("probe: no columns");
+    return { text: "SELECT TOP 25 " + cols.map(function (c) { return "[" + c + "]"; }).join(", ") +
+      " FROM dbo.[" + t + "]", inputs: [] };
+  }
+  if (what === "recency") {
+    const t = probeIdent(p.table, "table");
+    const c = probeSafeCol(p.col);
+    return { text: "SELECT COUNT(*) AS n, MIN([" + c + "]) AS min_v, MAX([" + c + "]) AS max_v FROM dbo.[" + t + "]", inputs: [] };
+  }
+  if (what === "bydate") {
+    const t = probeIdent(p.table, "table");
+    const c = probeSafeCol(p.col);
+    return { text: "SELECT TOP 30 [" + c + "] AS d, COUNT(*) AS n FROM dbo.[" + t + "] " +
+      "GROUP BY [" + c + "] ORDER BY [" + c + "] DESC", inputs: [] };
+  }
+  throw new Error("probe: unknown mode");
+}
+async function runProbe(password, params) {
+  const rows = await runSelect(password, buildProbeQuery(params));
+  return rows;
+}
+
 // Test-only reset of the cached pool promise, so a unit test that stubs
 // `mssql` isn't polluted by a pool from a previous test.
 function _resetPoolForTest() {
@@ -332,6 +394,9 @@ module.exports = {
   // DB-hitting API (used by foundation.js; DB stubbed in tests)
   fetchJobs,
   fetchJobHours,
+  // TEMPORARY probe (see block above — remove with the probe action)
+  buildProbeQuery,
+  runProbe,
   _resetPoolForTest,
   // constants exposed for tests/assertions
   FOUNDATION_SERVER,
