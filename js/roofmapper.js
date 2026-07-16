@@ -3835,14 +3835,14 @@ function rmGenerateOutline(){
 var rmTraceState = { active: false, mode: "manual", points: [], previewLayer: null, vertexLayers: [], insertLayers: [] };
 var rmTraceClickHandler = null;
 /* Precision cursor (Mark: "big HAND cursor... as accurate as possible")
-   -- toggles the crosshair CSS + fixed center reticle (see the
+   -- toggles pointer cursor CSS + fixed center reticle (see the
    #rm-map-wrap.rm-precision-active rules and .rm-crosshair-reticle in the
    stylesheet) on for the duration of placing/tracing/editing a vertex.
    Applies uniformly to trace, vertex-edit, and feature placement; the
    "⊕ Place at Crosshair" quick-action button (rmPlaceAtCrosshair()) is
    trace-specific -- vertex-edit is drag-based (you already see the handle
    move) and feature placement already has its own click-to-reposition, so
-   the cursor/reticle alone covers those two without a redundant button.
+   the pointer/reticle alone covers those two without a redundant button.
    See "Precision cursor" in DEV_NOTES.md. */
 function rmSetPrecisionMode(active){
   var wrap = document.getElementById("rm-map-wrap");
@@ -3864,10 +3864,10 @@ function rmShowTracePanel(){
     "satellite/OSM aren’t usable here, not survey-grade. Undo and re-record a corner if a reading looks off." :
     "Tap the roof's corners in order. Drag orange points to move them, tap a + on an edge to insert one, or double-click/right-click a point to delete it.";
   document.getElementById("rm-walk-record-btn").style.display = isWalk ? "" : "none";
-  /* Crosshair/reticle + "Place at Crosshair" only apply to map-tap tracing
+  /* Reticle + "Place at Crosshair" only apply to map-tap tracing
      -- walk-corners points come from an actual GPS fix at the tech's
      physical position, not a map tap, so there's nothing on the map to
-     aim a crosshair at. */
+     aim a fixed reticle at. */
   rmSetPrecisionMode(!isWalk);
   rmUpdateTraceButtons();
   rmUpdateControlVisibility(); /* shows #rm-trace-panel (rmTraceState.active is already true here), hides search buttons */
