@@ -34,7 +34,7 @@ function buildingCtx(exists){
       })
     }
   };
-  vm.runInNewContext(slice("async function ensureCustomerAndBuilding", "/* ================= building roofs data layer"), ctx);
+  vm.runInNewContext(slice("function customerIdFor", "/* ================= building roofs data layer"), ctx);
   ctx.__rec = rec;
   return ctx;
 }

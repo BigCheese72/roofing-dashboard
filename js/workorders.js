@@ -163,6 +163,12 @@ async function bpSelectCompanyCamProject(i){
 function bpSelectBuilding(buildingId){
   var b = (bpCache || []).find(function(x){ return x.id === buildingId; });
   if (!b) return;
+  /* Picking a building IS choosing its stable identity (FIX 1) — the doc id
+     from the buildings collection, not a name-derived slug. This is also
+     the deliberate way to RE-POINT an order at a different building (typing
+     a new name into a saved order renames its building instead). */
+  currentBuildingId = b.id;
+  currentCustomerId = b.customerId || null;
   setVal("jobName", b.name || "");
   setVal("billTo", b.customerName || "");
   setVal("location", b.location || "");
@@ -369,18 +375,16 @@ var currentRoofIds = null;
 var lastLookupRoofInfo = null;
 var toastTimer = null;
 
-function buildingIdFor(billTo, jobName){
-  var custName = (billTo || "").trim();
-  var bldName = (jobName || "").trim();
-  if (!bldName) return null;
-  var custId = custName ? ("cust_" + slugify(custName)) : null;
-  return "bld_" + slugify((custId || "nocust") + "_" + bldName);
-}
+/* buildingIdFor()/customerIdFor() moved to js/core.js (audit FIX 1) — ONE
+   canonical copy of the slug formula instead of five hand-copied ones. */
 function lookupRoofInfoMatchesBuilding(info, buildingId){
   return !!(info && info.buildingId && buildingId && info.buildingId === buildingId);
 }
 function currentWorkOrderBuildingId(){
-  return buildingIdFor(val("billTo"), val("jobName"));
+  /* Stored/stable identity first (currentBuildingId — see js/core.js):
+     renaming the job on a saved order must not re-derive a different
+     building. Name-derived slug is the legacy/new-order fallback only. */
+  return currentBuildingId || buildingIdFor(val("billTo"), val("jobName"));
 }
 function clearStaleLookupRoofInfoForCurrentOrder(){
   if (!lookupRoofInfoMatchesBuilding(lastLookupRoofInfo, currentWorkOrderBuildingId())){
@@ -1232,6 +1236,12 @@ function collect(){
      Persisted on the WO by cloudSaveOrder (copies all keys), AND onto the
      BUILDING doc by ensureCustomerAndBuilding() — customerNo + address ride
      along so the building carries the full accounting identity/anchor (#76). */
+  /* Stable identity (FIX 1) — stamped from currentBuildingId/currentCustomerId
+     (js/core.js): set on load for docs that carry it, on building pick, and
+     by saveOrder() after ensureCustomerAndBuilding(). null on a brand-new
+     or legacy order until first save; readers fall back to the name slug. */
+  o.buildingId = currentBuildingId || null;
+  o.customerId = currentCustomerId || null;
   o.foundationJobNo = (typeof fdnLinkedJobNo !== "undefined" && fdnLinkedJobNo) ? fdnLinkedJobNo : null;
   o.foundationJobName = (typeof fdnLinkedJobName !== "undefined" && fdnLinkedJobName) ? fdnLinkedJobName : "";
   o.foundationCustomerNo = (typeof fdnLinkedCustomerNo !== "undefined" && fdnLinkedCustomerNo) ? fdnLinkedCustomerNo : null;
@@ -1250,7 +1260,7 @@ function collect(){
      individual findings different roofIds on ANY work order type, and the
      report needs real names for those too. See "GPS auto-assign photos to
      roofs" in DEV_NOTES.md. */
-  var buildingId = buildingIdFor(o.billTo, o.jobName);
+  var buildingId = o.buildingId || buildingIdFor(o.billTo, o.jobName); /* same stored-id-first rule as the lookup that filled the cache */
   o.roofLabels = (lookupRoofInfoMatchesBuilding(lastLookupRoofInfo, buildingId) && lastLookupRoofInfo.roofs) ?
     lastLookupRoofInfo.roofs.reduce(function(m, r){ m[r.id] = r.label || "Roof"; return m; }, {}) : null;
   o.changeOrderSignature = changeOrderSignature || null;
@@ -1258,6 +1268,12 @@ function collect(){
 }
 function fill(o){
   currentId = o.id;
+  /* Stable identity (FIX 1): a doc that carries stored ids keeps them for
+     this whole edit session — name edits rename the building rather than
+     re-deriving a fork. Legacy docs (no stored id) load null and keep the
+     old slug-fallback behavior byte-for-byte. */
+  currentBuildingId = o.buildingId || null;
+  currentCustomerId = o.customerId || null;
   currentRoofId = o.roofId || null;
   currentRoofIds = (o.roofIds && o.roofIds.length > 1) ? o.roofIds.slice() : null;
   /* Must be set before onWoTypeChange() below (Inspection's branch reads

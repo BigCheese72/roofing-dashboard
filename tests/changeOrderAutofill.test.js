@@ -25,6 +25,8 @@ function makeSandbox(opts){
     WORK_ORDER_TYPES: ["Leak / Service", "Change Order"],
     currentId: null,
     currentRoofId: null,
+    currentBuildingId: null,
+    currentCustomerId: null,
     currentRoofIds: null,
     findings: [],
     repairs: [],

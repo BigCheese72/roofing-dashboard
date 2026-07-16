@@ -312,15 +312,13 @@ function dprCanCreate(){
 }
 
 /* ---- canonical id derivation (must match the rest of the app) ---- */
-/* Same formula as ensureCustomerAndBuilding() (core.js) and buildingIdFor()
-   (workorders.js), reused here so a DPR files under the EXACT building doc the
-   work orders do — never a parallel/rogue building record. */
+/* Delegates to THE canonical derivation (buildingIdFor(), js/core.js —
+   audit FIX 1 deduped the five hand-copied slug formulas into that one) so
+   a DPR files under the EXACT building doc the work orders do — never a
+   parallel/rogue building record. Wrapper kept so dpr.js call sites are
+   untouched (crew-roster work is in-flight in this file). */
 function dprBuildingId(billTo, jobName){
-  var custName = (billTo || "").trim();
-  var bldName = (jobName || "").trim();
-  if (!bldName) return null;
-  var custId = custName ? ("cust_" + slugify(custName)) : null;
-  return "bld_" + slugify((custId || "nocust") + "_" + bldName);
+  return buildingIdFor(billTo, jobName);
 }
 function dprDocId(buildingId, dateStr){
   if (!buildingId || !dateStr) return null;

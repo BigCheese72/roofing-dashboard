@@ -19,6 +19,8 @@ function makeSandbox(fields){
     WORK_ORDER_TYPES: ["Leak / Service"],
     currentId: null,
     currentRoofId: null,
+    currentBuildingId: null,
+    currentCustomerId: null,
     currentRoofIds: null,
     findings: [{ id: "f1", condition: "", location: "", warranty: "Warrantable", pin: null }],
     repairs: [],
@@ -41,6 +43,13 @@ function makeSandbox(fields){
     slugify(s){
       return String(s || "").toLowerCase().trim()
         .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "unknown";
+    },
+    /* canonical id derivation moved to core.js (audit FIX 1) — real formula here */
+    customerIdFor(billTo){ const n = (billTo || "").trim(); return n ? ("cust_" + sandbox.slugify(n)) : null; },
+    buildingIdFor(billTo, jobName){
+      const b = (jobName || "").trim();
+      if (!b) return null;
+      return "bld_" + sandbox.slugify((sandbox.customerIdFor(billTo) || "nocust") + "_" + b);
     },
     val(id){ return sandbox.__fields[id] || ""; },
     setVal(id, value){ sandbox.__fields[id] = value || ""; },

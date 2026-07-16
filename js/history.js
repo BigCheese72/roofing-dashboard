@@ -640,22 +640,21 @@ function promptAddRoof(buildingId){
    etc.) -- a real, documented limit, not silently unbounded. See "GPS
    auto-assign photos to roofs" in DEV_NOTES.md. */
 /* Shared by rmAutoAssignExistingPinsToRoofs()/backfillMissingHistoryEvents()/
-   countFindingsWithoutGps() below -- workorders has no buildingId field of
-   its own (see DATA_MODEL.md), so every one of these recomputes the same
-   cust_/bld_ slug ensureCustomerAndBuilding() uses at report-save time from
-   each candidate's own jobName/billTo, rather than trusting a stored field.
-   Capped at the same 100-most-recent-saved window cloudFetchIndex() already
-   uses everywhere else in this file. Pure read, no writes. */
+   countFindingsWithoutGps() below. Work orders now carry a STORED buildingId
+   (audit FIX 1, stamped at save via ensureCustomerAndBuilding()) — preferred
+   here so a renamed job still matches its building; the name-derived slug
+   (buildingIdFor(), js/core.js — the one canonical copy) remains the
+   fallback for legacy docs saved before the stored id existed. Capped at
+   the same 100-most-recent-saved window cloudFetchIndex() already uses
+   everywhere else in this file. Pure read, no writes. */
 async function findBuildingWorkOrderCandidates(buildingId){
   var qs = await fdb.collection("workorders").orderBy("savedAt", "desc").limit(100).get();
   var candidates = [];
   qs.forEach(function(d){
     var v = d.data();
-    var bldName = (v.jobName || "").trim();
-    if (!bldName) return;
-    var custId = (v.billTo || "").trim() ? ("cust_" + slugify(v.billTo.trim())) : null;
-    var bldId = "bld_" + slugify((custId || "nocust") + "_" + bldName);
-    if (bldId === buildingId) candidates.push({ id: d.id, jobName: bldName, savedAt: v.savedAt || 0 });
+    var bldId = v.buildingId || buildingIdFor(v.billTo, v.jobName);
+    if (!bldId) return;
+    if (bldId === buildingId) candidates.push({ id: d.id, jobName: (v.jobName || "").trim(), savedAt: v.savedAt || 0 });
   });
   return candidates;
 }
@@ -1291,11 +1290,10 @@ async function ccSiteLatLng(o){
 async function ccResolveBuildingContext(o){
   var ctx = { roofs: [], geo: null, bldId: null };
   try{
-    if (!fdb || typeof slugify !== "function" || typeof getBuildingRoofs !== "function") return ctx;
-    var bldName = (o.jobName || "").trim();
-    if (!bldName) return ctx;
-    var custId = (o.billTo || "").trim() ? ("cust_" + slugify(o.billTo)) : null;
-    ctx.bldId = "bld_" + slugify((custId || "nocust") + "_" + bldName);
+    if (!fdb || typeof buildingIdFor !== "function" || typeof getBuildingRoofs !== "function") return ctx;
+    /* Stored id first (FIX 1), canonical slug fallback for legacy docs. */
+    ctx.bldId = o.buildingId || buildingIdFor(o.billTo, o.jobName);
+    if (!ctx.bldId) return ctx;
     var snap = await fdb.collection("buildings").doc(ctx.bldId).get();
     if (!snap || !snap.exists) return ctx;
     var bld = snap.data() || {};
@@ -1543,7 +1541,16 @@ async function logReportAndHistoryEvent(o, kind, emailInfo, ccUploadResult){
        writing a buildingId:null record -- a real PDF action (kind !== "Saved")
        already implied a filled-in job name every time this ran before, so
        this guard changes nothing for those call sites. */
-    if (!ids.buildingId) return;
+    if (!ids.buildingId){
+      /* Audit fix (blank job name): a real report action (PDF Emailed /
+         Downloaded / Shared) silently vanishing from Building History was
+         invisible data loss — say so out loud. "Saved" alone stays silent
+         BY DESIGN (see the comment above: it fires on every save of every
+         type, long before a job name necessarily exists — toasting there
+         would nag on every early save). */
+      if (kind !== "Saved") toast("⚠️ Not logged to Building History — this work order has no Job Name, so there's no building to attach the " + kind + " event to. Add the Job Name and redo the action to keep the record.");
+      return;
+    }
     var pdfRef = null; /* no Firebase Storage — see comment above */
     var sharedId = "evt_" + o.id;
     var existing = null;

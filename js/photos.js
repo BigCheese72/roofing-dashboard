@@ -170,11 +170,11 @@ function refreshInspectionRoofPickerIfNeeded(){
 async function lookupProspectiveBuildingRoofInfo(){
   if (!fdb) return null;
   var o = collect();
-  var custName = (o.billTo || "").trim();
-  var bldName = (o.jobName || "").trim();
-  if (!bldName) return null;
-  var custId = custName ? ("cust_" + slugify(custName)) : null;
-  var bldId = "bld_" + slugify((custId || "nocust") + "_" + bldName);
+  /* Stored id first (audit FIX 1 — this was a sixth hand-copied slug the
+     audit's "5+ places" undercounted), canonical buildingIdFor()
+     (js/core.js) as the legacy/new-order fallback. */
+  var bldId = o.buildingId || buildingIdFor(o.billTo, o.jobName);
+  if (!bldId) return null;
   /* The linked CompanyCam project is the durable, site-level anchor (it maps
      1:1 to a physical job site/address) — carried alongside the roofs so the
      base-map resolver can follow a site across forms whose customer/job-name
