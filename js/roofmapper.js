@@ -7596,6 +7596,252 @@ function rmDeleteLocalOutline(id){
   rmRenderPendingSaveStatus();
 }
 
+/* ================= repair-area base-map pins =================
+   Work Orders owns repair rows and validation (repairAreaById /
+   setRepairAreaPin). RoofMapper owns only this in-form map popup, so repair
+   pins use the same base-map placement behavior as finding pins without
+   writing Firestore, localStorage, or row objects directly. */
+var rmRepairAreaPinMap = null, rmRepairAreaPinMarker = null, rmRepairAreaPinId = null,
+  rmRepairAreaPinMode = "latlng", rmRepairAreaPinFrame = null,
+  rmRepairAreaPinInteracted = false;
+function rmRepairAreaPinIsLatLng(pin){
+  return !!(pin && rmIsFiniteNumber(pin.lat) && rmIsFiniteNumber(pin.lng) &&
+    !rmIsFiniteNumber(pin.x) && !rmIsFiniteNumber(pin.y));
+}
+function rmRepairAreaPinIsXY(pin){
+  return !!(pin && rmIsFiniteNumber(pin.x) && rmIsFiniteNumber(pin.y) &&
+    !rmIsFiniteNumber(pin.lat) && !rmIsFiniteNumber(pin.lng));
+}
+function rmRepairAreaPinMatchesFrame(pin, frameUrl){
+  return !!(rmRepairAreaPinIsXY(pin) && frameUrl && pin.imageFrameUrl === frameUrl);
+}
+function rmRepairAreaPinBuildLatLng(latlng, source){
+  if (!latlng || !rmIsFiniteNumber(latlng.lat) || !rmIsFiniteNumber(latlng.lng)) return null;
+  if (latlng.lat === 0 && latlng.lng === 0) return null;
+  return { lat: latlng.lat, lng: latlng.lng, x: null, y: null, source: source || "tech_placed" };
+}
+function rmRepairAreaPinBuildXY(latlng, frame){
+  if (!latlng || !frame || !rmIsFiniteNumber(frame.w) || !rmIsFiniteNumber(frame.h) || !frame.url) return null;
+  if (frame.w <= 0 || frame.h <= 0) return null;
+  if (!rmIsFiniteNumber(latlng.lng) || !rmIsFiniteNumber(latlng.lat)) return null;
+  var x = latlng.lng / frame.w, y = latlng.lat / frame.h;
+  if (x < 0 || x > 1 || y < 0 || y > 1) return null;
+  return {
+    lat: null, lng: null, x: x, y: y, source: "tech_placed",
+    imageFrame: "roof_base_map", imageFrameUrl: frame.url
+  };
+}
+function rmRepairAreaBoundsToLatLngBounds(b){
+  return [[b.south, b.west], [b.north, b.east]];
+}
+function rmEnsureRepairAreaPinModal(){
+  var modal = document.getElementById("rm-repair-pin-modal");
+  if (modal) return modal;
+  modal = document.createElement("div");
+  modal.id = "rm-repair-pin-modal";
+  modal.className = "modal";
+  modal.style.display = "none";
+  modal.innerHTML =
+    '<div class="modal-card" style="max-width:960px;width:min(960px,calc(100vw - 24px))">' +
+      '<div class="rowhead"><b id="rm-repair-pin-title">Repair Area Pin</b><span class="sp"></span>' +
+        '<button class="btn" onclick="rmCloseRepairAreaPinPicker()">Close</button></div>' +
+      '<p id="rm-repair-pin-hint" class="hint" style="margin-top:0">Loading...</p>' +
+      '<div id="rm-repair-pin-map" style="height:420px;border:1px solid #ddd;border-radius:8px;overflow:hidden;background:#f6f7f8"></div>' +
+      '<div class="btnrow" style="margin-top:12px">' +
+        '<button class="btn danger" id="rm-repair-pin-clear" onclick="rmClearRepairAreaPin()">Clear Pin</button>' +
+        '<button class="btn primary" onclick="rmSaveRepairAreaPin()">Save Pin</button>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(modal);
+  return modal;
+}
+function rmSetRepairAreaPinHint(msg){
+  var el = document.getElementById("rm-repair-pin-hint");
+  if (el) el.textContent = msg || "";
+}
+function rmClearRepairAreaPinMap(){
+  if (rmRepairAreaPinMap){ rmRepairAreaPinMap.remove(); rmRepairAreaPinMap = null; }
+  rmRepairAreaPinMarker = null;
+  rmRepairAreaPinFrame = null;
+}
+function rmRepairAreaPinLabel(row){
+  return (row && (row.repair || row.location)) ?
+    ((row.repair || "Repair") + (row.location ? " - " + row.location : "")) : "Repair Area Pin";
+}
+async function rmOpenRepairAreaPinPicker(repairAreaId){
+  if (typeof repairAreaById !== "function" || typeof setRepairAreaPin !== "function"){
+    toast("Repair area pin placement is not available on this form yet.");
+    return;
+  }
+  var row = repairAreaById(repairAreaId);
+  if (!row) return;
+  var modal = rmEnsureRepairAreaPinModal();
+  rmRepairAreaPinId = repairAreaId;
+  rmRepairAreaPinInteracted = false;
+  rmClearRepairAreaPinMap();
+  document.getElementById("rm-repair-pin-title").textContent = rmRepairAreaPinLabel(row);
+  document.getElementById("rm-repair-pin-clear").style.display = row.pin ? "" : "none";
+  rmSetRepairAreaPinHint("Locating base map...");
+  lockBodyScroll();
+  modal.style.display = "";
+  try{
+    var customBaseMap = (typeof lookupProspectiveBuildingBaseMap === "function") ?
+      await lookupProspectiveBuildingBaseMap() : null;
+    if (customBaseMap && customBaseMap.georeferenced){
+      rmRepairAreaPinMode = "latlng";
+      await rmOpenRepairAreaPinSatellite(row, customBaseMap);
+      return;
+    }
+    if (customBaseMap && rmRepairAreaPinIsLatLng(row.pin)){
+      rmRepairAreaPinMode = "latlng";
+      await rmOpenRepairAreaPinSatellite(row, null, customBaseMap);
+      return;
+    }
+    if (customBaseMap){
+      rmRepairAreaPinMode = "xy";
+      await rmOpenRepairAreaPinImage(row, customBaseMap);
+      return;
+    }
+    rmRepairAreaPinMode = "latlng";
+    await rmOpenRepairAreaPinSatellite(row, null);
+  }catch(e){
+    rmSetRepairAreaPinHint("Couldn't open the base-map picker: " + e.message);
+  }
+}
+async function rmOpenRepairAreaPinImage(row, customBaseMap){
+  rmSetRepairAreaPinHint("Loading base map...");
+  var img = new Image();
+  img.onload = function(){
+    var w = img.naturalWidth, h = img.naturalHeight;
+    rmRepairAreaPinFrame = { w: w, h: h, url: customBaseMap.url };
+    var bounds = [[0,0],[h,w]];
+    setTimeout(function(){
+      rmRepairAreaPinMap = L.map("rm-repair-pin-map", { crs: L.CRS.Simple, minZoom: -5 });
+      L.imageOverlay(customBaseMap.url, bounds).addTo(rmRepairAreaPinMap);
+      rmRepairAreaPinMap.fitBounds(bounds);
+      var existingOnFrame = rmRepairAreaPinMatchesFrame(row.pin, customBaseMap.url);
+      var start = existingOnFrame ? [row.pin.y * h, row.pin.x * w] : [h / 2, w / 2];
+      rmRepairAreaPinMarker = L.marker(start, { draggable: true }).addTo(rmRepairAreaPinMap);
+      rmRepairAreaPinMarker.on("dragend", function(){ rmRepairAreaPinInteracted = true; });
+      rmRepairAreaPinMap.on("click", function(e){
+        rmRepairAreaPinMarker.setLatLng(e.latlng);
+        rmRepairAreaPinInteracted = true;
+      });
+      rmRepairAreaPinMap.invalidateSize();
+      setTimeout(function(){ if (rmRepairAreaPinMap) rmRepairAreaPinMap.invalidateSize(); }, 300);
+    }, 50);
+    var type = String(customBaseMap.type || "base map").replace("_", " ");
+    var existingOnFrame = rmRepairAreaPinMatchesFrame(row.pin, customBaseMap.url);
+    rmSetRepairAreaPinHint((existingOnFrame ?
+      "Existing repair pin on the " + type + " - drag to move it." :
+      (rmRepairAreaPinIsXY(row.pin) ?
+        "This repair pin was placed on a different base-map image. Tap the " + type + " to re-place it, or clear it." :
+        "Tap the " + type + " to place this repair area.")) +
+      (customBaseMap.fromSelectedRoof ? "" : " This base map is shared from " + (customBaseMap.sourceRoofLabel || "another roof") + "."));
+  };
+  img.onerror = function(){
+    toast("Couldn't load the custom base map - using satellite instead.");
+    rmRepairAreaPinMode = "latlng";
+    rmOpenRepairAreaPinSatellite(row, null);
+  };
+  img.src = customBaseMap.url;
+}
+async function rmOpenRepairAreaPinSatellite(row, orthoOverlay, skippedBaseMap){
+  var roofInfo = (typeof lookupProspectiveBuildingRoofInfo === "function") ?
+    await lookupProspectiveBuildingRoofInfo() : null;
+  var roofs = (roofInfo && roofInfo.roofs) || [];
+  var outlines = roofs.reduce(function(acc, r){
+    var ol = r.roof_outlines || [];
+    var latest = ol[ol.length - 1];
+    if (latest && latest.ring && latest.ring.length >= 3){
+      acc.push(Object.assign({}, latest, { _roofLabel: r.label || "Roof" }));
+    }
+    return acc;
+  }, []);
+  var center = null, zoom = 18, fitBounds = null;
+  if (rmRepairAreaPinIsLatLng(row.pin)){
+    center = { lat: row.pin.lat, lng: row.pin.lng };
+    zoom = 19;
+  } else if (orthoOverlay && orthoOverlay.bounds){
+    var b = orthoOverlay.bounds;
+    center = { lat: (b.north + b.south) / 2, lng: (b.east + b.west) / 2 };
+    fitBounds = rmRepairAreaBoundsToLatLngBounds(b);
+  } else if (outlines.length){
+    var ring = outlines[outlines.length - 1].ring;
+    center = rmGeomRingCentroid(ring);
+    fitBounds = ring.map(function(p){ return [p.lat, p.lng]; });
+  } else {
+    var addr = (typeof val === "function" ? (val("location") || val("jobName") || "") : "");
+    center = addr && typeof geocodeAddress === "function" ? await geocodeAddress(addr) : null;
+    if (!center){ center = { lat: 39.8283, lng: -98.5795 }; zoom = 4; }
+  }
+  var hint = rmRepairAreaPinIsLatLng(row.pin) ?
+    "Existing repair pin - drag to move it, or tap Save to keep it here." :
+    (zoom === 4 ? "No base map or address was found. Pan/zoom to the repair area, then tap to place the pin." :
+      "Tap the map to place this repair area, or drag the marker into position.");
+  if (skippedBaseMap){
+    hint += " Satellite is shown because the existing GPS pin cannot be plotted on a non-georeferenced drawing. Clear it to place a drawing pin instead.";
+  }
+  rmSetRepairAreaPinHint(hint);
+  setTimeout(function(){
+    rmRepairAreaPinMap = L.map("rm-repair-pin-map").setView([center.lat, center.lng], zoom);
+    L.tileLayer(RM_TILE_SAT, {
+      maxZoom: 22, maxNativeZoom: SAT_MAX_NATIVE_ZOOM, attribution: "Tiles &copy; Esri"
+    }).addTo(rmRepairAreaPinMap);
+    if (orthoOverlay && orthoOverlay.bounds){
+      L.imageOverlay(orthoOverlay.url, rmRepairAreaBoundsToLatLngBounds(orthoOverlay.bounds)).addTo(rmRepairAreaPinMap);
+    }
+    outlines.forEach(function(o){
+      L.polygon(o.ring.map(function(p){ return [p.lat, p.lng]; }), {
+        color: "#E8600A", weight: 2, fillColor: "#E8600A", fillOpacity: 0.1
+      }).addTo(rmRepairAreaPinMap);
+    });
+    if (fitBounds) rmRepairAreaPinMap.fitBounds(fitBounds, { padding: [24, 24] });
+    rmRepairAreaPinMarker = L.marker([center.lat, center.lng], { draggable: true }).addTo(rmRepairAreaPinMap);
+    rmRepairAreaPinMarker.on("dragend", function(){ rmRepairAreaPinInteracted = true; });
+    rmRepairAreaPinMap.on("click", function(e){
+      rmRepairAreaPinMarker.setLatLng(e.latlng);
+      rmRepairAreaPinInteracted = true;
+    });
+    rmRepairAreaPinMap.invalidateSize();
+    setTimeout(function(){ if (rmRepairAreaPinMap) rmRepairAreaPinMap.invalidateSize(); }, 300);
+  }, 50);
+}
+function rmSaveRepairAreaPin(){
+  if (!rmRepairAreaPinId || !rmRepairAreaPinMarker) return;
+  var row = repairAreaById(rmRepairAreaPinId);
+  if (!row) return;
+  var hadSameModePin = (rmRepairAreaPinMode === "xy") ?
+    rmRepairAreaPinMatchesFrame(row.pin, rmRepairAreaPinFrame && rmRepairAreaPinFrame.url) :
+    rmRepairAreaPinIsLatLng(row.pin);
+  if (!rmRepairAreaPinInteracted && !hadSameModePin){
+    toast("Tap or drag the map before saving a repair pin.");
+    return;
+  }
+  var latlng = rmRepairAreaPinMarker.getLatLng();
+  var pin = rmRepairAreaPinMode === "xy" ?
+    rmRepairAreaPinBuildXY(latlng, rmRepairAreaPinFrame) :
+    rmRepairAreaPinBuildLatLng(latlng, "tech_placed");
+  if (!pin || !setRepairAreaPin(rmRepairAreaPinId, pin)){
+    toast("That repair pin could not be saved. Place it on the visible map area and try again.");
+    return;
+  }
+  toast("Repair area pin saved.");
+  rmCloseRepairAreaPinPicker();
+}
+function rmClearRepairAreaPin(){
+  if (rmRepairAreaPinId && setRepairAreaPin(rmRepairAreaPinId, null)) toast("Repair area pin cleared.");
+  rmCloseRepairAreaPinPicker();
+}
+function rmCloseRepairAreaPinPicker(){
+  var modal = document.getElementById("rm-repair-pin-modal");
+  if (modal) modal.style.display = "none";
+  unlockBodyScroll();
+  rmClearRepairAreaPinMap();
+  rmRepairAreaPinId = null;
+  rmRepairAreaPinInteracted = false;
+}
+
 /* Mobile: auto-hide the header on scroll-down, show again on scroll-up --
    Mark: "maximize usable area... consider collapsing or auto-hiding the
    banner... on scroll." Mobile-only (matchMedia gate, same 640px cutoff as
