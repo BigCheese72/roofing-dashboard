@@ -14,6 +14,7 @@
 // else in the request body.
 const { getDb, requirePermission, hostnameFromEvent } = require("./lib/authGuard");
 const { PERMISSION_KEYS, PERMISSION_SCOPES, isValidPermissionValue } = require("./lib/permissions");
+const { purgeLabelsForBuilding } = require("./lib/aiLabels");
 
 function resp(code, obj) {
   return { statusCode: code, headers: { "Content-Type": "application/json" }, body: JSON.stringify(obj) };
@@ -105,6 +106,13 @@ exports.handler = async function (event) {
       // not a restore mechanism; roofs[]/history content can be large and
       // isn't what this log is for.
       const bldBefore = bldSnapBefore.exists ? bldSnapBefore.data() : null;
+      // Deletion cascade for AI training labels (see lib/aiLabels.js +
+      // "AI training labels" in DEV_NOTES.md): label records reference this
+      // building's photos, which are customer property -- purge them BEFORE
+      // the building doc itself, so a mid-delete failure leaves the
+      // building (and a retry path) intact rather than orphaning labels
+      // behind a building that no longer exists.
+      const deletedLabels = await purgeLabelsForBuilding(db, buildingId);
       const batch = db.batch();
       evtSnap.forEach(d => batch.delete(d.ref));
       repSnap.forEach(d => batch.delete(d.ref));
@@ -112,9 +120,10 @@ exports.handler = async function (event) {
       await batch.commit();
       await writeAuditLog(db, caller, "delete_building", { collection: "buildings", id: buildingId },
         bldBefore ? { name: bldBefore.name || null, address: bldBefore.address || null,
-          customerId: bldBefore.customerId || null, deletedEvents: evtSnap.size, deletedReports: repSnap.size } : null,
+          customerId: bldBefore.customerId || null, deletedEvents: evtSnap.size, deletedReports: repSnap.size,
+          deletedAiLabels: deletedLabels } : null,
         null);
-      return resp(200, { ok: true, deletedEvents: evtSnap.size, deletedReports: repSnap.size });
+      return resp(200, { ok: true, deletedEvents: evtSnap.size, deletedReports: repSnap.size, deletedAiLabels: deletedLabels });
     }
 
     if (body.action === "delete_history_event") {
