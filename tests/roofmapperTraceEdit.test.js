@@ -14,17 +14,31 @@ function between(start, end){
   return source.slice(a, b);
 }
 
-function makeSandbox(){
-  const sandbox = {};
+function makeSandbox(options = {}){
+  const elements = {
+    "rm-trace-finish-btn": { disabled: false },
+    "rm-trace-undo-btn": { disabled: false },
+    "rm-trace-count": { textContent: "" }
+  };
+  const sandbox = {
+    document: {
+      getElementById(id){
+        return elements[id];
+      }
+    },
+    __elements: elements
+  };
   vm.createContext(sandbox);
   vm.runInContext(
-    between("var rmTraceState", "function rmTraceMidpoint"),
+    between("var rmTraceState", "function rmCancelTrace"),
     sandbox
   );
   sandbox.renderCount = 0;
   sandbox.buttonCount = 0;
   sandbox.rmRenderTracePreview = function(){ sandbox.renderCount += 1; };
-  sandbox.rmUpdateTraceButtons = function(){ sandbox.buttonCount += 1; };
+  if (!options.realButtons) {
+    sandbox.rmUpdateTraceButtons = function(){ sandbox.buttonCount += 1; };
+  }
   sandbox.rmTraceState.active = true;
   sandbox.rmTraceState.points = [
     { lat: 1, lng: 1 },
@@ -77,4 +91,30 @@ test("trace edit operations ignore inactive traces and invalid indexes", () => {
   assert.strictEqual(JSON.stringify(sb.rmTraceState.points), before);
   assert.strictEqual(sb.renderCount, 0);
   assert.strictEqual(sb.buttonCount, 0);
+});
+
+test("inserting on the closing edge appends before the implicit first point", () => {
+  const sb = makeSandbox();
+
+  sb.rmTraceInsertPoint(2, { lat: 40, lng: 41 });
+
+  assert.deepStrictEqual(sb.rmTraceState.points.map((p) => [p.lat, p.lng]), [
+    [1, 1],
+    [2, 2],
+    [3, 3],
+    [40, 41]
+  ]);
+});
+
+test("deleting below three trace points disables Finish", () => {
+  const sb = makeSandbox({ realButtons: true });
+
+  sb.rmUpdateTraceButtons();
+  assert.strictEqual(sb.__elements["rm-trace-finish-btn"].disabled, false);
+
+  sb.rmTraceDeletePoint(2);
+
+  assert.strictEqual(sb.__elements["rm-trace-finish-btn"].disabled, true);
+  assert.strictEqual(sb.__elements["rm-trace-undo-btn"].disabled, false);
+  assert.match(sb.__elements["rm-trace-count"].textContent, /^2 points/);
 });
