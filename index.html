@@ -181,6 +181,19 @@
       <p class="hint" style="margin:4px 0 0" id="warranty-check-status">Auto-checks every 30 minutes. Unmatched reports land in the Review Queue for manual assignment — never silently guessed.</p>
     </div>
     </div>
+
+    <!-- Roles & Permissions editor (owner-only -- hidden for non-owner
+         admins by updateAdminUI(), server-gated on settings.security either
+         way). Edits the LIVE roles/{roleId} permission grids; rendered and
+         saved entirely by js/roles-admin.js. First modular section of the
+         consolidated Admin page — see "Admin page" in DEV_NOTES.md. -->
+    <div class="card no-print" id="roles-admin-card" style="display:none;margin-top:12px;padding:10px 14px">
+      <h2 class="cond" style="margin:0 0 4px">🔑 Roles &amp; Permissions <span class="hint" style="font-size:12px">(owner only)</span></h2>
+      <p class="hint" style="margin:0 0 8px">Check what each role is allowed to do, then Save. Changes are live
+        immediately — every server action re-reads the role grid on each request. The Owner column is locked to
+        all permissions so you can never lock yourself out. Every save is recorded in the Audit Log.</p>
+      <div id="roles-admin-body"><p class="hint">Loading…</p></div>
+    </div>
   </div>
 
   <!-- ================= HOME / LAUNCHER VIEW ================= -->
@@ -201,6 +214,14 @@
 
     <div class="card">
       <h2 class="cond">Job Information</h2>
+      <!-- "Leak – No Job" catch-all flag (see isLeakNoJobOrder() in
+           js/workorders.js). DERIVED, never stored: shows while the order
+           rides the catch-all job, clears by itself the moment a real
+           Foundation job is linked. -->
+      <div id="wo-leaknojob-banner" style="display:none;background:#FFF3E0;border:1px solid #E8600A;color:#8A5A00;border-radius:8px;padding:10px 12px;margin:0 0 12px;font-weight:600">
+        ⚠️ Leak – No Job ticket — no real Foundation job number yet. Charlotte needs to create
+        the job in Foundation; once it exists, link it here (🔍 Select Job) and this flag clears.
+      </div>
       <div class="fld" style="max-width:280px">
         <label>Work Order Type</label>
         <select id="woType" onchange="onWoTypeChange()"></select>
@@ -213,6 +234,11 @@
       <div class="grid">
         <div class="fld"><label>Job Name</label><input type="text" id="jobName" list="dl-jobName" onblur="rememberFieldValue('jobName', this.value); refreshInspectionRoofPickerIfNeeded();"></div>
         <div class="fld"><label>Location</label><input type="text" id="location" list="dl-location" onblur="rememberFieldValue('location', this.value)"></div>
+        <!-- Suite is a TAG for strip-mall / multi-tenant sites, never a
+             boundary: one address, one roof, one base map — see
+             currentSuiteTag() in js/workorders.js. Optional; blank for
+             single-tenant buildings. -->
+        <div class="fld"><label>Suite (optional)</label><input type="text" id="suite" placeholder="e.g. Suite 12"></div>
         <div class="fld"><label>Date of Service</label><input type="text" id="serviceDate"></div>
         <div class="fld"><label>Job No.</label><input type="text" id="jobNo"></div>
         <div class="fld"><label>Project Manager</label><input type="text" id="projectManager" list="dl-projectManager"></div>
@@ -222,21 +248,11 @@
         <div class="fld"><label>Site Contact</label><input type="text" id="siteContact" list="dl-contactName" onblur="rememberFieldValue('contactName', this.value)"></div>
         <div class="fld"><label>Technician</label><input type="text" id="technician" list="dl-technician" onblur="rememberFieldValue('technician', this.value)"></div>
         <div class="fld"><label>Roof System</label>
-          <select id="roofSystem">
-            <option value=""></option>
-            <option>FA EPDM</option>
-            <option>MECH EPDM</option>
-            <option>Fleece Back EPDM</option>
-            <option>FA TPO</option>
-            <option>MECH TPO</option>
-            <option>Fleece Back TPO</option>
-            <option>PVC</option>
-            <option>Fleece Back PVC</option>
-            <option>BUR / Gravel</option>
-            <option>BUR Smooth</option>
-            <option>SBS</option>
-            <option>Shingles</option>
-          </select>
+          <!-- Options are populated from the shared roof-type list (builtins +
+               app-wide user-added types) by populateRoofSystemSelect() in
+               js/workorders.js — the static list that used to live here is now
+               ROOF_TYPES_BUILTIN there. Last option is "➕ Add new roof type…". -->
+          <select id="roofSystem" onchange="onRoofSystemChange()"></select>
         </div>
       </div>
       <div class="fld" id="wo-reportedarea-fld"><label>Reported Leak Area</label>
@@ -278,6 +294,16 @@
       <h2 class="cond">Work Performed</h2>
       <div id="repairs-list"></div>
       <div class="btnrow"><button class="btn" onclick="addRepair()">+ Add Repair</button></div>
+    </div>
+
+    <!-- Work Order (stored type "Repair") only — see onWoTypeChange(). Change
+         Order keeps its own free-text Materials textarea (#woMaterials) inside
+         its own card; this is the itemized list for executed work. Rows live in
+         materials[] (js/workorders.js) and persist with the work order. -->
+    <div class="card" id="wo-materials-card" style="display:none">
+      <h2 class="cond">Material List</h2>
+      <div id="materials-list"></div>
+      <div class="btnrow"><button class="btn" onclick="addMaterial()">+ Add Material</button></div>
     </div>
 
     <div class="card" id="wo-changeorder-card" style="display:none">
@@ -504,7 +530,9 @@
         this building's record or export it.</p>
       <div class="btnrow" style="margin:0 0 10px">
         <button class="btn primary" id="rm-locate-btn" onclick="rmUseMyLocation()">📍 Use My Location</button>
+        <button class="btn" id="rm-job-picker-btn" onclick="rmOpenJobPicker()">🔍 Select Job</button>
       </div>
+      <div id="rm-job-link-info" class="hint" style="margin:-4px 0 10px;display:none"></div>
       <div class="btnrow" style="margin:0 0 10px">
         <input type="text" id="rm-address-search" placeholder="…or type any address" style="flex:1;min-width:160px"
           onkeydown="if(event.key==='Enter'){event.preventDefault();rmSearchByAddress();}">
@@ -1021,6 +1049,20 @@
   </div>
 </div>
 
+<div id="rm-job-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)rmCloseJobPicker()">
+  <div style="background:#fff;max-width:640px;margin:4vh auto;border-radius:8px;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;width:94%">
+    <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
+      <b class="cond" style="font-size:17px">Select Job for RoofMapper</b>
+      <span style="flex:1"></span>
+      <button class="btn" onclick="rmCloseJobPicker()">Close</button>
+    </div>
+    <div style="padding:14px 16px;overflow:auto">
+      <input type="text" id="rm-job-search" placeholder="Search by job #, name, customer, city, or address…" style="width:100%;margin-bottom:10px;box-sizing:border-box" oninput="rmFilterJobPicker();">
+      <div id="rm-job-list" class="hint">Loading jobs…</div>
+    </div>
+  </div>
+</div>
+
 <div id="pin-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)closePinModal()">
   <div style="background:#fff;max-width:760px;margin:3vh auto;border-radius:8px;max-height:94vh;display:flex;flex-direction:column;overflow:hidden;width:96%">
     <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
@@ -1451,6 +1493,14 @@
 <datalist id="dl-technician"></datalist>
 <datalist id="dl-roofLocationDetail"></datalist>
 <datalist id="dl-repairItemNotes"></datalist>
+<datalist id="dl-materialName"></datalist>
+<datalist id="dl-materialUnit"></datalist>
+<!-- Shared roof-type suggestions for free-text roof-system inputs (the DPR
+     form's #dpr-roofSystem already points here) — populated from the same
+     shared list as the work-order select, see populateRoofSystemDatalist()
+     in js/workorders.js. NOT part of FIELD_HISTORY_KEYS' per-device memory:
+     this one is the app-wide list. -->
+<datalist id="dl-roofSystem"></datalist>
 <datalist id="dl-photoCaption"></datalist>
 <datalist id="dl-assetLabel"></datalist>
 <!-- Foremen roster for the Daily Progress Report's Foreman field. Populated
@@ -1489,6 +1539,12 @@
 <script src="js/workorders.js"></script>
 <script src="js/roofmapper.js"></script>
 <script src="js/dpr.js"></script>
+<script src="js/roles-admin.js"></script>
+<!-- AI training-label write path (see js/ailabels.js). Pure data plumbing,
+     no UI of its own and deliberately no callers yet — loaded so the flows
+     that confirm/correct an issue label (work orders, photos, inspections)
+     can call recordConfirmedLabel() as they wire up. -->
+<script src="js/ailabels.js"></script>
 <!-- Help Center / tooltips / first-run walkthrough (see js/help.js). Loaded
      last among the modules since it wraps showView() from the outside and
      needs that + every other global already defined; builds its own DOM at
@@ -1508,6 +1564,11 @@ populateEmailPick();
    Preview/Save before ever picking a launcher tile or loading a saved
    order — harmless either way, just extra safety. */
 populateWoTypeSelect();
+/* Roof-type select + shared datalist: builtins render immediately (plus any
+   types this device already cached), then the app-wide list refreshes from
+   Firestore in the background — see "shared roof-type list" in
+   js/workorders.js. */
+loadRoofTypes();
 populateWarrantyGuidelines();
 showView("home");
 renderSaved();

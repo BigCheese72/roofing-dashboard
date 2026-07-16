@@ -11,6 +11,19 @@ function findingHasPhotos(f){
 function filledFindings(){ return findings.filter(function(f){ return f.condition || f.location || findingHasPhotos(f); }); }
 function filledRepairs(){ return repairs.filter(function(r){ return r.repair || r.location; }); }
 function filledRepairItems(){ return repairItems.filter(function(it){ return it.qty || it.notes; }); }
+function filledMaterials(){ return materials.filter(function(m){ return m.material || m.qty || m.notes; }); }
+/* "Repair #N" exactly as the Work Performed section numbers it
+   (filledRepairs() order) for a material row linked to that repair area —
+   "" when the row isn't linked, or the linked repair was emptied out and
+   no longer prints (a dangling number would point at nothing). */
+function materialRepairRefLabel(repairId){
+  if (!repairId) return "";
+  var fr = filledRepairs();
+  for (var i = 0; i < fr.length; i++){
+    if (fr[i].id === repairId) return "Repair #" + (i + 1);
+  }
+  return "";
+}
 function filledPhotos(){ return photos.filter(function(p){ return p.img || (p.caption||"").trim(); }); }
 
 /* Routes by work order type — Change Order gets its own distinct
@@ -38,6 +51,7 @@ function buildLeakReportText(o){
   L.push("Work Order Type: " + woTypeLabel(o.woType));
   L.push("Job Name: " + o.jobName);
   L.push("Location: " + o.location);
+  if (o.suite) L.push("Suite: " + o.suite);
   L.push("Date of Service: " + o.serviceDate);
   L.push("Job No.: " + o.jobNo);
   L.push("Bill To: " + o.billTo);
@@ -90,6 +104,19 @@ function buildLeakReportText(o){
     });
     L.push("");
   }
+  /* Print-if-present like WORK PERFORMED above — the Material List card is
+     only OFFERED on the Repair form (see onWoTypeChange()), but any record
+     that has rows prints them. */
+  var fmat = filledMaterials();
+  if (fmat.length){
+    L.push("MATERIAL LIST");
+    fmat.forEach(function(m,i){
+      var ref = materialRepairRefLabel(m.repair_id);
+      L.push((i+1) + ". " + m.material + (m.qty ? " x" + m.qty : "") + (m.unit ? " " + m.unit : "") +
+        (m.notes ? " — " + m.notes : "") + (ref ? " [" + ref + "]" : ""));
+    });
+    L.push("");
+  }
   if (!isInspection){
     L.push("WARRANTY DETERMINATION");
     if (o.warrantable) L.push("Warrantable Repairs: " + o.warrantable);
@@ -121,6 +148,7 @@ function buildChangeOrderText(o){
   L.push("JOB INFORMATION");
   L.push("Job Name: " + o.jobName);
   L.push("Location: " + o.location);
+  if (o.suite) L.push("Suite: " + o.suite);
   L.push("Date: " + o.serviceDate);
   L.push("Job No.: " + o.jobNo);
   L.push("Bill To: " + o.billTo);
@@ -224,7 +252,14 @@ function renderDoc(){
      back and forth between Edit and Preview on the same order). */
   var toBox = document.getElementById("emailTo");
   if (toBox && !toBox.value.trim()){
-    toBox.value = (o.woType === WORK_ORDER_TYPES[0] ? EMAIL_DEFAULT_TO_LEAK : EMAIL_DEFAULT_TO).join(", ");
+    /* Leak / Service already defaults to Charlotte (she handles billing).
+       A "Leak – No Job" ticket defaults to her too, whatever its type —
+       she's the Foundation record-keeper who has to create the real job
+       (see isLeakNoJobOrder() in js/workorders.js). Still just a DEFAULT
+       into an empty box: the tech sees it and can adjust before sending. */
+    var defaultToCharlotte = o.woType === WORK_ORDER_TYPES[0] ||
+      (typeof isLeakNoJobOrder === "function" && isLeakNoJobOrder(o));
+    toBox.value = (defaultToCharlotte ? EMAIL_DEFAULT_TO_LEAK : EMAIL_DEFAULT_TO).join(", ");
   }
 }
 /* Every DISTINCT roofId actually present among this report's findings
@@ -310,10 +345,10 @@ function rmReportOutlineDrawability(outline){
   return { include: hasImageFrame, planUnavailable: hasImageFrame };
 }
 async function rmFetchReportRoofOutlines(o){
-  var bldName = (o.jobName || "").trim();
-  if (!fdb || !bldName) return { roofEntries: [], error: null };
-  var custId = (o.billTo || "").trim() ? ("cust_" + slugify(o.billTo)) : null;
-  var bldId = "bld_" + slugify((custId || "nocust") + "_" + bldName);
+  /* Stored id first (audit FIX 1), canonical name-slug (buildingIdFor(),
+     js/core.js) as the legacy fallback. */
+  var bldId = o.buildingId || buildingIdFor(o.billTo, o.jobName);
+  if (!fdb || !bldId) return { roofEntries: [], error: null };
   try{
     var snap = await fdb.collection("buildings").doc(bldId).get(); /* READ ONLY -- see comment above; never .set()/.update() from this path */
     if (!snap.exists) return { roofEntries: [], error: null };
@@ -896,7 +931,7 @@ function renderLeakReportDoc(o){
   h += "<h3 class='cond'>Job Information</h3>" + kvTable([
     /* Display label, never the raw stored value — see WORK_ORDER_TYPE_LABELS. */
     ["Work Order Type",woTypeLabel(o.woType)],
-    ["Job Name",o.jobName],["Location",o.location],["Date of Service",o.serviceDate],
+    ["Job Name",o.jobName],["Location",o.location],["Suite",o.suite],["Date of Service",o.serviceDate],
     ["Job No.",o.jobNo],["Bill To",o.billTo],["Billing Contact",o.billContact],
     ["Contact Phone",o.billPhone],["Site Contact",o.siteContact],["Technician",o.technician]]
     .concat(isInspection ? [] : [["Reported Leak Area",o.reportedArea]])
@@ -1033,6 +1068,20 @@ function renderLeakReportDoc(o){
       }).join("") + "</tbody></table>";
   }
 
+  /* Print-if-present like Work Performed above (the card is only OFFERED on
+     the Repair form — see onWoTypeChange()). "For" ties a row back to the
+     Work Performed numbering when the tech linked it to a repair area. */
+  var fmat = filledMaterials();
+  if (fmat.length){
+    h += "<h3 class='cond'>Material List</h3><table><thead><tr>" +
+      "<th style='width:36px'>No.</th><th>Material / Description</th><th style='width:60px'>Qty</th>" +
+      "<th style='width:80px'>Unit</th><th>Notes</th><th style='width:100px'>For</th></tr></thead><tbody>" +
+      fmat.map(function(m,i){
+        return "<tr><td>" + (i+1) + "</td><td>" + esc(m.material) + "</td><td>" + esc(m.qty) + "</td><td>" +
+          esc(m.unit) + "</td><td>" + esc(m.notes) + "</td><td>" + (esc(materialRepairRefLabel(m.repair_id)) || "—") + "</td></tr>";
+      }).join("") + "</tbody></table>";
+  }
+
   if (!isInspection){
     var wd = kvTable([["Warrantable Repairs",o.warrantable],["Non-Warrantable Repairs",o.nonWarrantable],["Manufacturer Service #",o.mfgServiceNo]]);
     if (wd) h += "<h3 class='cond'>Warranty Determination</h3>" + wd;
@@ -1072,7 +1121,7 @@ function renderChangeOrderDoc(o){
        "<div class='t2'>" + esc(o.jobName) + (o.location ? " — " + esc(o.location) : "") + "</div></div></div>";
 
   h += "<h3 class='cond'>Job Information</h3>" + kvTable([
-    ["Job Name",o.jobName],["Location",o.location],["Date",o.serviceDate],
+    ["Job Name",o.jobName],["Location",o.location],["Suite",o.suite],["Date",o.serviceDate],
     ["Job No.",o.jobNo],["Bill To",o.billTo],["Billing Contact",o.billContact],
     ["Contact Phone",o.billPhone],["Site Contact",o.siteContact],["Technician",o.technician],
     ["PO Number",o.woPONumber],["Date Completed",o.woDateCompleted]]);
@@ -1139,9 +1188,12 @@ async function emailDoc(){
   var addrList = parseEmailRecipients(val("emailTo"));
   var alreadyHasBcc = addrList.some(function(a){ return a.toLowerCase() === EMAIL_ALWAYS_BCC.toLowerCase(); });
   var addrs = addrList.map(encodeURIComponent).join(",");
+  /* Leak/no-job note rides at the top of the email body (auto-inserted,
+     not a separate email — see leakNoJobEmailNote() in js/workorders.js). */
+  var njNote = (typeof leakNoJobEmailNote === "function") ? leakNoJobEmailNote(o) : "";
   var href = "mailto:" + addrs +
     "?subject=" + encodeURIComponent(subject) +
-    "&body=" + encodeURIComponent(buildText()) +
+    "&body=" + encodeURIComponent((njNote ? njNote + "\n\n" : "") + buildText()) +
     (alreadyHasBcc ? "" : "&bcc=" + encodeURIComponent(EMAIL_ALWAYS_BCC));
   window.location.href = href;
   toast("Opening your email app… If nothing opens or it's cut off, use Copy Document Text.");
@@ -1381,11 +1433,11 @@ async function generatePdf(){
      of them calls collect() AFTER this returns -- so resolving here is what
      guarantees o.companyCamProjectId is set, and therefore that
      uploadLinkedPdfToCompanyCam() actually pushes the signed Change Order PDF
-     instead of returning { skipped:true }. No-op for every non-Change-Order
-     type and for a CO whose building has no CompanyCam project (it never
-     creates one) -- see resolveChangeOrderCompanyCamLink() in
-     js/companycam.js. */
-  if (typeof resolveChangeOrderCompanyCamLink === "function") await resolveChangeOrderCompanyCamLink();
+     instead of returning { skipped:true }. Now inherits for EVERY work-order
+     type on a linked building (audit FIX 3 — was Change Order only); still a
+     no-op when the building has no CompanyCam project (it never creates
+     one) -- see resolveBuildingCompanyCamLink() in js/companycam.js. */
+  if (typeof resolveBuildingCompanyCamLink === "function") await resolveBuildingCompanyCamLink();
   var o = collect();
   if (o.woType === "Change Order") return generateChangeOrderPdf(o);
   /* PDF generation doesn't necessarily pass through Preview first (a
@@ -1470,7 +1522,7 @@ async function generateLeakReportPdf(o, roofPlanData){
   kvTablePdf([
     /* Display label, never the raw stored value — see WORK_ORDER_TYPE_LABELS. */
     ["Work Order Type", woTypeLabel(o.woType)],
-    ["Job Name", o.jobName], ["Location", o.location], ["Date of Service", o.serviceDate],
+    ["Job Name", o.jobName], ["Location", o.location], ["Suite", o.suite], ["Date of Service", o.serviceDate],
     ["Job No.", o.jobNo], ["Bill To", o.billTo], ["Billing Contact", o.billContact],
     ["Contact Phone", o.billPhone], ["Site Contact", o.siteContact], ["Technician", o.technician]
   ].concat(isInspection ? [] : [["Reported Leak Area", o.reportedArea]]).concat([["Roof System", o.roofSystem]]));
@@ -1598,6 +1650,26 @@ async function generateLeakReportPdf(o, roofPlanData){
       headStyles: { fillColor: [38, 50, 56], fontSize: 8 },
       styles: { fontSize: 9, cellPadding: 4, textColor: [30, 39, 46], lineColor: [154, 165, 172], lineWidth: 0.5 },
       columnStyles: { 0: { cellWidth: 28 } },
+      margin: { left: M, right: M }
+    });
+    y = doc.lastAutoTable.finalY + 18;
+  }
+
+  /* Print-if-present like Work Performed above — see the HTML builder's
+     Material List block for the reasoning; identical content here. */
+  var fmat = filledMaterials();
+  if (fmat.length){
+    heading("Material List");
+    doc.autoTable({
+      startY: y,
+      head: [["No.", "Material / Description", "Qty", "Unit", "Notes", "For"]],
+      body: fmat.map(function(m, i){
+        return [i + 1, m.material, m.qty, m.unit, m.notes, materialRepairRefLabel(m.repair_id) || "—"];
+      }),
+      theme: "grid",
+      headStyles: { fillColor: [38, 50, 56], fontSize: 8 },
+      styles: { fontSize: 9, cellPadding: 4, textColor: [30, 39, 46], lineColor: [154, 165, 172], lineWidth: 0.5 },
+      columnStyles: { 0: { cellWidth: 28 }, 2: { cellWidth: 40 } },
       margin: { left: M, right: M }
     });
     y = doc.lastAutoTable.finalY + 18;
@@ -1743,7 +1815,7 @@ async function generateChangeOrderPdf(o){
 
   heading("Job Information");
   kvTablePdf([
-    ["Job Name", o.jobName], ["Location", o.location], ["Date", o.serviceDate],
+    ["Job Name", o.jobName], ["Location", o.location], ["Suite", o.suite], ["Date", o.serviceDate],
     ["Job No.", o.jobNo], ["Bill To", o.billTo], ["Billing Contact", o.billContact],
     ["Contact Phone", o.billPhone], ["Site Contact", o.siteContact], ["Technician", o.technician],
     ["PO Number", o.woPONumber], ["Date Completed", o.woDateCompleted]

@@ -2206,6 +2206,13 @@ var rmState = {
   referenceLayerGroup: null,
   pendingBuildingId: null,
   pendingBuildingName: null,
+  pendingBuildingSource: null,
+  linkedJobNo: null,
+  linkedJobName: "",
+  linkedJobCustomerNo: null,
+  linkedJobAddress: "",
+  linkedJobBuildingId: null,
+  linkedJobBuildingName: "",
   /* Scale inheritance -- see rmFinishTrace()/rmCalibrateEdge(). A
      dimensionless rescale factor (1 = no correction learned yet),
      compounded (multiplied in, not replaced) each time a manual_trace/
@@ -3825,17 +3832,17 @@ function rmGenerateOutline(){
    `source` tag, no tags/osmId since there's no OSM feature behind either),
    so everything downstream -- save, export, inline feature placement --
    works completely unchanged regardless of which method captured it. */
-var rmTraceState = { active: false, mode: "manual", points: [], previewLayer: null, vertexLayers: [] };
+var rmTraceState = { active: false, mode: "manual", points: [], previewLayer: null, vertexLayers: [], insertLayers: [] };
 var rmTraceClickHandler = null;
 /* Precision cursor (Mark: "big HAND cursor... as accurate as possible")
-   -- toggles the crosshair CSS + fixed center reticle (see the
+   -- toggles pointer cursor CSS + fixed center reticle (see the
    #rm-map-wrap.rm-precision-active rules and .rm-crosshair-reticle in the
    stylesheet) on for the duration of placing/tracing/editing a vertex.
    Applies uniformly to trace, vertex-edit, and feature placement; the
    "⊕ Place at Crosshair" quick-action button (rmPlaceAtCrosshair()) is
    trace-specific -- vertex-edit is drag-based (you already see the handle
    move) and feature placement already has its own click-to-reposition, so
-   the cursor/reticle alone covers those two without a redundant button.
+   the pointer/reticle alone covers those two without a redundant button.
    See "Precision cursor" in DEV_NOTES.md. */
 function rmSetPrecisionMode(active){
   var wrap = document.getElementById("rm-map-wrap");
@@ -3855,12 +3862,12 @@ function rmShowTracePanel(){
     "Walk to each corner of the roof and tap “📍 Record This Corner” there. Consumer GPS is " +
     "accurate to roughly ±10–30 ft per corner — good for a rough, adjustable footprint when " +
     "satellite/OSM aren’t usable here, not survey-grade. Undo and re-record a corner if a reading looks off." :
-    "Tap the roof's corners in order, all the way around, right on the satellite map above.";
+    "Tap the roof's corners in order. Drag orange points to move them, tap a + on an edge to insert one, or double-click/right-click a point to delete it.";
   document.getElementById("rm-walk-record-btn").style.display = isWalk ? "" : "none";
-  /* Crosshair/reticle + "Place at Crosshair" only apply to map-tap tracing
+  /* Reticle + "Place at Crosshair" only apply to map-tap tracing
      -- walk-corners points come from an actual GPS fix at the tech's
      physical position, not a map tap, so there's nothing on the map to
-     aim a crosshair at. */
+     aim a fixed reticle at. */
   rmSetPrecisionMode(!isWalk);
   rmUpdateTraceButtons();
   rmUpdateControlVisibility(); /* shows #rm-trace-panel (rmTraceState.active is already true here), hides search buttons */
@@ -3871,6 +3878,7 @@ function rmStartManualTrace(){
   rmTraceState.active = true;
   rmTraceState.mode = "manual";
   rmTraceState.points = [];
+  rmTraceState.insertLayers = [];
   rmSetBaseLayer("satellite");
   var map = rmEnsureMap();
   rmTraceClickHandler = function(e){ rmTraceAddPoint(e.latlng); };
@@ -4026,6 +4034,7 @@ function rmStartGeoTiffTrace(georaster){
   rmTraceState.active = true;
   rmTraceState.mode = "manual";
   rmTraceState.points = [];
+  rmTraceState.insertLayers = [];
   rmTraceClickHandler = function(e){ rmTraceAddPoint(e.latlng); };
   map.on("click", rmTraceClickHandler);
   rmShowTracePanel();
@@ -4220,6 +4229,7 @@ function rmStartKmlGroundOverlayTrace(dataUrl, meta){
   rmTraceState.active = true;
   rmTraceState.mode = "manual";
   rmTraceState.points = [];
+  rmTraceState.insertLayers = [];
   rmTraceClickHandler = function(e){ rmTraceAddPoint(e.latlng); };
   map.on("click", rmTraceClickHandler);
   rmShowTracePanel();
@@ -4265,6 +4275,7 @@ function rmStartKmlSuperOverlayTrace(tiles, meta){
   rmTraceState.active = true;
   rmTraceState.mode = "manual";
   rmTraceState.points = [];
+  rmTraceState.insertLayers = [];
   rmTraceClickHandler = function(e){ rmTraceAddPoint(e.latlng); };
   map.on("click", rmTraceClickHandler);
   rmShowTracePanel();
@@ -4812,6 +4823,7 @@ function rmStartOrthoTrace(dataUrl, pixelW, pixelH){
   rmTraceState.active = true;
   rmTraceState.mode = "manual";
   rmTraceState.points = [];
+  rmTraceState.insertLayers = [];
   rmTraceClickHandler = function(e){ rmTraceAddPoint(e.latlng); };
   map.on("click", rmTraceClickHandler);
   rmShowTracePanel();
@@ -4943,6 +4955,7 @@ function rmStartWalkCorners(){
   rmTraceState.active = true;
   rmTraceState.mode = "walk";
   rmTraceState.points = [];
+  rmTraceState.insertLayers = [];
   rmSetBaseLayer("satellite");
   var map = rmEnsureMap();
   if (rmState.lat != null) map.setView([rmState.lat, rmState.lng], 19);
@@ -4983,18 +4996,85 @@ function rmTraceAddPoint(latlng){
   rmRenderTracePreview();
   rmUpdateTraceButtons();
 }
+function rmTracePointFromLatLng(latlng){
+  return { lat: latlng.lat, lng: latlng.lng };
+}
+function rmTraceMovePoint(index, latlng){
+  if (!rmTraceState.active || index < 0 || index >= rmTraceState.points.length) return;
+  rmTraceState.points[index] = rmTracePointFromLatLng(latlng);
+  rmRenderTracePreview({ pan: false });
+  rmUpdateTraceButtons();
+}
+function rmTraceInsertPoint(afterIndex, latlng){
+  if (!rmTraceState.active || afterIndex < 0 || afterIndex >= rmTraceState.points.length) return;
+  rmTraceState.points.splice(afterIndex + 1, 0, rmTracePointFromLatLng(latlng));
+  rmRenderTracePreview({ pan: false });
+  rmUpdateTraceButtons();
+}
+function rmTraceDeletePoint(index){
+  if (!rmTraceState.active || index < 0 || index >= rmTraceState.points.length) return;
+  rmTraceState.points.splice(index, 1);
+  rmRenderTracePreview({ pan: false });
+  rmUpdateTraceButtons();
+}
 function rmTraceUndo(){
   rmTraceState.points.pop();
   rmRenderTracePreview();
   rmUpdateTraceButtons();
 }
-function rmRenderTracePreview(){
+function rmTraceMidpoint(a, b){
+  return { lat: (a.lat + b.lat) / 2, lng: (a.lng + b.lng) / 2 };
+}
+function rmTraceVertexIcon(index){
+  return L.divIcon({
+    className: "",
+    iconSize: [22, 22],
+    iconAnchor: [11, 11],
+    html: '<div title="Drag to move; double-click/right-click to delete" style="width:18px;height:18px;border-radius:50%;background:#E8600A;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.45);cursor:move;color:#fff;font-size:10px;line-height:18px;text-align:center;font-weight:800">' + (index + 1) + '</div>'
+  });
+}
+function rmTraceInsertIcon(){
+  return L.divIcon({
+    className: "",
+    iconSize: [18, 18],
+    iconAnchor: [9, 9],
+    html: '<div title="Insert point here" style="width:16px;height:16px;border-radius:50%;background:#fff;border:2px solid #E8600A;box-shadow:0 1px 4px rgba(0,0,0,.35);cursor:pointer;color:#E8600A;font-size:13px;line-height:14px;text-align:center;font-weight:900">+</div>'
+  });
+}
+function rmRenderTracePreview(options){
+  options = options || {};
   var map = rmState.map;
   if (!map) return;
   rmTraceState.vertexLayers.forEach(function(l){ map.removeLayer(l); });
-  rmTraceState.vertexLayers = rmTraceState.points.map(function(p){
-    return L.circleMarker([p.lat, p.lng], { radius: 5, color: "#fff", weight: 2, fillColor: "#E8600A", fillOpacity: 1 }).addTo(map);
+  rmTraceState.insertLayers.forEach(function(l){ map.removeLayer(l); });
+  rmTraceState.vertexLayers = rmTraceState.points.map(function(p, index){
+    var marker = L.marker([p.lat, p.lng], { draggable: true, icon: rmTraceVertexIcon(index), zIndexOffset: 500 }).addTo(map);
+    marker.on("dragend", function(e){ rmTraceMovePoint(index, e.target.getLatLng()); });
+    marker.on("dblclick contextmenu", function(e){
+      if (e && e.originalEvent && e.originalEvent.preventDefault) e.originalEvent.preventDefault();
+      if (e && e.originalEvent && e.originalEvent.stopPropagation) e.originalEvent.stopPropagation();
+      rmTraceDeletePoint(index);
+    });
+    return marker;
   });
+  rmTraceState.insertLayers = [];
+  if (rmTraceState.points.length >= 2){
+    var segmentCount = rmTraceState.points.length >= 3 ? rmTraceState.points.length : rmTraceState.points.length - 1;
+    for (var i = 0; i < segmentCount; i++){
+      (function(index){
+        var a = rmTraceState.points[index];
+        var b = rmTraceState.points[(index + 1) % rmTraceState.points.length];
+        var mid = rmTraceMidpoint(a, b);
+        var insertMarker = L.marker([mid.lat, mid.lng], { icon: rmTraceInsertIcon(), zIndexOffset: 450 }).addTo(map);
+        insertMarker.on("click", function(e){
+          if (e && e.originalEvent && e.originalEvent.preventDefault) e.originalEvent.preventDefault();
+          if (e && e.originalEvent && e.originalEvent.stopPropagation) e.originalEvent.stopPropagation();
+          rmTraceInsertPoint(index, insertMarker.getLatLng());
+        });
+        rmTraceState.insertLayers.push(insertMarker);
+      })(i);
+    }
+  }
   if (rmTraceState.previewLayer){ map.removeLayer(rmTraceState.previewLayer); rmTraceState.previewLayer = null; }
   if (rmTraceState.points.length >= 2){
     rmTraceState.previewLayer = L.polygon(rmTraceState.points.map(function(p){ return [p.lat, p.lng]; }), {
@@ -5005,7 +5085,7 @@ function rmRenderTracePreview(){
      physically moves around a building. Manual trace deliberately does NOT
      auto-pan: the tech is intentionally tapping a fixed view, and yanking
      the map after every tap would fight their own panning/zooming. */
-  if (rmTraceState.mode === "walk" && rmTraceState.points.length){
+  if (options.pan !== false && rmTraceState.mode === "walk" && rmTraceState.points.length){
     var last = rmTraceState.points[rmTraceState.points.length - 1];
     map.panTo([last.lat, last.lng], { animate: true });
   }
@@ -5013,13 +5093,15 @@ function rmRenderTracePreview(){
 function rmUpdateTraceButtons(){
   document.getElementById("rm-trace-finish-btn").disabled = rmTraceState.points.length < 3;
   document.getElementById("rm-trace-undo-btn").disabled = rmTraceState.points.length === 0;
-  document.getElementById("rm-trace-count").textContent = rmTraceState.points.length + " point" + (rmTraceState.points.length === 1 ? "" : "s");
+  var editable = rmTraceState.points.length ? " Drag points to adjust; + inserts; double-click/right-click deletes." : "";
+  document.getElementById("rm-trace-count").textContent = rmTraceState.points.length + " point" + (rmTraceState.points.length === 1 ? "" : "s") + editable;
 }
 function rmCancelTrace(){
   rmTraceState.active = false;
   var map = rmState.map;
   if (map){
     rmTraceState.vertexLayers.forEach(function(l){ map.removeLayer(l); });
+    rmTraceState.insertLayers.forEach(function(l){ map.removeLayer(l); });
     if (rmTraceState.previewLayer) map.removeLayer(rmTraceState.previewLayer);
     if (rmTraceClickHandler){ map.off("click", rmTraceClickHandler); rmTraceClickHandler = null; }
   }
@@ -5027,6 +5109,7 @@ function rmCancelTrace(){
   rmSetPrecisionMode(false);
   rmTraceState.points = [];
   rmTraceState.vertexLayers = [];
+  rmTraceState.insertLayers = [];
   rmTraceState.previewLayer = null;
   rmTraceState.mode = "manual";
   document.getElementById("rm-walk-record-btn").style.display = "none";
@@ -5112,6 +5195,164 @@ function rmFinishTrace(){
     (canInheritScale ? "Roof outline traced ✓ — scale inherited from this building, no need to re-measure" : "Roof outline traced ✓"));
 }
 
+/* ---- RoofMapper job link ----
+   RoofMapper is often opened before a work order exists on the page. This
+   picker uses the same cached job list as the work-order Select Job flow, but
+   keeps the selection local to RoofMapper: the selected job's address locates
+   the map, and its matched/created building is used later when saving the
+   traced roof. */
+var rmJobPickerJobs = [];
+var rmJobPickerFiltered = [];
+
+function rmJobNo(j){ return String((j && (j.job_number || j.job_no)) || ""); }
+function rmJobAddress(j){
+  if (typeof fdnComposeAddress === "function") return fdnComposeAddress(j || {});
+  var line2 = [j && j.city, [j && j.state, j && j.zip].filter(Boolean).join(" ")].filter(Boolean).join(", ");
+  return [j && j.address, line2].filter(Boolean).join(", ");
+}
+function rmJobDisplayName(j){ return (j && (j.name || rmJobNo(j))) || "selected job"; }
+function rmJobMatchesSearch(j, q){
+  if (!q) return true;
+  return [j.name, j.job_no, j.job_number, j.customer_no, j.project_manager_no, j.city, j.state, j.address, rmJobAddress(j)]
+    .some(function(v){ return String(v || "").toLowerCase().indexOf(q) !== -1; });
+}
+function rmSetLinkedJobState(job, building){
+  var addr = rmJobAddress(job);
+  rmState.linkedJobNo = rmJobNo(job) || null;
+  rmState.linkedJobName = (job && job.name) || "";
+  rmState.linkedJobCustomerNo = (job && job.customer_no) || null;
+  rmState.linkedJobAddress = addr || "";
+  rmState.linkedJobBuildingId = building && building.id ? building.id : null;
+  rmState.linkedJobBuildingName = building && building.name ? building.name : "";
+  if (building && building.id){
+    rmState.pendingBuildingId = building.id;
+    rmState.pendingBuildingName = building.name || rmJobDisplayName(job);
+    rmState.pendingBuildingSource = "job";
+  } else {
+    rmState.pendingBuildingId = null;
+    rmState.pendingBuildingName = null;
+    rmState.pendingBuildingSource = null;
+  }
+}
+function rmRenderLinkedJobInfo(){
+  var el = document.getElementById("rm-job-link-info");
+  if (!el) return;
+  if (!rmState.linkedJobNo && !rmState.linkedJobName){
+    el.style.display = "none";
+    el.innerHTML = "";
+    return;
+  }
+  el.style.display = "";
+  var bits = [];
+  if (rmState.linkedJobNo) bits.push("#" + esc(rmState.linkedJobNo));
+  if (rmState.linkedJobAddress) bits.push(esc(rmState.linkedJobAddress));
+  if (rmState.linkedJobBuildingName) bits.push("matched to " + esc(rmState.linkedJobBuildingName));
+  el.innerHTML = "Linked job: <b>" + esc(rmState.linkedJobName || rmState.linkedJobNo) + "</b>" +
+    (bits.length ? " (" + bits.join(" &middot; ") + ")" : "") +
+    ' - <a href="#" onclick="rmClearLinkedJob();return false;">clear</a>';
+}
+function rmClearLinkedJob(){
+  rmSetLinkedJobState({}, null);
+  rmRenderLinkedJobInfo();
+  toast("RoofMapper job link cleared.");
+}
+async function rmEnsureJobBuildingCache(){
+  if (typeof bpCache !== "undefined" && bpCache && bpCache.length) return bpCache;
+  if (!fdb) return [];
+  var qs = await fdb.collection("buildings").orderBy("updatedAt", "desc").limit(500).get();
+  bpCache = [];
+  qs.forEach(function(d){
+    var b = Object.assign({ id: d.id }, d.data());
+    if (!b.archived) bpCache.push(b);
+  });
+  return bpCache;
+}
+async function rmOpenJobPicker(){
+  var modal = document.getElementById("rm-job-modal");
+  var search = document.getElementById("rm-job-search");
+  var list = document.getElementById("rm-job-list");
+  if (!modal || !list) return;
+  modal.style.display = "";
+  lockBodyScroll();
+  if (search) search.value = "";
+  list.className = "hint";
+  list.textContent = "Loading jobs...";
+  try{
+    await rmEnsureJobBuildingCache();
+    if (typeof fdnLoadJobs !== "function") throw new Error("job cache is not available");
+    rmJobPickerJobs = await fdnLoadJobs(false);
+    rmFilterJobPicker();
+  }catch(e){
+    list.className = "hint";
+    list.textContent = "Couldn't load jobs: " + ((e && e.message) || e);
+  }
+}
+function rmCloseJobPicker(){
+  var modal = document.getElementById("rm-job-modal");
+  if (modal) modal.style.display = "none";
+  unlockBodyScroll();
+}
+function rmFilterJobPicker(){
+  var q = "";
+  var input = document.getElementById("rm-job-search");
+  if (input) q = String(input.value || "").trim().toLowerCase();
+  rmJobPickerFiltered = (rmJobPickerJobs || []).filter(function(j){ return rmJobMatchesSearch(j, q); }).slice(0, 300);
+  rmRenderJobPicker();
+}
+function rmRenderJobPicker(){
+  var host = document.getElementById("rm-job-list");
+  if (!host) return;
+  if (!(rmJobPickerJobs || []).length){
+    host.className = "hint";
+    host.textContent = "No jobs cached yet.";
+    return;
+  }
+  if (!rmJobPickerFiltered.length){
+    host.className = "hint";
+    host.textContent = "No matching jobs.";
+    return;
+  }
+  host.className = "";
+  host.innerHTML = rmJobPickerFiltered.map(function(j){
+    var b = (typeof fdnFindMatchingBuilding === "function") ? fdnFindMatchingBuilding(j) : null;
+    var parts = [j.customer_no, j.project_manager_no ? "PM " + j.project_manager_no : "", rmJobAddress(j)];
+    if (b) parts.push("in app");
+    var jobNo = String(j.job_no);
+    return '<div class="bld-item" onclick="rmSelectJobForMapper(' + JSON.stringify(jobNo).replace(/"/g, "&quot;") + ')"><div class="info">' +
+      '<div class="name">' + esc(j.name || "(unnamed job)") +
+      (rmJobNo(j) ? ' <span class="hint">#' + esc(rmJobNo(j)) + '</span>' : "") + '</div>' +
+      '<div class="meta">' + parts.filter(Boolean).map(esc).join(" &middot; ") + '</div></div>' +
+      '<button class="btn">Use Job</button></div>';
+  }).join("");
+}
+async function rmSelectJobForMapper(jobNo){
+  var job = (rmJobPickerJobs || []).find(function(j){ return String(j.job_no) === String(jobNo); });
+  if (!job) return;
+  var building = (typeof fdnFindMatchingBuilding === "function") ? fdnFindMatchingBuilding(job) : null;
+  rmSetLinkedJobState(job, building);
+  rmRenderLinkedJobInfo();
+  rmCloseJobPicker();
+  var addr = rmState.linkedJobAddress;
+  if (addr){
+    var input = document.getElementById("rm-address-search");
+    if (input) input.value = addr;
+    toast("Loaded job " + (rmState.linkedJobNo ? "#" + rmState.linkedJobNo : rmState.linkedJobName) + " - searching its address.");
+    await rmSearchByAddress();
+  } else if (building && building.id) {
+    toast("Loaded job - using its matched building.");
+    await rmEnterMultiRoofCapture(building.id);
+  } else {
+    toast("Loaded job, but it has no address yet. Search an address or use GPS.");
+  }
+}
+function rmApplyLinkedJobToSaveFields(){
+  if (!rmState.linkedJobNo && !rmState.linkedJobName) return;
+  var nameEl = document.getElementById("rm-new-jobname");
+  var billEl = document.getElementById("rm-new-billto");
+  if (nameEl) nameEl.value = rmState.linkedJobName || "";
+  if (billEl) billEl.value = rmState.linkedJobCustomerNo || "";
+}
+
 /* ---- save to building (existing or new) ---- */
 var rmBpCache = null;
 function openRmSaveModal(){
@@ -5119,6 +5360,7 @@ function openRmSaveModal(){
   document.getElementById("rm-save-modal").style.display = "";
   lockBodyScroll();
   rmRenderContinueBuildingBanner();
+  rmApplyLinkedJobToSaveFields();
   document.getElementById("rm-bp-search").value = "";
   document.getElementById("rm-roof-picker").innerHTML = "";
   var list = document.getElementById("rm-bp-list");
@@ -5165,9 +5407,12 @@ function rmRenderContinueBuildingBanner(){
   if (!el) return;
   if (!rmState.pendingBuildingId){ el.style.display = "none"; el.innerHTML = ""; return; }
   el.style.display = "";
+  var reason = rmState.pendingBuildingSource === "job" ?
+    "the building matched to the selected job" :
+    "the building your last roof on this page was saved to";
   el.innerHTML = '<div class="rm-footprint-info" style="margin-bottom:14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
     '<span>↩️ Continuing on <b>' + esc(rmState.pendingBuildingName || "the same building") +
-    '</b> — the building your last roof on this page was saved to</span>' +
+    '</b> — ' + reason + '</span>' +
     '<button class="btn primary" onclick="rmContinueOnPendingBuilding()" style="margin-left:auto">Use This Building</button></div>';
 }
 async function rmContinueOnPendingBuilding(){
@@ -5774,6 +6019,7 @@ async function rmSaveSplitSectionsToBuilding(buildingId){
     rmState.linkedRoofId = last.roof.id;
     rmState.pendingBuildingId = null;
     rmState.pendingBuildingName = null;
+    rmState.pendingBuildingSource = null;
     rmState.outline = Object.assign({}, last.outlineEntry);
     if (rmState.map){
       if (rmState.outlineLayer) rmState.map.removeLayer(rmState.outlineLayer);
@@ -6028,6 +6274,7 @@ async function rmSaveOutlineToBuilding(buildingId, roofId){
        later outline. */
     rmState.pendingBuildingId = null;
     rmState.pendingBuildingName = null;
+    rmState.pendingBuildingSource = null;
     /* Persistent label on the outline just saved, using the roof it was
        actually saved to -- so Mark sees which roof this is at a glance,
        not just in the picker dropdown. See "Individual-roof tracing +
@@ -6172,6 +6419,7 @@ async function rmOpenRoofInMapper(buildingId, roofId){
     rmState.linkedRoofId = roof.id;
     rmState.pendingBuildingId = null;
     rmState.pendingBuildingName = null;
+    rmState.pendingBuildingSource = null;
     if (rmState.roofLabelLayer) map.removeLayer(rmState.roofLabelLayer);
     /* Restore wherever this roof's label was dragged to, if anywhere --
        see rmSaveRoofLabelPos()/"Draggable roof labels" in DEV_NOTES.md. */
@@ -6230,7 +6478,7 @@ async function rmCreateBuildingAndSave(){
   if (!jobName){ toast("Enter a building/job name."); return; }
   var billTo = val("rm-new-billto").trim();
   var tags = rmState.outline.tags || {};
-  var addr = [tags["addr:housenumber"], tags["addr:street"]].filter(Boolean).join(" ");
+  var addr = rmState.linkedJobAddress || [tags["addr:housenumber"], tags["addr:street"]].filter(Boolean).join(" ");
   toast("Creating building…");
   try{
     var ids = await ensureCustomerAndBuilding({ jobName: jobName, billTo: billTo, location: addr });
@@ -6599,6 +6847,7 @@ async function rmEnterMultiRoofCapture(buildingId){
     var bld = snap.exists ? snap.data() : {};
     rmState.pendingBuildingId = buildingId;
     rmState.pendingBuildingName = bld.name || "this building";
+    rmState.pendingBuildingSource = "continue";
     var bounds = await rmDrawReferenceRoofs(buildingId, bld, null);
     if (continuingOrtho){
       /* Ortho/GeoTIFF overlay + its map position/zoom are already exactly
@@ -6609,6 +6858,7 @@ async function rmEnterMultiRoofCapture(buildingId){
       rmTraceState.active = true;
       rmTraceState.mode = "manual";
       rmTraceState.points = [];
+      rmTraceState.insertLayers = [];
       rmTraceClickHandler = function(e){ rmTraceAddPoint(e.latlng); };
       map2.on("click", rmTraceClickHandler);
       rmShowTracePanel();
@@ -7517,6 +7767,252 @@ function rmDeleteLocalOutline(id){
   rmSaveLocalOutlines(rmLoadLocalOutlines().filter(function(x){ return x.id !== id; }));
   rmRenderLocalSaves();
   rmRenderPendingSaveStatus();
+}
+
+/* ================= repair-area base-map pins =================
+   Work Orders owns repair rows and validation (repairAreaById /
+   setRepairAreaPin). RoofMapper owns only this in-form map popup, so repair
+   pins use the same base-map placement behavior as finding pins without
+   writing Firestore, localStorage, or row objects directly. */
+var rmRepairAreaPinMap = null, rmRepairAreaPinMarker = null, rmRepairAreaPinId = null,
+  rmRepairAreaPinMode = "latlng", rmRepairAreaPinFrame = null,
+  rmRepairAreaPinInteracted = false;
+function rmRepairAreaPinIsLatLng(pin){
+  return !!(pin && rmIsFiniteNumber(pin.lat) && rmIsFiniteNumber(pin.lng) &&
+    !rmIsFiniteNumber(pin.x) && !rmIsFiniteNumber(pin.y));
+}
+function rmRepairAreaPinIsXY(pin){
+  return !!(pin && rmIsFiniteNumber(pin.x) && rmIsFiniteNumber(pin.y) &&
+    !rmIsFiniteNumber(pin.lat) && !rmIsFiniteNumber(pin.lng));
+}
+function rmRepairAreaPinMatchesFrame(pin, frameUrl){
+  return !!(rmRepairAreaPinIsXY(pin) && frameUrl && pin.imageFrameUrl === frameUrl);
+}
+function rmRepairAreaPinBuildLatLng(latlng, source){
+  if (!latlng || !rmIsFiniteNumber(latlng.lat) || !rmIsFiniteNumber(latlng.lng)) return null;
+  if (latlng.lat === 0 && latlng.lng === 0) return null;
+  return { lat: latlng.lat, lng: latlng.lng, x: null, y: null, source: source || "tech_placed" };
+}
+function rmRepairAreaPinBuildXY(latlng, frame){
+  if (!latlng || !frame || !rmIsFiniteNumber(frame.w) || !rmIsFiniteNumber(frame.h) || !frame.url) return null;
+  if (frame.w <= 0 || frame.h <= 0) return null;
+  if (!rmIsFiniteNumber(latlng.lng) || !rmIsFiniteNumber(latlng.lat)) return null;
+  var x = latlng.lng / frame.w, y = latlng.lat / frame.h;
+  if (x < 0 || x > 1 || y < 0 || y > 1) return null;
+  return {
+    lat: null, lng: null, x: x, y: y, source: "tech_placed",
+    imageFrame: "roof_base_map", imageFrameUrl: frame.url
+  };
+}
+function rmRepairAreaBoundsToLatLngBounds(b){
+  return [[b.south, b.west], [b.north, b.east]];
+}
+function rmEnsureRepairAreaPinModal(){
+  var modal = document.getElementById("rm-repair-pin-modal");
+  if (modal) return modal;
+  modal = document.createElement("div");
+  modal.id = "rm-repair-pin-modal";
+  modal.className = "modal";
+  modal.style.display = "none";
+  modal.innerHTML =
+    '<div class="modal-card" style="max-width:960px;width:min(960px,calc(100vw - 24px))">' +
+      '<div class="rowhead"><b id="rm-repair-pin-title">Repair Area Pin</b><span class="sp"></span>' +
+        '<button class="btn" onclick="rmCloseRepairAreaPinPicker()">Close</button></div>' +
+      '<p id="rm-repair-pin-hint" class="hint" style="margin-top:0">Loading...</p>' +
+      '<div id="rm-repair-pin-map" style="height:420px;border:1px solid #ddd;border-radius:8px;overflow:hidden;background:#f6f7f8"></div>' +
+      '<div class="btnrow" style="margin-top:12px">' +
+        '<button class="btn danger" id="rm-repair-pin-clear" onclick="rmClearRepairAreaPin()">Clear Pin</button>' +
+        '<button class="btn primary" onclick="rmSaveRepairAreaPin()">Save Pin</button>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(modal);
+  return modal;
+}
+function rmSetRepairAreaPinHint(msg){
+  var el = document.getElementById("rm-repair-pin-hint");
+  if (el) el.textContent = msg || "";
+}
+function rmClearRepairAreaPinMap(){
+  if (rmRepairAreaPinMap){ rmRepairAreaPinMap.remove(); rmRepairAreaPinMap = null; }
+  rmRepairAreaPinMarker = null;
+  rmRepairAreaPinFrame = null;
+}
+function rmRepairAreaPinLabel(row){
+  return (row && (row.repair || row.location)) ?
+    ((row.repair || "Repair") + (row.location ? " - " + row.location : "")) : "Repair Area Pin";
+}
+async function rmOpenRepairAreaPinPicker(repairAreaId){
+  if (typeof repairAreaById !== "function" || typeof setRepairAreaPin !== "function"){
+    toast("Repair area pin placement is not available on this form yet.");
+    return;
+  }
+  var row = repairAreaById(repairAreaId);
+  if (!row) return;
+  var modal = rmEnsureRepairAreaPinModal();
+  rmRepairAreaPinId = repairAreaId;
+  rmRepairAreaPinInteracted = false;
+  rmClearRepairAreaPinMap();
+  document.getElementById("rm-repair-pin-title").textContent = rmRepairAreaPinLabel(row);
+  document.getElementById("rm-repair-pin-clear").style.display = row.pin ? "" : "none";
+  rmSetRepairAreaPinHint("Locating base map...");
+  lockBodyScroll();
+  modal.style.display = "";
+  try{
+    var customBaseMap = (typeof lookupProspectiveBuildingBaseMap === "function") ?
+      await lookupProspectiveBuildingBaseMap() : null;
+    if (customBaseMap && customBaseMap.georeferenced){
+      rmRepairAreaPinMode = "latlng";
+      await rmOpenRepairAreaPinSatellite(row, customBaseMap);
+      return;
+    }
+    if (customBaseMap && rmRepairAreaPinIsLatLng(row.pin)){
+      rmRepairAreaPinMode = "latlng";
+      await rmOpenRepairAreaPinSatellite(row, null, customBaseMap);
+      return;
+    }
+    if (customBaseMap){
+      rmRepairAreaPinMode = "xy";
+      await rmOpenRepairAreaPinImage(row, customBaseMap);
+      return;
+    }
+    rmRepairAreaPinMode = "latlng";
+    await rmOpenRepairAreaPinSatellite(row, null);
+  }catch(e){
+    rmSetRepairAreaPinHint("Couldn't open the base-map picker: " + e.message);
+  }
+}
+async function rmOpenRepairAreaPinImage(row, customBaseMap){
+  rmSetRepairAreaPinHint("Loading base map...");
+  var img = new Image();
+  img.onload = function(){
+    var w = img.naturalWidth, h = img.naturalHeight;
+    rmRepairAreaPinFrame = { w: w, h: h, url: customBaseMap.url };
+    var bounds = [[0,0],[h,w]];
+    setTimeout(function(){
+      rmRepairAreaPinMap = L.map("rm-repair-pin-map", { crs: L.CRS.Simple, minZoom: -5 });
+      L.imageOverlay(customBaseMap.url, bounds).addTo(rmRepairAreaPinMap);
+      rmRepairAreaPinMap.fitBounds(bounds);
+      var existingOnFrame = rmRepairAreaPinMatchesFrame(row.pin, customBaseMap.url);
+      var start = existingOnFrame ? [row.pin.y * h, row.pin.x * w] : [h / 2, w / 2];
+      rmRepairAreaPinMarker = L.marker(start, { draggable: true }).addTo(rmRepairAreaPinMap);
+      rmRepairAreaPinMarker.on("dragend", function(){ rmRepairAreaPinInteracted = true; });
+      rmRepairAreaPinMap.on("click", function(e){
+        rmRepairAreaPinMarker.setLatLng(e.latlng);
+        rmRepairAreaPinInteracted = true;
+      });
+      rmRepairAreaPinMap.invalidateSize();
+      setTimeout(function(){ if (rmRepairAreaPinMap) rmRepairAreaPinMap.invalidateSize(); }, 300);
+    }, 50);
+    var type = String(customBaseMap.type || "base map").replace("_", " ");
+    var existingOnFrame = rmRepairAreaPinMatchesFrame(row.pin, customBaseMap.url);
+    rmSetRepairAreaPinHint((existingOnFrame ?
+      "Existing repair pin on the " + type + " - drag to move it." :
+      (rmRepairAreaPinIsXY(row.pin) ?
+        "This repair pin was placed on a different base-map image. Tap the " + type + " to re-place it, or clear it." :
+        "Tap the " + type + " to place this repair area.")) +
+      (customBaseMap.fromSelectedRoof ? "" : " This base map is shared from " + (customBaseMap.sourceRoofLabel || "another roof") + "."));
+  };
+  img.onerror = function(){
+    toast("Couldn't load the custom base map - using satellite instead.");
+    rmRepairAreaPinMode = "latlng";
+    rmOpenRepairAreaPinSatellite(row, null);
+  };
+  img.src = customBaseMap.url;
+}
+async function rmOpenRepairAreaPinSatellite(row, orthoOverlay, skippedBaseMap){
+  var roofInfo = (typeof lookupProspectiveBuildingRoofInfo === "function") ?
+    await lookupProspectiveBuildingRoofInfo() : null;
+  var roofs = (roofInfo && roofInfo.roofs) || [];
+  var outlines = roofs.reduce(function(acc, r){
+    var ol = r.roof_outlines || [];
+    var latest = ol[ol.length - 1];
+    if (latest && latest.ring && latest.ring.length >= 3){
+      acc.push(Object.assign({}, latest, { _roofLabel: r.label || "Roof" }));
+    }
+    return acc;
+  }, []);
+  var center = null, zoom = 18, fitBounds = null;
+  if (rmRepairAreaPinIsLatLng(row.pin)){
+    center = { lat: row.pin.lat, lng: row.pin.lng };
+    zoom = 19;
+  } else if (orthoOverlay && orthoOverlay.bounds){
+    var b = orthoOverlay.bounds;
+    center = { lat: (b.north + b.south) / 2, lng: (b.east + b.west) / 2 };
+    fitBounds = rmRepairAreaBoundsToLatLngBounds(b);
+  } else if (outlines.length){
+    var ring = outlines[outlines.length - 1].ring;
+    center = rmGeomRingCentroid(ring);
+    fitBounds = ring.map(function(p){ return [p.lat, p.lng]; });
+  } else {
+    var addr = (typeof val === "function" ? (val("location") || val("jobName") || "") : "");
+    center = addr && typeof geocodeAddress === "function" ? await geocodeAddress(addr) : null;
+    if (!center){ center = { lat: 39.8283, lng: -98.5795 }; zoom = 4; }
+  }
+  var hint = rmRepairAreaPinIsLatLng(row.pin) ?
+    "Existing repair pin - drag to move it, or tap Save to keep it here." :
+    (zoom === 4 ? "No base map or address was found. Pan/zoom to the repair area, then tap to place the pin." :
+      "Tap the map to place this repair area, or drag the marker into position.");
+  if (skippedBaseMap){
+    hint += " Satellite is shown because the existing GPS pin cannot be plotted on a non-georeferenced drawing. Clear it to place a drawing pin instead.";
+  }
+  rmSetRepairAreaPinHint(hint);
+  setTimeout(function(){
+    rmRepairAreaPinMap = L.map("rm-repair-pin-map").setView([center.lat, center.lng], zoom);
+    L.tileLayer(RM_TILE_SAT, {
+      maxZoom: 22, maxNativeZoom: SAT_MAX_NATIVE_ZOOM, attribution: "Tiles &copy; Esri"
+    }).addTo(rmRepairAreaPinMap);
+    if (orthoOverlay && orthoOverlay.bounds){
+      L.imageOverlay(orthoOverlay.url, rmRepairAreaBoundsToLatLngBounds(orthoOverlay.bounds)).addTo(rmRepairAreaPinMap);
+    }
+    outlines.forEach(function(o){
+      L.polygon(o.ring.map(function(p){ return [p.lat, p.lng]; }), {
+        color: "#E8600A", weight: 2, fillColor: "#E8600A", fillOpacity: 0.1
+      }).addTo(rmRepairAreaPinMap);
+    });
+    if (fitBounds) rmRepairAreaPinMap.fitBounds(fitBounds, { padding: [24, 24] });
+    rmRepairAreaPinMarker = L.marker([center.lat, center.lng], { draggable: true }).addTo(rmRepairAreaPinMap);
+    rmRepairAreaPinMarker.on("dragend", function(){ rmRepairAreaPinInteracted = true; });
+    rmRepairAreaPinMap.on("click", function(e){
+      rmRepairAreaPinMarker.setLatLng(e.latlng);
+      rmRepairAreaPinInteracted = true;
+    });
+    rmRepairAreaPinMap.invalidateSize();
+    setTimeout(function(){ if (rmRepairAreaPinMap) rmRepairAreaPinMap.invalidateSize(); }, 300);
+  }, 50);
+}
+function rmSaveRepairAreaPin(){
+  if (!rmRepairAreaPinId || !rmRepairAreaPinMarker) return;
+  var row = repairAreaById(rmRepairAreaPinId);
+  if (!row) return;
+  var hadSameModePin = (rmRepairAreaPinMode === "xy") ?
+    rmRepairAreaPinMatchesFrame(row.pin, rmRepairAreaPinFrame && rmRepairAreaPinFrame.url) :
+    rmRepairAreaPinIsLatLng(row.pin);
+  if (!rmRepairAreaPinInteracted && !hadSameModePin){
+    toast("Tap or drag the map before saving a repair pin.");
+    return;
+  }
+  var latlng = rmRepairAreaPinMarker.getLatLng();
+  var pin = rmRepairAreaPinMode === "xy" ?
+    rmRepairAreaPinBuildXY(latlng, rmRepairAreaPinFrame) :
+    rmRepairAreaPinBuildLatLng(latlng, "tech_placed");
+  if (!pin || !setRepairAreaPin(rmRepairAreaPinId, pin)){
+    toast("That repair pin could not be saved. Place it on the visible map area and try again.");
+    return;
+  }
+  toast("Repair area pin saved.");
+  rmCloseRepairAreaPinPicker();
+}
+function rmClearRepairAreaPin(){
+  if (rmRepairAreaPinId && setRepairAreaPin(rmRepairAreaPinId, null)) toast("Repair area pin cleared.");
+  rmCloseRepairAreaPinPicker();
+}
+function rmCloseRepairAreaPinPicker(){
+  var modal = document.getElementById("rm-repair-pin-modal");
+  if (modal) modal.style.display = "none";
+  unlockBodyScroll();
+  rmClearRepairAreaPinMap();
+  rmRepairAreaPinId = null;
+  rmRepairAreaPinInteracted = false;
 }
 
 /* Mobile: auto-hide the header on scroll-down, show again on scroll-up --

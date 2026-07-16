@@ -163,6 +163,12 @@ async function bpSelectCompanyCamProject(i){
 function bpSelectBuilding(buildingId){
   var b = (bpCache || []).find(function(x){ return x.id === buildingId; });
   if (!b) return;
+  /* Picking a building IS choosing its stable identity (FIX 1) — the doc id
+     from the buildings collection, not a name-derived slug. This is also
+     the deliberate way to RE-POINT an order at a different building (typing
+     a new name into a saved order renames its building instead). */
+  currentBuildingId = b.id;
+  currentCustomerId = b.customerId || null;
   setVal("jobName", b.name || "");
   setVal("billTo", b.customerName || "");
   setVal("location", b.location || "");
@@ -307,6 +313,7 @@ var currentId = null;
 var findings = [];
 var repairs = [];
 var repairItems = []; /* Repair-type only — see wo-repair-card / addRepairItem() */
+var materials = []; /* Repair-type only — see wo-materials-card / addMaterial() below */
 /* Inspection-type only — component-by-component condition checklist (see
    "Inspection form overhaul" in DEV_NOTES.md). A fixed set of 8 rows
    (ensureInspectionChecklist() backfills any missing ones, always in this
@@ -368,18 +375,16 @@ var currentRoofIds = null;
 var lastLookupRoofInfo = null;
 var toastTimer = null;
 
-function buildingIdFor(billTo, jobName){
-  var custName = (billTo || "").trim();
-  var bldName = (jobName || "").trim();
-  if (!bldName) return null;
-  var custId = custName ? ("cust_" + slugify(custName)) : null;
-  return "bld_" + slugify((custId || "nocust") + "_" + bldName);
-}
+/* buildingIdFor()/customerIdFor() moved to js/core.js (audit FIX 1) — ONE
+   canonical copy of the slug formula instead of five hand-copied ones. */
 function lookupRoofInfoMatchesBuilding(info, buildingId){
   return !!(info && info.buildingId && buildingId && info.buildingId === buildingId);
 }
 function currentWorkOrderBuildingId(){
-  return buildingIdFor(val("billTo"), val("jobName"));
+  /* Stored/stable identity first (currentBuildingId — see js/core.js):
+     renaming the job on a saved order must not re-derive a different
+     building. Name-derived slug is the legacy/new-order fallback only. */
+  return currentBuildingId || buildingIdFor(val("billTo"), val("jobName"));
 }
 function clearStaleLookupRoofInfoForCurrentOrder(){
   if (!lookupRoofInfoMatchesBuilding(lastLookupRoofInfo, currentWorkOrderBuildingId())){
@@ -745,6 +750,15 @@ function pinImageFrameUrlForFinding(f){
   return ((roof.roof_base_map_type === "roof_plan" || roof.roof_base_map_type === "sketch") &&
     roof.roof_base_map_url) ? roof.roof_base_map_url : null;
 }
+/* Suite TAG (Mark): strip-mall / multi-tenant buildings share one address,
+   one roof, one base map — Suite never splits any of that, it's just an
+   attribute on the work order (FIELD_IDS "suite", optional/blank for
+   single-tenant) that also rides on pins so pins on the shared roof can be
+   labeled and filtered by suite. Pins stamp the WO's CURRENT Suite value
+   at save time — the tag source of truth is the record's own field. */
+function currentSuiteTag(){
+  return (val("suite") || "").trim() || null;
+}
 function pinCoordIsNumber(value){
   return typeof value === "number" && Number.isFinite(value);
 }
@@ -775,12 +789,13 @@ function savePinFromModal(){
       y: ll.lat / pinXYSize.h,
       source: xySource,
       imageFrame: "roof_base_map",
-      imageFrameUrl: pinImageFrameUrlForFinding(f)
+      imageFrameUrl: pinImageFrameUrlForFinding(f),
+      suite: currentSuiteTag()
     };
   } else {
     var source = pinDeviceGpsUsed ? "device_gps" :
       (pinInitialSource === "photo_gps" ? (pinInteracted ? "gps_corrected" : "photo_gps") : pinInitialSource);
-    f.pin = { lat: ll.lat, lng: ll.lng, x: null, y: null, source: source };
+    f.pin = { lat: ll.lat, lng: ll.lng, x: null, y: null, source: source, suite: currentSuiteTag() };
   }
   renderFindings();
   closePinModal();
@@ -793,6 +808,165 @@ function clearPinFromModal(){
   renderFindings();
   closePinModal();
   toast("Pin cleared");
+}
+
+/* ============ repair-area base-map pins — CONTRACT with js/roofmapper.js ============
+   Everything ties together around the JOB (Mark): each Work Performed row
+   ("repair area") is repair text ⇄ its Repair Scope line ⇄ optionally one pin
+   on the job's PERMANENT base map — all carried on the work-order record
+   itself (repairs[] round-trips through collect()/fill() like findings do),
+   never screen-local, so it's identical wherever the job is opened.
+
+   THIS FILE (js/workorders.js) owns the data side; js/roofmapper.js owns the
+   in-form popup UI. The interface, exactly:
+
+     openBaseMapPinPicker(repairAreaId)          — UI entry point, called from the
+       row's "📍 Place on Map" button (renderRepairs, js/photos.js). Delegates to
+       rmOpenRepairAreaPinPicker(repairAreaId) once js/roofmapper.js provides it;
+       until then it's a graceful stub (repair area + scope still fully work).
+
+     rmOpenRepairAreaPinPicker(repairAreaId)     — Codex implements in js/roofmapper.js.
+       MUST: open the job's EXISTING permanent base map in an in-form modal
+       (resolve the same way the finding pin modal does — no separate/new map);
+       fall back to satellite when the job has none georeferenced, and degrade
+       gracefully (message, still closable, repair area unaffected) when there's
+       no map at all. Reads the row via repairAreaById(); persists ONLY through
+       setRepairAreaPin() below — never write r.pin directly.
+
+     repairAreaById(repairAreaId) -> row | null   — row: {id, repair, location, pin}
+
+     setRepairAreaPin(repairAreaId, pin) -> bool  — sole write path. Validates via
+       repairAreaPinValid() (rejects the write, returns false, when the shape is
+       wrong), stores onto the row, re-renders. Pass pin = null to clear.
+
+   Pin shape — IDENTICAL to finding pins (f.pin), so every existing renderer
+   that understands finding pins can be pointed at repair pins unchanged:
+     satellite / georeferenced ortho:
+       { lat:Number, lng:Number, x:null, y:null, source:"tech_placed"|"device_gps" }
+     non-georeferenced roof plan / sketch:
+       { lat:null, lng:null, x:0..1, y:0..1, source:"tech_placed",
+         imageFrame:"roof_base_map", imageFrameUrl:<the exact image placed against> }
+     plus, on BOTH shapes, the optional multi-tenant tag (see
+     currentSuiteTag()):
+       suite: String|null — e.g. "Suite 12"; a TAG for filtering pins on a
+         shared strip-mall roof, never a boundary. The popup may set it
+         explicitly (including null); when it's absent, setRepairAreaPin()
+         stamps the work order's own Suite field automatically, so the
+         popup normally doesn't have to care. Finding pins carry the same
+         field (savePinFromModal()).
+   Guards enforced here (defense in depth — the popup should uphold them too):
+     - Null Island: (0,0) is this codebase's synthetic "no real location"
+       convention (#40) — never storable as a real repair pin.
+     - Frame binding: an x/y pin is meaningless without the exact base-map image
+       it was placed against (#45) — imageFrameUrl is REQUIRED on x/y pins so the
+       pin carries its own frame wherever the job is viewed.
+     - Only real placements: like savePinFromModal(), the popup must never save
+       an un-interacted default/center marker position as a tech placement. */
+function repairAreaById(repairAreaId){
+  return repairs.find(function(r){ return r && r.id === repairAreaId; }) || null;
+}
+function repairAreaPinValid(pin){
+  if (!pin || typeof pin !== "object") return false;
+  var latlng = pinCoordIsNumber(pin.lat) && pinCoordIsNumber(pin.lng);
+  var xy = pinCoordIsNumber(pin.x) && pinCoordIsNumber(pin.y);
+  if (latlng && !xy) return !(pin.lat === 0 && pin.lng === 0);
+  if (xy && !latlng){
+    return pin.imageFrame === "roof_base_map" && !!pin.imageFrameUrl &&
+      pin.x >= 0 && pin.x <= 1 && pin.y >= 0 && pin.y <= 1;
+  }
+  return false;
+}
+function setRepairAreaPin(repairAreaId, pin){
+  var r = repairAreaById(repairAreaId);
+  if (!r) return false;
+  if (pin !== null && !repairAreaPinValid(pin)) return false;
+  /* Suite tag rides on every pin (see currentSuiteTag()): an explicit
+     suite from the popup (including null) is respected; absent means
+     "stamp the work order's own Suite field", so the popup normally
+     doesn't have to care. */
+  if (pin && pin.suite === undefined) pin.suite = currentSuiteTag();
+  r.pin = pin;
+  renderRepairs();
+  return true;
+}
+function openBaseMapPinPicker(repairAreaId){
+  if (!repairAreaById(repairAreaId)) return;
+  if (typeof rmOpenRepairAreaPinPicker === "function"){
+    rmOpenRepairAreaPinPicker(repairAreaId);
+    return;
+  }
+  toast("Base-map pin placement for repair areas is coming shortly — this repair area is saved without a pin for now.");
+}
+
+/* ================= Work Order material list ================= *
+   Itemized materials used on a Work Order (stored type "Repair") — the
+   type that executes work and burns material. Same job-centric shape as
+   repairs[]/repairItems[]: rows live in materials[] on the work-order
+   record (collect()/fill() below), so the list follows the job everywhere
+   it's opened — never screen-local.
+
+   Row shape: { id, material, qty, unit, notes, repair_id }
+   - id: stable genId("mat"), same plumbing role as finding/repair ids.
+   - repair_id: OPTIONAL link to a Work Performed row (repairs[].id) — the
+     job-centric tie-in: a material can hang off the same repair area its
+     scope line and base-map pin do. null = general/whole-job material.
+     Kept loose on purpose (a select per row, photos' finding_id pattern):
+     removing a repair area just nulls the link back to "General", the
+     material row itself is never deleted with it — the material was still
+     used on the job.
+   - USER-ENTERED ONLY, nothing is ever written to Foundation. Clean seam
+     for later: a Foundation catalog picker would just prefill material/
+     unit on this same row shape (and could stamp e.g. foundationItemNo as
+     an extra key — collect()/cloudSaveOrder copy whole objects, so no
+     schema change needed here). */
+function addMaterial(data){
+  materials.push(data || {id: genId("mat"), material:"", qty:"", unit:"", notes:"", repair_id:null});
+  renderMaterials();
+}
+function removeMaterial(i){ materials.splice(i,1); renderMaterials(); }
+/* "General / whole job" + one option per repair area, labeled by its row
+   number and text so the tech recognizes it without ids. Rows without an
+   id can't be linked (legacy rows get ids via fill()'s self-heal). */
+function materialRepairAreaOptionsHtml(selectedId){
+  var opts = ['<option value="">General / whole job</option>'];
+  repairs.forEach(function(r, i){
+    if (!r || !r.id) return;
+    var text = (r.repair || r.location || "").slice(0, 40);
+    opts.push('<option value="' + esc(r.id) + '"' + (r.id === selectedId ? " selected" : "") + '>' +
+      esc("Repair #" + (i+1) + (text ? " — " + text : "")) + '</option>');
+  });
+  return opts.join("");
+}
+function renderMaterials(){
+  var host = document.getElementById("materials-list");
+  if (!host) return;
+  host.innerHTML = "";
+  materials.forEach(function(m, i){
+    var d = document.createElement("div");
+    d.className = "rowcard";
+    d.style.borderLeftColor = "#00838F";
+    d.innerHTML =
+      '<div class="rowhead"><b>Material #' + (i+1) + '</b><span class="sp"></span>' +
+      '<button class="btn danger" onclick="removeMaterial(' + i + ')">Remove</button></div>' +
+      '<div class="fld"><label>Material / Description</label>' +
+      '<input type="text" data-i="' + i + '" data-f="material" value="' + esc(m.material) + '" list="dl-materialName" onblur="rememberFieldValue(\'materialName\', this.value)"></div>' +
+      '<div class="grid">' +
+      '<div class="fld"><label>Quantity</label><input type="number" min="0" step="any" data-i="' + i + '" data-f="qty" value="' + esc(m.qty) + '"></div>' +
+      '<div class="fld"><label>Unit (optional)</label><input type="text" data-i="' + i + '" data-f="unit" value="' + esc(m.unit) + '" list="dl-materialUnit" onblur="rememberFieldValue(\'materialUnit\', this.value)" placeholder="rolls, tubes, sq ft…"></div>' +
+      '</div>' +
+      '<div class="fld"><label>Notes (optional)</label>' +
+      '<input type="text" data-i="' + i + '" data-f="notes" value="' + esc(m.notes) + '"></div>' +
+      '<div class="fld"><label>For Repair Area</label>' +
+      '<select data-i="' + i + '" data-f="repair_id">' + materialRepairAreaOptionsHtml(m.repair_id) + '</select></div>';
+    host.appendChild(d);
+  });
+  host.querySelectorAll("[data-f]").forEach(function(el){
+    el.addEventListener("input", function(){
+      /* An empty select value means "General / whole job" — store the same
+         null a never-linked row has, not "". */
+      materials[+el.dataset.i][el.dataset.f] = (el.dataset.f === "repair_id") ? (el.value || null) : el.value;
+    });
+  });
 }
 
 /* ================= warranty guidelines (display-only reference) =================
@@ -848,7 +1022,192 @@ function populateWarrantyGuidelines(){
       "<b style='color:#D64545'>Typically Not Warrantable</b>" + list(WARRANTY_GUIDELINES.notWarrantable) +
     "</div>";
 }
-var FIELD_IDS = ["jobName","location","serviceDate","jobNo","projectManager","billTo","billContact","billPhone",
+/* ================= "Leak – No Job" catch-all flag ================= *
+   Shop convention: a leak call with no real Foundation job yet gets
+   written against the "Leak – No Job" catch-all job; Charlotte (Foundation
+   record-keeper) later creates the real job and the ticket reconciles to
+   its number. The app's job (Mark): make such a ticket impossible to miss —
+   a banner on the form, a chip in the Saved list, and an auto-inserted
+   note in the outgoing work-order email (which already defaults leaks to
+   Charlotte — EMAIL_DEFAULT_TO_LEAK) — until a real job is linked.
+
+   ALL DERIVED, NOTHING STORED: the flag is computed from the job names on
+   the record every time it renders, so it clears by itself the moment the
+   order is re-linked to the real Foundation job (fill/edit/list all agree,
+   on every device, with zero migration or reconciliation bookkeeping).
+
+   ASSUMPTION (flagged for Mark): the catch-all is detected by NAME —
+   "leak" followed closely by "no job" in the Foundation-linked job name or
+   the visible job name ("Leak - No Job", "LEAK–NO JOB", "leak no job"...).
+   If the real Foundation catch-all uses a different name or a well-known
+   job number, LEAK_NO_JOB_RE below is the single thing to adjust. */
+var LEAK_NO_JOB_RE = /\bleak\b[^A-Za-z0-9]{0,8}no[^A-Za-z0-9]{0,3}job\b/i;
+function isLeakNoJobName(name){
+  return LEAK_NO_JOB_RE.test(String(name || ""));
+}
+function isLeakNoJobOrder(o){
+  o = o || {};
+  /* Rides the catch-all Foundation job itself -> flagged. */
+  if (isLeakNoJobName(o.foundationJobName)) return true;
+  /* A real (non-catch-all) Foundation job is linked -> reconciled, even if
+     the visible job name still says "Leak - No Job" from before. */
+  if (o.foundationJobNo && o.foundationJobName) return false;
+  return isLeakNoJobName(o.jobName);
+}
+/* Auto-inserted paragraph for the OUTGOING work-order email (Mark: not a
+   separate system email — the tech is emailing the work order to Charlotte
+   anyway, the note rides along in that email). "" when not applicable. */
+function leakNoJobEmailNote(o){
+  if (!isLeakNoJobOrder(o)) return "";
+  return "⚠️ LEAK – NO JOB TICKET: This work order is on the “Leak – No Job” catch-all " +
+    "and has no real Foundation job number yet. Please create the job/work order in Foundation " +
+    "and assign the real job number so this ticket can be reconciled.";
+}
+function renderLeakNoJobBadge(){
+  var el = document.getElementById("wo-leaknojob-banner");
+  if (!el) return;
+  el.style.display = isLeakNoJobOrder({
+    jobName: val("jobName"),
+    foundationJobNo: (typeof fdnLinkedJobNo !== "undefined" && fdnLinkedJobNo) ? fdnLinkedJobNo : null,
+    foundationJobName: (typeof fdnLinkedJobName !== "undefined" && fdnLinkedJobName) ? fdnLinkedJobName : ""
+  }) ? "" : "none";
+}
+/* Live re-evaluation while the tech types the job name; fill() and
+   fdnSetLinkedJob() (js/foundation.js) cover load and job-link changes. */
+document.addEventListener("DOMContentLoaded", function(){
+  var jn = document.getElementById("jobName");
+  if (jn) jn.addEventListener("input", renderLeakNoJobBadge);
+});
+
+/* ================= shared roof-type list ================= *
+   The Roof System options are an APP-WIDE, GROWING list (Mark): when a tech
+   adds a type that isn't offered, it should stay on the list for every
+   future work order on every device — not be a one-off free-text that's
+   forgotten. One source of truth feeding every place the field renders:
+   the work-order #roofSystem select AND the #dl-roofSystem datalist the
+   DPR form's free-text Roof System input suggests from.
+
+   - Builtins live in ROOF_TYPES_BUILTIN below (now including SSM, per
+     Mark); user-added types live in Firestore app_settings/roof_types
+     { types: [...] } (see firestore.rules — signed-in users may write that
+     one doc and nothing else in app_settings), mirrored into localStorage
+     so the last-known list still shows offline. The merged view is
+     allRoofTypes(): builtins first, additions after, de-duped
+     case-insensitively, whitespace-trimmed.
+   - "➕ Add new roof type…" is the select's last option: prompt → trim/
+     collapse whitespace → if it case-insensitively matches an existing
+     type, just select that one (no dupes) → else select it, cache it, and
+     arrayUnion it into the shared doc so the next work order anywhere
+     already offers it.
+   - A record whose saved roofSystem isn't on the list (added elsewhere and
+     not yet synced, or pruned later) still displays/keeps its own value —
+     populateRoofSystemSelect() injects it as an option rather than blanking
+     a select set to an unmatched value.
+   - Admin-prune seam: everything user-added is that one doc's types[]
+     array — a later admin UI just edits the array (admin.js Admin-SDK
+     pattern); nothing else to touch. */
+var ROOF_TYPES_BUILTIN = ["FA EPDM","MECH EPDM","Fleece Back EPDM","FA TPO","MECH TPO",
+  "Fleece Back TPO","PVC","Fleece Back PVC","BUR / Gravel","BUR Smooth","SBS","Shingles","SSM"];
+var ROOF_TYPES_DOC_ID = "roof_types"; /* app_settings/roof_types */
+var ROOF_TYPES_CACHE_KEY = "custom-roof-types-v1";
+var ROOF_TYPE_ADD_SENTINEL = "__add_new_roof_type__";
+var customRoofTypes = [];
+var lastRoofSystemValue = ""; /* restore target when "Add new…" is cancelled */
+function allRoofTypes(){
+  var seen = {}, out = [];
+  ROOF_TYPES_BUILTIN.concat(customRoofTypes).forEach(function(t){
+    var label = String(t || "").trim();
+    if (!label) return;
+    var key = label.toLowerCase();
+    if (seen[key]) return;
+    seen[key] = true;
+    out.push(label);
+  });
+  return out;
+}
+function populateRoofSystemSelect(value){
+  var sel = document.getElementById("roofSystem");
+  if (!sel) return;
+  var current = (value !== undefined ? (value || "") : sel.value).trim();
+  if (current === ROOF_TYPE_ADD_SENTINEL) current = "";
+  var types = allRoofTypes();
+  var canon = types.find(function(t){ return t.toLowerCase() === current.toLowerCase(); });
+  if (canon) current = canon;
+  else if (current) types.push(current); /* record's own off-list value stays visible */
+  sel.innerHTML = '<option value=""></option>' +
+    types.map(function(t){
+      return '<option' + (t === current ? ' selected' : '') + '>' + esc(t) + '</option>';
+    }).join('') +
+    '<option value="' + ROOF_TYPE_ADD_SENTINEL + '">➕ Add new roof type…</option>';
+  sel.value = current;
+  lastRoofSystemValue = current;
+  populateRoofSystemDatalist();
+}
+function populateRoofSystemDatalist(){
+  var dl = document.getElementById("dl-roofSystem");
+  if (!dl) return;
+  dl.innerHTML = allRoofTypes().map(function(t){
+    return '<option value="' + esc(t) + '">';
+  }).join('');
+}
+function onRoofSystemChange(){
+  var sel = document.getElementById("roofSystem");
+  if (!sel) return;
+  if (sel.value !== ROOF_TYPE_ADD_SENTINEL){
+    lastRoofSystemValue = sel.value;
+    return;
+  }
+  var raw = prompt('New roof type (it\'ll be added to the list for every future work order):', "");
+  var label = (raw || "").trim().replace(/\s+/g, " ");
+  if (!label){
+    populateRoofSystemSelect(lastRoofSystemValue);
+    return;
+  }
+  addRoofType(label);
+}
+function addRoofType(label){
+  var existing = allRoofTypes().find(function(t){ return t.toLowerCase() === label.toLowerCase(); });
+  if (existing){
+    /* Already offered (any casing) — select it, never store a duplicate. */
+    populateRoofSystemSelect(existing);
+    toast('"' + existing + '" is already on the list — selected it.');
+    return;
+  }
+  customRoofTypes.push(label);
+  populateRoofSystemSelect(label);
+  try{ localStorage.setItem(ROOF_TYPES_CACHE_KEY, JSON.stringify(customRoofTypes)); }catch(e){}
+  if (!fdb){
+    toast('Roof type "' + label + '" added on this device — no connection, so it isn\'t on the shared list yet.');
+    return;
+  }
+  fdb.collection("app_settings").doc(ROOF_TYPES_DOC_ID).set(
+    { types: firebase.firestore.FieldValue.arrayUnion(label) }, { merge: true }
+  ).then(function(){
+    toast('Roof type "' + label + '" added to the shared list ✓');
+  }).catch(function(e){
+    toast("Couldn't save the new roof type to the shared list: " + (e && e.message || e));
+  });
+}
+async function loadRoofTypes(){
+  try{
+    var raw = localStorage.getItem(ROOF_TYPES_CACHE_KEY);
+    var arr = raw ? JSON.parse(raw) : [];
+    if (Array.isArray(arr)) customRoofTypes = arr.filter(function(t){ return typeof t === "string"; });
+  }catch(e){}
+  populateRoofSystemSelect();
+  if (!fdb) return;
+  try{
+    var snap = await fdb.collection("app_settings").doc(ROOF_TYPES_DOC_ID).get();
+    var data = snap && snap.exists ? snap.data() : null;
+    if (data && Array.isArray(data.types)){
+      customRoofTypes = data.types.filter(function(t){ return typeof t === "string"; });
+      try{ localStorage.setItem(ROOF_TYPES_CACHE_KEY, JSON.stringify(customRoofTypes)); }catch(e){}
+      populateRoofSystemSelect(); /* re-render, preserving the current selection */
+    }
+  }catch(e){ /* offline / rules hiccup — builtins + device cache still work */ }
+}
+
+var FIELD_IDS = ["jobName","location","suite","serviceDate","jobNo","projectManager","billTo","billContact","billPhone",
   "siteContact","technician","roofSystem","reportedArea","warrantable","nonWarrantable","summary",
   "woCost","woManHours","woMaterials","woDescription","woPONumber","woDateCompleted","repairDescription",
   "mfgServiceNo"];
@@ -865,6 +1224,7 @@ function collect(){
   o.findings = findings.slice();
   o.repairs = repairs.slice();
   o.repairItems = repairItems.slice();
+  o.materials = materials.slice();
   o.inspectionChecklist = inspectionChecklist.slice();
   o.photos = photos.slice();
   o.companyCamProjectId = ccLinkedProjectId || null;
@@ -876,6 +1236,12 @@ function collect(){
      Persisted on the WO by cloudSaveOrder (copies all keys), AND onto the
      BUILDING doc by ensureCustomerAndBuilding() — customerNo + address ride
      along so the building carries the full accounting identity/anchor (#76). */
+  /* Stable identity (FIX 1) — stamped from currentBuildingId/currentCustomerId
+     (js/core.js): set on load for docs that carry it, on building pick, and
+     by saveOrder() after ensureCustomerAndBuilding(). null on a brand-new
+     or legacy order until first save; readers fall back to the name slug. */
+  o.buildingId = currentBuildingId || null;
+  o.customerId = currentCustomerId || null;
   o.foundationJobNo = (typeof fdnLinkedJobNo !== "undefined" && fdnLinkedJobNo) ? fdnLinkedJobNo : null;
   o.foundationJobName = (typeof fdnLinkedJobName !== "undefined" && fdnLinkedJobName) ? fdnLinkedJobName : "";
   o.foundationCustomerNo = (typeof fdnLinkedCustomerNo !== "undefined" && fdnLinkedCustomerNo) ? fdnLinkedCustomerNo : null;
@@ -894,7 +1260,7 @@ function collect(){
      individual findings different roofIds on ANY work order type, and the
      report needs real names for those too. See "GPS auto-assign photos to
      roofs" in DEV_NOTES.md. */
-  var buildingId = buildingIdFor(o.billTo, o.jobName);
+  var buildingId = o.buildingId || buildingIdFor(o.billTo, o.jobName); /* same stored-id-first rule as the lookup that filled the cache */
   o.roofLabels = (lookupRoofInfoMatchesBuilding(lastLookupRoofInfo, buildingId) && lastLookupRoofInfo.roofs) ?
     lastLookupRoofInfo.roofs.reduce(function(m, r){ m[r.id] = r.label || "Roof"; return m; }, {}) : null;
   o.changeOrderSignature = changeOrderSignature || null;
@@ -902,6 +1268,12 @@ function collect(){
 }
 function fill(o){
   currentId = o.id;
+  /* Stable identity (FIX 1): a doc that carries stored ids keeps them for
+     this whole edit session — name edits rename the building rather than
+     re-deriving a fork. Legacy docs (no stored id) load null and keep the
+     old slug-fallback behavior byte-for-byte. */
+  currentBuildingId = o.buildingId || null;
+  currentCustomerId = o.customerId || null;
   currentRoofId = o.roofId || null;
   currentRoofIds = (o.roofIds && o.roofIds.length > 1) ? o.roofIds.slice() : null;
   /* Must be set before onWoTypeChange() below (Inspection's branch reads
@@ -910,6 +1282,11 @@ function fill(o){
      whichever order was open before this one. */
   inspectionChecklist = (o.inspectionChecklist || []).slice();
   FIELD_IDS.forEach(function(k){ setVal(k, o[k]); });
+  /* setVal on a select silently lands on "" when the value matches no
+     option — a roofSystem added on another device (or later pruned) would
+     display blank and then be SAVED back blank on the next save. Rebuild
+     the options around this record's own value instead. */
+  populateRoofSystemSelect(o.roofSystem || "");
   populateWoTypeSelect();
   setVal("woType", o.woType || WORK_ORDER_TYPES[0]);
   onWoTypeChange();
@@ -923,11 +1300,32 @@ function fill(o){
     if (f.pin === undefined) f.pin = null;
   });
   repairs = (o.repairs || []).slice(); if (!repairs.length) repairs = [{repair:"",location:""}];
+  /* Same self-heal as findings above: repair areas saved before ids/pins
+     existed get a stable id (so a base-map pin can reference the row) and an
+     explicit null pin — never a fabricated location, just plumbing. */
+  repairs.forEach(function(r){
+    if (!r.id) r.id = genId("rep");
+    if (r.pin === undefined) r.pin = null;
+  });
   repairItems = (o.repairItems || []).slice(); /* Repair type only — no forced minimum row, optional */
+  materials = (o.materials || []).slice(); /* Repair type only — no forced minimum row, optional */
+  /* Same self-heal as findings/repairs above: id is plumbing (row identity
+     for the repair-area link), repair_id gets an explicit null. */
+  materials.forEach(function(m){
+    if (!m.id) m.id = genId("mat");
+    if (m.repair_id === undefined) m.repair_id = null;
+  });
   photos = (o.photos || []).slice();
   photos.forEach(function(p){ if (p.finding_id === undefined) p.finding_id = null; });
   ccLinkedProjectId = o.companyCamProjectId || null;
   ccLinkedProjectName = o.companyCamProjectName || "";
+  /* Audit FIX 3: ANY work-order type on a linked building inherits the
+     building's CompanyCam link on load (debounced; no-op when this order
+     already carries a link, when there's no building yet, or offline —
+     see resolveBuildingCompanyCamLink()). The export path re-resolves
+     right before a PDF push regardless; this is the eager half so the
+     banner shows the link while editing. */
+  if (!ccLinkedProjectId && typeof scheduleResolveBuildingCCLink === "function") scheduleResolveBuildingCCLink();
   /* Restore the Foundation job linkage and refresh its dependent UI (the link
      line + the admin-only labor card). Guarded so this file has no hard
      dependency on js/foundation.js being present. */
@@ -939,7 +1337,7 @@ function fill(o){
   coJobNoAutoValue = null;
   changeOrderSignature = o.changeOrderSignature || null;
   clearStaleLookupRoofInfoForCurrentOrder();
-  renderFindings(); renderRepairs(); renderRepairItems(); renderPhotos(); renderCCLinkInfo(); renderChangeOrderSignature();
+  renderFindings(); renderRepairs(); renderRepairItems(); renderMaterials(); renderPhotos(); renderCCLinkInfo(); renderChangeOrderSignature();
   /* Re-render the checklist now that photos[]/findings[] are the truly
      loaded values, not whatever onWoTypeChange() saw mid-load above --
      otherwise a checklist item's photo gallery could briefly reflect the
@@ -947,6 +1345,7 @@ function fill(o){
      twice. */
   if (val("woType") === "Inspection"){ ensureInspectionChecklist(); renderInspectionChecklist(); }
   if (typeof refreshInspectionRoofPickerIfNeeded === "function") refreshInspectionRoofPickerIfNeeded();
+  renderLeakNoJobBadge();
   scheduleInlineBuildingHistoryRefresh();
 }
 /* ================= Change Order autofill =================
@@ -963,7 +1362,7 @@ function fill(o){
       most recent entry is itself a CO ("16153 CO") still resolves to base
       "16153", never "16153 CO CO" (changeOrderJobNo() is idempotent).
 
-   2. The building's CompanyCam link (resolveChangeOrderCompanyCamLink(), in
+   2. The building's CompanyCam link (resolveBuildingCompanyCamLink(), in
       js/companycam.js) -- so a CO on an already-linked building pushes its
       signed PDF with no manual step.
 
@@ -1020,7 +1419,7 @@ async function maybeApplyChangeOrderJobNo(){
 }
 async function runChangeOrderAutofill(){
   if (val("woType") !== "Change Order") return;
-  if (typeof resolveChangeOrderCompanyCamLink === "function") await resolveChangeOrderCompanyCamLink();
+  if (typeof resolveBuildingCompanyCamLink === "function") await resolveBuildingCompanyCamLink();
   await maybeApplyChangeOrderJobNo();
 }
 /* Debounced, and re-run whenever the fields that DERIVE the building change
@@ -1068,7 +1467,8 @@ function hasContent(){
   try{
     var o = collect();
     return !!(o.jobName || o.jobNo || o.reportedArea || o.summary ||
-      (photos && photos.length) || filledFindings().length || filledRepairs().length);
+      (photos && photos.length) || filledFindings().length || filledRepairs().length ||
+      filledMaterials().length);
   }catch(e){ return false; }
 }
 /* "+ New" (header) and "+ New Work Order" (Building History's empty
@@ -1194,7 +1594,40 @@ function inlineRoofHasGeoreferencedBaseMap(roof){
   return !!(roof && roof.roof_base_map_url &&
     roof.roof_base_map_type === "drone_ortho" && roof.roof_base_map_bounds);
 }
-function inlineResolveBuildingBaseMap(roofs, selectedRoofId){
+function inlineRoofHasSyntheticOrthoBaseMap(roof){
+  return !!(roof && roof.roof_base_map_url &&
+    roof.roof_base_map_type === "sketch" && roof.roof_base_map_synthetic);
+}
+function inlineValidComputedOrthoBounds(bounds){
+  return !!bounds &&
+    Number.isFinite(Number(bounds.north)) && Number.isFinite(Number(bounds.south)) &&
+    Number.isFinite(Number(bounds.east)) && Number.isFinite(Number(bounds.west)) &&
+    Number(bounds.north) !== Number(bounds.south) && Number(bounds.east) !== Number(bounds.west);
+}
+async function inlineSyntheticOrthoOverlay(roof){
+  if (!inlineRoofHasSyntheticOrthoBaseMap(roof)) return null;
+  if (typeof rmComputeOrthoBoundsForImageUrl !== "function") return null;
+  try{
+    var computed = await rmComputeOrthoBoundsForImageUrl(roof.roof_base_map_url);
+    var bounds = computed && computed.orthoBounds;
+    if (!inlineValidComputedOrthoBounds(bounds)) return null;
+    return { url: roof.roof_base_map_url, bounds: bounds };
+  }catch(e){
+    console.warn("Could not compute inline synthetic RoofMapper ortho bounds.", e);
+    return null;
+  }
+}
+async function inlineFirstOtherRoofWithSyntheticOrthoOverlay(roofs, selectedRoofId){
+  roofs = roofs || [];
+  for (var i = 0; i < roofs.length; i++){
+    var roof = roofs[i];
+    if (!roof || roof.id === selectedRoofId) continue;
+    var orthoOverlay = await inlineSyntheticOrthoOverlay(roof);
+    if (orthoOverlay) return { roof: roof, orthoOverlay: orthoOverlay };
+  }
+  return null;
+}
+async function inlineResolveBuildingBaseMap(roofs, selectedRoofId){
   roofs = roofs || [];
   var selectedRoof = roofs.find(function(r){ return r.id === selectedRoofId; }) || roofs[0] || null;
   var base = {
@@ -1207,9 +1640,17 @@ function inlineResolveBuildingBaseMap(roofs, selectedRoofId){
   };
   if (!inlineRoofHasBaseMap(selectedRoof)){
     var siblingOrtho = inlineFirstOtherRoofWithGeoreferencedBaseMap(roofs, selectedRoofId);
-    if (!siblingOrtho) return base;
-    base.sourceRoof = siblingOrtho;
-    base.orthoOverlay = { url: siblingOrtho.roof_base_map_url, bounds: siblingOrtho.roof_base_map_bounds };
+    if (siblingOrtho){
+      base.sourceRoof = siblingOrtho;
+      base.orthoOverlay = { url: siblingOrtho.roof_base_map_url, bounds: siblingOrtho.roof_base_map_bounds };
+      return base;
+    }
+    var siblingSyntheticOrtho = await inlineFirstOtherRoofWithSyntheticOrthoOverlay(roofs, selectedRoofId);
+    if (siblingSyntheticOrtho){
+      base.sourceRoof = siblingSyntheticOrtho.roof;
+      base.orthoOverlay = siblingSyntheticOrtho.orthoOverlay;
+      return base;
+    }
     return base;
   }
   base.sourceRoof = selectedRoof;
@@ -1218,7 +1659,12 @@ function inlineResolveBuildingBaseMap(roofs, selectedRoofId){
     base.orthoOverlay = { url: selectedRoof.roof_base_map_url, bounds: selectedRoof.roof_base_map_bounds };
     return base;
   }
-  base.syntheticOrtho = !!(selectedRoof.roof_base_map_type === "sketch" && selectedRoof.roof_base_map_synthetic);
+  var selectedSyntheticOrtho = await inlineSyntheticOrthoOverlay(selectedRoof);
+  if (selectedSyntheticOrtho){
+    base.orthoOverlay = selectedSyntheticOrtho;
+    return base;
+  }
+  base.syntheticOrtho = !!inlineRoofHasSyntheticOrthoBaseMap(selectedRoof);
   base.customBld = selectedRoof;
   return base;
 }
@@ -1458,7 +1904,7 @@ async function refreshInlineBuildingHistory(){
     if (seq !== woInlineHistorySeq) return;
     var roofId = inlineSelectedRoofId(ctx.roofs);
     var roof = inlineRoofById(ctx, roofId);
-    var baseMap = inlineResolveBuildingBaseMap(ctx.roofs, roofId);
+    var baseMap = await inlineResolveBuildingBaseMap(ctx.roofs, roofId);
     var mapRoof = roof;
     var mapRoofId = roofId;
     var hasCustomBaseMap = !!baseMap.customBld;

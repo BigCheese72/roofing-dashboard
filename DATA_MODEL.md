@@ -1151,6 +1151,71 @@ Notes:
   (regardless of type) so a mail rule can file every one of these into one Outlook
   folder reliably.
 
+### `ai_training_labels` (currently implemented — write path only, no callers yet)
+
+The learning-model data foundation (shipped 2026-07-16, dev only — see "AI training
+labels" in `DEV_NOTES.md`). Each doc is ONE tech-confirmed issue label on ONE photo —
+a labeled training example for a future learning model. Mark's framing: once photos in
+leak reports get identified, each identified leak becomes training data; this
+collection exists so those examples start accumulating NOW instead of being thrown
+away. Pure data plumbing — no AI call, no API key anywhere.
+
+Written exclusively via `recordConfirmedLabel()` in `js/ailabels.js` (the flows that
+own the confirm/correct interaction call it when they wire up — deliberately no
+callers yet). One confirm/correct action writes one clean row.
+
+```js
+// ai_training_labels/<aiLabelGenId(), "ail_..." >
+{
+  schemaVersion: 1,
+  source,          // "leak" | "inspection" | "workorder" — which flow confirmed it
+  label,           // CONTROLLED-VOCABULARY key, e.g. "ponding_water" — one of
+                   // AI_ISSUE_LABELS in js/ailabels.js (26 starter keys) plus the
+                   // admin-extendable app_settings/ai_label_vocab doc's extraLabels.
+                   // Keys are permanent once data exists against them; labels
+                   // (display text) can be reworded freely. Free text is rejected.
+  labelOther,      // free text, required iff label === "other" — the escape hatch
+                   // still produces a searchable string to promote into a real key
+  likelyCause,     // tech's short free-text cause, optional
+  photo,           // REFERENCE, NEVER a URL (signed-URL discipline — the bucket is
+                   // sealed, resolution to bytes/URLs happens server-side at read
+                   // time). One of:
+                   //   { kind:"storage"|"workorder_embedded", workOrderId, photoIndex }
+                   //     (the same pair netlify/functions/photos.js builds paths from)
+                   //   { kind:"companycam", companyCamPhotoId, companyCamProjectId }
+  pin,             // { lat, lng, x, y } — exactly one pair set, other pair null; same
+                   // convention as finding pins/roof assets. null if no location.
+  roofId,          // "roof_default" fallback, same convention as everywhere else
+  roofSystem,      // material snapshot if known ("" if not)
+  roofAgeYears,    // number|null — from roof.profile installDate/estimatedAgeYears
+  buildingId,      // REQUIRED — the STABLE stored building doc id (stable-identity
+                   // fix, PR #120), NOT a slug recomputed from Bill To + Job Name
+  customerId, workOrderId, findingId, // optional context ids, null when unknown
+  confirmedByUid,  // rules-enforced == request.auth.uid — a label is the tech's own
+                   // attestation, not writable on someone else's behalf
+  confirmedByName, // display name snapshot, optional
+  confirmedAt, createdAt // plain numbers (Date.now()), audit_logs convention
+}
+```
+
+Notes:
+
+- `firestore.rules`: any signed-in user can `create` (with field validation:
+  uid match, source enum, bounded label/buildingId strings, photo is a map with a
+  known kind); `read`/`update`/`delete` are denied to EVERY client including the
+  owner — training data references customer roof photos and is sensitive. Reads are
+  Admin SDK only (future export/labeling tooling). Rules need the usual manual
+  Console apply.
+- **Deletion cascade** (photos are customer property):
+  `netlify/functions/lib/aiLabels.js` — `purgeLabelsForBuilding()` is wired into
+  `admin.js`'s `delete_building` (runs BEFORE the building doc delete so a mid-delete
+  failure keeps a retry path; count lands in the audit log as `deletedAiLabels`).
+  `purgeLabelsForWorkOrder()`/`purgeLabelsForPhoto()` are the documented hooks for
+  the work-order-delete and photo-delete flows to call when their owners wire them.
+- Vocabulary admin seam: `app_settings/ai_label_vocab` `{ extraLabels: [{key,label}] }`
+  — app_settings is already world-readable/server-write-only, so extending the list is
+  a data change (future admin.js action or Console edit), never a code deploy.
+
 ## Migration Notes
 
 - Keep current `workorders` behavior stable until Phase 2 data cleanup is complete.

@@ -295,13 +295,19 @@
     display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0}
   /* Precision cursor (Mark: "big HAND cursor, can't tell where the point
      will land, as accurate as possible") -- swaps the default Leaflet grab
-     hand for a fine crosshair while placing/tracing/editing a vertex.
+     hand for a pointer while placing/tracing/editing a vertex.
      Real, immediate accuracy win for a mouse/trackpad with zero risk
      (pure CSS, no interaction change). See "Precision cursor" in
      DEV_NOTES.md. */
   #rm-map-wrap.rm-precision-active #rm-map,
   #rm-map-wrap.rm-precision-active #rm-map .leaflet-interactive,
-  #rm-map-wrap.rm-precision-active #rm-map .leaflet-container{cursor:crosshair}
+  #rm-map-wrap.rm-precision-active #rm-map .leaflet-container,
+  #rm-map-wrap.rm-precision-active #rm-map.leaflet-grab,
+  #rm-map-wrap.rm-precision-active #rm-map .leaflet-grab,
+  #rm-map-wrap.rm-precision-active #rm-map.leaflet-dragging,
+  #rm-map-wrap.rm-precision-active #rm-map .leaflet-dragging,
+  #rm-map-wrap.rm-precision-active #rm-map.leaflet-dragging .leaflet-grab,
+  #rm-map-wrap.rm-precision-active #rm-map .leaflet-dragging .leaflet-grab{cursor:pointer}
   /* Touch precision aid: a finger occludes the exact drop point, so a
      fixed reticle at the map's own center gives an unambiguous aim point
      -- pan the map so the crosshair sits over the real corner, then tap

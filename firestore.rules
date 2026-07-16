@@ -158,6 +158,22 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // The ONE app_settings doc clients may write: the shared roof-type
+    // list (see "shared roof-type list" in js/workorders.js). Overlapping
+    // matches grant access when ANY matching allow grants it, so this
+    // opens write for exactly this doc without loosening the write:false
+    // above for the rest of app_settings. Signed-in users only, and the
+    // doc can only ever be { types: [...] } — nothing else can be smuggled
+    // into it. Client additions go through arrayUnion; pruning stays
+    // possible for a future admin.js action (Admin SDK bypasses rules).
+    // Zero prod risk: production's code never writes this doc, and the
+    // rule is purely additive.
+    match /app_settings/roof_types {
+      allow write: if request.auth != null
+        && request.resource.data.keys().hasOnly(['types'])
+        && request.resource.data.types is list;
+    }
+
     // In-app Send Feedback submissions (💬 button, every screen — see
     // "Send Feedback" in DEV_NOTES.md). Any client can create one (no PIN
     // needed — anyone should be able to submit), but nobody reads/updates/
@@ -274,6 +290,43 @@ service cloud.firestore {
     match /foundation_sync_meta/{metaId} {
       allow read: if request.auth != null;
       allow write: if false;
+    }
+
+    // AI training labels — the learning-model data foundation (see
+    // js/ailabels.js + "AI training labels" in DEV_NOTES.md/DATA_MODEL.md).
+    // Each doc is one tech-confirmed issue label on one photo: a labeled
+    // training example for a future model. Brand-new collection, zero
+    // production risk (production's code never touches it).
+    //
+    // CREATE: any signed-in tech, but only a well-formed record —
+    // confirmedByUid must be the caller's own uid (a label is a personal
+    // attestation, not writable on someone else's behalf), the label must
+    // be a bounded string key (vocabulary membership is enforced by
+    // js/ailabels.js — the vocab is admin-extendable data, so rules can't
+    // pin the exact list without a rules redeploy per new label), and the
+    // photo field must be a REFERENCE map, never a URL string.
+    //
+    // READ/UPDATE/DELETE: denied to every client, including the owner —
+    // training data references customer roof photos and is sensitive;
+    // reads are Admin SDK only (future export/labeling tooling), and the
+    // deletion cascade is netlify/functions/lib/aiLabels.js via admin.js's
+    // delete_building (same feedback-style write-only pattern, hardened).
+    match /ai_training_labels/{labelId} {
+      allow create: if request.auth != null
+        && request.resource.data.confirmedByUid == request.auth.uid
+        && request.resource.data.schemaVersion == 1
+        && request.resource.data.source in ['leak', 'inspection', 'workorder']
+        && request.resource.data.label is string
+        && request.resource.data.label.size() >= 2
+        && request.resource.data.label.size() <= 60
+        && request.resource.data.buildingId is string
+        && request.resource.data.buildingId.size() > 0
+        && request.resource.data.buildingId.size() <= 200
+        && request.resource.data.photo is map
+        && request.resource.data.photo.kind in ['storage', 'companycam', 'workorder_embedded']
+        && request.resource.data.confirmedAt is number
+        && request.resource.data.createdAt is number;
+      allow read, update, delete: if false;
     }
   }
 }

@@ -133,6 +133,15 @@ function singleNamedRoofLegacyEvents(){
   ] }];
 }
 
+function syntheticOrthoComputer(bounds){
+  return async function(url){
+    return {
+      url,
+      orthoBounds: bounds || { north: 41.1, south: 41.0, east: -87.9, west: -88.0 }
+    };
+  };
+}
+
 test("inline history does not borrow another roof's sketch base map", async () => {
   const sandbox = makeSandbox();
   const roofs = [
@@ -215,8 +224,10 @@ test("inline history distinguishes buildings with no base map anywhere", () => {
   );
 });
 
-test("synthetic RoofMapper orthos stay in the local image frame", async () => {
+test("synthetic RoofMapper orthos use computed georeferenced overlay bounds", async () => {
   const sandbox = makeSandbox();
+  const bounds = { north: 41.15, south: 41.05, east: -87.85, west: -87.95 };
+  sandbox.rmComputeOrthoBoundsForImageUrl = syntheticOrthoComputer(bounds);
   const roofs = mixedRoofs({
     roof_base_map_type: "sketch",
     roof_base_map_url: "synthetic.jpg",
@@ -225,12 +236,43 @@ test("synthetic RoofMapper orthos stay in the local image frame", async () => {
 
   const base = await sandbox.inlineResolveBuildingBaseMap(roofs, "roof1");
 
-  assert.strictEqual(base.customBld.id, "roof1");
-  assert.strictEqual(base.syntheticOrtho, true);
-  assert.strictEqual(base.orthoOverlay, null);
+  assert.strictEqual(base.customBld, null);
+  assert.strictEqual(base.syntheticOrtho, false);
+  assert.strictEqual(base.orthoOverlay.url, "synthetic.jpg");
+  assert.deepStrictEqual(base.orthoOverlay.bounds, bounds);
   assert.strictEqual(
-    sandbox.inlineHistoryMapLabel(true, null, base, roofs[0]),
-    "Roof map using <b>Roof 1</b>'s saved base image (RoofMapper image, not georeferenced)."
+    sandbox.inlineHistoryMapLabel(false, base.orthoOverlay, base, roofs[0]),
+    "Building-wide roof map on the saved drone orthophoto."
+  );
+});
+
+test("inline history can use a sibling synthetic RoofMapper ortho as a georeferenced fallback", async () => {
+  const sandbox = makeSandbox();
+  const bounds = { north: 41.2, south: 41.1, east: -87.7, west: -87.8 };
+  sandbox.rmComputeOrthoBoundsForImageUrl = syntheticOrthoComputer(bounds);
+  const roofs = [
+    { id: "roof1", label: "Roof 1" },
+    {
+      id: "roof7",
+      label: "Roof 7",
+      roof_base_map_type: "sketch",
+      roof_base_map_url: "roof7-synthetic.jpg",
+      roof_base_map_synthetic: true
+    }
+  ];
+
+  const base = await sandbox.inlineResolveBuildingBaseMap(roofs, "roof1");
+
+  assert.strictEqual(base.selectedRoof.id, "roof1");
+  assert.strictEqual(base.sourceRoof.id, "roof7");
+  assert.strictEqual(base.fromSelectedRoof, false);
+  assert.strictEqual(base.customBld, null);
+  assert.strictEqual(base.syntheticOrtho, false);
+  assert.strictEqual(base.orthoOverlay.url, "roof7-synthetic.jpg");
+  assert.deepStrictEqual(base.orthoOverlay.bounds, bounds);
+  assert.strictEqual(
+    sandbox.inlineHistoryMapLabel(false, base.orthoOverlay, base, base.selectedRoof),
+    "Base map from <b>Roof 7</b> (building-wide)."
   );
 });
 
@@ -283,13 +325,16 @@ test("plain satellite label does not attribute building-wide GPS pins to one roo
     assetDisclosure: [/features from other roofs/, /GPS-placed feature/]
   },
   {
-    name: "synthetic RoofMapper ortho as custom base map",
+    name: "synthetic RoofMapper ortho as georeferenced overlay",
     baseFields: { roof_base_map_type: "sketch", roof_base_map_url: "synthetic.jpg", roof_base_map_synthetic: true },
-    hasCustomBaseMap: true,
-    expectedPinIds: ["selected-xy"],
-    expectedAssetIds: ["asset-selected-xy"],
-    pinDisclosure: [/pinned to other roofs/, /legacy unassigned findings/, /GPS-placed finding/],
-    assetDisclosure: [/features from other roofs/, /GPS-placed feature/]
+    computeSyntheticBounds: true,
+    hasCustomBaseMap: false,
+    expectedPinIds: ["selected-gps", "other-gps", "legacy-gps"],
+    expectedAssetIds: ["asset-selected-gps", "asset-other-gps"],
+    pinDisclosure: [/image-placed finding/],
+    pinDisclosureAbsent: [/pinned to other roofs/, /legacy unassigned findings/],
+    assetDisclosure: [/image-placed feature/],
+    assetDisclosureAbsent: [/features from other roofs/]
   },
   {
     name: "genuine drone ortho satellite overlay",
@@ -355,6 +400,7 @@ test("plain satellite label does not attribute building-wide GPS pins to one roo
 ].forEach((mode) => {
   test("coverage invariant holds for " + mode.name, async () => {
     const sandbox = makeSandbox();
+    if (mode.computeSyntheticBounds) sandbox.rmComputeOrthoBoundsForImageUrl = syntheticOrthoComputer();
     const roofs = mode.roofs ? mode.roofs(mode.baseFields) : mixedRoofs(mode.baseFields);
     const events = mode.events ? mode.events() : mixedEvents();
     const base = await sandbox.inlineResolveBuildingBaseMap(roofs, "roof1");
