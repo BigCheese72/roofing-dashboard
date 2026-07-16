@@ -44,10 +44,15 @@ var dprState = {
   roofs: [],             /* getBuildingRoofs() result for the selected building */
   continuedExisting: false /* true once we've loaded a same-day report to add to */
 };
-var dprCrew = [];        /* roster rows: [{ name }]  headcount derives from this */
+var dprCrew = [];        /* roster rows: [{ name, hours, hoursSource }]  headcount + daily total derive from this.
+                            hours is a form-style string ("8", "7.5", "" = not entered);
+                            hoursSource is "foundation" when auto-filled from the time
+                            clock (see dprAutofillCrewHours) or "" for manual entry —
+                            a manual edit always wins and flips it back to "". */
 var dprQuantities = [];  /* material-quantity rows: [{ item, qty, unit }] (Phase-2 gated section) */
 var dprPhotos = [];      /* [{ caption, img, thumb, w, h, gps, storageRef, localId }] */
 var dprHeadcountAutoVal = "";  /* last headcount we auto-filled — lets a manual edit stick (same trick as CO job-no autofill) */
+var dprHoursAutoVal = "";      /* last "Hours Worked" total we auto-filled from crew hours — same manual-edit-wins trick */
 var dprBldCache = null;  /* buildings list for the inline picker (lazy) */
 var dprLoadSeq = 0;      /* guards against a slow same-day fetch clobbering a newer selection */
 /* The section a foreman traces for the day's worked area lives on dprState.section:
@@ -297,6 +302,7 @@ function dprPickFoundationJob(jobNo){
   if (host) host.innerHTML = "";
   dprHideJobSelect();
   dprScheduleSameDayLoad();
+  dprScheduleCrewHoursAutofill();
   toast("Linked Foundation job " + (j.job_no || "") + " — fill in today's progress");
 }
 
@@ -357,6 +363,7 @@ function dprEnsureListeners(){
   });
   var dateEl = document.getElementById("dpr-date");
   if (dateEl) dateEl.addEventListener("change", dprScheduleSameDayLoad);
+  if (dateEl) dateEl.addEventListener("change", dprScheduleCrewHoursAutofill); /* punches are per-day */
   dprListenersInstalled = true;
 }
 
@@ -476,6 +483,7 @@ function dprPickBuilding(buildingId){
      building has no Foundation link. */
   if (!dprApplyFoundationJobNo(b)) dprAutofillJobNo(buildingId);
   dprScheduleSameDayLoad();
+  dprScheduleCrewHoursAutofill();
   toast("Loaded “" + b.name + "” — review the fields, then fill in today's progress");
 }
 function dprRenderRoofPicker(){
@@ -547,10 +555,10 @@ async function dprLoadForBuildingDate(){
   }catch(e){ if (notice) notice.style.display = "none"; }
 }
 
-/* ================= crew roster + headcount ================= */
+/* ================= crew roster + per-person hours + headcount ================= */
 function dprAddCrewRow(name){
   if (dprIsLocked()){ toast("This report is signed and locked."); return; }
-  dprCrew.push({ name: name || "" });
+  dprCrew.push({ name: name || "", hours: "", hoursSource: "" });
   dprRenderCrew();
   dprSyncHeadcount();
 }
@@ -559,6 +567,7 @@ function dprRemoveCrewRow(idx){
   dprCrew.splice(idx, 1);
   dprRenderCrew();
   dprSyncHeadcount();
+  dprSyncHours();
 }
 function dprRenderCrew(){
   var host = document.getElementById("dpr-crew-list");
@@ -567,19 +576,64 @@ function dprRenderCrew(){
     host.innerHTML = '<p class="hint">No crew added yet. Add each person who worked this job today.</p>';
     return;
   }
+  var locked = dprIsLocked();
   host.innerHTML = dprCrew.map(function(c, i){
+    /* The ⏱ badge marks hours auto-filled from the time clock (Foundation) —
+       it disappears the moment the foreman edits the value (manual wins). */
+    var fdnBadge = '<span class="hint" data-dprcrewsrc="' + i + '" ' +
+      'style="margin:0;align-self:center' + (c.hoursSource === "foundation" ? "" : ";display:none") + '" ' +
+      'title="Auto-filled from the time clock — edit to override">⏱</span>';
     return '<div class="btnrow" style="margin:0 0 6px;gap:6px">' +
       '<input type="text" placeholder="Crew member name" data-dprcrew="' + i + '" value="' + esc(c.name) + '" ' +
-        'list="dl-dprCrew" style="flex:1;min-width:140px">' +
+        'list="dl-dprCrew" style="flex:1;min-width:140px"' + (locked ? " readonly" : "") + '>' +
+      '<input type="number" placeholder="Hrs" min="0" step="0.25" data-dprcrewhrs="' + i + '" ' +
+        'value="' + esc(c.hours == null ? "" : String(c.hours)) + '" ' +
+        'title="Hours this person worked today" style="width:76px"' + (locked ? " readonly" : "") + '>' +
+      fdnBadge +
       '<button class="btn danger" onclick="dprRemoveCrewRow(' + i + ')">✕</button>' +
       '</div>';
-  }).join("");
+  }).join("") + '<div class="hint" id="dpr-crew-total" style="margin:2px 0 0"></div>';
   host.querySelectorAll("[data-dprcrew]").forEach(function(el){
     el.addEventListener("input", function(){ dprCrew[+el.dataset.dprcrew].name = el.value; dprSyncHeadcount(); });
+    /* Name committed (blur/datalist pick) — a punch may now match this person. */
+    el.addEventListener("change", function(){ dprScheduleCrewHoursAutofill(); });
   });
+  host.querySelectorAll("[data-dprcrewhrs]").forEach(function(el){
+    el.addEventListener("input", function(){
+      var i = +el.getAttribute("data-dprcrewhrs");
+      dprCrew[i].hours = el.value;
+      dprCrew[i].hoursSource = "";   /* typed by hand — manual always wins */
+      var badge = host.querySelector('[data-dprcrewsrc="' + i + '"]');
+      if (badge) badge.style.display = "none";
+      dprRenderCrewTotal();
+      dprSyncHours();
+    });
+  });
+  dprRenderCrewTotal();
 }
 function dprCrewCount(){
   return dprCrew.filter(function(c){ return (c.name || "").trim(); }).length;
+}
+/* Sum of the per-person hours across named crew rows, rounded to 2dp (defensive
+   against "" / garbage — same discipline as sumHours in the Foundation lib). */
+function dprCrewHoursTotal(){
+  var total = dprCrew.reduce(function(acc, c){
+    if (!(c.name || "").trim()) return acc;
+    var h = Number(c.hours);
+    return acc + (isFinite(h) && h > 0 ? h : 0);
+  }, 0);
+  return Math.round(total * 100) / 100;
+}
+/* Live total line under the crew rows — updated in place on every keystroke so
+   the foreman sees the day's total build as they enter hours. */
+function dprRenderCrewTotal(){
+  var el = document.getElementById("dpr-crew-total");
+  if (!el) return;
+  var total = dprCrewHoursTotal();
+  var n = dprCrewCount();
+  el.innerHTML = total > 0
+    ? 'Total hours today: <b>' + esc(String(total)) + '</b> across ' + esc(String(n)) + (n === 1 ? ' person' : ' people')
+    : 'Add each person’s hours — the day’s total sums here.';
 }
 function dprSyncHeadcount(){
   /* Auto-fill headcount from the roster, but never stomp a value the user
@@ -593,6 +647,134 @@ function dprSyncHeadcount(){
     el.value = n;
     dprHeadcountAutoVal = n;
   }
+}
+function dprSyncHours(){
+  /* Auto-fill the day's "Hours Worked" total from the per-person crew hours —
+     same never-stomp trick as headcount above. Only kicks in once there ARE
+     crew hours (total > 0), so a foreman who still types one total by hand
+     keeps that workflow untouched. */
+  var el = document.getElementById("dpr-hours");
+  if (!el) return;
+  var total = dprCrewHoursTotal();
+  if (total <= 0) return;
+  var current = el.value.trim();
+  if (current === "" || current === dprHoursAutoVal){
+    var n = String(total);
+    el.value = n;
+    dprHoursAutoVal = n;
+  }
+}
+
+/* ================= Foundation time-clock auto-fill (per-person daily hours) ====
+   Employees punch in/out daily and those punches land in Foundation before
+   payroll posts them to jobs. Where a punch total exists for a crew member on
+   this job + date, their hours AUTO-FILL (marked with the ⏱ badge); a manual
+   edit always wins and is never overwritten.
+
+   SERVER SEAM: netlify/functions/foundation.js `action=day_hours&job_no&date` —
+   per-employee summed hours for one job + one date, name included, gated
+   server-side on foundation.read exactly like the WO labor card (attempt-fetch,
+   fail closed): a 401/403 stops asking for the session, any other error skips
+   that job+date pair, and manual entry is untouched either way. Until the
+   server action ships, the fetch 400s and this whole path is a silent no-op. */
+var dprDayHoursCache = {};      /* "jobNo|date" -> { byName: {nameKey -> hours} } | null (fetch failed, don't retry) */
+var dprDayHoursDenied = false;  /* server said not authorized — stop asking this session */
+var dprCrewHoursTimer = null;
+function dprScheduleCrewHoursAutofill(){
+  if (dprCrewHoursTimer) clearTimeout(dprCrewHoursTimer);
+  dprCrewHoursTimer = setTimeout(function(){ dprAutofillCrewHours(); }, 250);
+}
+/* Case/spacing-insensitive name key; folds "Last, First" to "first last" so a
+   Foundation-style name still matches the roster's "First Last". */
+function dprNameKey(s){
+  var t = String(s == null ? "" : s).trim();
+  var parts = t.indexOf(",") > -1 ? t.split(",") : null;
+  if (parts && parts.length === 2) t = parts[1].trim() + " " + parts[0].trim();
+  return t.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+async function dprFetchDayHours(jobNo, date){
+  var r = await fetch("/.netlify/functions/foundation?action=day_hours&job_no=" +
+    encodeURIComponent(jobNo) + "&date=" + encodeURIComponent(date), { headers: await authHeaders() });
+  var out = null;
+  try{ out = await r.json(); }catch(e){}
+  if (!r.ok){ var err = new Error((out && out.error) || ("server error " + r.status)); err.status = r.status; throw err; }
+  return out;
+}
+/* Folds the server's rows into {nameKey -> hours}. Two rows for the same person
+   (e.g. two cost codes that day) accumulate. Pure — unit-tested directly. */
+function dprDayHoursByName(rows){
+  var byName = {};
+  (rows || []).forEach(function(rw){
+    var k = dprNameKey(rw && rw.name);
+    if (!k) return;
+    var h = Number(rw.hours);
+    if (!isFinite(h) || h <= 0) return;
+    byName[k] = (byName[k] || 0) + h;
+  });
+  Object.keys(byName).forEach(function(k){ byName[k] = Math.round(byName[k] * 100) / 100; });
+  return byName;
+}
+/* Decides one crew row's new hours given the punch total for their name.
+   Returns the string to set, or null to leave the row alone. Manual wins:
+   only an empty value or a previous auto-fill is ever replaced. Pure. */
+function dprCrewHoursFillValue(row, punchHours){
+  if (punchHours == null) return null;
+  var hs = String(punchHours);
+  var cur = (row.hours == null ? "" : String(row.hours)).trim();
+  if (cur !== "" && row.hoursSource !== "foundation") return null; /* typed by hand — never touch */
+  if (cur === hs && row.hoursSource === "foundation") return null; /* already current */
+  return hs;
+}
+async function dprAutofillCrewHours(){
+  if (dprIsLocked() || dprDayHoursDenied) return;
+  if (typeof fetch !== "function" || typeof authHeaders !== "function") return;
+  var jobNo = String(dprState.foundationJobNo || val("dpr-jobNo") || "").trim();
+  var date = (val("dpr-date") || "").trim();
+  if (!jobNo || !date) return;
+  if (!dprCrew.some(function(c){ return (c.name || "").trim(); })) return;
+  var key = jobNo + "|" + date;
+  var entry = dprDayHoursCache[key];
+  if (entry === undefined){
+    try{
+      var data = await dprFetchDayHours(jobNo, date);
+      entry = dprDayHoursCache[key] = { byName: dprDayHoursByName(data && data.rows) };
+    }catch(e){
+      if (e && (e.status === 401 || e.status === 403)) dprDayHoursDenied = true;
+      else dprDayHoursCache[key] = null; /* transient/unknown — don't hammer this pair */
+      return;
+    }
+    /* The job/date may have moved on while the fetch was in flight — the
+       result is cached for later, but don't apply it to the wrong report. */
+    var nowJob = String(dprState.foundationJobNo || val("dpr-jobNo") || "").trim();
+    if (nowJob + "|" + (val("dpr-date") || "").trim() !== key) return;
+  }
+  if (!entry) return;
+  var changed = false;
+  dprCrew.forEach(function(c){
+    if (!(c.name || "").trim()) return;
+    var fill = dprCrewHoursFillValue(c, entry.byName[dprNameKey(c.name)]);
+    if (fill == null) return;
+    c.hours = fill;
+    c.hoursSource = "foundation";
+    changed = true;
+  });
+  if (changed) dprApplyCrewHoursToDom();
+}
+/* Pushes auto-filled hours into the already-rendered rows IN PLACE (value +
+   ⏱ badge) rather than re-rendering — a full innerHTML swap would steal focus
+   from a foreman mid-typing in another row. */
+function dprApplyCrewHoursToDom(){
+  var host = document.getElementById("dpr-crew-list");
+  if (host){
+    dprCrew.forEach(function(c, i){
+      var inp = host.querySelector('[data-dprcrewhrs="' + i + '"]');
+      if (inp && inp.value !== String(c.hours || "")) inp.value = String(c.hours || "");
+      var badge = host.querySelector('[data-dprcrewsrc="' + i + '"]');
+      if (badge) badge.style.display = (c.hoursSource === "foundation") ? "" : "none";
+    });
+  }
+  dprRenderCrewTotal();
+  dprSyncHours();
 }
 
 /* ================= material quantities (Phase-2 gated section) =================
@@ -739,7 +921,14 @@ function dprCollect(){
     foundationJobNo: dprState.foundationJobNo || null,          /* stamps the building's Foundation link on save (ensureCustomerAndBuilding) */
     foundationCustomerNo: dprState.foundationCustomerNo || null,
     roofSystem: val("dpr-roofSystem"),
-    crew: dprCrew.filter(function(c){ return (c.name || "").trim(); }).map(function(c){ return { name: c.name.trim() }; }),
+    crew: dprCrew.filter(function(c){ return (c.name || "").trim(); }).map(function(c){
+      return {
+        name: c.name.trim(),
+        hours: (c.hours == null ? "" : String(c.hours)).trim(),
+        hoursSource: c.hoursSource === "foundation" ? "foundation" : ""
+      };
+    }),
+    crewHoursTotal: dprCrewHoursTotal(),   /* denormalized daily total (sum of crew hours) for lists/exports */
     headcount: val("dpr-headcount"),
     hoursWorked: val("dpr-hours"),
     squares: val("dpr-squares"),
@@ -794,7 +983,15 @@ function dprFill(o){
   setVal("dpr-squares", o.squares || "");
   setVal("dpr-summary", o.summary || "");
   dprHeadcountAutoVal = String(o.headcount || "");
-  dprCrew = (o.crew || []).map(function(c){ return { name: c.name || "" }; });
+  dprHoursAutoVal = String(o.hoursWorked || "");
+  dprCrew = (o.crew || []).map(function(c){
+    /* Old docs pre-date per-person hours ({name} only) — default them empty. */
+    return {
+      name: c.name || "",
+      hours: (c.hours == null ? "" : String(c.hours)),
+      hoursSource: c.hoursSource === "foundation" ? "foundation" : ""
+    };
+  });
   dprPhotos = (o.photos || []).map(function(p){ return Object.assign({}, p); });
   dprState.section = o.section || null;
   dprState.signoff = o.signoff || null;
@@ -837,6 +1034,8 @@ function dprFill(o){
   dprRenderCrew();
   dprRenderPhotos();
   dprRenderSectionStatus();
+  dprSyncHours();                  /* a loaded report's crew hours roll up too */
+  dprScheduleCrewHoursAutofill();  /* punches may exist for this job + date */
 }
 
 /* ================= save (client-direct Firestore write, permission-gated by rules) ================= */
@@ -942,6 +1141,7 @@ function dprNewReport(){
   dprCrew = [];
   dprPhotos = [];
   dprHeadcountAutoVal = "";
+  dprHoursAutoVal = "";
   dprJobNoAutoVal = "";
   dprState.foundationJobNo = null;
   dprState.foundationCustomerNo = null;
@@ -1008,6 +1208,7 @@ async function dprShowHistory(){
         '<div class="meta">' + esc(r.billTo || "") +
         (r.foreman ? ' · 👷 ' + esc(r.foreman) : "") +
         (r.headcount ? ' · ' + esc(String(r.headcount)) + ' crew' : "") +
+        (r.crewHoursTotal ? ' · ' + esc(String(r.crewHoursTotal)) + ' hrs' : "") +
         (r.squares ? ' · ' + esc(String(r.squares)) + ' sq' : "") +
         (r.photoCount ? ' · ' + esc(String(r.photoCount)) + ' 📷' : "") + '</div></div>' +
         '<button class="btn">Open</button></div>';
@@ -1618,9 +1819,21 @@ async function generateDprPdf(o){
   ]);
 
   heading("Crew & Production");
+  /* With per-person hours on the roster, each crew member prints with what
+     they worked that day; without any (older reports), the flat name list. */
+  var crewRows = (o.crew || []).filter(function(c){ return c && c.name; });
+  var anyCrewHours = crewRows.some(function(c){ return String(c.hours || "").trim() !== ""; });
+  var crewCell = anyCrewHours
+    ? crewRows.map(function(c){
+        var h = String(c.hours || "").trim();
+        return c.name + (h ? " — " + h + " hrs" : "");
+      }).join("\n")
+    : crewRows.map(function(c){ return c.name; }).join(", ");
   kvTable([
-    ["Crew On Site", (o.crew || []).map(function(c){ return c.name; }).filter(Boolean).join(", ")],
-    ["Headcount", o.headcount], ["Hours Worked", o.hoursWorked], ["Approx. Squares Applied", o.squares],
+    ["Crew On Site", crewCell],
+    ["Headcount", o.headcount],
+    ["Total Crew Hours", anyCrewHours && o.crewHoursTotal ? String(o.crewHoursTotal) : ""],
+    ["Hours Worked", o.hoursWorked], ["Approx. Squares Applied", o.squares],
     ["Roof Section Traced", o.section ? (o.section.areaSqFt ? "Yes · ~" + o.section.areaSqFt + " sq ft" : "Yes") : ""]
   ]);
 
