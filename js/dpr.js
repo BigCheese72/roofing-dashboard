@@ -183,6 +183,7 @@ var dprDataListsLoaded = false;
 async function dprPopulateDataLists(force){
   dprPopulateForemen();     /* immediate/offline: roster + device history */
   dprPopulateCrewRoster();  /* immediate/offline: full crew roster */
+  dprSetDatalist("dl-dprRentedType", DPR_RENTED_TYPES); /* rented-equipment type pick-list */
   if ((dprDataListsLoaded && !force) || !fdb) return;
   try{
     if (!dprBldCache){
@@ -855,6 +856,125 @@ function dprRenderQuantities(){
   });
 }
 
+/* ================= rented equipment (gated) + pre-use checklist scaffold =====
+   Structured record of RENTED equipment on site that day — SkyTrak/
+   telehandler, boom lift, scissor lift, etc. Distinct from the existing
+   "Equipment On Site" section, which is a free-text note of any equipment
+   USED that day (crane, kettle, welder — owned or otherwise); rentals need
+   fields (what, from whom, unit #) because they drive billing and the lift
+   safety checklist below. Same repeatable-row pattern as the quantities
+   section; same Yes/No gate so the daily stays uncluttered.
+
+   PRE-USE SAFETY CHECKLIST (scaffold): when a rented LIFT is recorded
+   (telehandler/boom/scissor/MEWP/forklift — see DPR_RENTED_LIFT_RX), a daily
+   pre-use inspection checklist appears. The ITEM LIST is deliberately empty
+   for now — a parallel research task is compiling the standard items (OSHA
+   1910.178 forklift + ANSI A92 MEWP pre-use inspections); they drop straight
+   into DPR_PREUSE_CHECKLIST as {id, label} rows and the section lights up
+   with zero further wiring. Until then the checklist stays hidden, but the
+   persistence (preUseChecklist on the doc), the lift gate, the PDF block and
+   the tests are all live. */
+var dprRented = [];   /* [{ type, company, unitId, note }] */
+var dprPreUse = null; /* { completedBy, items: [{id, label, ok}] } — saved answers */
+var DPR_RENTED_TYPES = ["SkyTrak / Telehandler", "Boom Lift", "Scissor Lift", "Aerial Lift",
+  "Forklift", "Crane", "Generator", "Air Compressor", "Welder", "Kettle", "Dumpster", "Other"];
+var DPR_RENTED_LIFT_RX = /skytrak|telehandler|boom|scissor|aerial|mewp|man\s*lift|manlift|forklift|lull|genie|jlg/i;
+/* Items land here from Mark's checklist research (OSHA 1910.178 + ANSI A92):
+   [{ id: "tires", label: "Tires/wheels — condition & pressure" }, ...] */
+var DPR_PREUSE_CHECKLIST = [];
+
+function dprRentedHasLift(){
+  return dprRented.some(function(r){ return DPR_RENTED_LIFT_RX.test(String(r.type || "")); });
+}
+function dprAddRentedRow(row){
+  if (dprIsLocked()){ toast("This report is signed and locked."); return; }
+  dprRented.push(row || { type: "", company: "", unitId: "", note: "" });
+  dprRenderRented();
+}
+function dprRemoveRentedRow(idx){
+  if (dprIsLocked()) return;
+  dprRented.splice(idx, 1);
+  dprRenderRented();
+}
+function dprRenderRented(){
+  var host = document.getElementById("dpr-rented-list");
+  if (host){
+    if (!dprRented.length){
+      host.innerHTML = '<p class="hint">Nothing added yet — record each rented machine on site today (lift, telehandler, etc.).</p>';
+    } else {
+      var locked = dprIsLocked();
+      var ro = locked ? " readonly" : "";
+      host.innerHTML = dprRented.map(function(r, i){
+        return '<div class="btnrow" style="margin:0 0 6px;gap:6px;flex-wrap:wrap">' +
+          '<input type="text" placeholder="Equipment (e.g. SkyTrak)" list="dl-dprRentedType" data-dprrent-type="' + i + '" value="' + esc(r.type || "") + '" style="flex:2;min-width:150px"' + ro + '>' +
+          '<input type="text" placeholder="Rental company" data-dprrent-company="' + i + '" value="' + esc(r.company || "") + '" style="flex:2;min-width:130px"' + ro + '>' +
+          '<input type="text" placeholder="Unit / ID # (optional)" data-dprrent-unitId="' + i + '" value="' + esc(r.unitId || "") + '" style="flex:1;min-width:110px"' + ro + '>' +
+          '<input type="text" placeholder="Note" data-dprrent-note="' + i + '" value="' + esc(r.note || "") + '" style="flex:2;min-width:120px"' + ro + '>' +
+          '<button class="btn danger" onclick="dprRemoveRentedRow(' + i + ')">✕</button>' +
+          '</div>';
+      }).join("");
+      ["type", "company", "unitId", "note"].forEach(function(k){
+        host.querySelectorAll("[data-dprrent-" + k + "]").forEach(function(el){
+          el.addEventListener("input", function(){
+            dprRented[+el.getAttribute("data-dprrent-" + k)][k] = el.value;
+            if (k === "type") dprRenderPreUse();   /* a lift may have appeared/gone */
+          });
+        });
+      });
+    }
+  }
+  dprRenderPreUse();
+}
+/* The checklist block shows ONLY when a rented lift is recorded AND the item
+   list has been populated (see the scaffold note above). */
+function dprRenderPreUse(){
+  var block = document.getElementById("dpr-preuse-block");
+  if (!block) return;
+  var show = dprRentedHasLift() && DPR_PREUSE_CHECKLIST.length > 0;
+  block.style.display = show ? "" : "none";
+  if (!show){ return; }
+  var locked = dprIsLocked();
+  var saved = {};
+  ((dprPreUse && dprPreUse.items) || []).forEach(function(it){ if (it && it.id) saved[it.id] = !!it.ok; });
+  block.innerHTML =
+    '<h3 style="margin:14px 0 4px">Daily Pre-Use Safety Checklist (lift equipment)</h3>' +
+    '<p class="hint" style="margin:0 0 8px">Complete before first use each day (OSHA 1910.178 / ANSI A92).</p>' +
+    DPR_PREUSE_CHECKLIST.map(function(it){
+      return '<label style="display:flex;gap:8px;align-items:center;margin:0 0 6px">' +
+        '<input type="checkbox" data-dprpreuse="' + esc(it.id) + '"' + (saved[it.id] ? " checked" : "") + (locked ? " disabled" : "") + '>' +
+        '<span>' + esc(it.label) + '</span></label>';
+    }).join("") +
+    '<div class="fld" style="max-width:260px"><label>Checklist completed by</label>' +
+    '<input type="text" id="dpr-preuse-by" list="dl-dprCrew" value="' + esc((dprPreUse && dprPreUse.completedBy) || "") + '"' + (locked ? " readonly" : "") + '></div>';
+  block.querySelectorAll("[data-dprpreuse]").forEach(function(el){
+    el.addEventListener("change", function(){ dprPreUse = dprCollectPreUse(); });
+  });
+  var by = block.querySelector("#dpr-preuse-by");
+  if (by) by.addEventListener("input", function(){ dprPreUse = dprCollectPreUse(); });
+}
+/* Reads the checklist UI back into the saved shape. Pure-ish (DOM read). */
+function dprCollectPreUse(){
+  var block = document.getElementById("dpr-preuse-block");
+  if (!block || !DPR_PREUSE_CHECKLIST.length) return dprPreUse || null;
+  var byId = {};
+  block.querySelectorAll("[data-dprpreuse]").forEach(function(el){
+    byId[el.getAttribute("data-dprpreuse")] = !!el.checked;
+  });
+  var by = block.querySelector("#dpr-preuse-by");
+  return {
+    completedBy: by ? by.value : ((dprPreUse && dprPreUse.completedBy) || ""),
+    items: DPR_PREUSE_CHECKLIST.map(function(it){ return { id: it.id, label: it.label, ok: !!byId[it.id] }; })
+  };
+}
+/* What collect() persists: the current checklist state when the section is
+   live; a previously SAVED checklist rides through untouched when the item
+   list is empty (scaffold phase) so a re-save can't erase a filled one. */
+function dprPreUseForSave(rentedRows){
+  if (!rentedRows || !rentedRows.length) return null;
+  if (DPR_PREUSE_CHECKLIST.length && dprRentedHasLift()) return dprCollectPreUse();
+  return dprPreUse || null;
+}
+
 /* ================= photos (reuses the work-order storage/upload path) =================
    Its own array + capture handlers on purpose — the codebase already treats
    each capture context as a deliberate separate path, not a shared refactor
@@ -951,6 +1071,16 @@ function dprRenderPhotos(){
 function dprCollect(){
   var buildingId = dprState.buildingId || dprBuildingId(val("dpr-billTo"), val("dpr-jobName"));
   var dateStr = val("dpr-date");
+  /* Rented rows once, so the checklist decision sees the same filtered set. */
+  var rentedRows = dprToggleIsYes("dpr-rented-toggle")
+    ? dprRented
+        .filter(function(r){ return [r.type, r.company, r.unitId, r.note].some(function(v){ return String(v || "").trim(); }); })
+        .map(function(r){ return {
+          type: String(r.type || "").trim(), company: String(r.company || "").trim(),
+          unitId: String(r.unitId || "").trim(), note: String(r.note || "").trim()
+        }; })
+    : null;
+  if (rentedRows && !rentedRows.length) rentedRows = null;
   var o = {
     id: dprState.id || dprDocId(buildingId, dateStr),
     buildingId: buildingId,
@@ -994,6 +1124,8 @@ function dprCollect(){
       type: val("dpr-incidents-type"), reportedTo: val("dpr-incidents-reportedto"), description: val("dpr-incidents-desc")
     } : null,
     equipment: dprToggleIsYes("dpr-equipment-toggle") ? { notes: val("dpr-equipment-notes") } : null,
+    rentedEquipment: rentedRows,                    /* structured rentals (type/company/unit/note) */
+    preUseChecklist: dprPreUseForSave(rentedRows),  /* lift pre-use inspection (scaffold — see DPR_PREUSE_CHECKLIST) */
     visitors: dprToggleIsYes("dpr-visitors-toggle") ? { notes: val("dpr-visitors-notes") } : null,
     photos: dprPhotos.slice()
     /* FUTURE gated sections follow the same shape: one dprToggleIsYes(...) line here,
@@ -1067,6 +1199,13 @@ function dprFill(o){
   var eq = o.equipment || null;
   dprSetGate("dpr-equipment-toggle", "dpr-equipment-body", !!eq);
   setVal("dpr-equipment-notes", eq ? eq.notes : "");
+  var re = (o.rentedEquipment && o.rentedEquipment.length) ? o.rentedEquipment : null;
+  dprSetGate("dpr-rented-toggle", "dpr-rented-body", !!re);
+  dprRented = (re || []).map(function(r){ return {
+    type: r.type || "", company: r.company || "", unitId: r.unitId || "", note: r.note || ""
+  }; });
+  dprPreUse = o.preUseChecklist || null;
+  dprRenderRented();
   var vis = o.visitors || null;
   dprSetGate("dpr-visitors-toggle", "dpr-visitors-body", !!vis);
   setVal("dpr-visitors-notes", vis ? vis.notes : "");
@@ -1203,6 +1342,10 @@ function dprNewReport(){
   dprRefreshLaborCard(); /* job link + jobNo both cleared now -> hides the labor card */
   /* Gated sections back to No / hidden. */
   dprQuantities = [];
+  dprRented = [];
+  dprPreUse = null;
+  dprSetGate("dpr-rented-toggle", "dpr-rented-body", false);
+  dprRenderRented();
   dprSetGate("dpr-delays-toggle", "dpr-delays-body", false);
   dprSetGate("dpr-quantities-toggle", "dpr-quantities-body", false);
   dprSetGate("dpr-jsa-toggle", "dpr-jsa-body", false);
@@ -1706,7 +1849,7 @@ var DPR_LOCK_READONLY_FIELDS = ["dpr-foreman", "dpr-jobName", "dpr-billTo", "dpr
   "dpr-incidents-reportedto", "dpr-incidents-desc", "dpr-equipment-notes", "dpr-visitors-notes"];
 /* <select> has no readOnly — the gated toggles + their dropdowns lock via disabled. */
 var DPR_LOCK_DISABLED_SELECTS = ["dpr-delays-toggle", "dpr-quantities-toggle", "dpr-jsa-toggle",
-  "dpr-incidents-toggle", "dpr-equipment-toggle", "dpr-visitors-toggle",
+  "dpr-incidents-toggle", "dpr-equipment-toggle", "dpr-rented-toggle", "dpr-visitors-toggle",
   "dpr-delays-cause", "dpr-jsa-crewpresent", "dpr-incidents-type", "dpr-roof"];
 function dprApplySignoffLock(){
   var locked = dprIsLocked();
@@ -1913,6 +2056,18 @@ async function generateDprPdf(o){
   if (o.equipment && o.equipment.notes && o.equipment.notes.trim()){
     heading("Equipment On Site");
     wrapped(o.equipment.notes);
+  }
+  if (o.rentedEquipment && o.rentedEquipment.length){
+    heading("Rented Equipment");
+    kvTable(o.rentedEquipment.map(function(r){
+      return [r.type || "(item)", [r.company, r.unitId ? "Unit " + r.unitId : "", r.note].filter(Boolean).join(" · ")];
+    }));
+    var pc = o.preUseChecklist;
+    if (pc && pc.items && pc.items.length){
+      heading("Pre-Use Safety Checklist (lift equipment)");
+      kvTable(pc.items.map(function(it){ return [it.label, it.ok ? "Pass" : "NOT CHECKED"]; })
+        .concat(pc.completedBy ? [["Completed By", pc.completedBy]] : []));
+    }
   }
   if (o.visitors && o.visitors.notes && o.visitors.notes.trim()){
     heading("Site Visitors");
