@@ -2209,14 +2209,19 @@ function onWoTypeChange(){
   var isRepair = val("woType") === "Repair";
   var rc = document.getElementById("wo-repair-card");
   if (rc) rc.style.display = isRepair ? "" : "none";
-  /* Material List: Work Order (Repair) only — the type that executes work
-     and burns material. Change Order keeps its own free-text #woMaterials
-     inside its card; Leak is a pure investigation; Inspection/Warranty
-     don't record material usage. DISPLAY GATING ONLY — like repairs[],
-     collect()/fill() round-trip materials[] for every type, so a record
-     that somehow has rows never loses them. */
+  /* Material List: Work Order (Repair) AND Leak / Service (Mark, from prod:
+     the Repair-only gate made the card look "missing" on the Leak form — a
+     leak call burns material too, so both repair-capable forms show it).
+     Change Order keeps its own free-text #woMaterials inside its card;
+     Inspection stays out; WARRANTY is a pending decision from Mark —
+     deliberately NOT added yet. DISPLAY GATING ONLY — like repairs[],
+     collect()/fill() round-trip materials[] for every type and all three
+     report builders print materials whenever present, so nothing about
+     save/report behavior changes here. (WORK_ORDER_TYPES[0] is checked
+     inline — the isLeakType var is only declared further down in this
+     function; don't reference it before its declaration.) */
   var mc = document.getElementById("wo-materials-card");
-  if (mc) mc.style.display = isRepair ? "" : "none";
+  if (mc) mc.style.display = (isRepair || val("woType") === WORK_ORDER_TYPES[0]) ? "" : "none";
   /* Repair is a project/scope report, not a leak diagnosis — findings
      (leak pins/conditions) don't apply to it, per Mark. Change Order is a
      scope of work, not a leak diagnosis either — same reasoning. */
