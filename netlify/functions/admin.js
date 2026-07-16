@@ -12,7 +12,7 @@
 // there is no PIN check left to bypass, not even as a fallback. A missing
 // or insufficient token is rejected the same way regardless of anything
 // else in the request body.
-const { getDb, requirePermission, hostnameFromEvent } = require("./lib/authGuard");
+const { getDb, getAuth, requirePermission, hostnameFromEvent } = require("./lib/authGuard");
 const { PERMISSION_KEYS, PERMISSION_SCOPES, isValidPermissionValue } = require("./lib/permissions");
 const { purgeLabelsForBuilding } = require("./lib/aiLabels");
 
@@ -491,6 +491,71 @@ exports.handler = async function (event) {
       await db.collection("app_settings").doc("global").set(
         { photoSizePref: value, updatedAt: Date.now() }, { merge: true });
       return resp(200, { ok: true });
+    }
+
+    if (body.action === "list_login_events") {
+      // Login history for the Admin page's "Login History & Online Now"
+      // card (js/activity.js). audit.view tier -- it's the same class of
+      // "who did what, when" operational data as the audit log itself.
+      // Events are client-CREATED (firestore.rules pins uid to the writer's
+      // own token) but never client-readable; this Admin-SDK read is the
+      // only list path, exactly like list_feedback above.
+      let caller;
+      try { caller = await requirePermission(event, "audit.view"); }
+      catch (e) { return resp(e.statusCode || 401, { error: e.message }); }
+
+      const snap = await db.collection("login_events").orderBy("ts", "desc").limit(200).get();
+      const items = snap.docs.map(d => Object.assign({ id: d.id }, d.data()));
+      return resp(200, { ok: true, items });
+    }
+
+    if (body.action === "list_user_activity") {
+      // Who's-online / last-seen roster: every users/{uid} doc, joined with
+      // its presence/{uid} heartbeat (lastActiveAt, written client-side
+      // every ~60s while the tab is visible -- see js/activity.js) and
+      // Firebase Auth's own lastSignInTime (authoritative even for a user
+      // who has never heartbeated, e.g. everyone from before this feature
+      // shipped). The ONLINE decision itself (lastActiveAt within ~3 min)
+      // belongs to the reader -- presenceIsOnline() in js/activity.js --
+      // not to this snapshot, whose timestamps age the moment they're sent.
+      let caller;
+      try { caller = await requirePermission(event, "audit.view"); }
+      catch (e) { return resp(e.statusCode || 401, { error: e.message }); }
+
+      const [usersSnap, presenceSnap] = await Promise.all([
+        db.collection("users").get(),
+        db.collection("presence").get()
+      ]);
+      const presence = {};
+      presenceSnap.forEach(d => { presence[d.id] = d.data(); });
+      // lastSignInTime lives on the Auth user record, not in Firestore.
+      // listUsers(1000) is one call for the whole roster (this app has ~a
+      // dozen accounts); a failure here degrades to lastSignInTime:null
+      // rather than failing the roster -- presence data is still useful.
+      const lastSignIn = {};
+      try {
+        const authList = await getAuth().listUsers(1000);
+        (authList.users || []).forEach(u => {
+          lastSignIn[u.uid] = (u.metadata && u.metadata.lastSignInTime) || null;
+        });
+      } catch (e) {
+        console.error("list_user_activity: listUsers failed (lastSignInTime omitted):", e && e.message);
+      }
+      const items = usersSnap.docs.map(d => {
+        const u = d.data();
+        const p = presence[d.id] || {};
+        return {
+          uid: d.id,
+          email: u.email || null,
+          displayName: u.displayName || null,
+          role: u.role || null,
+          status: u.status || "active",
+          lastActiveAt: typeof p.lastActiveAt === "number" ? p.lastActiveAt : null,
+          userAgent: p.userAgent || null,
+          lastSignInTime: lastSignIn[d.id] || null
+        };
+      });
+      return resp(200, { ok: true, items });
     }
 
     if (body.action === "list_roles") {
