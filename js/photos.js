@@ -923,8 +923,10 @@ function syncRepairScopeLine(oldLine, newLine){
 }
 function addRepair(data){
   /* Stable id from birth (like findings) so a base-map pin can reference the
-     row — see the repair-area pin contract in js/workorders.js. */
-  repairs.push(data || {id: genId("rep"), repair:"", location:"", pin:null});
+     row — see the repair-area pin contract in js/workorders.js. finding_id
+     is the before/after pairing (null = not linked) — see the pairing block
+     there too. */
+  repairs.push(data || {id: genId("rep"), repair:"", location:"", pin:null, finding_id:null});
   renderRepairs();
 }
 function removeRepair(i){
@@ -956,6 +958,15 @@ function renderRepairs(){
       '<textarea rows="1" data-i="' + i + '" data-f="repair">' + esc(r.repair) + '</textarea></div>' +
       '<div class="fld"><label>Location / Detail</label>' +
       '<input type="text" data-i="' + i + '" data-f="location" value="' + esc(r.location) + '" list="dl-roofLocationDetail" onblur="rememberFieldValue(\'roofLocationDetail\', this.value)"></div>' +
+      /* Before/after pairing (see the pairing block in js/workorders.js):
+         offered only when a linkable finding exists — a Repair-type WO has
+         no findings, so its rows stay clean. Linking carries the finding's
+         location + a pin snapshot onto this repair (gaps only). */
+      ((typeof repairFindingLinkOptionsHtml === "function" &&
+        typeof findings !== "undefined" &&
+        findings.some(function(f){ return f && f.id && (f.condition || f.location); })) ?
+        '<div class="fld"><label>Resolves Finding (before → after, same spot)</label>' +
+        '<select data-i="' + i + '" data-f="finding_id">' + repairFindingLinkOptionsHtml(r.finding_id) + '</select></div>' : '') +
       /* Base-map pin for this repair area — same button pattern as findings.
          openBaseMapPinPicker() (js/workorders.js) delegates to the roofmapper
          in-form popup once it lands, and degrades to a toast until then. */
@@ -968,6 +979,20 @@ function renderRepairs(){
   host.querySelectorAll("[data-f]").forEach(function(el){
     el.addEventListener("input", function(){
       var r = repairs[+el.dataset.i];
+      /* Before/after pairing select: "" = unlink (null, same as never
+         linked). Linking carries the finding's location + pin snapshot
+         into this row's GAPS (linkRepairToFinding), then re-renders both
+         lists so the carried spot and the finding's paired chip show
+         immediately. */
+      if (el.dataset.f === "finding_id"){
+        r.finding_id = el.value || null;
+        if (r.finding_id && typeof linkRepairToFinding === "function"){
+          linkRepairToFinding(r, findingById(r.finding_id));
+        }
+        renderRepairs();
+        if (typeof renderFindings === "function") renderFindings();
+        return;
+      }
       var oldLine = repairScopeLineFor(r);
       r[el.dataset.f] = el.value;
       syncRepairScopeLine(oldLine, repairScopeLineFor(r));
