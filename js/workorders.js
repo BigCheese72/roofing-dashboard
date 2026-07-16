@@ -1213,6 +1213,7 @@ async function inlineSyntheticOrthoOverlay(roof){
     if (!inlineValidComputedOrthoBounds(bounds)) return null;
     return { url: roof.roof_base_map_url, bounds: bounds };
   }catch(e){
+    console.warn("Could not compute inline synthetic RoofMapper ortho bounds.", e);
     return null;
   }
 }
