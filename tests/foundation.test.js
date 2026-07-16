@@ -141,6 +141,8 @@ const ACTIONS = [
   { action: "jobs" },
   { action: "jobs", search: "smithton" },
   { action: "job_hours", job_no: "17053" },
+  { action: "employees" },
+  { action: "day_hours", job_no: "17053", date: "2026-07-16" },
   { action: "bogus" },
   {}
 ];

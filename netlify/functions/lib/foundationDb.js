@@ -312,71 +312,136 @@ async function fetchJobHours(password, jobNo) {
 }
 
 // ---------------------------------------------------------------------
-// TEMPORARY schema probe (read-only, admin-gated via foundation.js) — schema
-// discovery for the DPR crew-hours integration (employee master + raw daily
-// punch/timecard table). REMOVE once action=employees / action=day_hours ship.
-//
-// Same hard rules as everything above: SELECT-only, parameter-bound or
-// identifier-VALIDATED (never raw caller text), and pay/PII columns are
-// REFUSED by name pattern — this probe can list column NAMES (metadata, which
-// is how we learn what to avoid) but can never select pay or personal data.
+// Employee master + per-day punch hours (DPR crew-hours integration)
 // ---------------------------------------------------------------------
-const PROBE_IDENT = /^[A-Za-z0-9_]{1,64}$/;
-const PROBE_BANNED_COLS = /pay|rate|salar|wage|amount|comp|ssn|social|birth|bank|routing|acct|account|phone|addr|email|marital|gender|race|ethnic|tax|fica|medic|futa|suta|401|deduct|garnish|union|insur/i;
-function probeIdent(v, kind) {
-  const s = String(v == null ? "" : v).trim();
-  if (!PROBE_IDENT.test(s)) throw new Error("probe: invalid " + kind);
-  return s;
+// Schema facts (validated live via the temporary schema probe, 2026-07-16):
+//  * dbo.employees — the employee master. 327 rows; employee_no is a 6-char
+//    mnemonic CHAR (e.g. "ABECHR" = ABErnathy CHRistian), names live in
+//    first_name / last_name, record_status = 'A' marks an active employee.
+//    The table also carries pay/tax/PII columns — NEVER selected here; the
+//    query asks for id + name + nothing else (least-privilege rule above).
+//  * dbo.pending_timecards — the RAW pre-payroll time entry ledger (the daily
+//    punches Braxton described). Same job/day/hours shape as dbo.his_timecard
+//    (job_no CHAR w/ padding, dated datetime, hours numeric, multiple rows per
+//    person per day across cost codes) PLUS raw start_time/end_time punches
+//    and approval flags. Crucially it runs DAYS AHEAD of his_timecard:
+//    validated 2026-07-16 with his_timecard MAX(dated)=07-11 (last payroll
+//    posting) while pending_timecards had rows through 07-15. `hours` is
+//    already the per-entry duration — no out-minus-in math needed; a person's
+//    day is SUM(hours) over their rows. pay_rate/amount exist on this table
+//    too and are NEVER selected.
+//  * Day-hours strategy: read pending_timecards FIRST (fresh, covers the DPR
+//    use case of "today's report"); fall back to his_timecard only when the
+//    job+date has no pending rows. Never sum the two tables together — rows
+//    persist in pending after posting, so a union would double-count.
+
+// Active employees: id + name ONLY (no pay, no PII).
+function buildEmployeesQuery() {
+  const text =
+    "SELECT LTRIM(RTRIM(employee_no)) AS employee_no," +
+    " LTRIM(RTRIM(first_name)) AS first_name," +
+    " LTRIM(RTRIM(last_name)) AS last_name" +
+    " FROM dbo.employees" +
+    " WHERE record_status = 'A'" +
+    " ORDER BY last_name, first_name";
+  return { text: text, inputs: [] };
 }
-function probeSafeCol(v) {
-  const s = probeIdent(v, "column");
-  if (PROBE_BANNED_COLS.test(s)) throw new Error("probe: column refused (pay/PII pattern): " + s);
-  return s;
-}
-// Builds one whitelisted probe query. No arbitrary SQL ever reaches here —
-// only these five fixed shapes, with validated identifiers slotted in.
-function buildProbeQuery(p) {
-  p = p || {};
-  const what = p.probe || "tables";
-  if (what === "tables") {
-    return { text: "SELECT t.name AS tbl, SUM(pt.rows) AS approx_rows FROM sys.tables t " +
-      "JOIN sys.partitions pt ON pt.object_id = t.object_id AND pt.index_id IN (0,1) " +
-      "GROUP BY t.name ORDER BY t.name", inputs: [] };
-  }
-  if (what === "columns") {
-    const t = probeIdent(p.table, "table"); // metadata only — names/types, no data
-    return { text: "SELECT COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH FROM INFORMATION_SCHEMA.COLUMNS " +
-      "WHERE TABLE_NAME = @t ORDER BY ORDINAL_POSITION", inputs: [{ name: "t", value: t }] };
-  }
-  if (what === "sample") {
-    const t = probeIdent(p.table, "table");
-    const cols = String(p.cols || "").split(",").map(probeSafeCol);
-    if (!cols.length) throw new Error("probe: no columns");
-    return { text: "SELECT TOP 25 " + cols.map(function (c) { return "[" + c + "]"; }).join(", ") +
-      " FROM dbo.[" + t + "]", inputs: [] };
-  }
-  if (what === "recency") {
-    const t = probeIdent(p.table, "table");
-    const c = probeSafeCol(p.col);
-    return { text: "SELECT COUNT(*) AS n, MIN([" + c + "]) AS min_v, MAX([" + c + "]) AS max_v FROM dbo.[" + t + "]", inputs: [] };
-  }
-  if (what === "bydate") {
-    const t = probeIdent(p.table, "table");
-    const c = probeSafeCol(p.col);
-    return { text: "SELECT TOP 30 [" + c + "] AS d, COUNT(*) AS n FROM dbo.[" + t + "] " +
-      "GROUP BY [" + c + "] ORDER BY [" + c + "] DESC", inputs: [] };
-  }
-  throw new Error("probe: unknown mode");
-}
-async function runProbe(password, params) {
-  const rows = await runSelect(password, buildProbeQuery(params));
-  return rows;
+function mapEmployeeRow(row) {
+  const first = trimField(row.first_name), last = trimField(row.last_name);
+  return {
+    employee_no: trimField(row.employee_no),
+    first_name: first,
+    last_name: last,
+    name: (first + " " + last).trim()
+  };
 }
 
-// Test-only reset of the cached pool promise, so a unit test that stubs
-// `mssql` isn't polluted by a pool from a previous test.
+// Per-employee summed hours for ONE job + ONE day, from one timecard table.
+// `table` is chosen by fetchDayHours below — never by the caller — so only the
+// two known table names can ever appear in the SQL. job_no gets the same
+// LTRIM(RTRIM()) treatment as buildJobHoursQuery (CHAR padding gotcha), and
+// `dated` is a midnight datetime so an exact half-open day window matches it
+// regardless of any stray time-of-day component. record_status='A' skips
+// voided/inactive entries. hours only — no pay columns, ever.
+const DAY_HOURS_TABLES = ["pending_timecards", "his_timecard"];
+function buildDayHoursQuery(table, jobNo, date) {
+  if (DAY_HOURS_TABLES.indexOf(table) === -1) throw new Error("bad day-hours table");
+  const text =
+    "SELECT LTRIM(RTRIM(employee_no)) AS employee_no," +
+    " SUM(hours) AS hours" +
+    " FROM dbo." + table +
+    " WHERE LTRIM(RTRIM(job_no)) = @job_no" +
+    " AND record_status = 'A'" +
+    " AND dated >= @day AND dated < DATEADD(day, 1, @day)" +
+    " GROUP BY LTRIM(RTRIM(employee_no))" +
+    " ORDER BY LTRIM(RTRIM(employee_no))";
+  return {
+    text: text,
+    inputs: [
+      { name: "job_no", value: normalizeJobNo(jobNo) },
+      { name: "day", value: normalizeDay(date) }
+    ]
+  };
+}
+// A day parameter must be a plain YYYY-MM-DD — anything else is rejected
+// before it reaches SQL (it's parameter-bound anyway; this is semantics).
+function normalizeDay(date) {
+  const s = String(date == null ? "" : date).trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return "";
+  return s;
+}
+
+async function fetchEmployees(password) {
+  const rows = await runSelect(password, buildEmployeesQuery());
+  return rows.map(mapEmployeeRow);
+}
+
+// Employee-name lookup cached per warm Lambda (the master changes rarely and
+// day_hours needs it on every call to turn employee_no into a display name).
+let employeeCache = null; // { at: epoch-ms, byNo: { employee_no -> name } }
+const EMPLOYEE_CACHE_MS = 10 * 60 * 1000;
+async function employeeNamesByNo(password) {
+  const now = Date.now();
+  if (employeeCache && now - employeeCache.at < EMPLOYEE_CACHE_MS) return employeeCache.byNo;
+  const employees = await fetchEmployees(password);
+  const byNo = {};
+  employees.forEach(function (e) { if (e.employee_no) byNo[e.employee_no] = e.name; });
+  employeeCache = { at: now, byNo: byNo };
+  return byNo;
+}
+
+// Per-employee hours for one job + one day, names joined from the master.
+// pending_timecards first (pre-payroll — the fresh daily punches), falling
+// back to his_timecard for days that pre-date what pending still holds.
+async function fetchDayHours(password, jobNo, date) {
+  const day = normalizeDay(date);
+  const trimmedJob = normalizeJobNo(jobNo);
+  if (!day) throw new Error("day_hours: bad date");
+  let source = DAY_HOURS_TABLES[0];
+  let rows = await runSelect(password, buildDayHoursQuery(source, trimmedJob, day));
+  if (!rows.length) {
+    source = DAY_HOURS_TABLES[1];
+    rows = await runSelect(password, buildDayHoursQuery(source, trimmedJob, day));
+  }
+  const byNo = rows.length ? await employeeNamesByNo(password) : {};
+  const out = rows.map(function (r) {
+    const no = trimField(r.employee_no);
+    return { employee_no: no, name: byNo[no] || "", hours: toNumberOrNull(r.hours) };
+  });
+  return {
+    job_no: trimmedJob,
+    date: day,
+    source: source,
+    total_hours: sumHours(out),
+    rows: out
+  };
+}
+
+// Test-only reset of the caches, so a unit test that stubs `mssql` isn't
+// polluted by a pool/employee-map from a previous test.
 function _resetPoolForTest() {
   poolPromise = null;
+  employeeCache = null;
 }
 
 module.exports = {
@@ -391,12 +456,15 @@ module.exports = {
   mapHoursRow,
   sumHours,
   topClause,
+  buildEmployeesQuery,
+  buildDayHoursQuery,
+  normalizeDay,
+  mapEmployeeRow,
   // DB-hitting API (used by foundation.js; DB stubbed in tests)
   fetchJobs,
   fetchJobHours,
-  // TEMPORARY probe (see block above — remove with the probe action)
-  buildProbeQuery,
-  runProbe,
+  fetchEmployees,
+  fetchDayHours,
   _resetPoolForTest,
   // constants exposed for tests/assertions
   FOUNDATION_SERVER,
