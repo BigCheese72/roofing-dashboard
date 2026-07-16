@@ -229,6 +229,9 @@ function fdnSelectJob(jobNo) {
     }
   }
   fdnSetLinkedJob(j.job_no, j.name || "", j.customer_no || null, fdnComposeAddress(j));
+  /* Picked job's address is navigable immediately (🧭 Directions —
+     js/workorders.js, loads after this file, hence the guard). */
+  if (typeof renderLocationDirectionsLink === "function") renderLocationDirectionsLink();
   if (typeof closeBuildingPicker === "function") closeBuildingPicker();
   if (typeof toast === "function") toast("Loaded job “" + (j.name || j.job_no) + "” — review the fields below before saving");
 }

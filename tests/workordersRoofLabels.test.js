@@ -56,6 +56,7 @@ function makeSandbox(fields){
     populateWoTypeSelect(){},
     populateRoofSystemSelect(){},
     renderLeakNoJobBadge(){},
+    renderLocationDirectionsLink(){},
     onWoTypeChange(){},
     renderFindings(){},
     renderRepairs(){},

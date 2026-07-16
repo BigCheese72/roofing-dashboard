@@ -231,7 +231,15 @@
       <div id="fdn-link-info" class="hint" style="margin:0 0 10px;display:none"></div>
       <div class="grid">
         <div class="fld"><label>Job Name</label><input type="text" id="jobName" list="dl-jobName" onblur="rememberFieldValue('jobName', this.value); refreshInspectionRoofPickerIfNeeded();"></div>
-        <div class="fld"><label>Location</label><input type="text" id="location" list="dl-location" onblur="rememberFieldValue('location', this.value)"></div>
+        <div class="fld"><label>Location</label><input type="text" id="location" list="dl-location" onblur="rememberFieldValue('location', this.value)">
+          <!-- Turn-by-turn handoff to the device's maps app (Mark): Apple Maps
+               on iOS, Google Maps elsewhere — see directionsUrlFor() in
+               js/workorders.js. target=_blank so the tech never navigates away
+               from the form they're filling out. Hidden until there's an
+               address. -->
+          <a id="location-directions" href="#" target="_blank" rel="noopener"
+             style="display:none;font-size:13px;font-weight:600;margin-top:4px">🧭 Directions</a>
+        </div>
         <!-- Suite is a TAG for strip-mall / multi-tenant sites, never a
              boundary: one address, one roof, one base map — see
              currentSuiteTag() in js/workorders.js. Optional; blank for

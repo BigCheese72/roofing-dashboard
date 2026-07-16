@@ -189,6 +189,7 @@ function bpSelectBuilding(buildingId){
   }
   currentRoofId = null;
   currentRoofIds = null;
+  renderLocationDirectionsLink(); /* picked building's address is navigable immediately */
   if (typeof refreshInspectionRoofPickerIfNeeded === "function") refreshInspectionRoofPickerIfNeeded();
   closeBuildingPicker();
   toast("Loaded “" + b.name + "” — review the fields below before saving");
@@ -1022,6 +1023,44 @@ function populateWarrantyGuidelines(){
       "<b style='color:#D64545'>Typically Not Warrantable</b>" + list(WARRANTY_GUIDELINES.notWarrantable) +
     "</div>";
 }
+/* ================= address → turn-by-turn directions ================= *
+   The job's Location becomes a navigation handoff (Mark): tap 🧭 Directions
+   under the Location field and the device's maps app opens turn-by-turn to
+   the address — Apple Maps on iOS/iPadOS, Google Maps everywhere else
+   (Android resolves the google.com/maps URL to the native app; desktop gets
+   the web app). Opens in a new tab (target=_blank on the anchor) so the
+   tech NEVER navigates away from the form they're filling out.
+   Address STRING only for now: nav apps geocode a full street address more
+   reliably than our building-derived geometry (roof-outline centroids /
+   Foundation give no authoritative lat/lng today) — preferring coordinates
+   when a trustworthy source exists is a flagged follow-up, not silently
+   approximated here. All work-order types — the Location field is shared. */
+function isIOSDevice(){
+  return /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    /* iPadOS 13+ masquerades as desktop Safari — MacIntel platform with a
+       touch screen is the standard tell. */
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+}
+function directionsUrlFor(address){
+  var q = String(address || "").trim();
+  if (!q) return null;
+  return isIOSDevice()
+    ? "https://maps.apple.com/?daddr=" + encodeURIComponent(q)
+    : "https://www.google.com/maps/dir/?api=1&destination=" + encodeURIComponent(q);
+}
+function renderLocationDirectionsLink(){
+  var a = document.getElementById("location-directions");
+  if (!a) return;
+  var url = directionsUrlFor(val("location"));
+  if (url){
+    a.href = url;
+    a.style.display = "";
+  } else {
+    a.style.display = "none";
+    a.removeAttribute("href");
+  }
+}
+
 /* ================= "Leak – No Job" catch-all flag ================= *
    Shop convention: a leak call with no real Foundation job yet gets
    written against the "Leak – No Job" catch-all job; Charlotte (Foundation
@@ -1077,6 +1116,9 @@ function renderLeakNoJobBadge(){
 document.addEventListener("DOMContentLoaded", function(){
   var jn = document.getElementById("jobName");
   if (jn) jn.addEventListener("input", renderLeakNoJobBadge);
+  /* Directions link tracks the Location field live as the tech types. */
+  var loc = document.getElementById("location");
+  if (loc) loc.addEventListener("input", renderLocationDirectionsLink);
 });
 
 /* ================= shared roof-type list ================= *
@@ -1346,6 +1388,7 @@ function fill(o){
   if (val("woType") === "Inspection"){ ensureInspectionChecklist(); renderInspectionChecklist(); }
   if (typeof refreshInspectionRoofPickerIfNeeded === "function") refreshInspectionRoofPickerIfNeeded();
   renderLeakNoJobBadge();
+  renderLocationDirectionsLink();
   scheduleInlineBuildingHistoryRefresh();
 }
 /* ================= Change Order autofill =================
