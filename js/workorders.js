@@ -1379,11 +1379,16 @@ function collect(){
 /* ============ AI-drafted summary, Phase 1 (see DEV_NOTES.md) ============ */
 /* Pure projection of a collected work order into the compact payload the
    summary-draft server function consumes (netlify/functions/
-   generate-summary.js) — ONLY the text a summary is made of, never photo
-   bytes, pins, ids, or signatures. Checklist keys become their display
-   labels here because the server has no INSPECTION_CHECKLIST_COMPONENTS;
-   N/A rows are dropped (nothing to say about them). Kept pure/DOM-free so
-   tests can vm-extract it (tests/generateSummaryDraft.test.js). */
+   generate-summary.js) — the text a summary is made of plus each photo's
+   caption AND Storage ref (the ref is how the Phase-1 vision model will
+   actually SEE the photo: the server turns it into a short-lived SIGNED url
+   there, never here, never public). Still never photo BYTES, pins, GPS,
+   ids, or signatures. A photo captured but not yet cloud-saved has no
+   storageRef yet — it rides caption-only, so drafting right after a save
+   sees everything. Checklist keys become their display labels here because
+   the server has no INSPECTION_CHECKLIST_COMPONENTS; N/A rows are dropped.
+   Kept pure/DOM-free so tests can vm-extract it
+   (tests/generateSummaryDraft.test.js). */
 function buildSummaryDraftPayload(o){
   function s(v, max){ return String(v == null ? "" : v).slice(0, max || 300); }
   var labelByKey = {};
@@ -1413,18 +1418,29 @@ function buildSummaryDraftPayload(o){
     }).slice(0, 50).map(function(r){
       return { repair: s(r.repair, 500), location: s(r.location, 300) };
     }),
-    photoCaptions: (o.photos || []).map(function(p){
-      return s(p && p.caption, 300).trim();
-    }).filter(function(c){ return c; }).slice(0, 60),
+    repairDescription: s(o.repairDescription, 2000),
+    repairItems: (o.repairItems || []).filter(function(it){
+      return it && ((it.type || "").trim() || (it.notes || "").trim());
+    }).slice(0, 50).map(function(it){
+      return { type: s(it.type, 120), qty: s(it.qty, 20), notes: s(it.notes, 500) };
+    }),
+    photos: (o.photos || []).filter(function(p){
+      return p && ((p.caption || "").trim() || p.storageRef);
+    }).slice(0, 60).map(function(p){
+      return { caption: s(p.caption, 300).trim(), storageRef: p.storageRef ? s(p.storageRef, 300) : null };
+    }),
     photoCount: (o.photos || []).length
   };
 }
-/* "✨ Draft Summary" click handler (index.html's Summary card). Sends the
-   projection above to the server (Firebase-auth-gated: doc.generate) and
-   puts the returned text into the Summary TEXTAREA only — a draft the tech
-   edits, never saved or sent by this function. Server side is a
-   deterministic placeholder until the LLM is wired (Phase 2, blocked on
-   Mark provisioning an API key — see generate-summary.js's header). */
+/* "✨ Draft Summary" click handler (index.html's Summary card) — shared by
+   all three report types that show the button (Inspection, Leak, Work
+   Order). Sends the projection above to the server (Firebase-auth-gated:
+   doc.generate) and puts the returned text into the Summary TEXTAREA only —
+   a draft the tech edits, never saved or sent by this function. On-demand
+   only (this button IS the cost control — drafting never fires on save or
+   open). Server side is a deterministic placeholder until the vision LLM is
+   wired (Phase 1, blocked on Mark provisioning an API key — see
+   generate-summary.js's header). */
 async function draftReportSummary(btn){
   var existing = val("summary");
   if (existing && existing.trim() &&

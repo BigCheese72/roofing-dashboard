@@ -867,16 +867,20 @@ Goal: turn each building into a long-term roof record.
   imagery. Not being built now. The near-term approach stays manual
   placement plus the existing photo-GPS auto-pin (see "photo-capture
   rework" in `DEV_NOTES.md`).
-- **AI-drafted report Summary (Phase 1 stub on dev; LLM wiring awaiting
-  Mark's key decision)**: replaces Mark's export-PDF → ChatGPT → paste-back
-  loop for Inspection summaries. Phase 1 (built): "Draft Summary" button +
-  auth-gated `generate-summary` function returning a deterministic template
-  draft into the editable Summary box — no AI, no key. Phase 2: the same
-  function calls Anthropic server-side (`ANTHROPIC_API_KEY` env var, Mark
-  provisions — hard dependency, key never client-side). Phase 3 (optional):
-  photo-vision grounding, the first concrete step toward the "AI
-  auto-detection of rooftop features" item above. See "AI-drafted report
-  summary" in `DEV_NOTES.md`.
+- **AI-drafted report Summary (scaffold on dev; Phase 1 = vision LLM,
+  awaiting Mark's key decision)**: replaces Mark's export-PDF → ChatGPT →
+  paste-back loop, on all three summary-bearing types (Inspection, Leak,
+  Work Order) through one shared `generate-summary` function. Scaffold
+  (built): "Draft Summary" button + auth-gated function returning a
+  deterministic template draft into the editable Summary box — no AI, no
+  key. Phase 1: the same function calls a vision-capable Anthropic model
+  server-side — it LOOKS AT the report's photos via short-lived signed
+  URLs (never public), on-demand-only for cost control, length tuned to
+  run tighter than Mark's ChatGPT Flat Branch benchmark
+  (`SUMMARY_TARGET_WORDS`). Hard dependency: `ANTHROPIC_API_KEY` env var,
+  Mark provisions — key never client-side. First concrete step toward the
+  "AI auto-detection of rooftop features" item above. See "AI-drafted
+  report summary" in `DEV_NOTES.md`.
 - ✅ **Shipped (dev only, 2026-07-10)**: RoofMapper footprint deselect. Real
   gap Mark hit — once a footprint was selected there was no way back if it
   was the wrong building. Added a "✕ Wrong Building? Choose Again" control,

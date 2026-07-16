@@ -1,19 +1,36 @@
-// AI-drafted report Summary -- Phase 1 scaffold (deterministic stub).
+// AI-drafted report Summary -- shared scaffold (deterministic stub, no AI
+// key). ONE function serves all three report types that carry a Summary:
+// Inspection, Leak / Service, and Work Order (stored type "Repair") -- each
+// sends its own findings/checklist/repair-scope/photos through the same
+// payload shape and gets a draft back for the SAME editable #summary box.
 //
-// WHAT THIS IS TODAY: the tech taps "Draft Summary" on an Inspection work
-// order and this function composes a plain-English draft of the report's
-// Summary section from the report's OWN structured data (checklist ratings +
-// notes, findings, work performed, photo captions). The composer below is a
-// deterministic template -- same input, same output, no external calls, no
-// API key. It exists so the whole flow (button -> auth -> server -> editable
-// draft in the Summary textarea) is real and testable before any AI is wired.
+// WHAT THIS IS TODAY: the tech taps "Draft Summary" and this composes a
+// plain-English draft from the report's OWN structured data (checklist
+// ratings + notes, findings, repair scope + items, work performed, photo
+// captions). The composer below is a deterministic template -- same input,
+// same output, no external calls, no API key. It exists so the whole flow
+// (button -> auth -> server -> editable draft) is real and testable before
+// any AI is wired.
 //
-// WHAT PHASE 2 LOOKS LIKE (NOT BUILT -- blocked on Mark provisioning a key):
-// composeTemplateSummary() below is the exact seam. Replace its call in the
-// handler with a server-side LLM call (Anthropic Messages API recommended;
-// claude-haiku-tier is plenty for a half-page summary and costs well under a
-// cent per report) that receives the SAME sanitized `report` object as its
-// prompt context. Requirements already decided, do not relitigate them here:
+// PHASE 1 = LLM WITH PHOTO VISION (NOT BUILT -- blocked on Mark provisioning
+// a key). Mark's requirement: the model must actually LOOK AT the photos,
+// not just the written findings. The seams are all below, built and tested:
+//   * buildLlmPrompt(report) -- the prompt, with the length target in ONE
+//     tunable constant (SUMMARY_TARGET_WORDS). Style calibration: Mark liked
+//     his ChatGPT Flat Branch Pub summary but called it "a little long", so
+//     the prompt asks for that voice, tighter; his exact text drops into
+//     STYLE_EXEMPLAR verbatim when the relay supplies it.
+//   * collectSignedPhotoUrls(bucket, photos) -- turns the payload's Storage
+//     refs into SHORT-LIVED V4 SIGNED READ URLS (SIGNED_URL_TTL_MS) for the
+//     model's image blocks. Signed URLs ONLY -- no photo is ever made
+//     public, no bucket ACL changes, and the stub path never signs anything
+//     (URLs are minted only when there's an LLM call to consume them).
+//   * The handler swap: call Anthropic's Messages API (vision-capable model;
+//     claude-haiku tier reads a dozen photos for a few cents per report,
+//     sonnet tier ~10-15c) with buildLlmPrompt() + the signed-URL image
+//     blocks. Cost control is the BUTTON: drafts fire on demand only, never
+//     automatically on save/open.
+// Requirements already decided, do not relitigate here:
 //   * The key lives ONLY in a Netlify environment variable
 //     (ANTHROPIC_API_KEY), same handling as RESEND_API_KEY /
 //     COMPANYCAM_TOKEN. It is never sent to, stored in, or readable by the
@@ -22,10 +39,9 @@
 //   * The output stays a DRAFT: this function returns text for the client to
 //     put in the (editable) Summary textarea. It never writes to Firestore,
 //     never marks anything final, and the normal save/send paths (and their
-//     own permission gates) are unchanged. Phase 3 (optional, also not
-//     built): pass photo THUMBNAILS for vision grounding.
-//   * If the LLM call fails or the key is absent, fall back to this
-//     template -- the field flow must never dead-end on a roof.
+//     own permission gates) are unchanged.
+//   * If the LLM call fails or the key is absent, fall back to the template
+//     -- the field flow must never dead-end on a roof.
 //
 // AUTH: identity-first, same trust boundary as every other function here.
 // requirePermission() verifies the Firebase ID token signature and then
@@ -36,6 +52,20 @@
 // only becomes part of the record through the normal workorder.edit-gated
 // save the tech performs afterward.
 const { requirePermission } = require("./lib/authGuard");
+
+// ---- Length/style tuning knobs for the Phase-1 LLM prompt. Mark's verdict
+// on his ChatGPT Flat Branch Pub summary: right voice, "a little long" --
+// so the word target sits deliberately under a full ChatGPT-style page.
+// Tune HERE, nowhere else. ----
+const SUMMARY_TARGET_WORDS = 160;
+const SUMMARY_MAX_PARAGRAPHS = 3;
+// Mark's Flat Branch Pub summary text goes here VERBATIM when the relay
+// supplies it -- the prompt then says "this voice, but tighter" instead of
+// describing the voice abstractly. null until then (prompt degrades to the
+// generic professional-voice instruction).
+const STYLE_EXEMPLAR = null;
+// Signed photo URLs live just long enough for one model call to fetch them.
+const SIGNED_URL_TTL_MS = 10 * 60 * 1000;
 
 function resp(code, obj) {
   return { statusCode: code, headers: { "Content-Type": "application/json" }, body: JSON.stringify(obj) };
@@ -50,6 +80,15 @@ function s(v, max) { return String(v == null ? "" : v).slice(0, max || 300); }
 function rows(arr, max, map) {
   return (Array.isArray(arr) ? arr : []).slice(0, max).map(map).filter(Boolean);
 }
+// A photo Storage ref may be passed through to a signed READ url on the
+// Phase-1 LLM path, so it is validated hard: our own workorders/ prefix
+// only, no traversal, sane length. Anything else becomes null (caption may
+// still be useful) -- never an error, never a signable path.
+function cleanStorageRef(v) {
+  var ref = s(v, 300);
+  if (!ref || ref.indexOf("workorders/") !== 0 || ref.indexOf("..") !== -1) return null;
+  return ref;
+}
 function sanitizeReport(raw) {
   if (!raw || typeof raw !== "object") return null;
   return {
@@ -62,6 +101,7 @@ function sanitizeReport(raw) {
     reportedArea: s(raw.reportedArea, 300),
     warrantable: s(raw.warrantable, 1000),
     nonWarrantable: s(raw.nonWarrantable, 1000),
+    repairDescription: s(raw.repairDescription, 2000),
     inspectionChecklist: rows(raw.inspectionChecklist, 20, function (it) {
       if (!it || typeof it !== "object") return null;
       var label = s(it.label, 60), rating = s(it.rating, 20);
@@ -77,9 +117,16 @@ function sanitizeReport(raw) {
       var repair = s(r.repair, 500), location = s(r.location, 300);
       return (repair || location) ? { repair: repair, location: location } : null;
     }),
-    photoCaptions: rows(raw.photoCaptions, 60, function (c) {
-      var t = s(c, 300).trim();
-      return t || null;
+    repairItems: rows(raw.repairItems, 50, function (it) {
+      if (!it || typeof it !== "object") return null;
+      var type = s(it.type, 120), notes = s(it.notes, 500);
+      return (type || notes) ? { type: type, qty: s(it.qty, 20), notes: notes } : null;
+    }),
+    photos: rows(raw.photos, 60, function (p) {
+      if (!p || typeof p !== "object") return null;
+      var caption = s(p.caption, 300).trim();
+      var storageRef = cleanStorageRef(p.storageRef);
+      return (caption || storageRef) ? { caption: caption, storageRef: storageRef } : null;
     }),
     photoCount: Math.max(0, Math.min(500, parseInt(raw.photoCount, 10) || 0))
   };
@@ -151,6 +198,20 @@ function composeTemplateSummary(r) {
       " documented:\n" + fLines.join("\n"));
   }
 
+  // Repair scope (Work Order type): the tech's own scope description first,
+  // then the itemized repair list.
+  if (r.repairDescription) {
+    paras.push("Scope of work: " + r.repairDescription);
+  }
+  if ((r.repairItems || []).length) {
+    paras.push("Itemized work: " + joinList(r.repairItems.map(function (it) {
+      var t = it.type || "item";
+      if (it.qty) t += " (qty " + it.qty + ")";
+      if (it.notes) t += " — " + it.notes;
+      return t;
+    })) + ".");
+  }
+
   // Work performed during the visit, when any was recorded.
   if ((r.repairs || []).length) {
     paras.push("Work performed during this visit: " + joinList(r.repairs.map(function (rr) {
@@ -175,6 +236,52 @@ function composeTemplateSummary(r) {
   }
 
   return paras.join("\n\n");
+}
+
+// ---- Phase-1 seam: the LLM prompt. Built and tested NOW so wiring the
+// Messages API later is only a transport change, not a design session. The
+// photos do NOT ride inside this text -- they attach as image content
+// blocks (via collectSignedPhotoUrls() below), one per photo, with the
+// caption list in the JSON tying them to findings. ----
+function buildLlmPrompt(r) {
+  var style = STYLE_EXEMPLAR
+    ? "Match the voice of this example summary, but run tighter and more concise than it:\n---\n" + STYLE_EXEMPLAR + "\n---"
+    : "Write in a professional commercial-roofing service-report voice addressed to the building's customer.";
+  return {
+    system: "You draft the Summary section of a commercial roofing report. " +
+      "Use ONLY the report data and the attached photos -- never invent conditions, causes, " +
+      "measurements, or recommendations that they do not support. Where a photo shows a condition, " +
+      "ground the description in what is visible. " + style + " " +
+      "Target about " + SUMMARY_TARGET_WORDS + " words in at most " + SUMMARY_MAX_PARAGRAPHS + " short paragraphs, covering: " +
+      "what was done on site, the key findings/conditions, and recommended next actions. " +
+      "Plain text only, no headings or markdown. This is a DRAFT a technician will review and edit before it is sent.",
+    user: "Report data (JSON):\n" + JSON.stringify(r, null, 2) +
+      "\n\nThe report's photos follow as attached images, in the same order as the photos array above."
+  };
+}
+
+// ---- Phase-1 seam: photo access for the vision model. Turns the sanitized
+// payload's Storage refs into SHORT-LIVED V4 signed READ urls. Signed urls
+// only, never public: no ACL is touched, the url self-expires
+// (SIGNED_URL_TTL_MS), and a ref that fails validation or signing is simply
+// skipped (the model degrades to captions for that photo -- a draft must
+// never dead-end on one bad photo). NOT called on the stub path: urls are
+// minted only when there is an LLM call to consume them, so no live url
+// ever exists without a purpose. ----
+async function collectSignedPhotoUrls(bucket, photos, ttlMs) {
+  var out = [];
+  for (var i = 0; i < (photos || []).length; i++) {
+    var p = photos[i];
+    var ref = p && cleanStorageRef(p.storageRef);
+    if (!ref) continue;
+    try {
+      var signed = await bucket.file(ref).getSignedUrl({
+        version: "v4", action: "read", expires: Date.now() + (ttlMs || SIGNED_URL_TTL_MS)
+      });
+      out.push({ caption: (p.caption || ""), url: signed[0] });
+    } catch (e) { /* skip: unsignable photo -> captions-only for this one */ }
+  }
+  return out;
 }
 
 exports.handler = async function (event) {
@@ -208,3 +315,7 @@ exports.handler = async function (event) {
 // itself only ever calls exports.handler.
 exports.composeTemplateSummary = composeTemplateSummary;
 exports.sanitizeReport = sanitizeReport;
+exports.buildLlmPrompt = buildLlmPrompt;
+exports.collectSignedPhotoUrls = collectSignedPhotoUrls;
+exports.SUMMARY_TARGET_WORDS = SUMMARY_TARGET_WORDS;
+exports.SIGNED_URL_TTL_MS = SIGNED_URL_TTL_MS;

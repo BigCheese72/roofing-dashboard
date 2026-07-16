@@ -3,9 +3,11 @@
    DEV_NOTES.md). Guards the three promises the scaffold makes:
 
      1. The client payload builder (buildSummaryDraftPayload in
-        js/workorders.js) projects ONLY summary-relevant text — no photo
-        bytes, pins, ids, or signatures — maps checklist keys to labels,
-        drops N/A rows and empty finding/repair rows, and clamps everything.
+        js/workorders.js) projects summary-relevant text plus each photo's
+        caption AND Storage ref (the vision path's handle — the server signs
+        it, the client never does) — but never photo bytes, pins, GPS, ids,
+        or signatures — maps checklist keys to labels, drops N/A rows and
+        empty finding/repair rows, and clamps everything.
      2. The server function (netlify/functions/generate-summary.js) is
         auth-gated exactly like its siblings: no token -> 401 that leaks
         nothing; a signed-in role WITHOUT doc.generate -> 403; a plain
@@ -64,9 +66,10 @@ const FULL_ORDER = {
     { id: "rep_1", repair: "Temporary seam patch", location: "North lap", pin: null },
     { id: "rep_2", repair: " ", location: "", pin: null } // whitespace-only row
   ],
+  repairDescription: "", repairItems: [],
   photos: [
-    { img: "data:image/jpeg;base64,AAAA", caption: "Open seam at north lap", finding_id: "fnd_1", gps: { lat: 1, lng: 2 } },
-    { img: "data:image/jpeg;base64,BBBB", caption: "  ", finding_id: null, gps: null }
+    { img: "data:image/jpeg;base64,AAAA", caption: "Open seam at north lap", finding_id: "fnd_1", gps: { lat: 1, lng: 2 }, storageRef: "workorders/wo_123/0.jpg" },
+    { img: "data:image/jpeg;base64,BBBB", caption: "  ", finding_id: null, gps: null } // captured this visit, not cloud-saved yet: no storageRef
   ],
   changeOrderSignature: { img: "data:image/png;base64,SIG", printName: "X", date: "2026-07-14" }
 };
@@ -84,16 +87,34 @@ test("payload carries the summary-relevant text and nothing else", () => {
   // Findings/repairs: empty rows dropped.
   assert.deepEqual(p.findings, [{ condition: "Open seam", location: "North lap, panel 4", warranty: "Undetermined" }]);
   assert.deepEqual(p.repairs, [{ repair: "Temporary seam patch", location: "North lap" }]);
-  // Photos: captions only (trimmed non-empty), plus a bare count.
-  assert.deepEqual(p.photoCaptions, ["Open seam at north lap"]);
+  // Photos: caption + Storage ref (the vision path's handle — signed
+  // server-side only). The unsaved photo (blank caption, no ref) is dropped;
+  // photoCount still reflects everything on the order.
+  assert.deepEqual(p.photos, [{ caption: "Open seam at north lap", storageRef: "workorders/wo_123/0.jpg" }]);
   assert.equal(p.photoCount, 2);
   // NOTHING heavy or sensitive leaves the client: no bytes, pins, ids, gps,
-  // signature — the exact fields a future LLM prompt must never receive
-  // accidentally.
+  // signature — the exact fields the future LLM prompt must never receive
+  // accidentally. (storageRef is deliberately NOT on this list: it's the
+  // photo's cloud path, not its bytes, and the vision call needs it.)
   const flat = JSON.stringify(p);
-  ["img", "thumb", "base64", "pin", "gps", "fnd_1", "chk_1", "SIG", "signature", "storageRef"].forEach(tok => {
+  ["img", "thumb", "base64", "pin", "gps", "fnd_1", "chk_1", "SIG", "signature"].forEach(tok => {
     assert.equal(flat.indexOf(tok), -1, "payload leaked: " + tok);
   });
+});
+
+test("payload carries Work Order (Repair) scope: description + itemized rows", () => {
+  const p = buildSummaryDraftPayload({
+    woType: "Repair", jobName: "Flat Branch Pub", technician: "J. Alvarez",
+    repairDescription: "Remove and replace saturated insulation at the north drain sump.",
+    repairItems: [
+      { id: "ri_1", type: "TPO membrane patch", qty: "2", notes: "60-mil, north sump" },
+      { id: "ri_2", type: " ", qty: "", notes: "" } // empty row a tech never filled
+    ],
+    repairs: [{ id: "rep_1", repair: "Replaced drain strainer", location: "North drain", pin: null }]
+  });
+  assert.equal(p.repairDescription, "Remove and replace saturated insulation at the north drain sump.");
+  assert.deepEqual(p.repairItems, [{ type: "TPO membrane patch", qty: "2", notes: "60-mil, north sump" }]);
+  assert.deepEqual(p.repairs, [{ repair: "Replaced drain strainer", location: "North drain" }]);
 });
 
 test("payload survives a sparse/legacy order (all arrays missing)", () => {
@@ -101,7 +122,8 @@ test("payload survives a sparse/legacy order (all arrays missing)", () => {
   assert.deepEqual(p.inspectionChecklist, []);
   assert.deepEqual(p.findings, []);
   assert.deepEqual(p.repairs, []);
-  assert.deepEqual(p.photoCaptions, []);
+  assert.deepEqual(p.repairItems, []);
+  assert.deepEqual(p.photos, []);
   assert.equal(p.photoCount, 0);
 });
 
@@ -113,7 +135,7 @@ test("payload clamps oversized text and row counts", () => {
   });
   assert.equal(p.jobName.length, 200);
   assert.equal(p.findings.length, 50);
-  assert.equal(p.photoCaptions.length, 60);
+  assert.equal(p.photos.length, 60);
 });
 
 /* ================= Part 2: server function (auth + composer) ================= */
@@ -260,15 +282,97 @@ test("sanitizeReport re-clamps a hostile body server-side", () => {
     woType: "Inspection", jobName: "y".repeat(10000),
     inspectionChecklist: [{ label: "L", rating: "Poor", notes: "n".repeat(10000) }, { label: "", rating: "Poor" }, "junk", null],
     findings: Array.from({ length: 500 }, () => ({ condition: "c" })),
-    photoCaptions: [123, "  ok  ", ""],
+    repairItems: [{ type: "t".repeat(9999), qty: "1", notes: "" }, "junk"],
+    photos: [{ caption: "  ok  ", storageRef: "workorders/wo_1/0.jpg" }, { caption: 123 }],
     photoCount: 99999
   });
   assert.equal(r.jobName.length, 200);
   assert.equal(r.inspectionChecklist.length, 1); // label-less + junk rows dropped
   assert.equal(r.inspectionChecklist[0].notes.length, 500);
   assert.equal(r.findings.length, 50);
-  assert.deepEqual(r.photoCaptions, ["123", "ok"]);
+  assert.equal(r.repairItems.length, 1);
+  assert.equal(r.repairItems[0].type.length, 120);
+  assert.deepEqual(r.photos, [
+    { caption: "ok", storageRef: "workorders/wo_1/0.jpg" },
+    { caption: "123", storageRef: null }
+  ]);
   assert.equal(r.photoCount, 500);
   assert.equal(fn.sanitizeReport(null), null);
   assert.equal(fn.sanitizeReport("string"), null);
+});
+
+test("sanitizeReport rejects any photo ref outside our own workorders/ tree", () => {
+  const r = fn.sanitizeReport({
+    woType: "Inspection",
+    photos: [
+      { caption: "traversal", storageRef: "workorders/../secrets/key.json" },
+      { caption: "foreign bucket path", storageRef: "warranty_reports/b/x.pdf" },
+      { caption: "absolute-ish", storageRef: "/workorders/wo_1/0.jpg" },
+      { caption: "fine", storageRef: "workorders/wo_1/1.jpg" }
+    ]
+  });
+  // Bad refs become null (caption still rides along); only the clean ref
+  // survives as a signable path.
+  assert.deepEqual(r.photos.map(p => p.storageRef), [null, null, null, "workorders/wo_1/1.jpg"]);
+});
+
+/* ---- Phase-1 seams: the LLM prompt and the signed-URL helper. Neither is
+   reachable from the stub handler (the fetch trap above proves no network
+   happens) — these pin down their contracts so wiring the key later is a
+   transport change only. ---- */
+test("buildLlmPrompt: grounded, draft-only, and length-tunable via the one constant", () => {
+  const p = fn.buildLlmPrompt(fn.sanitizeReport(REPORT));
+  assert.ok(p.system.includes(String(fn.SUMMARY_TARGET_WORDS)), "word target comes from the constant");
+  assert.ok(/never invent/i.test(p.system), "anti-fabrication instruction");
+  assert.ok(/DRAFT/.test(p.system), "draft-only framing");
+  assert.ok(/photo/i.test(p.system), "photos are part of the grounding instructions");
+  assert.ok(p.user.includes("Tri-Delta Warehouse"), "report data rides in the user turn");
+  assert.ok(!/base64|data:image/.test(p.user), "photo BYTES never ride in the prompt text");
+  // Style exemplar not supplied yet -> generic professional-voice fallback.
+  assert.ok(/professional/i.test(p.system));
+});
+
+test("collectSignedPhotoUrls signs only clean workorders/ refs, short-lived, and never throws on a bad one", async () => {
+  const signedCalls = [];
+  const fakeBucket = {
+    file: (path) => ({
+      getSignedUrl: async (opts) => {
+        if (path.indexOf("boom") !== -1) throw new Error("storage hiccup");
+        signedCalls.push({ path, opts });
+        return ["https://storage.example/signed/" + path];
+      }
+    })
+  };
+  const before = Date.now();
+  const out = await fn.collectSignedPhotoUrls(fakeBucket, [
+    { caption: "good", storageRef: "workorders/wo_1/0.jpg" },
+    { caption: "traversal", storageRef: "workorders/../secrets/key.json" },
+    { caption: "foreign", storageRef: "warranty_reports/b/x.pdf" },
+    { caption: "no ref (unsaved photo)", storageRef: null },
+    { caption: "signing fails", storageRef: "workorders/wo_1/boom.jpg" }
+  ]);
+  // Only the clean ref produced a URL; the failing one was skipped, not fatal.
+  assert.deepEqual(out, [{ caption: "good", url: "https://storage.example/signed/workorders/wo_1/0.jpg" }]);
+  assert.equal(signedCalls.length, 1);
+  const o = signedCalls[0].opts;
+  assert.equal(o.version, "v4");
+  assert.equal(o.action, "read"); // read-only, never write/delete
+  // Expiry is bounded: at most the default TTL from now (no long-lived URLs).
+  assert.ok(o.expires <= before + fn.SIGNED_URL_TTL_MS + 60000, "expiry within default TTL");
+  assert.ok(o.expires > before, "expiry in the future");
+});
+
+test("composer covers the Work Order (Repair) scope fields", () => {
+  const d = fn.composeTemplateSummary(fn.sanitizeReport({
+    woType: "Repair", jobName: "Flat Branch Pub", technician: "J. Alvarez",
+    repairDescription: "Remove and replace saturated insulation at the north drain sump.",
+    repairItems: [{ type: "TPO membrane patch", qty: "2", notes: "60-mil, north sump" }],
+    repairs: [{ repair: "Replaced drain strainer", location: "North drain" }],
+    photoCount: 4
+  }));
+  assert.ok(d.includes("roof repair work"), "type phrase");
+  assert.ok(d.includes("Scope of work: Remove and replace saturated insulation"), "scope description");
+  assert.ok(d.includes("TPO membrane patch (qty 2)"), "itemized row");
+  assert.ok(d.includes("Replaced drain strainer"), "work performed");
+  assert.ok(d.includes("4 photos"), "photo count");
 });

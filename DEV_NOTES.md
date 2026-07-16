@@ -8301,32 +8301,47 @@ Delete in Saved, "remove pushed photo" in the gallery, asset Delete in its
 modal) — this consolidates the app-wide tools, not the in-context ones. Each
 handler still enforces its own server-side permission (defense in depth).
 
-## AI-drafted report summary (Phase 1 stub, dev only — NO AI wired yet)
+## AI-drafted report summary (scaffold on dev — NO AI wired yet)
 
-Mark's current flow for an Inspection report's Summary: export the PDF, paste
-it into ChatGPT, paste the result back into the Summary box. This feature moves
-that into the app: a **"✨ Draft Summary"** button in the Summary card
-(Inspection type only for now — `onWoTypeChange()` gates the row) sends the
-report's OWN structured data to `netlify/functions/generate-summary.js`, which
-returns a draft the client puts into the **editable** Summary textarea. Nothing
-is saved or sent by the draft step; the tech reviews/edits and then saves
-through the normal path. Replacing non-empty Summary text asks first.
+Mark's current flow for a report's Summary: export the PDF, paste it into
+ChatGPT, paste the result back into the Summary box. This feature moves that
+into the app across all THREE summary-bearing report types — **Inspection,
+Leak, and Work Order (stored type "Repair")** — which already share the ONE
+`#summary` textarea (index.html's Summary card, never hidden by
+`onWoTypeChange()`), the one `summary` field on the workorders doc, and the
+one PDF Summary block (js/export.js). A **"✨ Draft Summary"** button in that
+card (shown for those three types; Change Order/Warranty excluded) sends the
+report's OWN structured data to the ONE shared function
+`netlify/functions/generate-summary.js`, which returns a draft into the
+**editable** textarea. Nothing is saved or sent by the draft step; replacing
+non-empty Summary text asks first. Drafts fire from the button ONLY — on
+demand is the cost control; drafting never runs on save/open.
 
-What travels: `buildSummaryDraftPayload()` (js/workorders.js) projects ONLY
+What travels: `buildSummaryDraftPayload()` (js/workorders.js) projects
 summary-relevant text — job info, checklist label+rating+notes (N/A dropped),
-findings, repairs, photo CAPTIONS + count. Never photo bytes, pins, GPS, ids,
-or signatures (tests assert this — it's also the future LLM-prompt privacy
-boundary). The server re-clamps everything (`sanitizeReport()`).
+findings, repair scope (`repairDescription` + `repairItems`), work performed,
+and each photo's **caption + Storage ref**. The ref is how the Phase-1 vision
+model will actually SEE the photo: the server turns refs into **short-lived
+V4 signed READ urls** (`collectSignedPhotoUrls()`, `SIGNED_URL_TTL_MS`) —
+signed urls only, never public, minted only when an LLM call consumes them
+(the stub never signs). Never photo BYTES, pins, GPS, ids, or signatures
+(tests assert the boundary). The server re-clamps everything
+(`sanitizeReport()`), including a hard `workorders/`-prefix + no-traversal
+check on refs.
 
-**Phase 1 (this)**: the server composer is a DETERMINISTIC TEMPLATE —
-restates the report's own data, infers/recommends nothing, no external calls,
-no API key anywhere. It exists so the flow is real and testable end to end.
-**Phase 2 (not built — blocked on Mark provisioning an API key)**: replace the
-composer call with a server-side Anthropic Messages API call; key lives ONLY in
-a Netlify env var (`ANTHROPIC_API_KEY`), never client-side; template stays as
-the fallback when the call fails. **Phase 3 (optional, later)**: pass photo
-thumbnails for vision grounding — this is also the natural first concrete step
-toward the "AI auto-detection of rooftop features" ROADMAP item.
+**Scaffold (built)**: the composer is a DETERMINISTIC TEMPLATE — restates the
+report's own data, infers/recommends nothing, no external calls, no API key
+anywhere. **Phase 1 (not built — blocked on Mark provisioning an API key)**:
+swap the composer call for a server-side **vision-capable Anthropic call**
+(photos attach as image blocks via the signed urls; Haiku tier ≈ a few cents
+per report). The prompt is already built and tested (`buildLlmPrompt()`):
+length is tuned by the single `SUMMARY_TARGET_WORDS` constant (Mark's verdict
+on his ChatGPT Flat Branch Pub summary: right voice, "a little long" — so we
+target tighter), and his exact Flat Branch text drops into `STYLE_EXEMPLAR`
+verbatim when the relay supplies it. Key lives ONLY in a Netlify env var
+(`ANTHROPIC_API_KEY`), never client-side; template stays as the fallback when
+the call fails. This is also the codebase's first concrete step toward the
+"AI auto-detection of rooftop features" ROADMAP item.
 
 Auth: `requirePermission(event, "doc.generate")` — the semantically matching,
 boolean-only key every seed role holds (field-first: a tech on the roof can
@@ -8334,6 +8349,9 @@ draft their own summary). The function writes nothing server-side; the draft
 only enters the record via the tech's own `workorder.edit`-gated save.
 
 Tests: `tests/generateSummaryDraft.test.js` — payload projection/leak guards,
+storage-ref validation (traversal/foreign-tree refs nulled), signed-url
+helper contract (v4/read-only/short expiry, bad refs skipped not fatal),
+prompt contract (grounded, draft-only, length from the constant),
 401/403/405/400 auth surface, composer determinism, and a `global.fetch` trap
 that fails the suite if the stub ever grows a network call before the key
 decision.

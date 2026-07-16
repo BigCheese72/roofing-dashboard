@@ -399,18 +399,22 @@
 
     <div class="card">
       <h2 class="cond">Summary</h2>
-      <!-- AI-drafted summary, Phase 1 (see "AI-drafted report summary" in
-           DEV_NOTES.md). Inspection-only for now (shown by onWoTypeChange());
-           the server side is a deterministic PLACEHOLDER composer until the
-           LLM is wired (Phase 2, blocked on Mark provisioning an API key).
+      <!-- AI-drafted summary (see "AI-drafted report summary" in
+           DEV_NOTES.md). Shown for Inspection, Leak, and Work Order — the
+           three summary-bearing types — by onWoTypeChange(); one shared
+           server function serves all three. The server side is a
+           deterministic PLACEHOLDER composer until the vision LLM is wired
+           (Phase 1, blocked on Mark provisioning an API key — it will then
+           also LOOK AT the report's photos via short-lived signed URLs).
            Output only ever lands in the editable textarea below — a draft
-           the tech reviews, never an auto-final. -->
+           the tech reviews, never an auto-final. Drafts fire from this
+           button only (on demand = the cost control), never automatically. -->
       <div id="wo-draft-summary-row" style="display:none;margin:0 0 10px">
         <div class="btnrow" style="margin:0">
           <button class="btn" id="wo-draft-summary-btn" onclick="draftReportSummary(this)">✨ Draft Summary</button>
         </div>
-        <p class="hint" style="margin:6px 0 0">Writes a draft from this report's checklist, findings, and photo
-          captions into the box below. Placeholder generator for now (no AI yet) — always review and edit
+        <p class="hint" style="margin:6px 0 0">Writes a draft from this report's findings, checklist, repair scope,
+          and photos into the box below. Placeholder generator for now (no AI yet) — always review and edit
           before saving or sending.</p>
       </div>
       <div class="fld"><textarea id="summary" rows="5"></textarea></div>
