@@ -345,10 +345,10 @@ function rmReportOutlineDrawability(outline){
   return { include: hasImageFrame, planUnavailable: hasImageFrame };
 }
 async function rmFetchReportRoofOutlines(o){
-  var bldName = (o.jobName || "").trim();
-  if (!fdb || !bldName) return { roofEntries: [], error: null };
-  var custId = (o.billTo || "").trim() ? ("cust_" + slugify(o.billTo)) : null;
-  var bldId = "bld_" + slugify((custId || "nocust") + "_" + bldName);
+  /* Stored id first (audit FIX 1), canonical name-slug (buildingIdFor(),
+     js/core.js) as the legacy fallback. */
+  var bldId = o.buildingId || buildingIdFor(o.billTo, o.jobName);
+  if (!fdb || !bldId) return { roofEntries: [], error: null };
   try{
     var snap = await fdb.collection("buildings").doc(bldId).get(); /* READ ONLY -- see comment above; never .set()/.update() from this path */
     if (!snap.exists) return { roofEntries: [], error: null };

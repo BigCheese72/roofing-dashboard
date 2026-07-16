@@ -134,6 +134,18 @@ var cloudIndexCache = [];
    which order the rest of the modules happen to load in. */
 var ccLinkedProjectId = null;
 var ccLinkedProjectName = "";
+/* STABLE BUILDING IDENTITY for the work order currently open in the form
+   (audit FIX 1). Set by fill() from the loaded doc's stored buildingId/
+   customerId, by bpSelectBuilding() when a building is picked, and by
+   saveOrder() from ensureCustomerAndBuilding()'s result. null = no stable
+   id known yet (a brand-new or legacy order) — readers fall back to the
+   name-derived slug via currentWorkOrderBuildingId(). Declared here (not
+   js/workorders.js) for the same load-order reason as ccLinkedProjectId
+   above. Once set, renaming/typo-ing the job name can no longer fork a
+   new building — history, base map, and the CompanyCam link stay bound
+   to this id. */
+var currentBuildingId = null;
+var currentCustomerId = null;
 
 /* ================= Account / login =================
    Reachable via the header's "🔐 Account" button. Role/permission display
@@ -1001,13 +1013,39 @@ function slugify(s){
   return String(s || "").toLowerCase().trim()
     .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "unknown";
 }
+/* THE canonical name→id derivation (audit FIX 1). This exact formula used
+   to be hand-copied in five files (workorders/core/dpr/history/export) —
+   any drift between copies silently forked buildings. It now lives here
+   ONLY; every other site calls these. Note this is the LEGACY/FALLBACK
+   identity: saved work orders carry a stored buildingId/customerId
+   (stamped by saveOrder() via ensureCustomerAndBuilding()) and readers
+   prefer that, deriving from names only for legacy docs that predate the
+   stored id and for a form that's never been saved/picked yet. */
+function customerIdFor(billTo){
+  var custName = (billTo || "").trim();
+  return custName ? ("cust_" + slugify(custName)) : null;
+}
+function buildingIdFor(billTo, jobName){
+  var bldName = (jobName || "").trim();
+  if (!bldName) return null;
+  return "bld_" + slugify((customerIdFor(billTo) || "nocust") + "_" + bldName);
+}
 async function ensureCustomerAndBuilding(o){
-  if (!fdb) return { customerId: null, buildingId: null };
+  if (!fdb) return { customerId: (o.customerId || null), buildingId: (o.buildingId || null) };
   var custName = (o.billTo || "").trim();
   var bldName = (o.jobName || "").trim();
-  if (!bldName) return { customerId: null, buildingId: null };
-  var custId = custName ? ("cust_" + slugify(custName)) : null;
-  var bldId = "bld_" + slugify((custId || "nocust") + "_" + bldName);
+  /* STORED identity wins (FIX 1): an order that already carries ids keeps
+     writing to the SAME customer/building docs even after the tech renames
+     the job or fixes a typo — the rename UPDATES the building's name below
+     instead of forking a brand-new building that would strand its history,
+     base map, and CompanyCam link. Names only derive ids for legacy docs
+     and first saves. */
+  var custId = o.customerId || customerIdFor(o.billTo);
+  var bldId = o.buildingId || buildingIdFor(o.billTo, o.jobName);
+  /* No job name: nothing safe to write (a stored-id order must not get its
+     building name blanked either) — but still hand back whatever identity
+     the order already carries so callers never "lose" a stored id. */
+  if (!bldName || !bldId) return { customerId: custId || null, buildingId: (o.buildingId || null) };
   try{
     if (custId){
       await fdb.collection("customers").doc(custId).set({
@@ -2815,7 +2853,17 @@ function saveOrder(opts){
        moment connectivity is confirmed, with no separate "did that save
        actually finish" step for the tech to remember. */
     markPendingSync(o.id, o.jobName);
-    return cloudSaveOrder(o).then(function(){
+    /* FIX 1 (stable building identity): resolve/create the customer +
+       building BEFORE the doc write so the ids are stored ON the workorder
+       doc itself — from then on every reader follows the id, not the
+       recomputed name slug. Never blocks the save: ensureCustomerAndBuilding
+       already swallows its own Firestore errors and just returns whatever
+       identity the order carried. */
+    return ensureCustomerAndBuilding(o).then(function(ids){
+      if (ids.buildingId){ o.buildingId = ids.buildingId; currentBuildingId = ids.buildingId; }
+      if (ids.customerId){ o.customerId = ids.customerId; currentCustomerId = ids.customerId; }
+      return cloudSaveOrder(o);
+    }).then(function(){
       return syncPinCorrectionsToHistory(o);
     }).then(function(){
       /* Building History used to only get an entry once a PDF was

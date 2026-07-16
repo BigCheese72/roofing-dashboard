@@ -35,6 +35,14 @@ function makeSandbox(){
     currentAuthClaims: null,
     currentAuthUser: null,
     slugify: realSlugify,
+    /* canonical id derivation now lives in core.js (audit FIX 1) — real formula here */
+    customerIdFor(billTo){ const n = (billTo || "").trim(); return n ? ("cust_" + realSlugify(n)) : null; },
+    buildingIdFor(billTo, jobName){
+      const b = (jobName || "").trim();
+      if (!b) return null;
+      const c = (billTo || "").trim() ? ("cust_" + realSlugify(billTo.trim())) : null;
+      return "bld_" + realSlugify((c || "nocust") + "_" + b);
+    },
     __fields: {},
     val(id){ return sandbox.__fields[id] || ""; },
     setVal(id, v){ sandbox.__fields[id] = v == null ? "" : String(v); },
