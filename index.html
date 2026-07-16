@@ -1501,6 +1501,11 @@
 <script src="js/roofmapper.js"></script>
 <script src="js/dpr.js"></script>
 <script src="js/roles-admin.js"></script>
+<!-- AI training-label write path (see js/ailabels.js). Pure data plumbing,
+     no UI of its own and deliberately no callers yet — loaded so the flows
+     that confirm/correct an issue label (work orders, photos, inspections)
+     can call recordConfirmedLabel() as they wire up. -->
+<script src="js/ailabels.js"></script>
 <!-- Help Center / tooltips / first-run walkthrough (see js/help.js). Loaded
      last among the modules since it wraps showView() from the outside and
      needs that + every other global already defined; builds its own DOM at

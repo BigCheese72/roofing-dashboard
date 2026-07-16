@@ -8111,6 +8111,61 @@ its idempotence, parent-number recovery from a prior CO, the never-overwrite
 rule, offline/no-parent no-ops, every other type untouched, both banner hosts,
 the building inheritance, and "never auto-create").
 
+## AI training labels — learning-model data foundation (shipped 2026-07-16, dev only)
+
+Mark's framing: once we start identifying photos in leak reports, each identified
+leak becomes a labeled training example for a future learning model. This is the
+"start capturing labeled data NOW so we don't throw it away" scaffold — pure data
+plumbing, NO AI call, NO API key (deliberately independent of the held AI-summary
+work, which needs `ANTHROPIC_API_KEY`).
+
+**What shipped** (full schema in `DATA_MODEL.md` → `ai_training_labels`):
+
+- **`js/ailabels.js`** — the write path. `recordConfirmedLabel(entry)` turns one
+  tech confirm/correct action into one clean labeled row. Fail-safe: never throws,
+  never blocks the calling flow — a failed capture is `{ ok:false }` + a console
+  warning, because training-data bookkeeping must never cost a tech a save.
+  Loaded from `index.html` but has **no callers yet, on purpose** — the flows that
+  own the confirm/correct UI (work orders, photos, inspections, DPR) belong to
+  other sessions tonight; they call in when they wire up.
+- **Controlled vocabulary** — `AI_ISSUE_LABELS` (26 starter keys: ponding_water,
+  flashing_failed, open_seam, blister, fastener_backout, puncture, drain_clogged,
+  scupper_blocked, pitch_pan_deteriorated, membrane_split, coping_failure,
+  penetration_seal_failed, expansion_joint_failed, granule_loss, alligatoring,
+  ridging_wrinkling, hail_damage, wind_uplift, debris_accumulation,
+  vegetation_growth, skylight_failure, equipment_related, wall_intrusion,
+  insulation_saturated, no_defect_found, other). Free-text labels are rejected —
+  useless for training. `no_defect_found` is deliberate (negative examples matter);
+  `other` requires `labelOther` text so the escape hatch still yields a string
+  worth promoting into a real key later. **Admin seam**: extra labels come from
+  `app_settings/ai_label_vocab` (`{ extraLabels: [{key,label}] }`) — a data change,
+  never a code deploy; keys are permanent once data exists against them, display
+  labels rename freely.
+- **Signed-URL discipline** — a record stores photo REFERENCES only
+  (workOrderId+photoIndex for sealed-bucket/embedded photos, CompanyCam ids for CC
+  photos), never a URL, never image bytes. `aiLabelBuildDoc()` rebuilds the ref
+  field-by-field so a URL has nowhere to go; a test asserts no `https?:`/`base64`
+  can survive into a record.
+- **Stable identity** — `entry.buildingId` must be the STORED building doc id
+  (stable-identity fix, PR #120), never a recomputed slug. This module records
+  what the caller resolved; it derives nothing.
+- **`firestore.rules`** — create: signed-in + validated (uid match on
+  `confirmedByUid`, source enum, bounded strings, photo is a map); read/update/
+  delete: denied to every client including the owner. Training data references
+  customer roof photos — reads are Admin SDK only. Manual Console apply as usual.
+- **Deletion cascade** — `netlify/functions/lib/aiLabels.js`.
+  `purgeLabelsForBuilding()` wired into `admin.js` `delete_building` (purge runs
+  BEFORE the building delete → mid-failure keeps a retry path; audit log gains
+  `deletedAiLabels`). `purgeLabelsForWorkOrder()`/`purgeLabelsForPhoto()` are
+  ready-made hooks for the (client-side, open-rules) work-order delete and the
+  photos.js delete action — documented in that lib's header for their owners to
+  wire; an orphaned label meanwhile just fails to resolve at export time and gets
+  skipped.
+
+Covered by `tests/aiLabels.test.js` (15 tests: vocabulary shape + admin-seam merge,
+validation, never-a-URL, doc shape/defaults, fail-safe write path, rules block,
+cascade chunking + ordering, index.html wiring).
+
 ## Roadmap (not built yet, foundation only)
 
 - **RoofOps Dashboard**: cross-building reporting, search, filters — reads from
