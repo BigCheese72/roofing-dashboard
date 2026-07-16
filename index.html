@@ -816,11 +816,16 @@
       <div class="card">
         <h2 class="cond">Daily Progress Report</h2>
         <p class="hint" id="dpr-continue-notice" style="display:none;color:#2E7D32"></p>
-        <div class="btnrow" style="margin:0 0 8px">
-          <input type="text" id="dpr-bld-search" placeholder="🔍 Find an existing building…" style="flex:1;min-width:180px" oninput="dprSearchBuildings()">
-          <span class="hint" style="margin:0">Pick an existing job to auto-fill customer &amp; address — or just type a new one below.</span>
+        <div class="btnrow" style="margin:0 0 12px">
+          <button class="btn" onclick="dprShowJobSelect()">🔍 Select Job</button>
+          <span class="hint" style="margin:0">Pick the job — its customer, address and job number fill in automatically. Or just type a new one below.</span>
         </div>
-        <div id="dpr-bld-results"></div>
+        <div id="dpr-job-select" style="display:none">
+          <div class="btnrow" style="margin:0 0 8px">
+            <input type="text" id="dpr-bld-search" placeholder="Filter jobs — name, customer, address, job #…" style="flex:1;min-width:180px" oninput="dprSearchBuildings()">
+          </div>
+          <div id="dpr-bld-results"></div>
+        </div>
         <div class="fld" style="max-width:320px">
           <label>Foreman <span class="hint" style="font-weight:400">— who's filling this out</span></label>
           <input type="text" id="dpr-foreman" list="dl-dprForeman" placeholder="Start typing a name…"
