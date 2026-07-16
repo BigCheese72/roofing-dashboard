@@ -2206,6 +2206,13 @@ var rmState = {
   referenceLayerGroup: null,
   pendingBuildingId: null,
   pendingBuildingName: null,
+  pendingBuildingSource: null,
+  linkedJobNo: null,
+  linkedJobName: "",
+  linkedJobCustomerNo: null,
+  linkedJobAddress: "",
+  linkedJobBuildingId: null,
+  linkedJobBuildingName: "",
   /* Scale inheritance -- see rmFinishTrace()/rmCalibrateEdge(). A
      dimensionless rescale factor (1 = no correction learned yet),
      compounded (multiplied in, not replaced) each time a manual_trace/
@@ -5188,6 +5195,164 @@ function rmFinishTrace(){
     (canInheritScale ? "Roof outline traced ✓ — scale inherited from this building, no need to re-measure" : "Roof outline traced ✓"));
 }
 
+/* ---- RoofMapper job link ----
+   RoofMapper is often opened before a work order exists on the page. This
+   picker uses the same cached job list as the work-order Select Job flow, but
+   keeps the selection local to RoofMapper: the selected job's address locates
+   the map, and its matched/created building is used later when saving the
+   traced roof. */
+var rmJobPickerJobs = [];
+var rmJobPickerFiltered = [];
+
+function rmJobNo(j){ return String((j && (j.job_number || j.job_no)) || ""); }
+function rmJobAddress(j){
+  if (typeof fdnComposeAddress === "function") return fdnComposeAddress(j || {});
+  var line2 = [j && j.city, [j && j.state, j && j.zip].filter(Boolean).join(" ")].filter(Boolean).join(", ");
+  return [j && j.address, line2].filter(Boolean).join(", ");
+}
+function rmJobDisplayName(j){ return (j && (j.name || rmJobNo(j))) || "selected job"; }
+function rmJobMatchesSearch(j, q){
+  if (!q) return true;
+  return [j.name, j.job_no, j.job_number, j.customer_no, j.project_manager_no, j.city, j.state, j.address, rmJobAddress(j)]
+    .some(function(v){ return String(v || "").toLowerCase().indexOf(q) !== -1; });
+}
+function rmSetLinkedJobState(job, building){
+  var addr = rmJobAddress(job);
+  rmState.linkedJobNo = rmJobNo(job) || null;
+  rmState.linkedJobName = (job && job.name) || "";
+  rmState.linkedJobCustomerNo = (job && job.customer_no) || null;
+  rmState.linkedJobAddress = addr || "";
+  rmState.linkedJobBuildingId = building && building.id ? building.id : null;
+  rmState.linkedJobBuildingName = building && building.name ? building.name : "";
+  if (building && building.id){
+    rmState.pendingBuildingId = building.id;
+    rmState.pendingBuildingName = building.name || rmJobDisplayName(job);
+    rmState.pendingBuildingSource = "job";
+  } else {
+    rmState.pendingBuildingId = null;
+    rmState.pendingBuildingName = null;
+    rmState.pendingBuildingSource = null;
+  }
+}
+function rmRenderLinkedJobInfo(){
+  var el = document.getElementById("rm-job-link-info");
+  if (!el) return;
+  if (!rmState.linkedJobNo && !rmState.linkedJobName){
+    el.style.display = "none";
+    el.innerHTML = "";
+    return;
+  }
+  el.style.display = "";
+  var bits = [];
+  if (rmState.linkedJobNo) bits.push("#" + esc(rmState.linkedJobNo));
+  if (rmState.linkedJobAddress) bits.push(esc(rmState.linkedJobAddress));
+  if (rmState.linkedJobBuildingName) bits.push("matched to " + esc(rmState.linkedJobBuildingName));
+  el.innerHTML = "Linked job: <b>" + esc(rmState.linkedJobName || rmState.linkedJobNo) + "</b>" +
+    (bits.length ? " (" + bits.join(" &middot; ") + ")" : "") +
+    ' - <a href="#" onclick="rmClearLinkedJob();return false;">clear</a>';
+}
+function rmClearLinkedJob(){
+  rmSetLinkedJobState({}, null);
+  rmRenderLinkedJobInfo();
+  toast("RoofMapper job link cleared.");
+}
+async function rmEnsureJobBuildingCache(){
+  if (typeof bpCache !== "undefined" && bpCache && bpCache.length) return bpCache;
+  if (!fdb) return [];
+  var qs = await fdb.collection("buildings").orderBy("updatedAt", "desc").limit(500).get();
+  bpCache = [];
+  qs.forEach(function(d){
+    var b = Object.assign({ id: d.id }, d.data());
+    if (!b.archived) bpCache.push(b);
+  });
+  return bpCache;
+}
+async function rmOpenJobPicker(){
+  var modal = document.getElementById("rm-job-modal");
+  var search = document.getElementById("rm-job-search");
+  var list = document.getElementById("rm-job-list");
+  if (!modal || !list) return;
+  modal.style.display = "";
+  lockBodyScroll();
+  if (search) search.value = "";
+  list.className = "hint";
+  list.textContent = "Loading jobs...";
+  try{
+    await rmEnsureJobBuildingCache();
+    if (typeof fdnLoadJobs !== "function") throw new Error("job cache is not available");
+    rmJobPickerJobs = await fdnLoadJobs(false);
+    rmFilterJobPicker();
+  }catch(e){
+    list.className = "hint";
+    list.textContent = "Couldn't load jobs: " + ((e && e.message) || e);
+  }
+}
+function rmCloseJobPicker(){
+  var modal = document.getElementById("rm-job-modal");
+  if (modal) modal.style.display = "none";
+  unlockBodyScroll();
+}
+function rmFilterJobPicker(){
+  var q = "";
+  var input = document.getElementById("rm-job-search");
+  if (input) q = String(input.value || "").trim().toLowerCase();
+  rmJobPickerFiltered = (rmJobPickerJobs || []).filter(function(j){ return rmJobMatchesSearch(j, q); }).slice(0, 300);
+  rmRenderJobPicker();
+}
+function rmRenderJobPicker(){
+  var host = document.getElementById("rm-job-list");
+  if (!host) return;
+  if (!(rmJobPickerJobs || []).length){
+    host.className = "hint";
+    host.textContent = "No jobs cached yet.";
+    return;
+  }
+  if (!rmJobPickerFiltered.length){
+    host.className = "hint";
+    host.textContent = "No matching jobs.";
+    return;
+  }
+  host.className = "";
+  host.innerHTML = rmJobPickerFiltered.map(function(j){
+    var b = (typeof fdnFindMatchingBuilding === "function") ? fdnFindMatchingBuilding(j) : null;
+    var parts = [j.customer_no, j.project_manager_no ? "PM " + j.project_manager_no : "", rmJobAddress(j)];
+    if (b) parts.push("in app");
+    var jobNo = String(j.job_no);
+    return '<div class="bld-item" onclick="rmSelectJobForMapper(' + JSON.stringify(jobNo).replace(/"/g, "&quot;") + ')"><div class="info">' +
+      '<div class="name">' + esc(j.name || "(unnamed job)") +
+      (rmJobNo(j) ? ' <span class="hint">#' + esc(rmJobNo(j)) + '</span>' : "") + '</div>' +
+      '<div class="meta">' + parts.filter(Boolean).map(esc).join(" &middot; ") + '</div></div>' +
+      '<button class="btn">Use Job</button></div>';
+  }).join("");
+}
+async function rmSelectJobForMapper(jobNo){
+  var job = (rmJobPickerJobs || []).find(function(j){ return String(j.job_no) === String(jobNo); });
+  if (!job) return;
+  var building = (typeof fdnFindMatchingBuilding === "function") ? fdnFindMatchingBuilding(job) : null;
+  rmSetLinkedJobState(job, building);
+  rmRenderLinkedJobInfo();
+  rmCloseJobPicker();
+  var addr = rmState.linkedJobAddress;
+  if (addr){
+    var input = document.getElementById("rm-address-search");
+    if (input) input.value = addr;
+    toast("Loaded job " + (rmState.linkedJobNo ? "#" + rmState.linkedJobNo : rmState.linkedJobName) + " - searching its address.");
+    await rmSearchByAddress();
+  } else if (building && building.id) {
+    toast("Loaded job - using its matched building.");
+    await rmEnterMultiRoofCapture(building.id);
+  } else {
+    toast("Loaded job, but it has no address yet. Search an address or use GPS.");
+  }
+}
+function rmApplyLinkedJobToSaveFields(){
+  if (!rmState.linkedJobNo && !rmState.linkedJobName) return;
+  var nameEl = document.getElementById("rm-new-jobname");
+  var billEl = document.getElementById("rm-new-billto");
+  if (nameEl) nameEl.value = rmState.linkedJobName || "";
+  if (billEl) billEl.value = rmState.linkedJobCustomerNo || "";
+}
+
 /* ---- save to building (existing or new) ---- */
 var rmBpCache = null;
 function openRmSaveModal(){
@@ -5195,6 +5360,7 @@ function openRmSaveModal(){
   document.getElementById("rm-save-modal").style.display = "";
   lockBodyScroll();
   rmRenderContinueBuildingBanner();
+  rmApplyLinkedJobToSaveFields();
   document.getElementById("rm-bp-search").value = "";
   document.getElementById("rm-roof-picker").innerHTML = "";
   var list = document.getElementById("rm-bp-list");
@@ -5241,9 +5407,12 @@ function rmRenderContinueBuildingBanner(){
   if (!el) return;
   if (!rmState.pendingBuildingId){ el.style.display = "none"; el.innerHTML = ""; return; }
   el.style.display = "";
+  var reason = rmState.pendingBuildingSource === "job" ?
+    "the building matched to the selected job" :
+    "the building your last roof on this page was saved to";
   el.innerHTML = '<div class="rm-footprint-info" style="margin-bottom:14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
     '<span>↩️ Continuing on <b>' + esc(rmState.pendingBuildingName || "the same building") +
-    '</b> — the building your last roof on this page was saved to</span>' +
+    '</b> — ' + reason + '</span>' +
     '<button class="btn primary" onclick="rmContinueOnPendingBuilding()" style="margin-left:auto">Use This Building</button></div>';
 }
 async function rmContinueOnPendingBuilding(){
@@ -5850,6 +6019,7 @@ async function rmSaveSplitSectionsToBuilding(buildingId){
     rmState.linkedRoofId = last.roof.id;
     rmState.pendingBuildingId = null;
     rmState.pendingBuildingName = null;
+    rmState.pendingBuildingSource = null;
     rmState.outline = Object.assign({}, last.outlineEntry);
     if (rmState.map){
       if (rmState.outlineLayer) rmState.map.removeLayer(rmState.outlineLayer);
@@ -6104,6 +6274,7 @@ async function rmSaveOutlineToBuilding(buildingId, roofId){
        later outline. */
     rmState.pendingBuildingId = null;
     rmState.pendingBuildingName = null;
+    rmState.pendingBuildingSource = null;
     /* Persistent label on the outline just saved, using the roof it was
        actually saved to -- so Mark sees which roof this is at a glance,
        not just in the picker dropdown. See "Individual-roof tracing +
@@ -6248,6 +6419,7 @@ async function rmOpenRoofInMapper(buildingId, roofId){
     rmState.linkedRoofId = roof.id;
     rmState.pendingBuildingId = null;
     rmState.pendingBuildingName = null;
+    rmState.pendingBuildingSource = null;
     if (rmState.roofLabelLayer) map.removeLayer(rmState.roofLabelLayer);
     /* Restore wherever this roof's label was dragged to, if anywhere --
        see rmSaveRoofLabelPos()/"Draggable roof labels" in DEV_NOTES.md. */
@@ -6306,7 +6478,7 @@ async function rmCreateBuildingAndSave(){
   if (!jobName){ toast("Enter a building/job name."); return; }
   var billTo = val("rm-new-billto").trim();
   var tags = rmState.outline.tags || {};
-  var addr = [tags["addr:housenumber"], tags["addr:street"]].filter(Boolean).join(" ");
+  var addr = rmState.linkedJobAddress || [tags["addr:housenumber"], tags["addr:street"]].filter(Boolean).join(" ");
   toast("Creating building…");
   try{
     var ids = await ensureCustomerAndBuilding({ jobName: jobName, billTo: billTo, location: addr });
@@ -6675,6 +6847,7 @@ async function rmEnterMultiRoofCapture(buildingId){
     var bld = snap.exists ? snap.data() : {};
     rmState.pendingBuildingId = buildingId;
     rmState.pendingBuildingName = bld.name || "this building";
+    rmState.pendingBuildingSource = "continue";
     var bounds = await rmDrawReferenceRoofs(buildingId, bld, null);
     if (continuingOrtho){
       /* Ortho/GeoTIFF overlay + its map position/zoom are already exactly

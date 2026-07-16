@@ -515,7 +515,9 @@
         this building's record or export it.</p>
       <div class="btnrow" style="margin:0 0 10px">
         <button class="btn primary" id="rm-locate-btn" onclick="rmUseMyLocation()">📍 Use My Location</button>
+        <button class="btn" id="rm-job-picker-btn" onclick="rmOpenJobPicker()">🔍 Select Job</button>
       </div>
+      <div id="rm-job-link-info" class="hint" style="margin:-4px 0 10px;display:none"></div>
       <div class="btnrow" style="margin:0 0 10px">
         <input type="text" id="rm-address-search" placeholder="…or type any address" style="flex:1;min-width:160px"
           onkeydown="if(event.key==='Enter'){event.preventDefault();rmSearchByAddress();}">
@@ -1029,6 +1031,20 @@
       <button class="btn" onclick="closeCC()">Close</button>
     </div>
     <div style="padding:14px 16px;overflow:auto" id="cc-body"></div>
+  </div>
+</div>
+
+<div id="rm-job-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)rmCloseJobPicker()">
+  <div style="background:#fff;max-width:640px;margin:4vh auto;border-radius:8px;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;width:94%">
+    <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
+      <b class="cond" style="font-size:17px">Select Job for RoofMapper</b>
+      <span style="flex:1"></span>
+      <button class="btn" onclick="rmCloseJobPicker()">Close</button>
+    </div>
+    <div style="padding:14px 16px;overflow:auto">
+      <input type="text" id="rm-job-search" placeholder="Search by job #, name, customer, city, or address…" style="width:100%;margin-bottom:10px;box-sizing:border-box" oninput="rmFilterJobPicker();">
+      <div id="rm-job-list" class="hint">Loading jobs…</div>
+    </div>
   </div>
 </div>
 
