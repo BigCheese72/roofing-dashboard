@@ -21,6 +21,8 @@ function makeSandbox(fields){
     currentRoofId: null,
     currentBuildingId: null,
     currentCustomerId: null,
+    currentCcDocumentId: null,
+    currentCcDocumentHash: null,
     currentRoofIds: null,
     findings: [{ id: "f1", condition: "", location: "", warranty: "Warrantable", pin: null }],
     repairs: [],

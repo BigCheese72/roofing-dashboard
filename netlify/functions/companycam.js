@@ -26,7 +26,7 @@
 // NOT become a role/permission check. verifyCaller() proves WHO you are and
 // throws 401 if you're nobody; requirePermission() is the role-gate and is
 // deliberately NOT used here.
-const { uploadDocumentToCompanyCam } = require("./lib/companyCamDocuments");
+const { uploadDocumentToCompanyCam, verifyDocumentOnCompanyCam } = require("./lib/companyCamDocuments");
 const { uploadPhotoToCompanyCam, deletePushedPhotoFromCompanyCam } = require("./lib/companyCamPhotos");
 const { verifyCaller, requirePermission, getDb } = require("./lib/authGuard");
 
@@ -113,7 +113,26 @@ exports.handler = async function (event) {
           const code = /not set/.test(result.error) ? 500 : (/Missing/.test(result.error) ? 400 : 502);
           return resp(code, { error: result.error });
         }
-        return resp(200, { ok: true, document: result.document });
+        // documentId/url used to be DROPPED here (only `document` was
+        // forwarded) — one of the two holes behind the dishonest "saved"
+        // tracking (the client then depended entirely on the raw body's
+        // shape). Forward the lib's extracted id explicitly.
+        return resp(200, { ok: true, document: result.document, documentId: result.documentId, url: result.url });
+      }
+
+      // Artifact-truth reconciliation (Sophia's Curb Flashing false
+      // negative): read-only existence check for a previously uploaded
+      // document id, so the client can correct a stale "failed" status to
+      // "saved" (or confirm a doc is genuinely gone) WITHOUT re-uploading a
+      // duplicate version. Same requireAuth() gate as everything here;
+      // read token; mutates nothing.
+      if (body.action === "verify_document") {
+        const result = await verifyDocumentOnCompanyCam(body.document_id);
+        if (!result.ok) {
+          const code = /not set/.test(result.error) ? 500 : (/Missing/.test(result.error) ? 400 : 502);
+          return resp(code, { error: result.error });
+        }
+        return resp(200, { ok: true, exists: result.exists });
       }
 
       // Pushes ONE work-order photo into the linked project's PHOTO FEED,

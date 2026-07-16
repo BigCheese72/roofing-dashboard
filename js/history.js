@@ -1058,7 +1058,69 @@ function rpReportItemHtml(r){
     (r.companyCamUploadStatus === "failed" && r.companyCamUploadError ?
       '<div class="evt-row" style="color:#D64545">CompanyCam upload error: ' + esc(r.companyCamUploadError) + '</div>' : '') +
     (r.notes ? '<div class="evt-row">' + esc(r.notes) + '</div>' : '') +
+    /* Retry/backfill (Mark's Flat Branch case): a report on a CC-linked
+       work order whose PDF never verifiably landed — failed, never
+       attempted, or a legacy "saved" with no artifact id — gets a one-tap
+       re-push. stopPropagation: the row itself jumps to the building. */
+    (rpNeedsCcBackfill(r) ?
+      '<div class="btnrow" style="margin:6px 0 0"><button class="btn" onclick="event.stopPropagation(); backfillReportPdfToCompanyCam(\'' + esc(r.workOrderId) + '\')">⟳ Push PDF to CompanyCam</button></div>' : '') +
     '</div>';
+}
+/* True when this report SHOULD have its PDF in CompanyCam but there's no
+   verified artifact: the WO is linked, and either the status isn't "saved"
+   or it's a legacy "saved" written before ccDocumentId existed (the
+   dishonest-flag era — exactly the Flat Branch inspection). Activities and
+   unlinked reports never qualify. */
+function rpNeedsCcBackfill(r){
+  return !!(r && !r.isActivity && r.workOrderId && r.companyCamProjectId &&
+    (r.companyCamUploadStatus !== "saved" || !r.ccDocumentId));
+}
+/* Same load-then-act pattern as jumpToAdjustPin()/pendingPinFindingId: open
+   the work order (full photo hydration included), then — once the edit view
+   is actually showing (showView hook, js/core.js) — rebuild the PDF and
+   push it through the exact same uploadLinkedPdfToCompanyCam() path a
+   normal Send uses (photos feed-push rides along, idempotency hash
+   respected). The history event updates via kind "Saved", which keeps the
+   original reportType (e.g. "PDF Emailed") while the status/doc id become
+   honest. */
+var pendingCcPdfBackfillOrderId = null;
+function backfillReportPdfToCompanyCam(workOrderId){
+  if (!workOrderId) return;
+  pendingCcPdfBackfillOrderId = workOrderId;
+  loadOrder(workOrderId);
+}
+async function runPendingCcPdfBackfill(){
+  var woId = pendingCcPdfBackfillOrderId;
+  pendingCcPdfBackfillOrderId = null;
+  if (!woId || currentId !== woId) return;
+  var o = collect();
+  if (!o.companyCamProjectId){
+    toast("This work order isn't linked to a CompanyCam project — link it (🔍 Select Job or Import from CompanyCam), save, then retry.");
+    return;
+  }
+  /* VERIFY FIRST (Sophia's Curb Flashing): when the order already holds an
+     uploaded document id, ask CompanyCam whether that document really
+     exists before re-uploading anything. Exists -> the stale "failed" was
+     a transient fetch error; reconcile the event to saved WITHOUT pushing
+     a duplicate version (CompanyCam documents are create-only). Gone (or
+     the check itself is unreachable) -> fall through to the normal
+     regenerate-and-upload path. */
+  if (o.ccDocumentId){
+    try{
+      var v = await ccApiPost({ action: "verify_document", document_id: o.ccDocumentId });
+      if (v && v.exists){
+        await logReportAndHistoryEvent(o, "Saved", null,
+          { ok: true, documentId: o.ccDocumentId, unchanged: true, verified: true });
+        toast("Verified on CompanyCam ✓ — status corrected; nothing re-uploaded.");
+        return;
+      }
+    }catch(e){ /* verification unavailable — the upload path below is still the honest fallback */ }
+  }
+  toast("Building PDF for CompanyCam…");
+  var d = await generatePdf();
+  if (!d) return;
+  var ccUp = await uploadLinkedPdfToCompanyCam(d, o, "Backfill");
+  await logReportAndHistoryEvent(o, "Saved", null, ccUp);
 }
 function rpRenderList(){
   var host = document.getElementById("reports-list");
@@ -1150,12 +1212,25 @@ async function uploadPdfToCompanyCam(doc, o){
     if (ccDocumentPushIsRedundant(o, hash)) return { ok: true, skipped: true, unchanged: true, documentId: o.ccDocumentId };
     var out = await ccApiPost({ action: "upload_document", project_id: o.companyCamProjectId,
       name: (typeof ccDocumentName === "function" ? ccDocumentName(o) : pdfFileName()), attachment: base64 });
-    var documentId = (out && out.document && out.document.id) ? String(out.document.id) :
-      (out && out.documentId ? String(out.documentId) : null);
+    var documentId = (out && out.documentId) ? String(out.documentId) :
+      ((out && out.document && out.document.id) ? String(out.document.id) : null);
+    /* Flat Branch bug, client half: success is only success WITH the
+       artifact id. An ok-shaped response with no document id used to be
+       returned as { ok: true, documentId: null } — which toasted "saved ✓",
+       recorded companyCamUploadStatus "saved", and CLOBBERED any previously
+       good ccDocumentId with null. Now it's an honest failure, and a good
+       stored id is never overwritten by nothing. */
+    if (!documentId){
+      return { ok: false, error: "CompanyCam didn't return a document id — the PDF is NOT confirmed saved. Try again (⟳ Push PDF to CompanyCam on the report) or check the project in CompanyCam." };
+    }
     o.ccDocumentId = documentId;
     o.ccDocumentHash = hash;
+    /* Keep the session-wide artifact vars (js/core.js) in step so any LATER
+       collect() this session also carries the uploaded document. */
+    currentCcDocumentId = documentId;
+    currentCcDocumentHash = hash;
     if (o.id) await ccPersistDocumentInfo(o.id, documentId, hash);
-    return { ok: true, documentId: documentId };
+    return { ok: true, documentId: documentId, documentUrl: (out && out.url) || null };
   }catch(e){
     return { ok: false, error: e.message };
   }
@@ -1520,6 +1595,41 @@ function buildPinsForHistoryEvent(o){
   });
   return findingPins.concat(checklistPins);
 }
+/* Pure, testable mapping from an upload result to an HONEST durable status
+   (Mark's Flat Branch bug: companyCamUploadStatus said "saved" while no
+   document existed anywhere). The rule: "saved" REQUIRES the artifact — a
+   returned document id, or an unchanged-skip that already holds one. An
+   ok-shaped result with no id is recorded as "failed" with a real error
+   (belt-and-braces; uploadPdfToCompanyCam already converts that upstream).
+   A prior status/error/doc-id is only carried forward when this action
+   didn't attempt an upload at all (ccUploadResult undefined). */
+function ccStatusFromUploadResult(existingStatus, existingError, existingDocId, ccUploadResult){
+  var out = { status: existingStatus || null, error: existingError || "", documentId: existingDocId || null };
+  if (!ccUploadResult) return out;
+  if (ccUploadResult.ok && (ccUploadResult.documentId || ccUploadResult.unchanged)){
+    out.status = "saved";
+    out.error = "";
+    if (ccUploadResult.documentId) out.documentId = String(ccUploadResult.documentId);
+  } else if (ccUploadResult.skipped && !ccUploadResult.ok){
+    out.status = "not_linked";
+    out.error = "";
+  } else if (out.documentId){
+    /* FAILURE, but a document id is KNOWN — the other direction of the
+       honesty rule (Sophia's Curb Flashing, Job 17476: a transient client
+       "Load failed" was recorded as FINAL while the work order held the
+       uploaded doc's id). The artifact is the truth: an uploaded document
+       exists on CompanyCam, so the report must never alarm "not saved" —
+       the transient error is retryable noise (at worst the very latest
+       re-render didn't REPLACE an already-uploaded version; the next send
+       re-pushes by content hash). Status: saved, no alarm. */
+    out.status = "saved";
+    out.error = "";
+  } else {
+    out.status = "failed";
+    out.error = ccUploadResult.error || "CompanyCam upload returned no document id — not confirmed saved.";
+  }
+  return out;
+}
 /* ccUploadResult is the return value of uploadLinkedPdfToCompanyCam() —
    { ok:true } | { ok:false, error } | { skipped:true } (no linked
    project) | undefined (this action never attempted an upload, e.g. a
@@ -1562,12 +1672,17 @@ async function logReportAndHistoryEvent(o, kind, emailInfo, ccUploadResult){
     ((emailInfo && emailInfo.to) || []).forEach(function(addr){
       if (mergedRecipients.indexOf(addr) === -1) mergedRecipients.push(addr);
     });
-    var ccStatus = (existing && existing.companyCamUploadStatus) || null;
-    var ccError = (existing && existing.companyCamUploadError) || "";
-    if (ccUploadResult){
-      ccStatus = ccUploadResult.ok ? "saved" : (ccUploadResult.skipped ? "not_linked" : "failed");
-      ccError = (!ccUploadResult.ok && !ccUploadResult.skipped) ? (ccUploadResult.error || "") : "";
-    }
+    var ccS = ccStatusFromUploadResult(
+      (existing && existing.companyCamUploadStatus) || null,
+      (existing && existing.companyCamUploadError) || "",
+      /* Known artifact from EITHER record: the prior event's id, or the
+         work order's own (collect() carries ccDocumentId now — Sophia's
+         event predated the field, but her WO doc holds the id). */
+      (existing && existing.ccDocumentId) || o.ccDocumentId || null,
+      ccUploadResult
+    );
+    var ccStatus = ccS.status;
+    var ccError = ccS.error;
     var nowTs = Date.now();
     var payload = {
       buildingId: ids.buildingId, buildingName: o.jobName || "",
@@ -1613,6 +1728,12 @@ async function logReportAndHistoryEvent(o, kind, emailInfo, ccUploadResult){
       companyCamPhotoIds: (o.photos || []).filter(function(p){ return p.ccPhotoId; }).map(function(p){ return p.ccPhotoId; }),
       companyCamUploadStatus: ccStatus,   // "saved" | "failed" | "not_linked" | null (never attempted)
       companyCamUploadError: ccError,     // set only when status === "failed"
+      /* The actual uploaded artifact's id — "saved" is only ever written
+         alongside one (or an unchanged-skip that already holds one). This,
+         not pdfRef, is the proof-of-upload: pdfRef stays null BY DESIGN
+         (no Firebase Storage — CompanyCam is the system of record for the
+         PDF; see the section comment above uploadPdfToCompanyCam). */
+      ccDocumentId: ccS.documentId,
       pins: buildPinsForHistoryEvent(o),
       pdfRef: pdfRef,
       emailSent: !!(emailInfo && emailInfo.sent) || !!(existing && existing.emailSent),

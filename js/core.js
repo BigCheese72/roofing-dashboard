@@ -146,6 +146,18 @@ var ccLinkedProjectName = "";
    to this id. */
 var currentBuildingId = null;
 var currentCustomerId = null;
+/* The CompanyCam DOCUMENT artifact for the work order currently open — the
+   uploaded PDF's id + content hash (uploadPdfToCompanyCam /
+   ccPersistDocumentInfo, js/history.js). Same load-order home as the
+   identities above. These used to live only on the Firestore doc and the
+   in-memory `o` of the session that uploaded — collect() rebuilt orders
+   WITHOUT them, so a reopened order forgot its own uploaded artifact: the
+   #54 idempotency guard didn't survive a reload, and status reconciliation
+   couldn't see that a document already existed (Sophia's Curb Flashing
+   false "failed", Job 17476). fill() adopts them, collect() stamps them
+   back, uploads update them. */
+var currentCcDocumentId = null;
+var currentCcDocumentHash = null;
 
 /* ================= Account / login =================
    Reachable via the header's "🔐 Account" button. Role/permission display
@@ -3174,5 +3186,10 @@ function showView(v){
     pendingPinFindingId = null;
     openPinModal(fid);
   }
+  /* CompanyCam PDF backfill (⟳ on a report row) — same load-then-act
+     pattern as the pin jump above; no-ops unless
+     backfillReportPdfToCompanyCam() just loaded this order. See
+     runPendingCcPdfBackfill() in js/history.js. */
+  if (v === "edit" && typeof runPendingCcPdfBackfill === "function") runPendingCcPdfBackfill();
 }
 

@@ -27,6 +27,8 @@ function makeSandbox(opts){
     currentRoofId: null,
     currentBuildingId: null,
     currentCustomerId: null,
+    currentCcDocumentId: null,
+    currentCcDocumentHash: null,
     currentRoofIds: null,
     findings: [],
     repairs: [],
