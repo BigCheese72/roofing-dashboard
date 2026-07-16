@@ -400,3 +400,29 @@ test("a locked report blocks quantity-row edits", () => {
   s.dprAddQuantityRow({ item: "X", qty: "1", unit: "sq" });
   assert.strictEqual(s.dprQuantities.length, before);
 });
+
+// ---------------- 8. foreman + crew rosters ----------------
+
+test("foreman + crew rosters seed their pick-lists (Kelly Walker de-duped)", () => {
+  const s = makeSandbox();
+  const captured = {};
+  s.document.getElementById = (id) => {
+    if (id === "dl-dprForeman" || id === "dl-dprCrew"){
+      captured[id] = captured[id] || { innerHTML: "" };
+      return captured[id];
+    }
+    return null;
+  };
+  s.getFieldHistory = () => [];
+  s.dprPopulateForemen();
+  s.dprPopulateCrewRoster();
+  assert.strictEqual(s.DPR_FOREMEN.length, 9, "nine foremen");
+  assert.strictEqual(s.DPR_CREW_ROSTER.length, 43, "forty-three crew");
+  assert.ok(/Cletus Bagby/.test(captured["dl-dprForeman"].innerHTML));
+  assert.ok(/Mark Sheppard/.test(captured["dl-dprForeman"].innerHTML));
+  assert.ok(/Christian Abernathy/.test(captured["dl-dprCrew"].innerHTML));
+  assert.ok(/Levi Workman/.test(captured["dl-dprCrew"].innerHTML));
+  assert.ok(/Cletus Bagby/.test(captured["dl-dprCrew"].innerHTML), "foremen merged into crew list");
+  const kelly = (captured["dl-dprCrew"].innerHTML.match(/Kelly Walker/g) || []).length;
+  assert.strictEqual(kelly, 1, "Kelly Walker (foreman + crew) appears once");
+});

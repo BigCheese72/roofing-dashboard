@@ -67,18 +67,86 @@ var DPR_CREATE_ROLES = ["admin", "service_manager", "superintendent", "ops_manag
 
 /* Foremen roster for the "Foreman" field (who's filling out the report —
    foremen complete these daily). Populated into the dl-dprForeman datalist so
-   the field becomes a pick-list with autocomplete. EMPTY until Mark provides
-   the roster — until then the field is plain free text AND remembers whatever
-   is typed (field-history 'dprForeman'), so it's fully usable today and only
-   gets better once names are added here.
-   TODO(Mark's roster): add foreman names, e.g. ["Jose Garcia", "Mark Ruiz", ...]. */
-var DPR_FOREMEN = [];
+   the field is a pick-list with autocomplete; typed names still work and are
+   remembered (field-history 'dprForeman').
+   Provided by Mark from Foundation, 2026-07 — the connector has no employee
+   data (jobs + per-job hours only), so this list is maintained here by hand.
+   Ask Mark for adds/removes; keep in sync with DPR_CREW_ROSTER below. */
+var DPR_FOREMEN = [
+  "Cletus Bagby",
+  "Dax Dollens",
+  "Dalean Germany",
+  "Christopher Gravitt",
+  "Benjamin Mudd",
+  "Mendel Needham",
+  "William Noga",
+  "Mark Sheppard",
+  "Kelly Walker"
+];
+/* Full field/roofer roster for the Crew pick-list (dl-dprCrew) — same source
+   and maintenance story as DPR_FOREMEN above. Foremen are merged in when the
+   datalist is built (a foreman on the roof is crew too). */
+var DPR_CREW_ROSTER = [
+  "Christian Abernathy",
+  "Dustin Adkins",
+  "Steven Arce Vazquez",
+  "Nicholas Beckwith",
+  "Bradley Belisle",
+  "Guillermo Caliz",
+  "James Cheek",
+  "Mitchell Chilton",
+  "Billy Coleman",
+  "Brandon Dabney",
+  "Brian Draper",
+  "Leland Fitzgerald",
+  "Aaron Fletcher",
+  "Caydan Garner",
+  "Gerald Ginnings",
+  "Dale Griggs",
+  "Kenneth Hancock",
+  "Keith Hardecke",
+  "Lorenzo Harris",
+  "David Hendren",
+  "Joe Hernandez",
+  "Christopher Hubbard",
+  "Matthew Lock",
+  "Clinton Mahler",
+  "Cameron Minor",
+  "Gary Muse",
+  "Cesar Nava",
+  "Kyle Needham",
+  "Gabriel Olmstead",
+  "Jesse Pearman",
+  "Roscoe Rowland",
+  "Wade Sanderson",
+  "Denis Seu",
+  "Jacob Shackleford",
+  "Darrin Stokes",
+  "Juan Valdovinos",
+  "Timothy Vanlandingham",
+  "Steven Veverka",
+  "Dalton Walker",
+  "Kelly Walker",
+  "Aaron West",
+  "Bradley Wieberg",
+  "Levi Workman"
+];
 function dprPopulateForemen(){
   var names = DPR_FOREMEN.slice();
   try{
     (getFieldHistory("dprForeman") || []).forEach(function(v){ if (names.indexOf(v) === -1) names.push(v); });
   }catch(e){}
   dprSetDatalist("dl-dprForeman", names);
+}
+/* Immediate (offline-safe) seed of the Crew pick-list: full roster + foremen +
+   whatever's been typed on this device. dprPopulateDataLists() re-renders it
+   later with prior-DPR crew names merged in. */
+function dprPopulateCrewRoster(){
+  var names = DPR_CREW_ROSTER.concat(DPR_FOREMEN);
+  try{
+    (getFieldHistory("technician") || []).forEach(function(v){ names.push(v); });
+  }catch(e){}
+  dprSetDatalist("dl-dprCrew", names);
 }
 /* Fills a <datalist> with de-duped, non-empty option values (case-insensitive
    de-dupe, order preserved so the most relevant source can go first). */
@@ -108,7 +176,8 @@ function dprSetDatalist(id, values){
    dpr-feature-phases memory; this covers everything already in the app. */
 var dprDataListsLoaded = false;
 async function dprPopulateDataLists(force){
-  dprPopulateForemen(); /* immediate/offline: roster + device history */
+  dprPopulateForemen();     /* immediate/offline: roster + device history */
+  dprPopulateCrewRoster();  /* immediate/offline: full crew roster */
   if ((dprDataListsLoaded && !force) || !fdb) return;
   try{
     if (!dprBldCache){
@@ -145,7 +214,7 @@ async function dprPopulateDataLists(force){
     dprSetDatalist("dl-dprBillTo", custs.concat(getFieldHistory("billTo")));
     dprSetDatalist("dl-dprLocation", locs.concat(getFieldHistory("location")));
     dprSetDatalist("dl-dprForeman", foremen.concat(getFieldHistory("dprForeman")));
-    dprSetDatalist("dl-dprCrew", crew.concat(getFieldHistory("technician")));
+    dprSetDatalist("dl-dprCrew", DPR_CREW_ROSTER.concat(DPR_FOREMEN, crew, getFieldHistory("technician")));
     dprSetDatalist("dl-dprJobNo", fdnJobNos.concat(jobNos));
     dprDataListsLoaded = true;
   }catch(e){ /* best-effort — the fields still work as free text */ }
