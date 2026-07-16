@@ -1557,7 +1557,11 @@ var EMAIL_RECIPIENTS_SEED = [
   { email: "marks@watkinsroofing.net", label: "Mark Sheppard" },
   { email: "ChrisG@watkinsroofing.net", label: "Chris Gravits" },
   { email: "NathanD@watkinsroofing.net", label: "Nathan Dietiker" },
-  { email: "MarkE@watkinsroofing.net", label: "Mark Emms" }
+  { email: "MarkE@watkinsroofing.net", label: "Mark Emms" },
+  { email: "daxd@watkinsroofing.net", label: "Dax Dollins" },
+  { email: "carld@watkinsroofing.net", label: "Carl Daly" },
+  { email: "jodyg@watkinsroofing.net", label: "Jody Galloway" },
+  { email: "thomase@watkinsroofing.net", label: "Thomas Emms" }
 ];
 /* Mark doesn't want duplicate emails -- the always-on BCC (below) already
    covers him, so he's deliberately NOT a default To recipient anywhere
