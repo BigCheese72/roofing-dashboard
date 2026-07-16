@@ -250,7 +250,14 @@ function renderDoc(){
      back and forth between Edit and Preview on the same order). */
   var toBox = document.getElementById("emailTo");
   if (toBox && !toBox.value.trim()){
-    toBox.value = (o.woType === WORK_ORDER_TYPES[0] ? EMAIL_DEFAULT_TO_LEAK : EMAIL_DEFAULT_TO).join(", ");
+    /* Leak / Service already defaults to Charlotte (she handles billing).
+       A "Leak – No Job" ticket defaults to her too, whatever its type —
+       she's the Foundation record-keeper who has to create the real job
+       (see isLeakNoJobOrder() in js/workorders.js). Still just a DEFAULT
+       into an empty box: the tech sees it and can adjust before sending. */
+    var defaultToCharlotte = o.woType === WORK_ORDER_TYPES[0] ||
+      (typeof isLeakNoJobOrder === "function" && isLeakNoJobOrder(o));
+    toBox.value = (defaultToCharlotte ? EMAIL_DEFAULT_TO_LEAK : EMAIL_DEFAULT_TO).join(", ");
   }
 }
 /* Every DISTINCT roofId actually present among this report's findings
@@ -1179,9 +1186,12 @@ async function emailDoc(){
   var addrList = parseEmailRecipients(val("emailTo"));
   var alreadyHasBcc = addrList.some(function(a){ return a.toLowerCase() === EMAIL_ALWAYS_BCC.toLowerCase(); });
   var addrs = addrList.map(encodeURIComponent).join(",");
+  /* Leak/no-job note rides at the top of the email body (auto-inserted,
+     not a separate email — see leakNoJobEmailNote() in js/workorders.js). */
+  var njNote = (typeof leakNoJobEmailNote === "function") ? leakNoJobEmailNote(o) : "";
   var href = "mailto:" + addrs +
     "?subject=" + encodeURIComponent(subject) +
-    "&body=" + encodeURIComponent(buildText()) +
+    "&body=" + encodeURIComponent((njNote ? njNote + "\n\n" : "") + buildText()) +
     (alreadyHasBcc ? "" : "&bcc=" + encodeURIComponent(EMAIL_ALWAYS_BCC));
   window.location.href = href;
   toast("Opening your email app… If nothing opens or it's cut off, use Copy Document Text.");

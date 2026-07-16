@@ -212,6 +212,14 @@
 
     <div class="card">
       <h2 class="cond">Job Information</h2>
+      <!-- "Leak – No Job" catch-all flag (see isLeakNoJobOrder() in
+           js/workorders.js). DERIVED, never stored: shows while the order
+           rides the catch-all job, clears by itself the moment a real
+           Foundation job is linked. -->
+      <div id="wo-leaknojob-banner" style="display:none;background:#FFF3E0;border:1px solid #E8600A;color:#8A5A00;border-radius:8px;padding:10px 12px;margin:0 0 12px;font-weight:600">
+        ⚠️ Leak – No Job ticket — no real Foundation job number yet. Charlotte needs to create
+        the job in Foundation; once it exists, link it here (🔍 Select Job) and this flag clears.
+      </div>
       <div class="fld" style="max-width:280px">
         <label>Work Order Type</label>
         <select id="woType" onchange="onWoTypeChange()"></select>

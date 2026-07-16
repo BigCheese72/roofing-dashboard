@@ -46,6 +46,7 @@ function makeSandbox(fields){
     setVal(id, value){ sandbox.__fields[id] = value || ""; },
     populateWoTypeSelect(){},
     populateRoofSystemSelect(){},
+    renderLeakNoJobBadge(){},
     onWoTypeChange(){},
     renderFindings(){},
     renderRepairs(){},

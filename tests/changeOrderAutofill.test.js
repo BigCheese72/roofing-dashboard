@@ -50,6 +50,7 @@ function makeSandbox(opts){
     lookupRoofInfoMatchesBuilding(){ return false; },
     populateWoTypeSelect(){},
     populateRoofSystemSelect(){},
+    renderLeakNoJobBadge(){},
     onWoTypeChange(){},
     renderFindings(){},
     renderRepairs(){},
