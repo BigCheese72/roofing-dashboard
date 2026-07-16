@@ -86,6 +86,14 @@ test("different street number is not an address match", () => {
   assert.equal(ctx.fdnFindMatchingBuilding({ name: "CPS West Middle RTU replacement", address: "1200 Main St", city: "Springfield", state: "IL" }), null);
 });
 
+test("same street in a different city is not a lone address match", () => {
+  const ctx = makeCtx({
+    bpCache: [{ name: "Decatur Main Office", location: "1200 Main Street, Decatur, IL", companyCamProjectId: "ccp_4" }],
+    fdnCache: []
+  });
+  assert.equal(ctx.fdnFindMatchingBuilding({ name: "Springfield Main Office", address: "1200 Main St", city: "Springfield", state: "IL" }), null);
+});
+
 test("empty job name, empty cache, or explicit session CompanyCam link stay safe", () => {
   const empty = makeCtx({ bpCache: [] });
   assert.equal(empty.fdnFindMatchingBuilding({ name: "", address: "1200 Main St" }), null);

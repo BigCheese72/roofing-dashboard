@@ -154,7 +154,8 @@ function fdnNormalizeStreetToken(token) {
 }
 
 function fdnAddressMatchKey(s) {
-  var firstLine = String(s || "").split(",")[0];
+  var parts = String(s || "").split(",");
+  var firstLine = parts[0];
   var normalized = fdnNormalizeText(firstLine);
   var m = normalized.match(/^(\d+[a-z]?)\s+(.+)$/);
   if (!m) return "";
@@ -166,7 +167,13 @@ function fdnAddressMatchKey(s) {
     street.push(fdnNormalizeStreetToken(token));
     return false;
   });
-  return street.length ? (m[1] + " " + street.join(" ")) : "";
+  if (!street.length) return "";
+  var key = [m[1] + " " + street.join(" ")];
+  var city = fdnNormalizeText(parts[1]);
+  if (city) key.push(city);
+  var state = fdnNormalizeText(parts[2]).split(" ")[0] || "";
+  if (state) key.push(state);
+  return key.join("|");
 }
 
 function fdnUniqueMatch(candidates, predicate) {
