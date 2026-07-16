@@ -876,15 +876,66 @@ async function deleteAssetFromModal(){
   }catch(e){ toast("Couldn't remove: " + e.message); }
 }
 
+/* "+ Add Repair" ⇄ Repair Scope sync (Mark): on a Work Order (stored type
+   "Repair"), a repair row added in the Work Performed box should ALSO
+   populate the Repair Scope card's Description of Work Performed — techs
+   log what they did via "+ Add Repair" and never re-type it into the
+   scope, so the report's Repair Scope section came out empty. Each filled
+   repair row is mirrored as one "• repair — location" line in
+   #repairDescription, live as the row is typed/edited/removed.
+   NON-DESTRUCTIVE by design: a line is only ever replaced or removed when
+   it still EXACTLY matches the row's previous mirrored text — the moment
+   the tech hand-edits a mirrored line in the scope box it stops matching
+   and the sync permanently disengages for that row (their wording is
+   never clobbered, and the row is never re-appended behind their back —
+   see the oldLine-set-but-missing case below). No extra bookkeeping is
+   stored anywhere: repairs[] and repairDescription both already persist,
+   so the exact-match pairing survives save/reload as-is, and fill() never
+   syncs (opening an old record must not retroactively rewrite its scope).
+   Repair-type only — Inspection/Warranty also show Work Performed but
+   have no Repair Scope card, and writing into their hidden
+   #repairDescription would inject junk into those records. */
+function repairScopeLineFor(r){
+  if (!r || (!r.repair && !r.location)) return "";
+  return "• " + (r.repair || "") + (r.location ? " — " + r.location : "");
+}
+function syncRepairScopeLine(oldLine, newLine){
+  if (val("woType") !== "Repair") return;
+  if (oldLine === newLine) return;
+  var el = document.getElementById("repairDescription");
+  if (!el) return;
+  var lines = el.value ? el.value.split("\n") : [];
+  var idx = oldLine ? lines.indexOf(oldLine) : -1;
+  if (idx !== -1){
+    if (newLine) lines[idx] = newLine;
+    else lines.splice(idx, 1);
+  } else if (!oldLine && newLine){
+    /* Row just gained its first content — append, unless the identical
+       line is already there (duplicate row / tech already wrote it). */
+    if (lines.indexOf(newLine) !== -1) return;
+    lines.push(newLine);
+  } else {
+    /* oldLine set but no longer present: the tech edited or deleted the
+       mirrored line by hand — it's theirs now, leave the scope alone. */
+    return;
+  }
+  el.value = lines.join("\n");
+}
 function addRepair(data){
-  repairs.push(data || {repair:"",location:""});
+  /* Stable id from birth (like findings) so a base-map pin can reference the
+     row — see the repair-area pin contract in js/workorders.js. */
+  repairs.push(data || {id: genId("rep"), repair:"", location:"", pin:null});
   renderRepairs();
 }
-function removeRepair(i){ repairs.splice(i,1); renderRepairs(); }
+function removeRepair(i){
+  syncRepairScopeLine(repairScopeLineFor(repairs[i]), "");
+  repairs.splice(i,1); renderRepairs();
+}
 function renderRepairs(){
   var host = document.getElementById("repairs-list");
   host.innerHTML = "";
   repairs.forEach(function(r,i){
+    if (!r.id) r.id = genId("rep"); /* belt-and-braces — addRepair()/fill() normally assign it */
     var d = document.createElement("div");
     d.className = "rowcard";
     d.style.borderLeftColor = "#546E7A";
@@ -894,12 +945,22 @@ function renderRepairs(){
       '<div class="fld"><label>Repair Performed</label>' +
       '<textarea rows="1" data-i="' + i + '" data-f="repair">' + esc(r.repair) + '</textarea></div>' +
       '<div class="fld"><label>Location / Detail</label>' +
-      '<input type="text" data-i="' + i + '" data-f="location" value="' + esc(r.location) + '" list="dl-roofLocationDetail" onblur="rememberFieldValue(\'roofLocationDetail\', this.value)"></div>';
+      '<input type="text" data-i="' + i + '" data-f="location" value="' + esc(r.location) + '" list="dl-roofLocationDetail" onblur="rememberFieldValue(\'roofLocationDetail\', this.value)"></div>' +
+      /* Base-map pin for this repair area — same button pattern as findings.
+         openBaseMapPinPicker() (js/workorders.js) delegates to the roofmapper
+         in-form popup once it lands, and degrades to a toast until then. */
+      '<div class="btnrow" style="margin:-4px 0 12px">' +
+        '<button class="btn" onclick="openBaseMapPinPicker(\'' + esc(r.id) + '\')">' +
+          (r.pin ? '📍 Pinned — move' : '📍 Place on Map') +
+        '</button></div>';
     host.appendChild(d);
   });
   host.querySelectorAll("[data-f]").forEach(function(el){
     el.addEventListener("input", function(){
-      repairs[+el.dataset.i][el.dataset.f] = el.value;
+      var r = repairs[+el.dataset.i];
+      var oldLine = repairScopeLineFor(r);
+      r[el.dataset.f] = el.value;
+      syncRepairScopeLine(oldLine, repairScopeLineFor(r));
     });
   });
 }
