@@ -34,6 +34,9 @@ function makeSandbox(fields){
     document: { getElementById(){ return null; } },
     setTimeout(){ return 0; },
     clearTimeout(){},
+    /* fill() now backfills ids onto legacy findings/repairs via genId()
+       (repair-area pin contract) — the real one lives in the same file. */
+    genId(prefix){ return prefix + "_t" + Math.random().toString(36).slice(2, 8); },
     slugify(s){
       return String(s || "").toLowerCase().trim()
         .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "unknown";

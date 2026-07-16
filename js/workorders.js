@@ -795,6 +795,81 @@ function clearPinFromModal(){
   toast("Pin cleared");
 }
 
+/* ============ repair-area base-map pins — CONTRACT with js/roofmapper.js ============
+   Everything ties together around the JOB (Mark): each Work Performed row
+   ("repair area") is repair text ⇄ its Repair Scope line ⇄ optionally one pin
+   on the job's PERMANENT base map — all carried on the work-order record
+   itself (repairs[] round-trips through collect()/fill() like findings do),
+   never screen-local, so it's identical wherever the job is opened.
+
+   THIS FILE (js/workorders.js) owns the data side; js/roofmapper.js owns the
+   in-form popup UI. The interface, exactly:
+
+     openBaseMapPinPicker(repairAreaId)          — UI entry point, called from the
+       row's "📍 Place on Map" button (renderRepairs, js/photos.js). Delegates to
+       rmOpenRepairAreaPinPicker(repairAreaId) once js/roofmapper.js provides it;
+       until then it's a graceful stub (repair area + scope still fully work).
+
+     rmOpenRepairAreaPinPicker(repairAreaId)     — Codex implements in js/roofmapper.js.
+       MUST: open the job's EXISTING permanent base map in an in-form modal
+       (resolve the same way the finding pin modal does — no separate/new map);
+       fall back to satellite when the job has none georeferenced, and degrade
+       gracefully (message, still closable, repair area unaffected) when there's
+       no map at all. Reads the row via repairAreaById(); persists ONLY through
+       setRepairAreaPin() below — never write r.pin directly.
+
+     repairAreaById(repairAreaId) -> row | null   — row: {id, repair, location, pin}
+
+     setRepairAreaPin(repairAreaId, pin) -> bool  — sole write path. Validates via
+       repairAreaPinValid() (rejects the write, returns false, when the shape is
+       wrong), stores onto the row, re-renders. Pass pin = null to clear.
+
+   Pin shape — IDENTICAL to finding pins (f.pin), so every existing renderer
+   that understands finding pins can be pointed at repair pins unchanged:
+     satellite / georeferenced ortho:
+       { lat:Number, lng:Number, x:null, y:null, source:"tech_placed"|"device_gps" }
+     non-georeferenced roof plan / sketch:
+       { lat:null, lng:null, x:0..1, y:0..1, source:"tech_placed",
+         imageFrame:"roof_base_map", imageFrameUrl:<the exact image placed against> }
+   Guards enforced here (defense in depth — the popup should uphold them too):
+     - Null Island: (0,0) is this codebase's synthetic "no real location"
+       convention (#40) — never storable as a real repair pin.
+     - Frame binding: an x/y pin is meaningless without the exact base-map image
+       it was placed against (#45) — imageFrameUrl is REQUIRED on x/y pins so the
+       pin carries its own frame wherever the job is viewed.
+     - Only real placements: like savePinFromModal(), the popup must never save
+       an un-interacted default/center marker position as a tech placement. */
+function repairAreaById(repairAreaId){
+  return repairs.find(function(r){ return r && r.id === repairAreaId; }) || null;
+}
+function repairAreaPinValid(pin){
+  if (!pin || typeof pin !== "object") return false;
+  var latlng = pinCoordIsNumber(pin.lat) && pinCoordIsNumber(pin.lng);
+  var xy = pinCoordIsNumber(pin.x) && pinCoordIsNumber(pin.y);
+  if (latlng && !xy) return !(pin.lat === 0 && pin.lng === 0);
+  if (xy && !latlng){
+    return pin.imageFrame === "roof_base_map" && !!pin.imageFrameUrl &&
+      pin.x >= 0 && pin.x <= 1 && pin.y >= 0 && pin.y <= 1;
+  }
+  return false;
+}
+function setRepairAreaPin(repairAreaId, pin){
+  var r = repairAreaById(repairAreaId);
+  if (!r) return false;
+  if (pin !== null && !repairAreaPinValid(pin)) return false;
+  r.pin = pin;
+  renderRepairs();
+  return true;
+}
+function openBaseMapPinPicker(repairAreaId){
+  if (!repairAreaById(repairAreaId)) return;
+  if (typeof rmOpenRepairAreaPinPicker === "function"){
+    rmOpenRepairAreaPinPicker(repairAreaId);
+    return;
+  }
+  toast("Base-map pin placement for repair areas is coming shortly — this repair area is saved without a pin for now.");
+}
+
 /* ================= warranty guidelines (display-only reference) =================
    Plain tech guidelines, NOT manufacturer-official — Mark: "just guidelines
    for the techs." Two arrays, easy to edit (add/remove a line to change what
@@ -923,6 +998,13 @@ function fill(o){
     if (f.pin === undefined) f.pin = null;
   });
   repairs = (o.repairs || []).slice(); if (!repairs.length) repairs = [{repair:"",location:""}];
+  /* Same self-heal as findings above: repair areas saved before ids/pins
+     existed get a stable id (so a base-map pin can reference the row) and an
+     explicit null pin — never a fabricated location, just plumbing. */
+  repairs.forEach(function(r){
+    if (!r.id) r.id = genId("rep");
+    if (r.pin === undefined) r.pin = null;
+  });
   repairItems = (o.repairItems || []).slice(); /* Repair type only — no forced minimum row, optional */
   photos = (o.photos || []).slice();
   photos.forEach(function(p){ if (p.finding_id === undefined) p.finding_id = null; });

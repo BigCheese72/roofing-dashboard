@@ -922,7 +922,9 @@ function syncRepairScopeLine(oldLine, newLine){
   el.value = lines.join("\n");
 }
 function addRepair(data){
-  repairs.push(data || {repair:"",location:""});
+  /* Stable id from birth (like findings) so a base-map pin can reference the
+     row — see the repair-area pin contract in js/workorders.js. */
+  repairs.push(data || {id: genId("rep"), repair:"", location:"", pin:null});
   renderRepairs();
 }
 function removeRepair(i){
@@ -933,6 +935,7 @@ function renderRepairs(){
   var host = document.getElementById("repairs-list");
   host.innerHTML = "";
   repairs.forEach(function(r,i){
+    if (!r.id) r.id = genId("rep"); /* belt-and-braces — addRepair()/fill() normally assign it */
     var d = document.createElement("div");
     d.className = "rowcard";
     d.style.borderLeftColor = "#546E7A";
@@ -942,7 +945,14 @@ function renderRepairs(){
       '<div class="fld"><label>Repair Performed</label>' +
       '<textarea rows="1" data-i="' + i + '" data-f="repair">' + esc(r.repair) + '</textarea></div>' +
       '<div class="fld"><label>Location / Detail</label>' +
-      '<input type="text" data-i="' + i + '" data-f="location" value="' + esc(r.location) + '" list="dl-roofLocationDetail" onblur="rememberFieldValue(\'roofLocationDetail\', this.value)"></div>';
+      '<input type="text" data-i="' + i + '" data-f="location" value="' + esc(r.location) + '" list="dl-roofLocationDetail" onblur="rememberFieldValue(\'roofLocationDetail\', this.value)"></div>' +
+      /* Base-map pin for this repair area — same button pattern as findings.
+         openBaseMapPinPicker() (js/workorders.js) delegates to the roofmapper
+         in-form popup once it lands, and degrades to a toast until then. */
+      '<div class="btnrow" style="margin:-4px 0 12px">' +
+        '<button class="btn" onclick="openBaseMapPinPicker(\'' + esc(r.id) + '\')">' +
+          (r.pin ? '📍 Pinned — move' : '📍 Place on Map') +
+        '</button></div>';
     host.appendChild(d);
   });
   host.querySelectorAll("[data-f]").forEach(function(el){

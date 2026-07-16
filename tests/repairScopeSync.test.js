@@ -47,6 +47,9 @@ function makeSandbox(opts){
     val(id){ return sandbox.__fields[id] || ""; },
     esc(s){ return String(s == null ? "" : s); },
     rememberFieldValue(){},
+    __genIdCounter: 0,
+    genId(prefix){ return prefix + "_t" + (sandbox.__genIdCounter++); },
+    openBaseMapPinPicker(){},
     document: {
       getElementById(id){
         if (id === "repairs-list") return host;
