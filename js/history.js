@@ -1098,6 +1098,24 @@ async function runPendingCcPdfBackfill(){
     toast("This work order isn't linked to a CompanyCam project — link it (🔍 Select Job or Import from CompanyCam), save, then retry.");
     return;
   }
+  /* VERIFY FIRST (Sophia's Curb Flashing): when the order already holds an
+     uploaded document id, ask CompanyCam whether that document really
+     exists before re-uploading anything. Exists -> the stale "failed" was
+     a transient fetch error; reconcile the event to saved WITHOUT pushing
+     a duplicate version (CompanyCam documents are create-only). Gone (or
+     the check itself is unreachable) -> fall through to the normal
+     regenerate-and-upload path. */
+  if (o.ccDocumentId){
+    try{
+      var v = await ccApiPost({ action: "verify_document", document_id: o.ccDocumentId });
+      if (v && v.exists){
+        await logReportAndHistoryEvent(o, "Saved", null,
+          { ok: true, documentId: o.ccDocumentId, unchanged: true, verified: true });
+        toast("Verified on CompanyCam ✓ — status corrected; nothing re-uploaded.");
+        return;
+      }
+    }catch(e){ /* verification unavailable — the upload path below is still the honest fallback */ }
+  }
   toast("Building PDF for CompanyCam…");
   var d = await generatePdf();
   if (!d) return;
@@ -1207,6 +1225,10 @@ async function uploadPdfToCompanyCam(doc, o){
     }
     o.ccDocumentId = documentId;
     o.ccDocumentHash = hash;
+    /* Keep the session-wide artifact vars (js/core.js) in step so any LATER
+       collect() this session also carries the uploaded document. */
+    currentCcDocumentId = documentId;
+    currentCcDocumentHash = hash;
     if (o.id) await ccPersistDocumentInfo(o.id, documentId, hash);
     return { ok: true, documentId: documentId, documentUrl: (out && out.url) || null };
   }catch(e){
@@ -1591,6 +1613,17 @@ function ccStatusFromUploadResult(existingStatus, existingError, existingDocId, 
   } else if (ccUploadResult.skipped && !ccUploadResult.ok){
     out.status = "not_linked";
     out.error = "";
+  } else if (out.documentId){
+    /* FAILURE, but a document id is KNOWN — the other direction of the
+       honesty rule (Sophia's Curb Flashing, Job 17476: a transient client
+       "Load failed" was recorded as FINAL while the work order held the
+       uploaded doc's id). The artifact is the truth: an uploaded document
+       exists on CompanyCam, so the report must never alarm "not saved" —
+       the transient error is retryable noise (at worst the very latest
+       re-render didn't REPLACE an already-uploaded version; the next send
+       re-pushes by content hash). Status: saved, no alarm. */
+    out.status = "saved";
+    out.error = "";
   } else {
     out.status = "failed";
     out.error = ccUploadResult.error || "CompanyCam upload returned no document id — not confirmed saved.";
@@ -1642,7 +1675,10 @@ async function logReportAndHistoryEvent(o, kind, emailInfo, ccUploadResult){
     var ccS = ccStatusFromUploadResult(
       (existing && existing.companyCamUploadStatus) || null,
       (existing && existing.companyCamUploadError) || "",
-      (existing && existing.ccDocumentId) || null,
+      /* Known artifact from EITHER record: the prior event's id, or the
+         work order's own (collect() carries ccDocumentId now — Sophia's
+         event predated the field, but her WO doc holds the id). */
+      (existing && existing.ccDocumentId) || o.ccDocumentId || null,
       ccUploadResult
     );
     var ccStatus = ccS.status;

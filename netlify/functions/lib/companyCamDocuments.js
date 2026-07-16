@@ -45,4 +45,28 @@ async function uploadDocumentToCompanyCam(projectId, name, attachmentBase64) {
   }
 }
 
-module.exports = { uploadDocumentToCompanyCam };
+// Artifact-truth verification (Sophia's Curb Flashing false negative, Job
+// 17476 / wo_1784203041457): a transient client-side "Load failed" was
+// recorded as a FINAL "failed" status while the document was demonstrably
+// on CompanyCam (the work order holds its ccDocumentId). This read-only
+// check lets the client reconcile a stale "failed" to "saved" — or a stale
+// id to genuinely-gone — from the source of truth instead of the last
+// fetch's luck. READ token; never mutates anything.
+async function verifyDocumentOnCompanyCam(documentId) {
+  const readToken = process.env.COMPANYCAM_TOKEN;
+  if (!readToken) return { ok: false, error: "COMPANYCAM_TOKEN is not set." };
+  const id = String(documentId || "").replace(/[^A-Za-z0-9_-]/g, "");
+  if (!id) return { ok: false, error: "Missing document_id" };
+  try {
+    const r = await fetch("https://api.companycam.com/v2/documents/" + id, {
+      headers: { "Authorization": "Bearer " + readToken, "Accept": "application/json" }
+    });
+    if (r.status === 404) return { ok: true, exists: false };
+    if (!r.ok) return { ok: false, error: "CompanyCam document check failed: " + r.status };
+    return { ok: true, exists: true };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
+
+module.exports = { uploadDocumentToCompanyCam, verifyDocumentOnCompanyCam };

@@ -1284,6 +1284,12 @@ function collect(){
      or legacy order until first save; readers fall back to the name slug. */
   o.buildingId = currentBuildingId || null;
   o.customerId = currentCustomerId || null;
+  /* CompanyCam document artifact (vars in js/core.js): stamped so a rebuilt
+     order still KNOWS its uploaded PDF — keeps the #54 idempotency guard
+     alive across reloads and lets status reconciliation prove a document
+     exists (Sophia's Curb Flashing false "failed"). */
+  o.ccDocumentId = currentCcDocumentId || null;
+  o.ccDocumentHash = currentCcDocumentHash || null;
   o.foundationJobNo = (typeof fdnLinkedJobNo !== "undefined" && fdnLinkedJobNo) ? fdnLinkedJobNo : null;
   o.foundationJobName = (typeof fdnLinkedJobName !== "undefined" && fdnLinkedJobName) ? fdnLinkedJobName : "";
   o.foundationCustomerNo = (typeof fdnLinkedCustomerNo !== "undefined" && fdnLinkedCustomerNo) ? fdnLinkedCustomerNo : null;
@@ -1316,6 +1322,8 @@ function fill(o){
      old slug-fallback behavior byte-for-byte. */
   currentBuildingId = o.buildingId || null;
   currentCustomerId = o.customerId || null;
+  currentCcDocumentId = o.ccDocumentId || null;
+  currentCcDocumentHash = o.ccDocumentHash || null;
   currentRoofId = o.roofId || null;
   currentRoofIds = (o.roofIds && o.roofIds.length > 1) ? o.roofIds.slice() : null;
   /* Must be set before onWoTypeChange() below (Inspection's branch reads

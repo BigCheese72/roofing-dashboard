@@ -25,6 +25,8 @@ function makeFormSandbox(){
     WORK_ORDER_TYPES: ["Leak / Service"],
     currentId: null, currentRoofId: null, currentRoofIds: null,
     currentBuildingId: null, currentCustomerId: null,
+    currentCcDocumentId: null,
+    currentCcDocumentHash: null,
     findings: [], repairs: [], repairItems: [], materials: [], inspectionChecklist: [], photos: [],
     ccLinkedProjectId: null, ccLinkedProjectName: "", changeOrderSignature: null,
     lastLookupRoofInfo: null, fdb: {},
