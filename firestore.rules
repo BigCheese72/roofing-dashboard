@@ -158,6 +158,22 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // The ONE app_settings doc clients may write: the shared roof-type
+    // list (see "shared roof-type list" in js/workorders.js). Overlapping
+    // matches grant access when ANY matching allow grants it, so this
+    // opens write for exactly this doc without loosening the write:false
+    // above for the rest of app_settings. Signed-in users only, and the
+    // doc can only ever be { types: [...] } — nothing else can be smuggled
+    // into it. Client additions go through arrayUnion; pruning stays
+    // possible for a future admin.js action (Admin SDK bypasses rules).
+    // Zero prod risk: production's code never writes this doc, and the
+    // rule is purely additive.
+    match /app_settings/roof_types {
+      allow write: if request.auth != null
+        && request.resource.data.keys().hasOnly(['types'])
+        && request.resource.data.types is list;
+    }
+
     // In-app Send Feedback submissions (💬 button, every screen — see
     // "Send Feedback" in DEV_NOTES.md). Any client can create one (no PIN
     // needed — anyone should be able to submit), but nobody reads/updates/

@@ -49,6 +49,7 @@ function makeSandbox(opts){
     buildingIdFor(){ return "bld_acme_north"; },
     lookupRoofInfoMatchesBuilding(){ return false; },
     populateWoTypeSelect(){},
+    populateRoofSystemSelect(){},
     onWoTypeChange(){},
     renderFindings(){},
     renderRepairs(){},

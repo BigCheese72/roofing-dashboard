@@ -45,6 +45,7 @@ function makeSandbox(fields){
     val(id){ return sandbox.__fields[id] || ""; },
     setVal(id, value){ sandbox.__fields[id] = value || ""; },
     populateWoTypeSelect(){},
+    populateRoofSystemSelect(){},
     onWoTypeChange(){},
     renderFindings(){},
     renderRepairs(){},
