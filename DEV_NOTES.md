@@ -8224,3 +8224,24 @@ metadata + thumb + `storageRef` + `localId`.
 
 Still open: **Phase 2** upload-on-add (get bytes to Storage as you shoot, so
 they're cloud-durable, not just IDB-durable) and **Phase 3** proactive eviction.
+
+## Admin page (field-first UX)
+
+Mark's principle: the users are roofers, hot and sweaty on the roof — the WO /
+leak / DPR flows must stay dead-simple, and admin/maintenance controls must be
+OUT of that flow, consolidated in one easily-reached place.
+
+All admin/maintenance controls now live on a dedicated **Admin page**
+(`#view-admin`), reached via an **admin-only tab** (`tab-admin`). Previously they
+sat in `#admin-settings-bar` — an always-visible orange card on top of *every*
+view for admins, cluttering the field screens. The tab is shown/hidden purely by
+`updateAdminUI()` off the signed-in user's real role (never a toggle), so field
+techs never see it; if admin is revoked while the page is open, `updateAdminUI()`
+bounces back to Edit. `showView("admin")` toggles the view like any other.
+
+The page holds: global Photo Size, Migrate Photos to Storage, Sync Foundation
+Jobs, Backfill Thumbnails, Backfill Photos to CompanyCam, and CCM-Inspect report
+check/Review-Queue. Contextual admin actions stay where they belong (per-order
+Delete in Saved, "remove pushed photo" in the gallery, asset Delete in its
+modal) — this consolidates the app-wide tools, not the in-context ones. Each
+handler still enforces its own server-side permission (defense in depth).

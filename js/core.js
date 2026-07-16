@@ -1237,6 +1237,34 @@ async function fetchFoundationJobs(search){
     return (out && Array.isArray(out.jobs)) ? out.jobs : [];
   }catch(e){ return []; }
 }
+/* Admin-triggered Foundation job sync -- forces the same read-only pull the
+   scheduled hourly Action runs (netlify/functions/foundation-sync.js), so an
+   admin can refresh the job picker on demand. The function is server-gated:
+   the caller must hold foundation.read (or be the scheduled secret), so a
+   non-permitted user just gets a clear 403 toast. Wired to the admin-only
+   "Sync Foundation Jobs Now" button; disables the button while in flight. */
+async function runFoundationSync(btn){
+  if (btn) btn.disabled = true;
+  toast("Syncing Foundation jobs…");
+  try{
+    var r = await fetch("/.netlify/functions/foundation-sync", {
+      method: "POST", headers: await authHeaders(),
+      body: JSON.stringify({ action: "sync" })
+    });
+    var out = null; try{ out = await r.json(); }catch(e){}
+    if (!r.ok || !out || out.ok === false){
+      toast("Foundation sync failed: " + ((out && out.error) || ("server error " + r.status)));
+    } else {
+      var n = (out.active_jobs != null) ? out.active_jobs : "?";
+      toast("Foundation jobs synced ✓ — " + n + " active job" + (out.active_jobs === 1 ? "" : "s") +
+        (out.written != null ? " (" + out.written + " updated)" : "") + ".");
+    }
+  }catch(e){
+    toast("Foundation sync failed: " + (e && e.message ? e.message : "network error"));
+  }finally{
+    if (btn) btn.disabled = false;
+  }
+}
 async function callAdminApi(body){
   var r = await fetch("/.netlify/functions/admin", {
     method: "POST",
@@ -1413,12 +1441,17 @@ async function runCompanyCamPhotoBackfill(){
    on. Every privileged control below now shows or hides purely off
    isAdmin/claims, with no manual step in between. */
 function updateAdminUI(){
-  var settingsBar = document.getElementById("admin-settings-bar");
-  if (settingsBar){
-    settingsBar.style.display = isAdmin ? "" : "none";
-    var sel = document.getElementById("adminPhotoSize");
-    if (isAdmin && sel) sel.value = globalPhotoSizePref;
-    if (isAdmin && typeof updateWarrantyReviewBadge === "function") updateWarrantyReviewBadge();
+  /* All admin/maintenance controls live on the dedicated Admin page (#view-admin,
+     reached via tab-admin) instead of an always-visible bar. Show the tab only
+     for admins; keep the global photo-size select in sync; and if admin was just
+     revoked while the Admin page is open, bounce back to Edit. */
+  var adminTab = document.getElementById("tab-admin");
+  if (adminTab) adminTab.style.display = isAdmin ? "" : "none";
+  var sel = document.getElementById("adminPhotoSize");
+  if (isAdmin && sel) sel.value = globalPhotoSizePref;
+  if (isAdmin && typeof updateWarrantyReviewBadge === "function") updateWarrantyReviewBadge();
+  if (!isAdmin && typeof currentViewName !== "undefined" && currentViewName === "admin"){
+    showView("edit");
   }
   /* Saved view access control (Mark) -- Import Work Order File and, per
      saved work order, Delete, are admin-only (Export was removed
@@ -1883,6 +1916,20 @@ function renderAuditLogBacklog(){
     '</div>';
   }).join("");
 }
+/* Per-photo assignment options for a Repair work order's photo dropdown: the
+   Repairs Performed rows (repairs[]), tagged "repair:<original-row-index>" so
+   the value can't collide with a real finding id and the report ignores it.
+   Blank rows are skipped; numbering ("Repair #N") is contiguous over what's
+   shown. Pure/extracted for testing — see renderPhotos()'s isRepairWo branch. */
+function repairPhotoAssignOptions(repairs){
+  var out = [];
+  (repairs || []).forEach(function(r, ri){
+    if (r && (r.repair || r.location)){
+      out.push({ id: "repair:" + ri, label: "Repair #" + (out.length + 1) + (r.repair ? ": " + String(r.repair).slice(0, 40) : "") });
+    }
+  });
+  return out;
+}
 function renderPhotos(){
   var host = document.getElementById("photos-list");
   host.innerHTML = "";
@@ -1914,6 +1961,21 @@ function renderPhotos(){
       return { id: item.id, label: "Checklist: " + inspectionComponentLabel(item.key) };
     })
   );
+  /* A Repair work order has no findings (wo-findings-card is hidden — see
+     onWoTypeChange). Mark: on a Repair, the per-photo assignment should read
+     "Repair" and list the Repairs Performed rows entered in that section, not
+     an empty "Finding" dropdown. The selection persists in the same finding_id
+     field, tagged "repair:<row>" so it can't collide with a real finding id;
+     the report/PDF captions look up finding_id against findings only, so they
+     ignore these tags and stay unchanged (a form-organization aid, per the
+     agreed scope). repairs[] rows carry no stable id, so the tag keys off the
+     row's original index — a Repair WO's Repairs Performed list is small and
+     rarely reordered, and a stale tag only mislabels a photo in the form,
+     never touches data or the report. */
+  var isRepairWo = (typeof val === "function" && val("woType") === "Repair");
+  var assignLabel = isRepairWo ? "Repair" : "Finding";
+  var assignEmpty = isRepairWo ? "General / no specific repair" : "General / no specific finding";
+  var assignOptions = isRepairWo ? repairPhotoAssignOptions(repairs) : findingOptions;
   photos.forEach(function(p,i){
     var d = document.createElement("div");
     d.className = "photo-card";
@@ -1931,10 +1993,10 @@ function renderPhotos(){
       '</div>' +
       (isAdmin && p.ccFeedPhotoId ? '<button class="btn" onclick="removePushedPhotoFromCC(' + i + ')" title="Remove this photo from the CompanyCam feed (it stays on the work order)">⤺ CC</button>' : '') +
       '<button class="btn danger" onclick="removePhoto(' + i + ')">✕</button></div>' +
-      '<div class="photo-finding-row"><label>Finding:</label>' +
+      '<div class="photo-finding-row"><label>' + assignLabel + ':</label>' +
       '<select data-photo-finding="' + i + '">' +
-        '<option value="">General / no specific finding</option>' +
-        findingOptions.map(function(o){
+        '<option value="">' + assignEmpty + '</option>' +
+        assignOptions.map(function(o){
           return '<option value="' + esc(o.id) + '"' + (p.finding_id === o.id ? " selected" : "") + '>' + esc(o.label) + '</option>';
         }).join("") +
       '</select></div>' +
@@ -2986,11 +3048,14 @@ var currentViewName = "home"; /* mirrors showView()'s v -- used by Send
   Feedback to auto-capture which screen the tester was on. See "Send
   Feedback" in DEV_NOTES.md. */
 function showView(v){
+  if (v === "admin" && !isAdmin){
+    v = "edit";
+  }
   currentViewName = v;
   /* "home" has no header tab (reached via "+ New", the empty-state button
      in Building History, or tapping the logo) — every other view still
      keeps its tab exactly as before. */
-  ["home","edit","preview","saved","history","reports","roofmapper","dpr"].forEach(function(name){
+  ["home","edit","preview","saved","history","reports","roofmapper","dpr","admin"].forEach(function(name){
     var viewEl = document.getElementById("view-" + name);
     if (viewEl) viewEl.style.display = (name === v ? "" : "none");
     var tabEl = document.getElementById("tab-" + name);
