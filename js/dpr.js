@@ -1152,6 +1152,10 @@ async function dprRefreshWeather(){
     if (seq !== dprWeatherFetchSeq) return;
   }
   if (!w){ dprRenderWeatherUnavailable(); return; }
+  /* A same-day report may have LOADED while this fetch was in flight (the
+     same-day continuation) — its saved snapshot is the day's record and must
+     not be overwritten by a fresh pull. */
+  if (dprState.weather && dprState.weather.date === dateStr){ dprRenderWeather(); return; }
   dprState.weather = Object.assign({ lat: Math.round(center.lat * 10000) / 10000, lng: Math.round(center.lng * 10000) / 10000 }, w);
   dprRenderWeather();
 }
