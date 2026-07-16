@@ -131,12 +131,21 @@ async function dprPopulateDataLists(force){
         if (r.jobNo) jobNos.push(r.jobNo);
       });
     }catch(e){}
-    dprSetDatalist("dl-dprJobName", names.concat(getFieldHistory("jobName")));
+    /* Foundation jobs (the accounting system of record) — real job numbers +
+       job names to choose from. Loaded once into dprFdnJobsCache; the cache
+       also powers the "From Foundation" search results in dprSearchBuildings. */
+    var fdnJobNos = [], fdnJobNames = [];
+    await dprLoadFoundationJobs();
+    (dprFdnJobsCache || []).forEach(function(j){
+      if (j.job_no) fdnJobNos.push(j.job_no);
+      if (j.name) fdnJobNames.push(j.name);
+    });
+    dprSetDatalist("dl-dprJobName", fdnJobNames.concat(names, getFieldHistory("jobName")));
     dprSetDatalist("dl-dprBillTo", custs.concat(getFieldHistory("billTo")));
     dprSetDatalist("dl-dprLocation", locs.concat(getFieldHistory("location")));
     dprSetDatalist("dl-dprForeman", foremen.concat(getFieldHistory("dprForeman")));
     dprSetDatalist("dl-dprCrew", crew.concat(getFieldHistory("technician")));
-    dprSetDatalist("dl-dprJobNo", jobNos);
+    dprSetDatalist("dl-dprJobNo", fdnJobNos.concat(jobNos));
     dprDataListsLoaded = true;
   }catch(e){ /* best-effort — the fields still work as free text */ }
 }
@@ -161,6 +170,63 @@ async function dprAutofillJobNo(buildingId){
     setVal("dpr-jobNo", base);
     dprJobNoAutoVal = base;
   }catch(e){ /* non-fatal */ }
+}
+
+/* ================= Foundation jobs (accounting system of record) =================
+   Reads the client-readable `foundation_jobs` cache (mirrored from FoundationSoft
+   by the parallel session's foundation-sync — read-only here, never written). Lets
+   a foreman pick the real Foundation job for the day so Job No./name come straight
+   from accounting, and stamps the Foundation link onto the building on save. */
+var dprFdnJobsCache = null;
+async function dprLoadFoundationJobs(){
+  if (dprFdnJobsCache || !fdb) return;
+  try{
+    var qs = await fdb.collection("foundation_jobs").limit(1000).get();
+    dprFdnJobsCache = [];
+    qs.forEach(function(d){ dprFdnJobsCache.push(Object.assign({ id: d.id }, d.data())); });
+  }catch(e){ dprFdnJobsCache = dprFdnJobsCache || []; }
+}
+/* Sets Job No. from a building's Foundation link. Returns true if the building
+   HAS a Foundation job (so the caller can skip the history-based fallback),
+   false if not — never stomps a number the foreman typed. */
+function dprApplyFoundationJobNo(b){
+  var fjn = (b && b.foundationJobNo != null) ? String(b.foundationJobNo).trim() : "";
+  if (!fjn) return false;
+  dprState.foundationJobNo = fjn;
+  if (b.foundationCustomerNo != null) dprState.foundationCustomerNo = String(b.foundationCustomerNo);
+  var cur = (val("dpr-jobNo") || "").trim();
+  if (!cur || cur === dprJobNoAutoVal){
+    setVal("dpr-jobNo", fjn);
+    dprJobNoAutoVal = fjn;
+  }
+  return true;
+}
+/* Human label for a Foundation job row. */
+function dprFdnJobLabel(j){
+  var parts = [];
+  if (j.job_no) parts.push(j.job_no);
+  if (j.name) parts.push(j.name);
+  var loc = [j.address, j.city, j.state].filter(Boolean).join(", ");
+  return { title: parts.join(" — ") || (j.name || j.job_no || "Foundation job"), meta: loc };
+}
+/* Foreman picked a Foundation job directly (no building needed): fill Job Name,
+   Location and Job No. from accounting. Customer stays as-is (Foundation gives a
+   customer number, not a name — the linked building carries the real name). */
+function dprPickFoundationJob(jobNo){
+  var j = (dprFdnJobsCache || []).find(function(x){ return String(x.job_no) === String(jobNo); });
+  if (!j) return;
+  if (j.name) setVal("dpr-jobName", j.name);
+  var loc = [j.address, j.city, j.state, j.zip].filter(Boolean).join(", ");
+  if (loc) setVal("dpr-location", loc);
+  setVal("dpr-jobNo", String(j.job_no || ""));
+  dprJobNoAutoVal = String(j.job_no || "");
+  dprState.foundationJobNo = String(j.job_no || "");
+  dprState.foundationCustomerNo = (j.customer_no != null ? String(j.customer_no) : null);
+  setVal("dpr-bld-search", "");
+  var host = document.getElementById("dpr-bld-results");
+  if (host) host.innerHTML = "";
+  dprScheduleSameDayLoad();
+  toast("Linked Foundation job " + (j.job_no || "") + " — fill in today's progress");
 }
 
 function dprCanView(){
@@ -271,14 +337,35 @@ async function dprSearchBuildings(){
       (b.customerName || "").toLowerCase().indexOf(q) > -1 ||
       (b.location || "").toLowerCase().indexOf(q) > -1;
   }).slice(0, 25);
-  if (!matches.length){ host.innerHTML = '<p class="hint">No matching buildings — type the job details in directly below.</p>'; return; }
-  host.innerHTML = matches.map(function(b){
+  var html = matches.map(function(b){
     return '<div class="bld-item" onclick="dprPickBuilding(\'' + esc(b.id) + '\')"><div class="info">' +
       '<div class="name">' + esc(b.name) + '</div>' +
       '<div class="meta">' + esc(b.customerName || "") + (b.location ? ' · ' + esc(b.location) : "") +
       (b.roofSystem ? ' · ' + esc(b.roofSystem) : "") + '</div></div>' +
       '<button class="btn">Select</button></div>';
   }).join("");
+  /* "From Foundation" — active jobs from accounting the foreman can pick even
+     if there's no RoofOps building for the site yet. Searched against the local
+     foundation_jobs cache (loaded in dprPopulateDataLists). */
+  await dprLoadFoundationJobs();
+  var fdnMatches = (dprFdnJobsCache || []).filter(function(j){
+    return String(j.job_no || "").toLowerCase().indexOf(q) > -1 ||
+      (j.name || "").toLowerCase().indexOf(q) > -1 ||
+      (j.address || "").toLowerCase().indexOf(q) > -1 ||
+      (j.city || "").toLowerCase().indexOf(q) > -1;
+  }).slice(0, 15);
+  if (fdnMatches.length){
+    html += '<div class="hint" style="margin:8px 0 4px;font-weight:600">☁️ From Foundation</div>' +
+      fdnMatches.map(function(j){
+        var lbl = dprFdnJobLabel(j);
+        return '<div class="bld-item" onclick="dprPickFoundationJob(\'' + esc(String(j.job_no)) + '\')"><div class="info">' +
+          '<div class="name">' + esc(lbl.title) + '</div>' +
+          (lbl.meta ? '<div class="meta">' + esc(lbl.meta) + '</div>' : '') + '</div>' +
+          '<button class="btn">Select</button></div>';
+      }).join("");
+  }
+  if (!html){ host.innerHTML = '<p class="hint">No matching jobs — type the details in directly below.</p>'; return; }
+  host.innerHTML = html;
 }
 function dprPickBuilding(buildingId){
   var b = (dprBldCache || []).find(function(x){ return x.id === buildingId; });
@@ -293,7 +380,10 @@ function dprPickBuilding(buildingId){
   dprState.buildingId = buildingId;
   dprState.roofs = getBuildingRoofs(b);
   dprRenderRoofPicker();
-  dprAutofillJobNo(buildingId);
+  /* Prefer the building's Foundation job number (the accounting system of
+     record) for Job No.; fall back to the parent-job derivation only if the
+     building has no Foundation link. */
+  if (!dprApplyFoundationJobNo(b)) dprAutofillJobNo(buildingId);
   dprScheduleSameDayLoad();
   toast("Loaded “" + b.name + "” — review the fields, then fill in today's progress");
 }
@@ -519,7 +609,9 @@ function dprCollect(){
     jobName: val("dpr-jobName"),
     billTo: val("dpr-billTo"),
     location: val("dpr-location"),
-    jobNo: val("dpr-jobNo"),          /* manual for now; Foundation auto-fill is a LATER phase (hook only) */
+    jobNo: val("dpr-jobNo"),          /* from Foundation (building link / job pick) or typed */
+    foundationJobNo: dprState.foundationJobNo || null,          /* stamps the building's Foundation link on save (ensureCustomerAndBuilding) */
+    foundationCustomerNo: dprState.foundationCustomerNo || null,
     roofSystem: val("dpr-roofSystem"),
     crew: dprCrew.filter(function(c){ return (c.name || "").trim(); }).map(function(c){ return { name: c.name.trim() }; }),
     headcount: val("dpr-headcount"),
@@ -545,6 +637,8 @@ function dprFill(o){
   setVal("dpr-location", o.location || "");
   setVal("dpr-jobNo", o.jobNo || "");
   dprJobNoAutoVal = String(o.jobNo || "");
+  dprState.foundationJobNo = o.foundationJobNo || null;
+  dprState.foundationCustomerNo = o.foundationCustomerNo || null;
   setVal("dpr-roofSystem", o.roofSystem || "");
   setVal("dpr-date", o.date || dprTodayStr());
   setVal("dpr-headcount", o.headcount || "");
@@ -675,6 +769,8 @@ function dprNewReport(){
   dprPhotos = [];
   dprHeadcountAutoVal = "";
   dprJobNoAutoVal = "";
+  dprState.foundationJobNo = null;
+  dprState.foundationCustomerNo = null;
   ["dpr-foreman", "dpr-jobName", "dpr-billTo", "dpr-location", "dpr-jobNo", "dpr-headcount", "dpr-hours", "dpr-squares", "dpr-summary", "dpr-bld-search"].forEach(function(id){ setVal(id, ""); });
   setVal("dpr-roofSystem", "");
   setVal("dpr-date", dprTodayStr());
