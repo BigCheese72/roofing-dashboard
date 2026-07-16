@@ -287,3 +287,116 @@ test("a locked report blocks edits at the entry points", () => {
   s.dprClearSection();
   assert.ok(s.dprState.section, "section clear is blocked when locked");
 });
+
+// ---------------- 6. Foundation job autofill ----------------
+
+test("dprApplyFoundationJobNo fills Job No. from the building's Foundation link", () => {
+  const s = makeSandbox();
+  // building with a Foundation job number -> returns true, sets the field
+  assert.strictEqual(s.dprApplyFoundationJobNo({ foundationJobNo: "24-1053", foundationCustomerNo: 771 }), true);
+  assert.strictEqual(s.val("dpr-jobNo"), "24-1053");
+  assert.strictEqual(s.dprState.foundationJobNo, "24-1053");
+  assert.strictEqual(s.dprState.foundationCustomerNo, "771");
+  // a building with no Foundation link -> false (caller falls back to history)
+  const s2 = makeSandbox();
+  assert.strictEqual(s2.dprApplyFoundationJobNo({ name: "X" }), false);
+  assert.strictEqual(s2.val("dpr-jobNo"), "");
+});
+
+test("dprApplyFoundationJobNo never stomps a foreman-typed Job No.", () => {
+  const s = makeSandbox();
+  s.setVal("dpr-jobNo", "MINE");
+  s.dprJobNoAutoVal = "";            // the typed value is not an auto value
+  const linked = s.dprApplyFoundationJobNo({ foundationJobNo: "24-1053" });
+  assert.strictEqual(linked, true);  // building is linked...
+  assert.strictEqual(s.val("dpr-jobNo"), "MINE"); // ...but the typed value stands
+});
+
+test("dprPickFoundationJob fills job name/location/number and stamps the link", () => {
+  const s = makeSandbox();
+  s.dprFdnJobsCache = [{ job_no: "24-1053", name: "Acme Roof Replacement", address: "123 Main St", city: "Cleveland", state: "OH", zip: "44101", customer_no: 771 }];
+  s.dprPickFoundationJob("24-1053");
+  assert.strictEqual(s.val("dpr-jobName"), "Acme Roof Replacement");
+  assert.strictEqual(s.val("dpr-location"), "123 Main St, Cleveland, OH, 44101");
+  assert.strictEqual(s.val("dpr-jobNo"), "24-1053");
+  assert.strictEqual(s.dprState.foundationJobNo, "24-1053");
+  const out = s.dprCollect();
+  assert.strictEqual(out.foundationJobNo, "24-1053");   // saved on the DPR -> stamps the building
+  assert.strictEqual(out.foundationCustomerNo, "771");
+});
+
+// ---------------- 7. Phase-2 gated sections ----------------
+
+function fillJobBasics(s){
+  s.setVal("dpr-jobName", "North Warehouse");
+  s.setVal("dpr-billTo", "Acme");
+  s.setVal("dpr-date", "2026-07-16");
+}
+
+test("gated sections collect null when their toggle is No (the default)", () => {
+  const s = makeSandbox();
+  fillJobBasics(s);
+  const o = s.dprCollect();
+  ["delays", "quantities", "jsa", "incidents", "equipment", "visitors"].forEach((k) => {
+    assert.strictEqual(o[k], null, k + " should be null when toggled No");
+  });
+});
+
+test("a Yes toggle collects its block; quantities keep only real rows", () => {
+  const s = makeSandbox();
+  fillJobBasics(s);
+  s.setVal("dpr-delays-toggle", "Yes");
+  s.setVal("dpr-delays-cause", "Weather");
+  s.setVal("dpr-delays-hours", "2.5");
+  s.setVal("dpr-delays-notes", "Rain until 10am");
+  s.setVal("dpr-quantities-toggle", "Yes");
+  s.dprQuantities.push({ item: "TPO 60mil", qty: "24", unit: "sq" }, { item: "  ", qty: "", unit: "rolls" });
+  s.setVal("dpr-jsa-toggle", "Yes");
+  s.setVal("dpr-jsa-by", "Jose Garcia");
+  s.setVal("dpr-jsa-crewpresent", "Yes");
+  s.setVal("dpr-jsa-topics", "Fall protection, hot work");
+  const o = s.dprCollect();
+  assert.strictEqual(o.delays.cause, "Weather");
+  assert.strictEqual(o.delays.hoursLost, "2.5");
+  assert.strictEqual(o.quantities.length, 1, "empty quantity row dropped");
+  assert.strictEqual(o.quantities[0].item, "TPO 60mil");
+  assert.strictEqual(o.jsa.conductedBy, "Jose Garcia");
+  assert.strictEqual(o.incidents, null, "untouched section stays null");
+});
+
+test("gated sections round-trip through fill() (Yes blocks restore; No stays No)", () => {
+  const s = makeSandbox();
+  fillJobBasics(s);
+  s.setVal("dpr-incidents-toggle", "Yes");
+  s.setVal("dpr-incidents-type", "Near Miss");
+  s.setVal("dpr-incidents-reportedto", "Mark");
+  s.setVal("dpr-incidents-desc", "Dropped hammer off edge, no one below");
+  s.setVal("dpr-visitors-toggle", "Yes");
+  s.setVal("dpr-visitors-notes", "GC superintendent (walkthrough)");
+  const o = s.dprCollect();
+
+  const s2 = makeSandbox();
+  fillJobBasics(s2);
+  s2.dprFill(o);
+  const o2 = s2.dprCollect();
+  assert.strictEqual(o2.incidents.type, "Near Miss");
+  assert.strictEqual(o2.incidents.description, "Dropped hammer off edge, no one below");
+  assert.strictEqual(o2.visitors.notes, "GC superintendent (walkthrough)");
+  assert.strictEqual(o2.delays, null);
+  assert.strictEqual(o2.equipment, null);
+  // Firestore null-coercion ("" instead of null) still reads as No
+  const s3 = makeSandbox();
+  fillJobBasics(s3);
+  s3.dprFill(Object.assign({}, o, { incidents: "", visitors: "" }));
+  const o3 = s3.dprCollect();
+  assert.strictEqual(o3.incidents, null);
+  assert.strictEqual(o3.visitors, null);
+});
+
+test("a locked report blocks quantity-row edits", () => {
+  const s = makeSandbox();
+  s.dprState.signoff = { locked: true };
+  const before = s.dprQuantities.length;
+  s.dprAddQuantityRow({ item: "X", qty: "1", unit: "sq" });
+  assert.strictEqual(s.dprQuantities.length, before);
+});

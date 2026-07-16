@@ -818,11 +818,16 @@
       <div class="card">
         <h2 class="cond">Daily Progress Report</h2>
         <p class="hint" id="dpr-continue-notice" style="display:none;color:#2E7D32"></p>
-        <div class="btnrow" style="margin:0 0 8px">
-          <input type="text" id="dpr-bld-search" placeholder="🔍 Find an existing building…" style="flex:1;min-width:180px" oninput="dprSearchBuildings()">
-          <span class="hint" style="margin:0">Pick an existing job to auto-fill customer &amp; address — or just type a new one below.</span>
+        <div class="btnrow" style="margin:0 0 12px">
+          <button class="btn" onclick="dprShowJobSelect()">🔍 Select Job</button>
+          <span class="hint" style="margin:0">Pick the job — its customer, address and job number fill in automatically. Or just type a new one below.</span>
         </div>
-        <div id="dpr-bld-results"></div>
+        <div id="dpr-job-select" style="display:none">
+          <div class="btnrow" style="margin:0 0 8px">
+            <input type="text" id="dpr-bld-search" placeholder="Filter jobs — name, customer, address, job #…" style="flex:1;min-width:180px" oninput="dprSearchBuildings()">
+          </div>
+          <div id="dpr-bld-results"></div>
+        </div>
         <div class="fld" style="max-width:320px">
           <label>Foreman <span class="hint" style="font-weight:400">— who's filling this out</span></label>
           <input type="text" id="dpr-foreman" list="dl-dprForeman" placeholder="Start typing a name…"
@@ -847,6 +852,116 @@
           <div class="fld"><label>Headcount</label><input type="number" id="dpr-headcount" min="0" step="1"></div>
           <div class="fld"><label>Hours Worked</label><input type="number" id="dpr-hours" min="0" step="0.25"></div>
           <div class="fld"><label>Approx. Squares Applied</label><input type="number" id="dpr-squares" min="0" step="0.5"></div>
+        </div>
+      </div>
+
+      <!-- ============ Yes/No-gated sections (DPR Phase 2) ============
+           Each defaults to No and stays out of the way; flipping to Yes reveals
+           the details via dprGate() (js/dpr.js). Data stored on the DPR doc as
+           null (No) or an object/rows (Yes) — see dprCollect(). -->
+      <div class="card">
+        <h2 class="cond">Delays</h2>
+        <div class="fld" style="max-width:220px">
+          <label>Any delays today?</label>
+          <select id="dpr-delays-toggle" onchange="dprGate('dpr-delays-toggle','dpr-delays-body','Yes')">
+            <option>No</option><option>Yes</option>
+          </select>
+        </div>
+        <div id="dpr-delays-body" style="display:none">
+          <div class="grid">
+            <div class="fld"><label>Cause</label>
+              <select id="dpr-delays-cause">
+                <option value=""></option>
+                <option>Weather</option><option>Material Delivery</option><option>Equipment</option>
+                <option>Access / Site</option><option>Other Trades</option><option>Other</option>
+              </select>
+            </div>
+            <div class="fld"><label>Hours Lost</label><input type="number" id="dpr-delays-hours" min="0" step="0.25"></div>
+          </div>
+          <div class="fld"><label>What happened</label><textarea id="dpr-delays-notes" rows="3"></textarea></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2 class="cond">Material Quantities</h2>
+        <div class="fld" style="max-width:220px">
+          <label>Track quantities today?</label>
+          <select id="dpr-quantities-toggle" onchange="dprGate('dpr-quantities-toggle','dpr-quantities-body','Yes')">
+            <option>No</option><option>Yes</option>
+          </select>
+        </div>
+        <div id="dpr-quantities-body" style="display:none">
+          <div id="dpr-quantities-list"></div>
+          <div class="btnrow"><button class="btn" onclick="dprAddQuantityRow()">+ Add Quantity</button></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2 class="cond">Job Safety Analysis (JSA)</h2>
+        <div class="fld" style="max-width:220px">
+          <label>JSA completed today?</label>
+          <select id="dpr-jsa-toggle" onchange="dprGate('dpr-jsa-toggle','dpr-jsa-body','Yes')">
+            <option>No</option><option>Yes</option>
+          </select>
+        </div>
+        <div id="dpr-jsa-body" style="display:none">
+          <div class="grid">
+            <div class="fld"><label>Conducted By</label><input type="text" id="dpr-jsa-by" list="dl-dprForeman"></div>
+            <div class="fld"><label>All crew present?</label>
+              <select id="dpr-jsa-crewpresent"><option value=""></option><option>Yes</option><option>No</option></select>
+            </div>
+          </div>
+          <div class="fld"><label>Topics / hazards covered</label><textarea id="dpr-jsa-topics" rows="3"></textarea></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2 class="cond">Incidents / Near Misses</h2>
+        <div class="fld" style="max-width:220px">
+          <label>Any incidents today?</label>
+          <select id="dpr-incidents-toggle" onchange="dprGate('dpr-incidents-toggle','dpr-incidents-body','Yes')">
+            <option>No</option><option>Yes</option>
+          </select>
+        </div>
+        <div id="dpr-incidents-body" style="display:none">
+          <div class="grid">
+            <div class="fld"><label>Type</label>
+              <select id="dpr-incidents-type">
+                <option value=""></option>
+                <option>Injury</option><option>Near Miss</option><option>Property Damage</option><option>Other</option>
+              </select>
+            </div>
+            <div class="fld"><label>Reported To</label><input type="text" id="dpr-incidents-reportedto"></div>
+          </div>
+          <div class="fld"><label>What happened</label><textarea id="dpr-incidents-desc" rows="3"></textarea></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2 class="cond">Equipment On Site</h2>
+        <div class="fld" style="max-width:220px">
+          <label>Equipment used today?</label>
+          <select id="dpr-equipment-toggle" onchange="dprGate('dpr-equipment-toggle','dpr-equipment-body','Yes')">
+            <option>No</option><option>Yes</option>
+          </select>
+        </div>
+        <div id="dpr-equipment-body" style="display:none">
+          <div class="fld"><label>Equipment</label>
+            <textarea id="dpr-equipment-notes" rows="3" placeholder="One per line — e.g. Crane (4 hrs), Kettle, Welder"></textarea></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2 class="cond">Site Visitors</h2>
+        <div class="fld" style="max-width:220px">
+          <label>Any visitors today?</label>
+          <select id="dpr-visitors-toggle" onchange="dprGate('dpr-visitors-toggle','dpr-visitors-body','Yes')">
+            <option>No</option><option>Yes</option>
+          </select>
+        </div>
+        <div id="dpr-visitors-body" style="display:none">
+          <div class="fld"><label>Who &amp; why</label>
+            <textarea id="dpr-visitors-notes" rows="3" placeholder="One per line — e.g. GC superintendent (walkthrough), Inspector"></textarea></div>
         </div>
       </div>
 
@@ -881,10 +996,10 @@
         <div id="dpr-photos-host"></div>
       </div>
 
-      <!-- LATER-PHASE HOOKS: radio-gated cards (delays, quantities, JSA,
-           incidents, equipment, visitors) drop in here as additional
-           <div class="card"> blocks, each revealed via dprGate() on a Yes/No
-           radio (see js/dpr.js). Nothing built in Phase 1. -->
+      <!-- The Phase-2 gated sections (delays, quantities, JSA, incidents,
+           equipment, visitors) live above, between Crew & Hours and Summary.
+           Any FUTURE gated section drops in the same way: a card with a
+           Yes/No select wired to dprGate() (see js/dpr.js). -->
 
       <div class="card" id="dpr-history-panel" style="display:none">
         <h2 class="cond">Daily Progress Reports</h2>

@@ -45,6 +45,7 @@ var dprState = {
   continuedExisting: false /* true once we've loaded a same-day report to add to */
 };
 var dprCrew = [];        /* roster rows: [{ name }]  headcount derives from this */
+var dprQuantities = [];  /* material-quantity rows: [{ item, qty, unit }] (Phase-2 gated section) */
 var dprPhotos = [];      /* [{ caption, img, thumb, w, h, gps, storageRef, localId }] */
 var dprHeadcountAutoVal = "";  /* last headcount we auto-filled — lets a manual edit stick (same trick as CO job-no autofill) */
 var dprBldCache = null;  /* buildings list for the inline picker (lazy) */
@@ -131,12 +132,21 @@ async function dprPopulateDataLists(force){
         if (r.jobNo) jobNos.push(r.jobNo);
       });
     }catch(e){}
-    dprSetDatalist("dl-dprJobName", names.concat(getFieldHistory("jobName")));
+    /* Foundation jobs (the accounting system of record) — real job numbers +
+       job names to choose from. Loaded once into dprFdnJobsCache; the cache
+       also powers the "From Foundation" search results in dprSearchBuildings. */
+    var fdnJobNos = [], fdnJobNames = [];
+    await dprLoadFoundationJobs();
+    (dprFdnJobsCache || []).forEach(function(j){
+      if (j.job_no) fdnJobNos.push(j.job_no);
+      if (j.name) fdnJobNames.push(j.name);
+    });
+    dprSetDatalist("dl-dprJobName", fdnJobNames.concat(names, getFieldHistory("jobName")));
     dprSetDatalist("dl-dprBillTo", custs.concat(getFieldHistory("billTo")));
     dprSetDatalist("dl-dprLocation", locs.concat(getFieldHistory("location")));
     dprSetDatalist("dl-dprForeman", foremen.concat(getFieldHistory("dprForeman")));
     dprSetDatalist("dl-dprCrew", crew.concat(getFieldHistory("technician")));
-    dprSetDatalist("dl-dprJobNo", jobNos);
+    dprSetDatalist("dl-dprJobNo", fdnJobNos.concat(jobNos));
     dprDataListsLoaded = true;
   }catch(e){ /* best-effort — the fields still work as free text */ }
 }
@@ -161,6 +171,64 @@ async function dprAutofillJobNo(buildingId){
     setVal("dpr-jobNo", base);
     dprJobNoAutoVal = base;
   }catch(e){ /* non-fatal */ }
+}
+
+/* ================= Foundation jobs (accounting system of record) =================
+   Reads the client-readable `foundation_jobs` cache (mirrored from FoundationSoft
+   by the parallel session's foundation-sync — read-only here, never written). Lets
+   a foreman pick the real Foundation job for the day so Job No./name come straight
+   from accounting, and stamps the Foundation link onto the building on save. */
+var dprFdnJobsCache = null;
+async function dprLoadFoundationJobs(){
+  if (dprFdnJobsCache || !fdb) return;
+  try{
+    var qs = await fdb.collection("foundation_jobs").limit(1000).get();
+    dprFdnJobsCache = [];
+    qs.forEach(function(d){ dprFdnJobsCache.push(Object.assign({ id: d.id }, d.data())); });
+  }catch(e){ dprFdnJobsCache = dprFdnJobsCache || []; }
+}
+/* Sets Job No. from a building's Foundation link. Returns true if the building
+   HAS a Foundation job (so the caller can skip the history-based fallback),
+   false if not — never stomps a number the foreman typed. */
+function dprApplyFoundationJobNo(b){
+  var fjn = (b && b.foundationJobNo != null) ? String(b.foundationJobNo).trim() : "";
+  if (!fjn) return false;
+  dprState.foundationJobNo = fjn;
+  if (b.foundationCustomerNo != null) dprState.foundationCustomerNo = String(b.foundationCustomerNo);
+  var cur = (val("dpr-jobNo") || "").trim();
+  if (!cur || cur === dprJobNoAutoVal){
+    setVal("dpr-jobNo", fjn);
+    dprJobNoAutoVal = fjn;
+  }
+  return true;
+}
+/* Human label for a Foundation job row. */
+function dprFdnJobLabel(j){
+  var parts = [];
+  if (j.job_no) parts.push(j.job_no);
+  if (j.name) parts.push(j.name);
+  var loc = [j.address, j.city, j.state].filter(Boolean).join(", ");
+  return { title: parts.join(" — ") || (j.name || j.job_no || "Foundation job"), meta: loc };
+}
+/* Foreman picked a Foundation job directly (no building needed): fill Job Name,
+   Location and Job No. from accounting. Customer stays as-is (Foundation gives a
+   customer number, not a name — the linked building carries the real name). */
+function dprPickFoundationJob(jobNo){
+  var j = (dprFdnJobsCache || []).find(function(x){ return String(x.job_no) === String(jobNo); });
+  if (!j) return;
+  if (j.name) setVal("dpr-jobName", j.name);
+  var loc = [j.address, j.city, j.state, j.zip].filter(Boolean).join(", ");
+  if (loc) setVal("dpr-location", loc);
+  setVal("dpr-jobNo", String(j.job_no || ""));
+  dprJobNoAutoVal = String(j.job_no || "");
+  dprState.foundationJobNo = String(j.job_no || "");
+  dprState.foundationCustomerNo = (j.customer_no != null ? String(j.customer_no) : null);
+  setVal("dpr-bld-search", "");
+  var host = document.getElementById("dpr-bld-results");
+  if (host) host.innerHTML = "";
+  dprHideJobSelect();
+  dprScheduleSameDayLoad();
+  toast("Linked Foundation job " + (j.job_no || "") + " — fill in today's progress");
 }
 
 function dprCanView(){
@@ -199,6 +267,7 @@ function dprOnShow(){
   dprPopulateDataLists();
   dprEnsureListeners();
   dprRenderCrew();
+  dprRenderQuantities();
   dprRenderPhotos();
   dprRenderSectionStatus();
   dprApplySignoffLock();
@@ -248,13 +317,31 @@ function dprApplyPermissionUI(){
 /* ================= building selection (inline, self-contained) =================
    A lightweight inline picker living right in the Job Info card — deliberately
    NOT the work-order bp-modal (that one writes into the work-order fields).
-   Same buildings collection, same read-only load. */
+   Same buildings collection, same read-only load.
+
+   The "🔍 Select Job" BUTTON is the front door (Mark: the search box alone
+   didn't read as a way to pick a job): tap it and the recent jobs list shows
+   IMMEDIATELY — no typing needed — with the filter box above it. */
+function dprShowJobSelect(){
+  if (dprIsLocked()){ toast("This report is signed and locked."); return; }
+  var wrap = document.getElementById("dpr-job-select");
+  if (!wrap) return;
+  if (wrap.style.display !== "none"){ wrap.style.display = "none"; return; } /* second tap closes */
+  wrap.style.display = "";
+  setVal("dpr-bld-search", "");
+  dprSearchBuildings(); /* empty query = recent jobs, so there's a list to tap right away */
+  var inp = document.getElementById("dpr-bld-search");
+  if (inp) try{ inp.focus(); }catch(e){}
+}
+function dprHideJobSelect(){
+  var wrap = document.getElementById("dpr-job-select");
+  if (wrap) wrap.style.display = "none";
+}
 async function dprSearchBuildings(){
   var q = (val("dpr-bld-search") || "").trim().toLowerCase();
   var host = document.getElementById("dpr-bld-results");
   if (!host) return;
-  if (!q){ host.innerHTML = ""; return; }
-  if (!fdb){ host.innerHTML = '<p class="hint">Building search needs an internet connection.</p>'; return; }
+  if (!fdb){ host.innerHTML = '<p class="hint">The job list needs an internet connection.</p>'; return; }
   if (!dprBldCache){
     host.innerHTML = '<p class="hint">Loading buildings…</p>';
     try{
@@ -271,14 +358,37 @@ async function dprSearchBuildings(){
       (b.customerName || "").toLowerCase().indexOf(q) > -1 ||
       (b.location || "").toLowerCase().indexOf(q) > -1;
   }).slice(0, 25);
-  if (!matches.length){ host.innerHTML = '<p class="hint">No matching buildings — type the job details in directly below.</p>'; return; }
-  host.innerHTML = matches.map(function(b){
+  /* Empty query (fresh "Select Job" tap) = the recent list, labeled as such. */
+  var html = (!q && matches.length) ? '<div class="hint" style="margin:0 0 4px;font-weight:600">Recent jobs</div>' : "";
+  html += matches.map(function(b){
     return '<div class="bld-item" onclick="dprPickBuilding(\'' + esc(b.id) + '\')"><div class="info">' +
       '<div class="name">' + esc(b.name) + '</div>' +
       '<div class="meta">' + esc(b.customerName || "") + (b.location ? ' · ' + esc(b.location) : "") +
       (b.roofSystem ? ' · ' + esc(b.roofSystem) : "") + '</div></div>' +
       '<button class="btn">Select</button></div>';
   }).join("");
+  /* "From Foundation" — active jobs from accounting the foreman can pick even
+     if there's no RoofOps building for the site yet. Searched against the local
+     foundation_jobs cache (loaded in dprPopulateDataLists). */
+  await dprLoadFoundationJobs();
+  var fdnMatches = (dprFdnJobsCache || []).filter(function(j){
+    return String(j.job_no || "").toLowerCase().indexOf(q) > -1 ||
+      (j.name || "").toLowerCase().indexOf(q) > -1 ||
+      (j.address || "").toLowerCase().indexOf(q) > -1 ||
+      (j.city || "").toLowerCase().indexOf(q) > -1;
+  }).slice(0, 15);
+  if (fdnMatches.length){
+    html += '<div class="hint" style="margin:8px 0 4px;font-weight:600">☁️ From Foundation</div>' +
+      fdnMatches.map(function(j){
+        var lbl = dprFdnJobLabel(j);
+        return '<div class="bld-item" onclick="dprPickFoundationJob(\'' + esc(String(j.job_no)) + '\')"><div class="info">' +
+          '<div class="name">' + esc(lbl.title) + '</div>' +
+          (lbl.meta ? '<div class="meta">' + esc(lbl.meta) + '</div>' : '') + '</div>' +
+          '<button class="btn">Select</button></div>';
+      }).join("");
+  }
+  if (!html){ host.innerHTML = '<p class="hint">No matching jobs — type the details in directly below.</p>'; return; }
+  host.innerHTML = html;
 }
 function dprPickBuilding(buildingId){
   var b = (dprBldCache || []).find(function(x){ return x.id === buildingId; });
@@ -290,10 +400,14 @@ function dprPickBuilding(buildingId){
   setVal("dpr-bld-search", "");
   var host = document.getElementById("dpr-bld-results");
   if (host) host.innerHTML = "";
+  dprHideJobSelect();
   dprState.buildingId = buildingId;
   dprState.roofs = getBuildingRoofs(b);
   dprRenderRoofPicker();
-  dprAutofillJobNo(buildingId);
+  /* Prefer the building's Foundation job number (the accounting system of
+     record) for Job No.; fall back to the parent-job derivation only if the
+     building has no Foundation link. */
+  if (!dprApplyFoundationJobNo(b)) dprAutofillJobNo(buildingId);
   dprScheduleSameDayLoad();
   toast("Loaded “" + b.name + "” — review the fields, then fill in today's progress");
 }
@@ -414,6 +528,41 @@ function dprSyncHeadcount(){
   }
 }
 
+/* ================= material quantities (Phase-2 gated section) =================
+   Repeatable {item, qty, unit} rows, same pattern as the crew roster. Only
+   collected when the Quantities toggle is Yes. */
+function dprAddQuantityRow(row){
+  if (dprIsLocked()){ toast("This report is signed and locked."); return; }
+  dprQuantities.push(row || { item: "", qty: "", unit: "" });
+  dprRenderQuantities();
+}
+function dprRemoveQuantityRow(idx){
+  if (dprIsLocked()) return;
+  dprQuantities.splice(idx, 1);
+  dprRenderQuantities();
+}
+function dprRenderQuantities(){
+  var host = document.getElementById("dpr-quantities-list");
+  if (!host) return;
+  if (!dprQuantities.length){
+    host.innerHTML = '<p class="hint">No quantities added yet — e.g. TPO 60mil, 24 squares.</p>';
+    return;
+  }
+  host.innerHTML = dprQuantities.map(function(qr, i){
+    return '<div class="btnrow" style="margin:0 0 6px;gap:6px">' +
+      '<input type="text" placeholder="Material / item" data-dprqty-item="' + i + '" value="' + esc(qr.item || "") + '" style="flex:2;min-width:120px">' +
+      '<input type="number" placeholder="Qty" step="0.01" data-dprqty-qty="' + i + '" value="' + esc(qr.qty || "") + '" style="flex:1;min-width:60px;max-width:110px">' +
+      '<input type="text" placeholder="Unit (sq, rolls…)" data-dprqty-unit="' + i + '" value="' + esc(qr.unit || "") + '" style="flex:1;min-width:70px;max-width:130px">' +
+      '<button class="btn danger" onclick="dprRemoveQuantityRow(' + i + ')">✕</button>' +
+      '</div>';
+  }).join("");
+  ["item", "qty", "unit"].forEach(function(k){
+    host.querySelectorAll("[data-dprqty-" + k + "]").forEach(function(el){
+      el.addEventListener("input", function(){ dprQuantities[+el.getAttribute("data-dprqty-" + k)][k] = el.value; });
+    });
+  });
+}
+
 /* ================= photos (reuses the work-order storage/upload path) =================
    Its own array + capture handlers on purpose — the codebase already treats
    each capture context as a deliberate separate path, not a shared refactor
@@ -519,7 +668,9 @@ function dprCollect(){
     jobName: val("dpr-jobName"),
     billTo: val("dpr-billTo"),
     location: val("dpr-location"),
-    jobNo: val("dpr-jobNo"),          /* manual for now; Foundation auto-fill is a LATER phase (hook only) */
+    jobNo: val("dpr-jobNo"),          /* from Foundation (building link / job pick) or typed */
+    foundationJobNo: dprState.foundationJobNo || null,          /* stamps the building's Foundation link on save (ensureCustomerAndBuilding) */
+    foundationCustomerNo: dprState.foundationCustomerNo || null,
     roofSystem: val("dpr-roofSystem"),
     crew: dprCrew.filter(function(c){ return (c.name || "").trim(); }).map(function(c){ return { name: c.name.trim() }; }),
     headcount: val("dpr-headcount"),
@@ -528,12 +679,34 @@ function dprCollect(){
     summary: val("dpr-summary"),
     section: dprState.section || null,   /* the roof area traced for today (progress overlay) */
     signoff: dprState.signoff || null,   /* signature + lock state (see sign-off/lock hooks below) */
+    /* ---- Phase-2 gated sections: null = toggle on No (nothing to report) ---- */
+    delays: dprToggleIsYes("dpr-delays-toggle") ? {
+      cause: val("dpr-delays-cause"), hoursLost: val("dpr-delays-hours"), notes: val("dpr-delays-notes")
+    } : null,
+    quantities: dprToggleIsYes("dpr-quantities-toggle")
+      ? dprQuantities
+          .filter(function(q){ return (q.item || "").trim() || String(q.qty || "").trim(); })
+          .map(function(q){ return { item: (q.item || "").trim(), qty: String(q.qty || "").trim(), unit: (q.unit || "").trim() }; })
+      : null,
+    jsa: dprToggleIsYes("dpr-jsa-toggle") ? {
+      conductedBy: val("dpr-jsa-by"), crewPresent: val("dpr-jsa-crewpresent"), topics: val("dpr-jsa-topics")
+    } : null,
+    incidents: dprToggleIsYes("dpr-incidents-toggle") ? {
+      type: val("dpr-incidents-type"), reportedTo: val("dpr-incidents-reportedto"), description: val("dpr-incidents-desc")
+    } : null,
+    equipment: dprToggleIsYes("dpr-equipment-toggle") ? { notes: val("dpr-equipment-notes") } : null,
+    visitors: dprToggleIsYes("dpr-visitors-toggle") ? { notes: val("dpr-visitors-notes") } : null,
     photos: dprPhotos.slice()
-    /* LATER-PHASE HOOKS (not built in Phase 1): delays{}, quantities[], jsa{},
-       incidents[], equipment[], visitors[] — each will be a radio-gated block
-       added via dprGate(); dprCollect() gains one line per block when built. */
+    /* FUTURE gated sections follow the same shape: one dprToggleIsYes(...) line here,
+       a card in index.html wired to dprGate(), and a dprSetGate(...) line in dprFill(). */
   };
   return o;
+}
+function dprToggleIsYes(id){ return val(id) === "Yes"; }
+/* Sets a gated section's toggle + shows/hides its body — used by fill()/new(). */
+function dprSetGate(toggleId, bodyId, yes){
+  setVal(toggleId, yes ? "Yes" : "No");
+  dprGate(toggleId, bodyId, "Yes");
 }
 function dprFill(o){
   o = o || {};
@@ -545,6 +718,8 @@ function dprFill(o){
   setVal("dpr-location", o.location || "");
   setVal("dpr-jobNo", o.jobNo || "");
   dprJobNoAutoVal = String(o.jobNo || "");
+  dprState.foundationJobNo = o.foundationJobNo || null;
+  dprState.foundationCustomerNo = o.foundationCustomerNo || null;
   setVal("dpr-roofSystem", o.roofSystem || "");
   setVal("dpr-date", o.date || dprTodayStr());
   setVal("dpr-headcount", o.headcount || "");
@@ -556,6 +731,32 @@ function dprFill(o){
   dprPhotos = (o.photos || []).map(function(p){ return Object.assign({}, p); });
   dprState.section = o.section || null;
   dprState.signoff = o.signoff || null;
+  /* ---- Phase-2 gated sections (falsy / "" from Firestore's null-coercion = No) ---- */
+  var dl = o.delays || null;
+  dprSetGate("dpr-delays-toggle", "dpr-delays-body", !!dl);
+  setVal("dpr-delays-cause", dl ? dl.cause : "");
+  setVal("dpr-delays-hours", dl ? dl.hoursLost : "");
+  setVal("dpr-delays-notes", dl ? dl.notes : "");
+  var qt = (o.quantities && o.quantities.length) ? o.quantities : null;
+  dprSetGate("dpr-quantities-toggle", "dpr-quantities-body", !!qt);
+  dprQuantities = (qt || []).map(function(q){ return { item: q.item || "", qty: q.qty || "", unit: q.unit || "" }; });
+  dprRenderQuantities();
+  var js = o.jsa || null;
+  dprSetGate("dpr-jsa-toggle", "dpr-jsa-body", !!js);
+  setVal("dpr-jsa-by", js ? js.conductedBy : "");
+  setVal("dpr-jsa-crewpresent", js ? js.crewPresent : "");
+  setVal("dpr-jsa-topics", js ? js.topics : "");
+  var inc = o.incidents || null;
+  dprSetGate("dpr-incidents-toggle", "dpr-incidents-body", !!inc);
+  setVal("dpr-incidents-type", inc ? inc.type : "");
+  setVal("dpr-incidents-reportedto", inc ? inc.reportedTo : "");
+  setVal("dpr-incidents-desc", inc ? inc.description : "");
+  var eq = o.equipment || null;
+  dprSetGate("dpr-equipment-toggle", "dpr-equipment-body", !!eq);
+  setVal("dpr-equipment-notes", eq ? eq.notes : "");
+  var vis = o.visitors || null;
+  dprSetGate("dpr-visitors-toggle", "dpr-visitors-body", !!vis);
+  setVal("dpr-visitors-notes", vis ? vis.notes : "");
   dprApplySignoffLock();
   /* Refresh roofs for the roof picker if we have the building loaded. */
   if (dprState.buildingId && fdb){
@@ -675,9 +876,22 @@ function dprNewReport(){
   dprPhotos = [];
   dprHeadcountAutoVal = "";
   dprJobNoAutoVal = "";
-  ["dpr-foreman", "dpr-jobName", "dpr-billTo", "dpr-location", "dpr-jobNo", "dpr-headcount", "dpr-hours", "dpr-squares", "dpr-summary", "dpr-bld-search"].forEach(function(id){ setVal(id, ""); });
+  dprState.foundationJobNo = null;
+  dprState.foundationCustomerNo = null;
+  ["dpr-foreman", "dpr-jobName", "dpr-billTo", "dpr-location", "dpr-jobNo", "dpr-headcount", "dpr-hours", "dpr-squares", "dpr-summary", "dpr-bld-search",
+   "dpr-delays-cause", "dpr-delays-hours", "dpr-delays-notes", "dpr-jsa-by", "dpr-jsa-crewpresent", "dpr-jsa-topics",
+   "dpr-incidents-type", "dpr-incidents-reportedto", "dpr-incidents-desc", "dpr-equipment-notes", "dpr-visitors-notes"].forEach(function(id){ setVal(id, ""); });
   setVal("dpr-roofSystem", "");
   setVal("dpr-date", dprTodayStr());
+  /* Gated sections back to No / hidden. */
+  dprQuantities = [];
+  dprSetGate("dpr-delays-toggle", "dpr-delays-body", false);
+  dprSetGate("dpr-quantities-toggle", "dpr-quantities-body", false);
+  dprSetGate("dpr-jsa-toggle", "dpr-jsa-body", false);
+  dprSetGate("dpr-incidents-toggle", "dpr-incidents-body", false);
+  dprSetGate("dpr-equipment-toggle", "dpr-equipment-body", false);
+  dprSetGate("dpr-visitors-toggle", "dpr-visitors-body", false);
+  dprRenderQuantities();
   var notice = document.getElementById("dpr-continue-notice");
   if (notice) notice.style.display = "none";
   dprState.section = null;
@@ -689,6 +903,7 @@ function dprNewReport(){
   dprApplySignoffLock();
   var results = document.getElementById("dpr-bld-results");
   if (results) results.innerHTML = "";
+  dprHideJobSelect();
   window.scrollTo(0, 0);
   toast("New daily progress report");
 }
@@ -1167,7 +1382,13 @@ async function dprShowProgressMap(){
 function dprIsLocked(){ return !!(dprState.signoff && dprState.signoff.locked); }
 var DPR_LOCK_READONLY_FIELDS = ["dpr-foreman", "dpr-jobName", "dpr-billTo", "dpr-location",
   "dpr-jobNo", "dpr-roofSystem", "dpr-date", "dpr-headcount", "dpr-hours", "dpr-squares",
-  "dpr-summary", "dpr-bld-search"];
+  "dpr-summary", "dpr-bld-search",
+  "dpr-delays-hours", "dpr-delays-notes", "dpr-jsa-by", "dpr-jsa-topics",
+  "dpr-incidents-reportedto", "dpr-incidents-desc", "dpr-equipment-notes", "dpr-visitors-notes"];
+/* <select> has no readOnly — the gated toggles + their dropdowns lock via disabled. */
+var DPR_LOCK_DISABLED_SELECTS = ["dpr-delays-toggle", "dpr-quantities-toggle", "dpr-jsa-toggle",
+  "dpr-incidents-toggle", "dpr-equipment-toggle", "dpr-visitors-toggle",
+  "dpr-delays-cause", "dpr-jsa-crewpresent", "dpr-incidents-type", "dpr-roof"];
 function dprApplySignoffLock(){
   var locked = dprIsLocked();
   var s = dprState.signoff || {};
@@ -1193,6 +1414,10 @@ function dprApplySignoffLock(){
   DPR_LOCK_READONLY_FIELDS.forEach(function(id){
     var el = document.getElementById(id);
     if (el) el.readOnly = locked;
+  });
+  DPR_LOCK_DISABLED_SELECTS.forEach(function(id){
+    var el = document.getElementById(id);
+    if (el) el.disabled = locked;
   });
   var capRow = document.getElementById("dpr-capture-row");
   if (capRow && locked) capRow.style.display = "none";
@@ -1331,6 +1556,37 @@ async function generateDprPdf(o){
     ["Headcount", o.headcount], ["Hours Worked", o.hoursWorked], ["Approx. Squares Applied", o.squares],
     ["Roof Section Traced", o.section ? (o.section.areaSqFt ? "Yes · ~" + o.section.areaSqFt + " sq ft" : "Yes") : ""]
   ]);
+
+  /* Phase-2 gated sections — only the ones the foreman flipped to Yes print. */
+  if (o.delays){
+    heading("Delays");
+    kvTable([["Cause", o.delays.cause], ["Hours Lost", o.delays.hoursLost]]);
+    if (o.delays.notes && o.delays.notes.trim()) wrapped(o.delays.notes);
+  }
+  if (o.quantities && o.quantities.length){
+    heading("Material Quantities");
+    kvTable(o.quantities.map(function(q){
+      return [q.item || "(item)", [q.qty, q.unit].filter(Boolean).join(" ")];
+    }));
+  }
+  if (o.jsa){
+    heading("Job Safety Analysis (JSA)");
+    kvTable([["Conducted By", o.jsa.conductedBy], ["All Crew Present", o.jsa.crewPresent]]);
+    if (o.jsa.topics && o.jsa.topics.trim()) wrapped(o.jsa.topics);
+  }
+  if (o.incidents){
+    heading("Incidents / Near Misses");
+    kvTable([["Type", o.incidents.type], ["Reported To", o.incidents.reportedTo]]);
+    if (o.incidents.description && o.incidents.description.trim()) wrapped(o.incidents.description);
+  }
+  if (o.equipment && o.equipment.notes && o.equipment.notes.trim()){
+    heading("Equipment On Site");
+    wrapped(o.equipment.notes);
+  }
+  if (o.visitors && o.visitors.notes && o.visitors.notes.trim()){
+    heading("Site Visitors");
+    wrapped(o.visitors.notes);
+  }
 
   if (o.summary && o.summary.trim()){
     heading("Summary of Work");
