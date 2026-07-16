@@ -127,14 +127,79 @@ function fdnRenderPicker() {
   }).join("");
 }
 
-// Best-effort link from a job to an already-created app building, matched on
-// job name (the app keys buildings by customer+name, not job number). Used to
+// Best-effort link from a job to an already-created app building. Address is
+// strongest, exact name is the fallback, and ambiguity always refuses to guess.
 // carry the building's extra context on select, and to tag "✓ in app" rows.
+function fdnNormalizeText(s) {
+  return String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().replace(/\s+/g, " ");
+}
+
+function fdnNormalizeStreetToken(token) {
+  var t = String(token || "").toLowerCase();
+  var map = {
+    avenue: "ave", ave: "ave",
+    boulevard: "blvd", blvd: "blvd",
+    circle: "cir", cir: "cir",
+    court: "ct", ct: "ct",
+    drive: "dr", dr: "dr",
+    highway: "hwy", hwy: "hwy",
+    lane: "ln", ln: "ln",
+    parkway: "pkwy", pkwy: "pkwy",
+    place: "pl", pl: "pl",
+    road: "rd", rd: "rd",
+    street: "st", st: "st",
+    terrace: "ter", ter: "ter"
+  };
+  return map[t] || t;
+}
+
+function fdnAddressMatchKey(s) {
+  var parts = String(s || "").split(",");
+  var firstLine = parts[0];
+  var normalized = fdnNormalizeText(firstLine);
+  var m = normalized.match(/^(\d+[a-z]?)\s+(.+)$/);
+  if (!m) return "";
+  var stop = { apt: true, apartment: true, ste: true, suite: true, unit: true, bldg: true, building: true };
+  var street = [];
+  fdnNormalizeText(m[2]).split(" ").some(function (token) {
+    if (!token) return false;
+    if (stop[token]) return true;
+    street.push(fdnNormalizeStreetToken(token));
+    return false;
+  });
+  if (!street.length) return "";
+  var key = [m[1] + " " + street.join(" ")];
+  var city = fdnNormalizeText(parts[1]);
+  if (city) key.push(city);
+  var state = fdnNormalizeText(parts[2]).split(" ")[0] || "";
+  if (state) key.push(state);
+  return key.join("|");
+}
+
+function fdnUniqueMatch(candidates, predicate) {
+  var matches = candidates.filter(predicate);
+  return matches.length === 1 ? matches[0] : null;
+}
+
 function fdnFindMatchingBuilding(job) {
   if (typeof bpCache === "undefined" || !bpCache) return null;
-  var jn = String((job && job.name) || "").trim().toLowerCase();
-  if (!jn) return null;
-  return bpCache.find(function (b) { return String(b.name || "").trim().toLowerCase() === jn; }) || null;
+  var buildings = (bpCache || []).filter(Boolean);
+  if (!buildings.length || !job) return null;
+
+  var jobAddressKey = fdnAddressMatchKey(fdnComposeAddress(job));
+  if (jobAddressKey) {
+    var addressMatches = buildings.filter(function (b) {
+      return fdnAddressMatchKey(b && b.location) === jobAddressKey;
+    });
+    if (addressMatches.length === 1) return addressMatches[0];
+    if (addressMatches.length > 1) return null;
+  }
+
+  var jobName = fdnNormalizeText(job.name);
+  if (!jobName) return null;
+  return fdnUniqueMatch(buildings, function (b) {
+    return fdnNormalizeText(b && b.name) === jobName;
+  });
 }
 
 // On select: auto-fill the WO fields. Bill To is filled with the customer CODE
