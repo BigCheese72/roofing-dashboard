@@ -229,6 +229,27 @@ test("a saved snapshot for the report's date is the record — an editable reope
   assert.strictEqual(s.dprCollect().weather.conditions, "Clear");
 });
 
+test("a saved snapshot that LOADS while a fetch is in flight is not overwritten", async () => {
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const calls = [];
+  const fetch = async (url) => {
+    url = String(url);
+    if (!/open-meteo\.com/.test(url)) return { ok: false, status: 400, json: async () => ({}) };
+    calls.push(url);
+    await gate;                                   // hold the fetch open
+    return { ok: true, status: 200, json: async () => OM_BODY };
+  };
+  const s = makeSandbox({ fetch });
+  fillFresh(s);
+  const inFlight = s.dprRefreshWeather();          // starts fetching
+  // …meanwhile the same-day report loads with its saved record
+  s.dprState.weather = { date: "2026-07-16", conditions: "Clear", icon: "☀️" };
+  release();
+  await inFlight;
+  assert.strictEqual(s.dprState.weather.conditions, "Clear", "saved record must survive the late fetch");
+});
+
 test("a locked (signed) report never refetches weather", async () => {
   const fetch = weatherFetch({ body: OM_BODY });
   const s = makeSandbox({ fetch });
