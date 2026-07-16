@@ -8300,3 +8300,40 @@ check/Review-Queue. Contextual admin actions stay where they belong (per-order
 Delete in Saved, "remove pushed photo" in the gallery, asset Delete in its
 modal) — this consolidates the app-wide tools, not the in-context ones. Each
 handler still enforces its own server-side permission (defense in depth).
+
+## AI-drafted report summary (Phase 1 stub, dev only — NO AI wired yet)
+
+Mark's current flow for an Inspection report's Summary: export the PDF, paste
+it into ChatGPT, paste the result back into the Summary box. This feature moves
+that into the app: a **"✨ Draft Summary"** button in the Summary card
+(Inspection type only for now — `onWoTypeChange()` gates the row) sends the
+report's OWN structured data to `netlify/functions/generate-summary.js`, which
+returns a draft the client puts into the **editable** Summary textarea. Nothing
+is saved or sent by the draft step; the tech reviews/edits and then saves
+through the normal path. Replacing non-empty Summary text asks first.
+
+What travels: `buildSummaryDraftPayload()` (js/workorders.js) projects ONLY
+summary-relevant text — job info, checklist label+rating+notes (N/A dropped),
+findings, repairs, photo CAPTIONS + count. Never photo bytes, pins, GPS, ids,
+or signatures (tests assert this — it's also the future LLM-prompt privacy
+boundary). The server re-clamps everything (`sanitizeReport()`).
+
+**Phase 1 (this)**: the server composer is a DETERMINISTIC TEMPLATE —
+restates the report's own data, infers/recommends nothing, no external calls,
+no API key anywhere. It exists so the flow is real and testable end to end.
+**Phase 2 (not built — blocked on Mark provisioning an API key)**: replace the
+composer call with a server-side Anthropic Messages API call; key lives ONLY in
+a Netlify env var (`ANTHROPIC_API_KEY`), never client-side; template stays as
+the fallback when the call fails. **Phase 3 (optional, later)**: pass photo
+thumbnails for vision grounding — this is also the natural first concrete step
+toward the "AI auto-detection of rooftop features" ROADMAP item.
+
+Auth: `requirePermission(event, "doc.generate")` — the semantically matching,
+boolean-only key every seed role holds (field-first: a tech on the roof can
+draft their own summary). The function writes nothing server-side; the draft
+only enters the record via the tech's own `workorder.edit`-gated save.
+
+Tests: `tests/generateSummaryDraft.test.js` — payload projection/leak guards,
+401/403/405/400 auth surface, composer determinism, and a `global.fetch` trap
+that fails the suite if the stub ever grows a network call before the key
+decision.

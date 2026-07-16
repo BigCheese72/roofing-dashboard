@@ -2386,6 +2386,14 @@ function onWoTypeChange(){
      -- see "Inspection form overhaul" in DEV_NOTES.md. */
   var raf = document.getElementById("wo-reportedarea-fld");
   if (raf) raf.style.display = isInspection ? "none" : "";
+  /* "Draft Summary" (AI-drafted summary Phase 1 — see "AI-drafted report
+     summary" in DEV_NOTES.md): Inspection-only for now, since that's the
+     report type whose summary Mark currently hand-rounds through ChatGPT.
+     Extending to Leak/Warranty later is just widening this condition — the
+     server side (netlify/functions/generate-summary.js) already composes
+     for every type. */
+  var dsr = document.getElementById("wo-draft-summary-row");
+  if (dsr) dsr.style.display = isInspection ? "" : "none";
   var ic = document.getElementById("wo-inspection-card");
   if (ic) ic.style.display = isInspection ? "" : "none";
   if (isInspection){ ensureInspectionChecklist(); renderInspectionChecklist(); renderInspectionRoofPicker(); }

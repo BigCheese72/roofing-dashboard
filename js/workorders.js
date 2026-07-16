@@ -1376,6 +1376,78 @@ function collect(){
   o.changeOrderSignature = changeOrderSignature || null;
   return o;
 }
+/* ============ AI-drafted summary, Phase 1 (see DEV_NOTES.md) ============ */
+/* Pure projection of a collected work order into the compact payload the
+   summary-draft server function consumes (netlify/functions/
+   generate-summary.js) — ONLY the text a summary is made of, never photo
+   bytes, pins, ids, or signatures. Checklist keys become their display
+   labels here because the server has no INSPECTION_CHECKLIST_COMPONENTS;
+   N/A rows are dropped (nothing to say about them). Kept pure/DOM-free so
+   tests can vm-extract it (tests/generateSummaryDraft.test.js). */
+function buildSummaryDraftPayload(o){
+  function s(v, max){ return String(v == null ? "" : v).slice(0, max || 300); }
+  var labelByKey = {};
+  INSPECTION_CHECKLIST_COMPONENTS.forEach(function(c){ labelByKey[c.key] = c.label; });
+  return {
+    woType: s(o.woType, 40),
+    jobName: s(o.jobName, 200),
+    location: s(o.location, 300),
+    serviceDate: s(o.serviceDate, 40),
+    technician: s(o.technician, 120),
+    roofSystem: s(o.roofSystem, 200),
+    reportedArea: s(o.reportedArea, 300),
+    warrantable: s(o.warrantable, 1000),
+    nonWarrantable: s(o.nonWarrantable, 1000),
+    inspectionChecklist: (o.inspectionChecklist || []).filter(function(it){
+      return it && it.rating && it.rating !== "N/A";
+    }).slice(0, 20).map(function(it){
+      return { label: labelByKey[it.key] || s(it.key, 60), rating: s(it.rating, 20), notes: s(it.notes, 500) };
+    }),
+    findings: (o.findings || []).filter(function(f){
+      return f && ((f.condition || "").trim() || (f.location || "").trim());
+    }).slice(0, 50).map(function(f){
+      return { condition: s(f.condition, 500), location: s(f.location, 300), warranty: s(f.warranty, 40) };
+    }),
+    repairs: (o.repairs || []).filter(function(r){
+      return r && ((r.repair || "").trim() || (r.location || "").trim());
+    }).slice(0, 50).map(function(r){
+      return { repair: s(r.repair, 500), location: s(r.location, 300) };
+    }),
+    photoCaptions: (o.photos || []).map(function(p){
+      return s(p && p.caption, 300).trim();
+    }).filter(function(c){ return c; }).slice(0, 60),
+    photoCount: (o.photos || []).length
+  };
+}
+/* "✨ Draft Summary" click handler (index.html's Summary card). Sends the
+   projection above to the server (Firebase-auth-gated: doc.generate) and
+   puts the returned text into the Summary TEXTAREA only — a draft the tech
+   edits, never saved or sent by this function. Server side is a
+   deterministic placeholder until the LLM is wired (Phase 2, blocked on
+   Mark provisioning an API key — see generate-summary.js's header). */
+async function draftReportSummary(btn){
+  var existing = val("summary");
+  if (existing && existing.trim() &&
+      !confirm("Replace the current Summary text with a generated draft?")) return;
+  if (btn) btn.disabled = true;
+  try{
+    var r = await fetch("/.netlify/functions/generate-summary", {
+      method: "POST", headers: await authHeaders(),
+      body: JSON.stringify({ action: "draft_summary", report: buildSummaryDraftPayload(collect()) })
+    });
+    var out = null; try{ out = await r.json(); }catch(e){}
+    if (!r.ok || !out || !out.ok || !out.draft){
+      toast("Summary draft failed: " + ((out && out.error) || ("server error " + r.status)));
+      return;
+    }
+    setVal("summary", out.draft);
+    toast("Draft summary inserted — review and edit it before saving or sending.");
+  }catch(e){
+    toast("Summary draft failed: " + (e && e.message ? e.message : "network error"));
+  }finally{
+    if (btn) btn.disabled = false;
+  }
+}
 function fill(o){
   currentId = o.id;
   /* Stable identity (FIX 1): a doc that carries stored ids keeps them for
