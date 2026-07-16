@@ -416,30 +416,35 @@ function renderCCLinkInfo(){
 }
 /* Inherits the building's durable CompanyCam link onto the work order that's
    currently open -- exactly what bpSelectBuilding() already does when a
-   building is picked, but WITHOUT requiring the picker at all (a Change Order
+   building is picked, but WITHOUT requiring the picker at all (a work order
    started from the Home tile and typed straight into never touches it).
    buildings/{id}.companyCamProjectId is the durable link; this only ever
    READS it.
 
-   Change Order only, deliberately: every other type still shows the global
-   card's own banner and Import button, so nothing about their behavior
-   changes. NEVER creates a CompanyCam project -- it can only adopt one that
-   already exists on the building (the established rule: link and push only,
-   never auto-create from the field). Never clobbers an explicit link made in
-   this session either: the !ccLinkedProjectId guard is re-checked after the
-   await, so a link made mid-flight still wins. */
-async function resolveChangeOrderCompanyCamLink(){
-  if (typeof val !== "function" || val("woType") !== "Change Order") return { skipped: true, reason: "not-a-change-order" };
+   ALL work-order types now (audit FIX 3, Mark-approved -- was Change Order
+   only): a Leak/Inspection/Repair/Warranty WO on an already-linked building
+   used to silently stay unlinked unless the tech went through the picker,
+   exactly the "link follows the job" gap. NEVER creates a CompanyCam
+   project -- it can only adopt one that already exists on the building (the
+   established rule: link and push only, never auto-create from the field).
+   Never clobbers an explicit link made in this session either: the
+   !ccLinkedProjectId guard is re-checked after the await, so a link made
+   mid-flight still wins. */
+async function resolveBuildingCompanyCamLink(){
   if (ccLinkedProjectId) return { ok: true, alreadyLinked: true, projectId: ccLinkedProjectId };
   if (!fdb) return { skipped: true, reason: "offline" };
   var buildingId = (typeof currentWorkOrderBuildingId === "function") ? currentWorkOrderBuildingId() : null;
   if (!buildingId) return { skipped: true, reason: "no-building" };
+  /* If the tech switches to a DIFFERENT order while the building read is in
+     flight, the stale result must not link the wrong work order. */
+  var orderAtStart = (typeof currentId !== "undefined") ? currentId : null;
   try{
     var snap = await fdb.collection("buildings").doc(buildingId).get();
     if (!snap.exists) return { skipped: true, reason: "no-building-record" };
     var b = snap.data() || {};
     if (!b.companyCamProjectId) return { skipped: true, reason: "building-not-linked" };
     if (ccLinkedProjectId) return { ok: true, alreadyLinked: true, projectId: ccLinkedProjectId };
+    if ((((typeof currentId !== "undefined") ? currentId : null)) !== orderAtStart) return { skipped: true, reason: "order-changed" };
     ccLinkedProjectId = b.companyCamProjectId;
     ccLinkedProjectName = b.companyCamProjectName || b.name || "";
     renderCCLinkInfo();
@@ -449,9 +454,38 @@ async function resolveChangeOrderCompanyCamLink(){
     return { ok: false, error: e.message };
   }
 }
-function unlinkCC(){
+/* Debounced entry point for the passive triggers (fill() on load; future
+   field-edit hooks) so rapid changes coalesce into one Firestore read. The
+   export path awaits resolveBuildingCompanyCamLink() directly instead — a
+   PDF push needs the answer NOW, not 800ms later. */
+var ccResolveTimer = null;
+function scheduleResolveBuildingCCLink(){
+  if (ccResolveTimer) clearTimeout(ccResolveTimer);
+  ccResolveTimer = setTimeout(function(){ resolveBuildingCompanyCamLink(); }, 800);
+}
+async function unlinkCC(){
   if (!isAdmin){ toast("Admin mode required to unlink."); return; }
+  var oldId = ccLinkedProjectId;
   ccLinkedProjectId = null; ccLinkedProjectName = "";
   renderCCLinkInfo();
   toast("Unlinked CompanyCam project from this work order");
+  /* Audit FIX 3b: unlink used to be work-order-local only, while
+     ensureCustomerAndBuilding() is ADD-only on the building doc — a
+     building-level link literally could not be removed from the app.
+     Offer (confirm-gated; admin already required above) to clear the
+     building's own link too when it still matches what was just unlinked.
+     Known limit (flagged in the PR): another saved WO still carrying this
+     project id re-stamps it on ITS next save via the add-only patch — a
+     full scrub across old WOs is a fast-follow, not tonight. */
+  if (!fdb || !oldId) return;
+  var buildingId = (typeof currentWorkOrderBuildingId === "function") ? currentWorkOrderBuildingId() : null;
+  if (!buildingId) return;
+  try{
+    var snap = await fdb.collection("buildings").doc(buildingId).get();
+    if (!snap.exists || (snap.data() || {}).companyCamProjectId !== oldId) return;
+    if (!confirm("Also unlink CompanyCam from the BUILDING itself?\n\nOK — future work orders for this building stop inheriting this project.\nCancel — only this work order is unlinked; the building keeps the link.")) return;
+    await fdb.collection("buildings").doc(buildingId).set(
+      { companyCamProjectId: null, companyCamProjectName: "" }, { merge: true });
+    toast("Building-level CompanyCam link cleared");
+  }catch(e){ console.warn("building-level CompanyCam unlink failed", e); }
 }

@@ -2175,7 +2175,7 @@ function onWoTypeChange(){
   if (isCO) renderChangeOrderPhotos();
   /* Change Order-only autofill: adopt the building's existing CompanyCam
      link (so the signed CO PDF actually pushes -- see
-     resolveChangeOrderCompanyCamLink() in js/companycam.js) and default the
+     resolveBuildingCompanyCamLink() in js/companycam.js) and default the
      Job No. to the parent job's number + " CO" (see
      maybeApplyChangeOrderJobNo() in js/workorders.js). Both are no-ops for
      every other type, both are pure defaults the tech can override, and

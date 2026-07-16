@@ -1319,6 +1319,13 @@ function fill(o){
   photos.forEach(function(p){ if (p.finding_id === undefined) p.finding_id = null; });
   ccLinkedProjectId = o.companyCamProjectId || null;
   ccLinkedProjectName = o.companyCamProjectName || "";
+  /* Audit FIX 3: ANY work-order type on a linked building inherits the
+     building's CompanyCam link on load (debounced; no-op when this order
+     already carries a link, when there's no building yet, or offline —
+     see resolveBuildingCompanyCamLink()). The export path re-resolves
+     right before a PDF push regardless; this is the eager half so the
+     banner shows the link while editing. */
+  if (!ccLinkedProjectId && typeof scheduleResolveBuildingCCLink === "function") scheduleResolveBuildingCCLink();
   /* Restore the Foundation job linkage and refresh its dependent UI (the link
      line + the admin-only labor card). Guarded so this file has no hard
      dependency on js/foundation.js being present. */
@@ -1355,7 +1362,7 @@ function fill(o){
       most recent entry is itself a CO ("16153 CO") still resolves to base
       "16153", never "16153 CO CO" (changeOrderJobNo() is idempotent).
 
-   2. The building's CompanyCam link (resolveChangeOrderCompanyCamLink(), in
+   2. The building's CompanyCam link (resolveBuildingCompanyCamLink(), in
       js/companycam.js) -- so a CO on an already-linked building pushes its
       signed PDF with no manual step.
 
@@ -1412,7 +1419,7 @@ async function maybeApplyChangeOrderJobNo(){
 }
 async function runChangeOrderAutofill(){
   if (val("woType") !== "Change Order") return;
-  if (typeof resolveChangeOrderCompanyCamLink === "function") await resolveChangeOrderCompanyCamLink();
+  if (typeof resolveBuildingCompanyCamLink === "function") await resolveBuildingCompanyCamLink();
   await maybeApplyChangeOrderJobNo();
 }
 /* Debounced, and re-run whenever the fields that DERIVE the building change
