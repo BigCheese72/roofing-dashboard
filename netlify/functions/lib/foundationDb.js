@@ -501,6 +501,20 @@ async function fetchDayHours(password, jobNo, date) {
   };
 }
 
+// WHO punched on one job + one day — the roster subset of fetchDayHours.
+// Hours are deliberately dropped at THIS layer (not the caller), so the
+// dpr.create-gated action=day_crew can never leak them through a mapping
+// mistake downstream. Same pending-first source logic.
+async function fetchDayCrew(password, jobNo, date) {
+  const dh = await fetchDayHours(password, jobNo, date);
+  return {
+    job_no: dh.job_no,
+    date: dh.date,
+    source: dh.source,
+    crew: dh.rows.map(function (r) { return { employee_no: r.employee_no, name: r.name }; })
+  };
+}
+
 // Test-only reset of the caches, so a unit test that stubs `mssql` isn't
 // polluted by a pool/employee-map from a previous test.
 function _resetPoolForTest() {
@@ -530,6 +544,7 @@ module.exports = {
   fetchJobHours,
   fetchEmployees,
   fetchDayHours,
+  fetchDayCrew,
   _resetPoolForTest,
   // constants exposed for tests/assertions
   FOUNDATION_SERVER,
