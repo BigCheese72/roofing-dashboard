@@ -1600,6 +1600,14 @@ async function logReportAndHistoryEvent(o, kind, emailInfo, ccUploadResult){
       reportType: kind === "Saved" ? ((existing && existing.reportType) || kind) : kind,
       conditionsSummary: summarizeRows(o.findings || [], "condition", "location"),
       repairsSummary: summarizeRows(o.repairs || [], "repair", "location"),
+      /* The tech's own Summary narrative EXACTLY as it went into the
+         generated/emailed/CompanyCam PDF (Mark's Flat Branch loss: his
+         pasted summary was in the sent PDF but nowhere durable — the
+         report event carried only the auto-built findings/repairs
+         summaries above, which are different fields entirely). Recorded
+         here so what was SENT is always recoverable next to the report
+         record, whatever later happens to the work-order doc. */
+      summary: o.summary || "",
       warrantyStatus: computeWarrantyStatus(o),
       companyCamProjectId: o.companyCamProjectId || null,
       companyCamPhotoIds: (o.photos || []).filter(function(p){ return p.ccPhotoId; }).map(function(p){ return p.ccPhotoId; }),
