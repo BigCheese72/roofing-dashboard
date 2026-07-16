@@ -48,7 +48,7 @@ function makeSandbox(opts){
   };
   vm.createContext(sandbox);
   vm.runInContext(
-    between(workordersSource, "function addMaterial", "var FIELD_IDS =") +
+    between(workordersSource, "function addMaterial", "var LEAK_NO_JOB_RE") +
     between(photosSource, "function removeRepair", "function renderRepairs") +
     between(exportSource, "function filledRepairs", "function filledPhotos"),
     sandbox

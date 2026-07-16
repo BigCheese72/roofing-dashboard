@@ -243,6 +243,10 @@ function fdnSetLinkedJob(jobNo, jobName, customerNo, address) {
   fdnLinkedAddress = address || "";
   renderFdnLinkInfo();
   fdnRefreshLaborCard();
+  /* Linking/unlinking the Foundation job is exactly what flips the
+     "Leak – No Job" flag (js/workorders.js — loads after this file, so
+     typeof-guarded the same way fill()'s call to this function is). */
+  if (typeof renderLeakNoJobBadge === "function") renderLeakNoJobBadge();
 }
 
 function renderFdnLinkInfo() {

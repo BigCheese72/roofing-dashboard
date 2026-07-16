@@ -3035,8 +3035,15 @@ function drawSaved(){
     return;
   }
   host.innerHTML = list.map(function(e){
+    /* "Leak – No Job" chip: the index entry only carries jobName (no
+       Foundation fields), so this matches by name alone — the edit-form
+       banner (isLeakNoJobOrder(), js/workorders.js — loads after this
+       file, hence the typeof guard) is the authoritative view that also
+       clears on a real Foundation link. */
+    var noJobChip = (typeof isLeakNoJobName === "function" && isLeakNoJobName(e.jobName)) ?
+      ' <span style="background:#FFF3E0;color:#8A5A00;font-size:11px;font-weight:700;padding:2px 7px;border-radius:4px;white-space:nowrap">⚠️ No Job # yet</span>' : '';
     return '<div class="saved-item"><div class="info">' +
-      '<div class="name">' + esc(e.jobName) + (e.jobNo ? ' <span>#' + esc(e.jobNo) + '</span>' : '') + '</div>' +
+      '<div class="name">' + esc(e.jobName) + (e.jobNo ? ' <span>#' + esc(e.jobNo) + '</span>' : '') + noJobChip + '</div>' +
       '<div class="meta">' + esc(e.location || "") + (e.serviceDate ? ' \u00B7 ' + esc(e.serviceDate) : '') +
       (e.cloud ? ' \u00B7 \u2601' : '') +
       (e.lastEmailedAt ? ' \u00B7 \uD83D\uDCE7 Emailed ' + fmtTs(e.lastEmailedAt) : '') + '</div></div>' +
