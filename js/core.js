@@ -2886,11 +2886,26 @@ function saveOrder(opts){
            copy was loaded). Retrying would only keep losing to it, so DON'T
            keep it queued -- drop it from the sync queue (the local copy stays
            in db.orders for the tech to reopen) and say so plainly. This is the
-           opposite of a transient failure. */
+           opposite of a transient failure.
+
+           RESOLVES FALSE (Mark's Flat Branch data loss, summary half): this
+           used to resolve localOk (true), so autoSaveBeforeReport() treated a
+           REFUSED cloud save as good enough and the email/share went out --
+           the sent PDF carried the tech's live edits (his pasted Summary)
+           while the cloud doc kept the other device's copy WITHOUT them, and
+           because the conflicting copy is deliberately un-queued above, those
+           edits were never going to reach the cloud. Sent != saved, silently.
+           Now a conflict fails the save's contract outright: every report
+           action behind autoSaveBeforeReport() (email/share/mailto) blocks
+           until the tech reopens and re-applies. The Save button ignores this
+           return value, so its flow (toast + local copy kept) is unchanged.
+           A TRANSIENT failure below still resolves localOk on purpose: that
+           copy stays queued and WILL reach the cloud, so sent == saved,
+           eventually -- not data loss. */
         markSynced(o.id);
         toast(e.message);
         renderSaved();
-        return localOk;
+        return false;
       }
       /* A cloud-save failure must never be silent, even on a quiet autosave
          (e.g. ccImport()'s post-import saveOrder({quiet:true})) -- quiet
@@ -2946,7 +2961,13 @@ document.addEventListener("DOMContentLoaded", function(){
 async function autoSaveBeforeReport(actionLabel){
   var ok = await saveOrder({ quiet: true });
   if (!ok){
-    toast("Couldn't auto-save before " + actionLabel + ". Fix the save issue, then try again.");
+    /* Blocks the report action outright — never email/share a PDF whose
+       content isn't durably saved (Mark's Flat Branch summary loss: the
+       sent PDF had his pasted Summary, the cloud doc didn't). saveOrder()
+       resolves false on a multi-device conflict (edits refused + un-queued)
+       and on a failed local write; a merely-queued transient cloud failure
+       still proceeds because that copy is durable and will sync. */
+    toast("⚠️ NOT " + actionLabel + " — this work order isn't safely saved (see the message above). Your edits are still on this screen; resolve the save first so what you send matches what's stored.");
     return false;
   }
   return true;
