@@ -316,10 +316,12 @@
       <div class="btnrow"><button class="btn" onclick="addRepair()">+ Add Repair</button></div>
     </div>
 
-    <!-- Work Order (stored type "Repair") only — see onWoTypeChange(). Change
-         Order keeps its own free-text Materials textarea (#woMaterials) inside
-         its own card; this is the itemized list for executed work. Rows live in
-         materials[] (js/workorders.js) and persist with the work order. -->
+    <!-- Work Order (stored type "Repair") AND Leak / Service — see
+         onWoTypeChange() (Mark, from prod: Repair-only gating made this look
+         "missing" on the Leak form). Change Order keeps its own free-text
+         Materials textarea (#woMaterials) inside its own card; this is the
+         itemized list for executed work. Rows live in materials[]
+         (js/workorders.js) and persist with the work order. -->
     <div class="card" id="wo-materials-card" style="display:none">
       <h2 class="cond">Material List</h2>
       <div id="materials-list"></div>
