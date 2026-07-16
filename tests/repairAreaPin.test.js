@@ -26,14 +26,16 @@ function makeSandbox(opts){
     __toasts: [],
     __renders: 0,
     __genIdCounter: 0,
+    __fields: Object.assign({}, opts.fields),
     genId(prefix){ return prefix + "_t" + (sandbox.__genIdCounter++); },
+    val(id){ return sandbox.__fields[id] || ""; },
     toast(msg){ sandbox.__toasts.push(msg); },
     renderRepairs(){ sandbox.__renders++; }
   };
   if (opts.rmPicker) sandbox.rmOpenRepairAreaPinPicker = opts.rmPicker;
   vm.createContext(sandbox);
   vm.runInContext(
-    between(workordersSource, "function pinCoordIsNumber", "function savePinFromModal") +
+    between(workordersSource, "function currentSuiteTag", "function savePinFromModal") +
     between(workordersSource, "function repairAreaById", "/* ================= warranty guidelines") +
     between(photosSource, "function addRepair", "function removeRepair"),
     sandbox

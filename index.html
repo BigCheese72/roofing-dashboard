@@ -232,6 +232,11 @@
       <div class="grid">
         <div class="fld"><label>Job Name</label><input type="text" id="jobName" list="dl-jobName" onblur="rememberFieldValue('jobName', this.value); refreshInspectionRoofPickerIfNeeded();"></div>
         <div class="fld"><label>Location</label><input type="text" id="location" list="dl-location" onblur="rememberFieldValue('location', this.value)"></div>
+        <!-- Suite is a TAG for strip-mall / multi-tenant sites, never a
+             boundary: one address, one roof, one base map — see
+             currentSuiteTag() in js/workorders.js. Optional; blank for
+             single-tenant buildings. -->
+        <div class="fld"><label>Suite (optional)</label><input type="text" id="suite" placeholder="e.g. Suite 12"></div>
         <div class="fld"><label>Date of Service</label><input type="text" id="serviceDate"></div>
         <div class="fld"><label>Job No.</label><input type="text" id="jobNo"></div>
         <div class="fld"><label>Project Manager</label><input type="text" id="projectManager" list="dl-projectManager"></div>
