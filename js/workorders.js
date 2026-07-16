@@ -410,9 +410,65 @@ function removeFinding(i){
   findings.splice(i,1);
   if (removedId){
     photos.forEach(function(p){ if (p.finding_id === removedId) p.finding_id = null; });
+    /* Repairs paired to this finding (before/after — see the pairing block
+       below) fall back to unlinked, same rule as the photos above: the
+       repair row itself is real work performed and is never deleted with
+       the finding it used to resolve. */
+    repairs.forEach(function(r){ if (r && r.finding_id === removedId) r.finding_id = null; });
     renderPhotos();
+    renderRepairs();
   }
   renderFindings();
+}
+
+/* ================= finding ↔ repair pairing (before/after) ================= *
+   Mark: a finding's photo is the BEFORE and the paired repair's photo is the
+   AFTER of the exact same spot. The pairing is job-centric and single-sourced:
+   the REPAIR row carries finding_id (like photos and materials reference
+   rows); the finding side is always DERIVED via repairForFinding() — no
+   second stored back-reference to drift. Linking carries the finding's
+   location and a SNAPSHOT of its pin onto the repair (only where the repair
+   doesn't already have its own), so the after-photo is framed on literally
+   the same spot; the snapshot is a clone (moving one pin later never yanks
+   the other). "After" photos already have a home — the photo dropdown's
+   "Repair #N" assignment (#95). The full side-by-side before/after PHOTO
+   layout in the report is the flagged fast-follow (per Mark's split:
+   linkage + shared pin first); the report meanwhile prints the pairing as a
+   "Resolves Finding #N" reference on the Work Performed rows. Cross-ORDER
+   pairing (a leak order's finding resolved by a later Work Order's repair)
+   is a separate fast-follow — this ships same-order pairing, which is where
+   both sections coexist (Inspection/Warranty; the Leak form deliberately
+   has no Work Performed card since #46). */
+function repairForFinding(findingId){
+  if (!findingId) return null;
+  return repairs.find(function(r){ return r && r.finding_id === findingId; }) || null;
+}
+function repairIndexForFinding(findingId){
+  if (!findingId) return -1;
+  for (var i = 0; i < repairs.length; i++){
+    if (repairs[i] && repairs[i].finding_id === findingId) return i;
+  }
+  return -1;
+}
+/* "— not linked —" + one option per finding that has any text, labeled with
+   the same #N the findings list shows (array position, blanks included, so
+   the tech sees matching numbers on screen). */
+function repairFindingLinkOptionsHtml(selectedId){
+  var opts = ['<option value="">— not linked —</option>'];
+  findings.forEach(function(f, i){
+    if (!f || !f.id || !(f.condition || f.location)) return;
+    var text = (f.condition || f.location).slice(0, 40);
+    opts.push('<option value="' + esc(f.id) + '"' + (f.id === selectedId ? " selected" : "") + '>' +
+      esc("Finding #" + (i + 1) + " — " + text) + '</option>');
+  });
+  return opts.join("");
+}
+/* Carry the finding's spot onto the repair — only into gaps, never over the
+   repair's own location or an already-placed pin. Pin is a deep clone. */
+function linkRepairToFinding(r, f){
+  if (!r || !f) return;
+  if (!r.location && f.location) r.location = f.location;
+  if (!r.pin && f.pin) r.pin = JSON.parse(JSON.stringify(f.pin));
 }
 /* Persistent per-photo indicator when a photo has no location data --
    Mark's real Tri-Delta case: captureDeviceGps() already fired on every
@@ -532,8 +588,14 @@ function renderFindings(){
     var roofBadgeHtml = roofLabel ?
       ('<span class="evt-tag" style="' + (f.roofIdAmbiguous ? 'background:#FBE2E2;color:#D64545' : 'background:#EAF2FB;color:#1976D2') +
         '" onclick="openPinModal(\'' + f.id + '\')">' + (f.roofIdAmbiguous ? '⚠️ ' : '🏠 ') + esc(roofLabel) + '</span>') : '';
+    /* Before/after pairing chip — DERIVED from the repair side
+       (repairForFinding/repairIndexForFinding; no stored back-ref to
+       drift). Shows which Work Performed row resolves this finding. */
+    var pairedIdx = (typeof repairIndexForFinding === "function") ? repairIndexForFinding(f.id) : -1;
+    var pairedChipHtml = pairedIdx !== -1 ?
+      '<span class="evt-tag" style="background:#E8F5E9;color:#2E7D32">🔧 Resolved by Repair #' + (pairedIdx + 1) + '</span>' : '';
     d.innerHTML =
-      '<div class="rowhead"><b>Finding #' + (i+1) + '</b>' + roofBadgeHtml + '<span class="sp"></span>' +
+      '<div class="rowhead"><b>Finding #' + (i+1) + '</b>' + roofBadgeHtml + pairedChipHtml + '<span class="sp"></span>' +
       '<button class="btn danger" onclick="removeFinding(' + i + ')">Remove</button></div>' +
       '<div class="fld"><label>Roof Condition Observed</label>' +
       '<textarea rows="1" data-i="' + i + '" data-f="condition">' + esc(f.condition) + '</textarea></div>' +
@@ -1356,6 +1418,7 @@ function fill(o){
   repairs.forEach(function(r){
     if (!r.id) r.id = genId("rep");
     if (r.pin === undefined) r.pin = null;
+    if (r.finding_id === undefined) r.finding_id = null; /* before/after pairing (null = not linked) */
   });
   repairItems = (o.repairItems || []).slice(); /* Repair type only — no forced minimum row, optional */
   materials = (o.materials || []).slice(); /* Repair type only — no forced minimum row, optional */
