@@ -3825,7 +3825,7 @@ function rmGenerateOutline(){
    `source` tag, no tags/osmId since there's no OSM feature behind either),
    so everything downstream -- save, export, inline feature placement --
    works completely unchanged regardless of which method captured it. */
-var rmTraceState = { active: false, mode: "manual", points: [], previewLayer: null, vertexLayers: [] };
+var rmTraceState = { active: false, mode: "manual", points: [], previewLayer: null, vertexLayers: [], insertLayers: [] };
 var rmTraceClickHandler = null;
 /* Precision cursor (Mark: "big HAND cursor... as accurate as possible")
    -- toggles the crosshair CSS + fixed center reticle (see the
@@ -3855,7 +3855,7 @@ function rmShowTracePanel(){
     "Walk to each corner of the roof and tap “📍 Record This Corner” there. Consumer GPS is " +
     "accurate to roughly ±10–30 ft per corner — good for a rough, adjustable footprint when " +
     "satellite/OSM aren’t usable here, not survey-grade. Undo and re-record a corner if a reading looks off." :
-    "Tap the roof's corners in order, all the way around, right on the satellite map above.";
+    "Tap the roof's corners in order. Drag orange points to move them, tap a + on an edge to insert one, or double-click/right-click a point to delete it.";
   document.getElementById("rm-walk-record-btn").style.display = isWalk ? "" : "none";
   /* Crosshair/reticle + "Place at Crosshair" only apply to map-tap tracing
      -- walk-corners points come from an actual GPS fix at the tech's
@@ -3871,6 +3871,7 @@ function rmStartManualTrace(){
   rmTraceState.active = true;
   rmTraceState.mode = "manual";
   rmTraceState.points = [];
+  rmTraceState.insertLayers = [];
   rmSetBaseLayer("satellite");
   var map = rmEnsureMap();
   rmTraceClickHandler = function(e){ rmTraceAddPoint(e.latlng); };
@@ -4026,6 +4027,7 @@ function rmStartGeoTiffTrace(georaster){
   rmTraceState.active = true;
   rmTraceState.mode = "manual";
   rmTraceState.points = [];
+  rmTraceState.insertLayers = [];
   rmTraceClickHandler = function(e){ rmTraceAddPoint(e.latlng); };
   map.on("click", rmTraceClickHandler);
   rmShowTracePanel();
@@ -4220,6 +4222,7 @@ function rmStartKmlGroundOverlayTrace(dataUrl, meta){
   rmTraceState.active = true;
   rmTraceState.mode = "manual";
   rmTraceState.points = [];
+  rmTraceState.insertLayers = [];
   rmTraceClickHandler = function(e){ rmTraceAddPoint(e.latlng); };
   map.on("click", rmTraceClickHandler);
   rmShowTracePanel();
@@ -4265,6 +4268,7 @@ function rmStartKmlSuperOverlayTrace(tiles, meta){
   rmTraceState.active = true;
   rmTraceState.mode = "manual";
   rmTraceState.points = [];
+  rmTraceState.insertLayers = [];
   rmTraceClickHandler = function(e){ rmTraceAddPoint(e.latlng); };
   map.on("click", rmTraceClickHandler);
   rmShowTracePanel();
@@ -4812,6 +4816,7 @@ function rmStartOrthoTrace(dataUrl, pixelW, pixelH){
   rmTraceState.active = true;
   rmTraceState.mode = "manual";
   rmTraceState.points = [];
+  rmTraceState.insertLayers = [];
   rmTraceClickHandler = function(e){ rmTraceAddPoint(e.latlng); };
   map.on("click", rmTraceClickHandler);
   rmShowTracePanel();
@@ -4943,6 +4948,7 @@ function rmStartWalkCorners(){
   rmTraceState.active = true;
   rmTraceState.mode = "walk";
   rmTraceState.points = [];
+  rmTraceState.insertLayers = [];
   rmSetBaseLayer("satellite");
   var map = rmEnsureMap();
   if (rmState.lat != null) map.setView([rmState.lat, rmState.lng], 19);
@@ -4983,18 +4989,85 @@ function rmTraceAddPoint(latlng){
   rmRenderTracePreview();
   rmUpdateTraceButtons();
 }
+function rmTracePointFromLatLng(latlng){
+  return { lat: latlng.lat, lng: latlng.lng };
+}
+function rmTraceMovePoint(index, latlng){
+  if (!rmTraceState.active || index < 0 || index >= rmTraceState.points.length) return;
+  rmTraceState.points[index] = rmTracePointFromLatLng(latlng);
+  rmRenderTracePreview({ pan: false });
+  rmUpdateTraceButtons();
+}
+function rmTraceInsertPoint(afterIndex, latlng){
+  if (!rmTraceState.active || afterIndex < 0 || afterIndex >= rmTraceState.points.length) return;
+  rmTraceState.points.splice(afterIndex + 1, 0, rmTracePointFromLatLng(latlng));
+  rmRenderTracePreview({ pan: false });
+  rmUpdateTraceButtons();
+}
+function rmTraceDeletePoint(index){
+  if (!rmTraceState.active || index < 0 || index >= rmTraceState.points.length) return;
+  rmTraceState.points.splice(index, 1);
+  rmRenderTracePreview({ pan: false });
+  rmUpdateTraceButtons();
+}
 function rmTraceUndo(){
   rmTraceState.points.pop();
   rmRenderTracePreview();
   rmUpdateTraceButtons();
 }
-function rmRenderTracePreview(){
+function rmTraceMidpoint(a, b){
+  return { lat: (a.lat + b.lat) / 2, lng: (a.lng + b.lng) / 2 };
+}
+function rmTraceVertexIcon(index){
+  return L.divIcon({
+    className: "",
+    iconSize: [22, 22],
+    iconAnchor: [11, 11],
+    html: '<div title="Drag to move; double-click/right-click to delete" style="width:18px;height:18px;border-radius:50%;background:#E8600A;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.45);cursor:move;color:#fff;font-size:10px;line-height:18px;text-align:center;font-weight:800">' + (index + 1) + '</div>'
+  });
+}
+function rmTraceInsertIcon(){
+  return L.divIcon({
+    className: "",
+    iconSize: [18, 18],
+    iconAnchor: [9, 9],
+    html: '<div title="Insert point here" style="width:16px;height:16px;border-radius:50%;background:#fff;border:2px solid #E8600A;box-shadow:0 1px 4px rgba(0,0,0,.35);cursor:pointer;color:#E8600A;font-size:13px;line-height:14px;text-align:center;font-weight:900">+</div>'
+  });
+}
+function rmRenderTracePreview(options){
+  options = options || {};
   var map = rmState.map;
   if (!map) return;
   rmTraceState.vertexLayers.forEach(function(l){ map.removeLayer(l); });
-  rmTraceState.vertexLayers = rmTraceState.points.map(function(p){
-    return L.circleMarker([p.lat, p.lng], { radius: 5, color: "#fff", weight: 2, fillColor: "#E8600A", fillOpacity: 1 }).addTo(map);
+  rmTraceState.insertLayers.forEach(function(l){ map.removeLayer(l); });
+  rmTraceState.vertexLayers = rmTraceState.points.map(function(p, index){
+    var marker = L.marker([p.lat, p.lng], { draggable: true, icon: rmTraceVertexIcon(index), zIndexOffset: 500 }).addTo(map);
+    marker.on("dragend", function(e){ rmTraceMovePoint(index, e.target.getLatLng()); });
+    marker.on("dblclick contextmenu", function(e){
+      if (e && e.originalEvent && e.originalEvent.preventDefault) e.originalEvent.preventDefault();
+      if (e && e.originalEvent && e.originalEvent.stopPropagation) e.originalEvent.stopPropagation();
+      rmTraceDeletePoint(index);
+    });
+    return marker;
   });
+  rmTraceState.insertLayers = [];
+  if (rmTraceState.points.length >= 2){
+    var segmentCount = rmTraceState.points.length >= 3 ? rmTraceState.points.length : rmTraceState.points.length - 1;
+    for (var i = 0; i < segmentCount; i++){
+      (function(index){
+        var a = rmTraceState.points[index];
+        var b = rmTraceState.points[(index + 1) % rmTraceState.points.length];
+        var mid = rmTraceMidpoint(a, b);
+        var insertMarker = L.marker([mid.lat, mid.lng], { icon: rmTraceInsertIcon(), zIndexOffset: 450 }).addTo(map);
+        insertMarker.on("click", function(e){
+          if (e && e.originalEvent && e.originalEvent.preventDefault) e.originalEvent.preventDefault();
+          if (e && e.originalEvent && e.originalEvent.stopPropagation) e.originalEvent.stopPropagation();
+          rmTraceInsertPoint(index, insertMarker.getLatLng());
+        });
+        rmTraceState.insertLayers.push(insertMarker);
+      })(i);
+    }
+  }
   if (rmTraceState.previewLayer){ map.removeLayer(rmTraceState.previewLayer); rmTraceState.previewLayer = null; }
   if (rmTraceState.points.length >= 2){
     rmTraceState.previewLayer = L.polygon(rmTraceState.points.map(function(p){ return [p.lat, p.lng]; }), {
@@ -5005,7 +5078,7 @@ function rmRenderTracePreview(){
      physically moves around a building. Manual trace deliberately does NOT
      auto-pan: the tech is intentionally tapping a fixed view, and yanking
      the map after every tap would fight their own panning/zooming. */
-  if (rmTraceState.mode === "walk" && rmTraceState.points.length){
+  if (options.pan !== false && rmTraceState.mode === "walk" && rmTraceState.points.length){
     var last = rmTraceState.points[rmTraceState.points.length - 1];
     map.panTo([last.lat, last.lng], { animate: true });
   }
@@ -5013,13 +5086,15 @@ function rmRenderTracePreview(){
 function rmUpdateTraceButtons(){
   document.getElementById("rm-trace-finish-btn").disabled = rmTraceState.points.length < 3;
   document.getElementById("rm-trace-undo-btn").disabled = rmTraceState.points.length === 0;
-  document.getElementById("rm-trace-count").textContent = rmTraceState.points.length + " point" + (rmTraceState.points.length === 1 ? "" : "s");
+  var editable = rmTraceState.points.length ? " Drag points to adjust; + inserts; double-click/right-click deletes." : "";
+  document.getElementById("rm-trace-count").textContent = rmTraceState.points.length + " point" + (rmTraceState.points.length === 1 ? "" : "s") + editable;
 }
 function rmCancelTrace(){
   rmTraceState.active = false;
   var map = rmState.map;
   if (map){
     rmTraceState.vertexLayers.forEach(function(l){ map.removeLayer(l); });
+    rmTraceState.insertLayers.forEach(function(l){ map.removeLayer(l); });
     if (rmTraceState.previewLayer) map.removeLayer(rmTraceState.previewLayer);
     if (rmTraceClickHandler){ map.off("click", rmTraceClickHandler); rmTraceClickHandler = null; }
   }
@@ -5027,6 +5102,7 @@ function rmCancelTrace(){
   rmSetPrecisionMode(false);
   rmTraceState.points = [];
   rmTraceState.vertexLayers = [];
+  rmTraceState.insertLayers = [];
   rmTraceState.previewLayer = null;
   rmTraceState.mode = "manual";
   document.getElementById("rm-walk-record-btn").style.display = "none";
@@ -6609,6 +6685,7 @@ async function rmEnterMultiRoofCapture(buildingId){
       rmTraceState.active = true;
       rmTraceState.mode = "manual";
       rmTraceState.points = [];
+      rmTraceState.insertLayers = [];
       rmTraceClickHandler = function(e){ rmTraceAddPoint(e.latlng); };
       map2.on("click", rmTraceClickHandler);
       rmShowTracePanel();
