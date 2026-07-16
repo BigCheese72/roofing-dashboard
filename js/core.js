@@ -172,6 +172,12 @@ var currentAuthClaims = null;
 if (fauth){
   fauth.onAuthStateChanged(function(user){
     currentAuthUser = user;
+    /* Login-history + presence feed (js/activity.js): record the sign-in
+       and start/stop the 60s presence heartbeat. typeof-guarded because
+       core.js loads first -- if auth resolves before activity.js parsed,
+       activity.js's own load-time check off currentAuthUser covers it.
+       Fire-and-forget: telemetry must never block sign-in. */
+    if (typeof activityOnAuthChange === "function") activityOnAuthChange(user);
     if (user){
       user.getIdTokenResult().then(function(res){
         currentAuthClaims = res.claims;
@@ -1546,6 +1552,12 @@ function updateAdminUI(){
     var claimsOwner = !!(currentAuthClaims && currentAuthClaims.owner === true);
     rolesCard.style.display = claimsOwner ? "" : "none";
   }
+  /* Login History & Online Now (js/activity.js) is admin-gated like the
+     rest of the Admin page (not owner-only like the roles card). Server
+     actions behind it (list_login_events/list_user_activity) require
+     audit.view regardless. */
+  var activityCard = document.getElementById("activity-admin-card");
+  if (activityCard) activityCard.style.display = isAdmin ? "" : "none";
 }
 
 function esc(s){
@@ -3180,6 +3192,7 @@ function showView(v){
   if (v === "roofmapper") rmOnShow();
   if (v === "dpr" && typeof dprOnShow === "function") dprOnShow();
   if (v === "admin" && typeof rolesAdminOnShow === "function") rolesAdminOnShow();
+  if (v === "admin" && typeof activityAdminOnShow === "function") activityAdminOnShow();
   window.scrollTo(0,0);
   if (v === "edit" && pendingPinFindingId){
     var fid = pendingPinFindingId;

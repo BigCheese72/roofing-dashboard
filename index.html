@@ -192,6 +192,20 @@
         all permissions so you can never lock yourself out. Every save is recorded in the Audit Log.</p>
       <div id="roles-admin-body"><p class="hint">Loading…</p></div>
     </div>
+
+    <!-- Login History & Online Now (admin-gated like the rest of this page,
+         not owner-only like the roles card above). Presence is a 60s
+         visible-tab heartbeat + 3-minute staleness threshold, NOT a live
+         socket (Firestore has no onDisconnect) -- rendered and loaded
+         entirely by js/activity.js; data served by admin.js's
+         list_user_activity / list_login_events (audit.view-gated). -->
+    <div class="card no-print" id="activity-admin-card" style="display:none;margin-top:12px;padding:10px 14px">
+      <h2 class="cond" style="margin:0 0 4px">🕐 Login History &amp; Online Now</h2>
+      <p class="hint" style="margin:0 0 8px">Who's in the app right now (green = active in the last 3 minutes),
+        when everyone was last seen, and recent sign-ins with device info. Logins are recorded once per browser
+        session — a page refresh doesn't count twice.</p>
+      <div id="activity-admin-body"><p class="hint">Loading…</p></div>
+    </div>
   </div>
 
   <!-- ================= HOME / LAUNCHER VIEW ================= -->
@@ -1551,6 +1565,7 @@
      that confirm/correct an issue label (work orders, photos, inspections)
      can call recordConfirmedLabel() as they wire up. -->
 <script src="js/ailabels.js"></script>
+<script src="js/activity.js"></script>
 <!-- Help Center / tooltips / first-run walkthrough (see js/help.js). Loaded
      last among the modules since it wraps showView() from the outside and
      needs that + every other global already defined; builds its own DOM at
