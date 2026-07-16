@@ -259,7 +259,25 @@ async function dprLoadFoundationJobs(){
     var qs = await fdb.collection("foundation_jobs").limit(1000).get();
     dprFdnJobsCache = [];
     qs.forEach(function(d){ dprFdnJobsCache.push(Object.assign({ id: d.id }, d.data())); });
+    dprFdnJobsCache.sort(dprFdnJobCompare);
   }catch(e){ dprFdnJobsCache = dprFdnJobsCache || []; }
+}
+/* NEWEST job first (Mark: the picker listed old→new; the recent jobs are the
+   ones a foreman actually wants). Primary key: job_start_date DESC — the
+   cache carries it as an ISO string, so a plain string compare orders it;
+   jobs with no start date sink to the bottom. Tie/fallback: job NUMBER
+   descending, numeric-aware ("17476" above "9999") — the same proxy the WO
+   picker's fdnLoadJobs() (js/foundation.js) already uses. */
+function dprFdnJobCompare(a, b){
+  var da = String(a.job_start_date || ""), db_ = String(b.job_start_date || "");
+  if (da !== db_){
+    if (!da) return 1;         /* undated sinks */
+    if (!db_) return -1;
+    return da < db_ ? 1 : -1;  /* ISO strings — newest first */
+  }
+  var na = Number(a.job_no), nb = Number(b.job_no);
+  if (isFinite(na) && isFinite(nb) && na !== nb) return nb - na;
+  return String(b.job_no || "").localeCompare(String(a.job_no || ""));
 }
 /* Sets Job No. from a building's Foundation link. Returns true if the building
    HAS a Foundation job (so the caller can skip the history-based fallback),
