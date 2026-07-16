@@ -266,6 +266,54 @@ test("a locked (signed) report never auto-fills", async () => {
 
 // ---------------- hours roll up into the day's "Hours Worked" ----------------
 
+// Give the sandbox a real-ish #dpr-hours element: the app's setVal() writes the
+// DOM element, so the stubbed setVal must write through to it too — otherwise
+// dprSyncHours (which reads el.value directly) sees "" where the app sees the
+// loaded total.
+function hookHoursEl(s){
+  const el = { value: "" };
+  s.document.getElementById = (id) => (id === "dpr-hours" ? el : null);
+  const origSetVal = s.setVal;
+  s.setVal = (id, v) => { origSetVal(id, v); if (id === "dpr-hours") el.value = v == null ? "" : String(v); };
+  return el;
+}
+
+test("reopening a report with a hand-typed total (≠ crew sum) does NOT rewrite it to the sum", () => {
+  const s = makeSandbox();
+  const el = hookHoursEl(s);
+  // foreman saved 20 hours (e.g. drive time on top of 14.5 roof hours)
+  s.dprFill({ date: "2026-07-16", jobName: "N", billTo: "A", hoursWorked: "20", crew: [
+    { name: "A", hours: "8" }, { name: "B", hours: "6.5" }
+  ] });
+  assert.strictEqual(el.value, "20");   // reopen must not stomp the deliberate total
+});
+
+test("reopening a report whose total WAS the crew sum keeps it live (updates when crew changes)", () => {
+  const s = makeSandbox();
+  const el = hookHoursEl(s);
+  s.dprFill({ date: "2026-07-16", jobName: "N", billTo: "A", hoursWorked: "14.5", crew: [
+    { name: "A", hours: "8" }, { name: "B", hours: "6.5" }
+  ] });
+  assert.strictEqual(el.value, "14.5");
+  s.dprCrew[1].hours = "8";             // second crew's hours corrected
+  s.dprSyncHours();
+  assert.strictEqual(el.value, "16");   // derived total stays in sync
+});
+
+test("clearing all crew hours clears an auto-filled total (but never a hand-typed one)", () => {
+  const s = makeSandbox();
+  const el = hookHoursEl(s);
+  s.dprFill({ date: "2026-07-16", jobName: "N", billTo: "A", crew: [{ name: "A", hours: "8" }] });
+  s.dprSyncHours();
+  assert.strictEqual(el.value, "8");    // auto-filled from the one row
+  s.dprCrew[0].hours = "";
+  s.dprSyncHours();
+  assert.strictEqual(el.value, "");     // our own auto-fill is cleaned up
+  el.value = "12";                       // now a hand-typed total…
+  s.dprSyncHours();
+  assert.strictEqual(el.value, "12");   // …survives a zero-sum sync
+});
+
 test("dprSyncHours auto-fills the Hours Worked total from crew hours but never stomps a manual value", () => {
   const s = makeSandbox();
   // dpr-hours needs a real-ish element for this one

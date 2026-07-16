@@ -656,7 +656,15 @@ function dprSyncHours(){
   var el = document.getElementById("dpr-hours");
   if (!el) return;
   var total = dprCrewHoursTotal();
-  if (total <= 0) return;
+  if (total <= 0){
+    /* The summed hours are gone (rows removed / hours cleared) — clear the
+       total too, but only if it's still exactly what we auto-filled. */
+    if (el.value.trim() !== "" && el.value.trim() === dprHoursAutoVal){
+      el.value = "";
+      dprHoursAutoVal = "";
+    }
+    return;
+  }
   var current = el.value.trim();
   if (current === "" || current === dprHoursAutoVal){
     var n = String(total);
@@ -983,7 +991,6 @@ function dprFill(o){
   setVal("dpr-squares", o.squares || "");
   setVal("dpr-summary", o.summary || "");
   dprHeadcountAutoVal = String(o.headcount || "");
-  dprHoursAutoVal = String(o.hoursWorked || "");
   dprCrew = (o.crew || []).map(function(c){
     /* Old docs pre-date per-person hours ({name} only) — default them empty. */
     return {
@@ -992,6 +999,13 @@ function dprFill(o){
       hoursSource: c.hoursSource === "foundation" ? "foundation" : ""
     };
   });
+  /* Treat the loaded "Hours Worked" as auto-filled ONLY if it equals the
+     loaded crew sum (i.e. it WAS the derived total) — a deliberately
+     different hand-typed total (say, drive time on top of roof hours) must
+     survive a reopen, not get silently rewritten to the sum. */
+  var loadedCrewTotal = dprCrewHoursTotal();
+  dprHoursAutoVal = (loadedCrewTotal > 0 && String(o.hoursWorked || "") === String(loadedCrewTotal))
+    ? String(o.hoursWorked || "") : "";
   dprPhotos = (o.photos || []).map(function(p){ return Object.assign({}, p); });
   dprState.section = o.section || null;
   dprState.signoff = o.signoff || null;
