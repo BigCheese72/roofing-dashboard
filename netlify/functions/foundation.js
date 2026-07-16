@@ -76,15 +76,25 @@ exports.handler = async function (event) {
       return resp(200, result);
     }
 
-    if (action === "schema_probe") {
-      // TEMPORARY (read-only): schema discovery for the DPR crew-hours
-      // integration — employee master + raw daily punch table. Behind the
-      // same foundation.read gate as everything else; the query shapes are
-      // WHITELISTED in lib/foundationDb.js (no arbitrary SQL, identifiers
-      // validated, pay/PII column names refused). REMOVE once
-      // action=employees / action=day_hours ship.
-      const rows = await foundationDb.runProbe(password, p);
-      return resp(200, { rows: rows });
+    if (action === "employees") {
+      // Active employees from dbo.employees — id + first/last/display name
+      // ONLY (no pay, no PII; see buildEmployeesQuery). Feeds the DPR crew
+      // roster / name join. Admin-grade like everything here (foundation.read).
+      const employees = await foundationDb.fetchEmployees(password);
+      return resp(200, { employees: employees });
+    }
+
+    if (action === "day_hours") {
+      // Per-employee summed punch hours for ONE job + ONE day, names joined
+      // from the employee master. Reads the raw pre-payroll ledger
+      // (dbo.pending_timecards) first — the daily punches exist there DAYS
+      // before payroll posts them to dbo.his_timecard — falling back to the
+      // posted history for older dates. Powers the DPR crew-hours auto-fill.
+      const jobNo = foundationDb.normalizeJobNo(p.job_no);
+      if (!jobNo) return resp(400, { error: "Missing job_no" });
+      if (!foundationDb.normalizeDay(p.date)) return resp(400, { error: "Bad or missing date (YYYY-MM-DD)" });
+      const result = await foundationDb.fetchDayHours(password, jobNo, p.date);
+      return resp(200, result);
     }
 
     return resp(400, { error: "Unknown action" });
