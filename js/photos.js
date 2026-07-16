@@ -211,6 +211,18 @@ function photosPinIsGpsOnly(pin){
   return !!(pin && typeof pin.lat === "number" && typeof pin.lng === "number" &&
     !(typeof pin.x === "number" && typeof pin.y === "number"));
 }
+/* Stamps the frame a pin is about to be placed against, in the same shape
+   savePinFromModal() (js/workorders.js) reads before writing the saved pin --
+   pinXYSize.imageFrameUrl there takes priority over its own (narrower,
+   single-roof) fallback lookup. Without this, a pin placed here degrades
+   silently: rmOutlineImageFramePersistence() and rmAssetImageFramePersistence()
+   already stamp outlines/assets so a later base-map swap can be detected and
+   disclosed (buildingMapFrameMismatchDisclosure()), but a pin with no stamp
+   reads as "legacy, always matches" and just re-anchors to the new picture
+   with nothing to say so. See issue #45. */
+function photosPinXYSizeFor(customBaseMap, w, h){
+  return { w: w, h: h, imageFrameUrl: (customBaseMap && customBaseMap.url) || null };
+}
 function photosResolveBuildingBaseMap(roofs, selectedRoofId){
   roofs = roofs || [];
   var selected = roofs.find(function(r){ return r.id === selectedRoofId; }) || roofs[0] || null;
@@ -384,7 +396,7 @@ async function openPinModal(findingId){
     var img = new Image();
     img.onload = function(){
       var w = img.naturalWidth, h = img.naturalHeight;
-      pinXYSize = { w: w, h: h };
+      pinXYSize = photosPinXYSizeFor(customBaseMap, w, h);
       var bounds = [[0,0],[h,w]];
       setTimeout(function(){
         pinMap = L.map("pin-map", { crs: L.CRS.Simple, minZoom: -5 });
