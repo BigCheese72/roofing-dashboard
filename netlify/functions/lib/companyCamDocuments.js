@@ -27,7 +27,19 @@ async function uploadDocumentToCompanyCam(projectId, name, attachmentBase64) {
     const t = await r.text();
     if (!r.ok) return { ok: false, error: "CompanyCam rejected the document: " + r.status + " " + t.slice(0, 300) };
     let out = null; try { out = JSON.parse(t); } catch (e) {}
-    return { ok: true, document: out, documentId: out && out.id ? String(out.id) : null, url: out && out.url ? out.url : null };
+    // Mark's Flat Branch bug (workorders/wo_1784122808661): a 2xx whose body
+    // couldn't be parsed, or whose shape didn't carry an id where we looked,
+    // used to return ok:true with documentId:null — the client then recorded
+    // companyCamUploadStatus:"saved" with NO artifact anywhere. Success now
+    // REQUIRES a document id: accept both response shapes ({id,...} and
+    // {document:{id,...}}), and anything 2xx WITHOUT an id is reported as a
+    // failure carrying the raw body, never as saved.
+    const docObj = (out && out.document && out.document.id) ? out.document : out;
+    const documentId = (docObj && docObj.id) ? String(docObj.id) : null;
+    if (!documentId) {
+      return { ok: false, error: "CompanyCam returned " + r.status + " but no document id — treating the upload as FAILED, not saved. Body: " + String(t || "(empty)").slice(0, 300) };
+    }
+    return { ok: true, document: docObj, documentId: documentId, url: docObj.url || null };
   } catch (e) {
     return { ok: false, error: e.message };
   }

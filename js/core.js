@@ -3174,5 +3174,10 @@ function showView(v){
     pendingPinFindingId = null;
     openPinModal(fid);
   }
+  /* CompanyCam PDF backfill (⟳ on a report row) — same load-then-act
+     pattern as the pin jump above; no-ops unless
+     backfillReportPdfToCompanyCam() just loaded this order. See
+     runPendingCcPdfBackfill() in js/history.js. */
+  if (v === "edit" && typeof runPendingCcPdfBackfill === "function") runPendingCcPdfBackfill();
 }
 
