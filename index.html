@@ -233,21 +233,11 @@
         <div class="fld"><label>Site Contact</label><input type="text" id="siteContact" list="dl-contactName" onblur="rememberFieldValue('contactName', this.value)"></div>
         <div class="fld"><label>Technician</label><input type="text" id="technician" list="dl-technician" onblur="rememberFieldValue('technician', this.value)"></div>
         <div class="fld"><label>Roof System</label>
-          <select id="roofSystem">
-            <option value=""></option>
-            <option>FA EPDM</option>
-            <option>MECH EPDM</option>
-            <option>Fleece Back EPDM</option>
-            <option>FA TPO</option>
-            <option>MECH TPO</option>
-            <option>Fleece Back TPO</option>
-            <option>PVC</option>
-            <option>Fleece Back PVC</option>
-            <option>BUR / Gravel</option>
-            <option>BUR Smooth</option>
-            <option>SBS</option>
-            <option>Shingles</option>
-          </select>
+          <!-- Options are populated from the shared roof-type list (builtins +
+               app-wide user-added types) by populateRoofSystemSelect() in
+               js/workorders.js — the static list that used to live here is now
+               ROOF_TYPES_BUILTIN there. Last option is "➕ Add new roof type…". -->
+          <select id="roofSystem" onchange="onRoofSystemChange()"></select>
         </div>
       </div>
       <div class="fld" id="wo-reportedarea-fld"><label>Reported Leak Area</label>
@@ -1474,6 +1464,12 @@
 <datalist id="dl-repairItemNotes"></datalist>
 <datalist id="dl-materialName"></datalist>
 <datalist id="dl-materialUnit"></datalist>
+<!-- Shared roof-type suggestions for free-text roof-system inputs (the DPR
+     form's #dpr-roofSystem already points here) — populated from the same
+     shared list as the work-order select, see populateRoofSystemDatalist()
+     in js/workorders.js. NOT part of FIELD_HISTORY_KEYS' per-device memory:
+     this one is the app-wide list. -->
+<datalist id="dl-roofSystem"></datalist>
 <datalist id="dl-photoCaption"></datalist>
 <datalist id="dl-assetLabel"></datalist>
 <!-- Foremen roster for the Daily Progress Report's Foreman field. Populated
@@ -1532,6 +1528,11 @@ populateEmailPick();
    Preview/Save before ever picking a launcher tile or loading a saved
    order — harmless either way, just extra safety. */
 populateWoTypeSelect();
+/* Roof-type select + shared datalist: builtins render immediately (plus any
+   types this device already cached), then the app-wide list refreshes from
+   Firestore in the background — see "shared roof-type list" in
+   js/workorders.js. */
+loadRoofTypes();
 populateWarrantyGuidelines();
 showView("home");
 renderSaved();

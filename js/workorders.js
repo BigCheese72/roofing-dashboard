@@ -995,6 +995,134 @@ function populateWarrantyGuidelines(){
       "<b style='color:#D64545'>Typically Not Warrantable</b>" + list(WARRANTY_GUIDELINES.notWarrantable) +
     "</div>";
 }
+/* ================= shared roof-type list ================= *
+   The Roof System options are an APP-WIDE, GROWING list (Mark): when a tech
+   adds a type that isn't offered, it should stay on the list for every
+   future work order on every device — not be a one-off free-text that's
+   forgotten. One source of truth feeding every place the field renders:
+   the work-order #roofSystem select AND the #dl-roofSystem datalist the
+   DPR form's free-text Roof System input suggests from.
+
+   - Builtins live in ROOF_TYPES_BUILTIN below (now including SSM, per
+     Mark); user-added types live in Firestore app_settings/roof_types
+     { types: [...] } (see firestore.rules — signed-in users may write that
+     one doc and nothing else in app_settings), mirrored into localStorage
+     so the last-known list still shows offline. The merged view is
+     allRoofTypes(): builtins first, additions after, de-duped
+     case-insensitively, whitespace-trimmed.
+   - "➕ Add new roof type…" is the select's last option: prompt → trim/
+     collapse whitespace → if it case-insensitively matches an existing
+     type, just select that one (no dupes) → else select it, cache it, and
+     arrayUnion it into the shared doc so the next work order anywhere
+     already offers it.
+   - A record whose saved roofSystem isn't on the list (added elsewhere and
+     not yet synced, or pruned later) still displays/keeps its own value —
+     populateRoofSystemSelect() injects it as an option rather than blanking
+     a select set to an unmatched value.
+   - Admin-prune seam: everything user-added is that one doc's types[]
+     array — a later admin UI just edits the array (admin.js Admin-SDK
+     pattern); nothing else to touch. */
+var ROOF_TYPES_BUILTIN = ["FA EPDM","MECH EPDM","Fleece Back EPDM","FA TPO","MECH TPO",
+  "Fleece Back TPO","PVC","Fleece Back PVC","BUR / Gravel","BUR Smooth","SBS","Shingles","SSM"];
+var ROOF_TYPES_DOC_ID = "roof_types"; /* app_settings/roof_types */
+var ROOF_TYPES_CACHE_KEY = "custom-roof-types-v1";
+var ROOF_TYPE_ADD_SENTINEL = "__add_new_roof_type__";
+var customRoofTypes = [];
+var lastRoofSystemValue = ""; /* restore target when "Add new…" is cancelled */
+function allRoofTypes(){
+  var seen = {}, out = [];
+  ROOF_TYPES_BUILTIN.concat(customRoofTypes).forEach(function(t){
+    var label = String(t || "").trim();
+    if (!label) return;
+    var key = label.toLowerCase();
+    if (seen[key]) return;
+    seen[key] = true;
+    out.push(label);
+  });
+  return out;
+}
+function populateRoofSystemSelect(value){
+  var sel = document.getElementById("roofSystem");
+  if (!sel) return;
+  var current = (value !== undefined ? (value || "") : sel.value).trim();
+  if (current === ROOF_TYPE_ADD_SENTINEL) current = "";
+  var types = allRoofTypes();
+  var canon = types.find(function(t){ return t.toLowerCase() === current.toLowerCase(); });
+  if (canon) current = canon;
+  else if (current) types.push(current); /* record's own off-list value stays visible */
+  sel.innerHTML = '<option value=""></option>' +
+    types.map(function(t){
+      return '<option' + (t === current ? ' selected' : '') + '>' + esc(t) + '</option>';
+    }).join('') +
+    '<option value="' + ROOF_TYPE_ADD_SENTINEL + '">➕ Add new roof type…</option>';
+  sel.value = current;
+  lastRoofSystemValue = current;
+  populateRoofSystemDatalist();
+}
+function populateRoofSystemDatalist(){
+  var dl = document.getElementById("dl-roofSystem");
+  if (!dl) return;
+  dl.innerHTML = allRoofTypes().map(function(t){
+    return '<option value="' + esc(t) + '">';
+  }).join('');
+}
+function onRoofSystemChange(){
+  var sel = document.getElementById("roofSystem");
+  if (!sel) return;
+  if (sel.value !== ROOF_TYPE_ADD_SENTINEL){
+    lastRoofSystemValue = sel.value;
+    return;
+  }
+  var raw = prompt('New roof type (it\'ll be added to the list for every future work order):', "");
+  var label = (raw || "").trim().replace(/\s+/g, " ");
+  if (!label){
+    populateRoofSystemSelect(lastRoofSystemValue);
+    return;
+  }
+  addRoofType(label);
+}
+function addRoofType(label){
+  var existing = allRoofTypes().find(function(t){ return t.toLowerCase() === label.toLowerCase(); });
+  if (existing){
+    /* Already offered (any casing) — select it, never store a duplicate. */
+    populateRoofSystemSelect(existing);
+    toast('"' + existing + '" is already on the list — selected it.');
+    return;
+  }
+  customRoofTypes.push(label);
+  populateRoofSystemSelect(label);
+  try{ localStorage.setItem(ROOF_TYPES_CACHE_KEY, JSON.stringify(customRoofTypes)); }catch(e){}
+  if (!fdb){
+    toast('Roof type "' + label + '" added on this device — no connection, so it isn\'t on the shared list yet.');
+    return;
+  }
+  fdb.collection("app_settings").doc(ROOF_TYPES_DOC_ID).set(
+    { types: firebase.firestore.FieldValue.arrayUnion(label) }, { merge: true }
+  ).then(function(){
+    toast('Roof type "' + label + '" added to the shared list ✓');
+  }).catch(function(e){
+    toast("Couldn't save the new roof type to the shared list: " + (e && e.message || e));
+  });
+}
+async function loadRoofTypes(){
+  try{
+    var raw = localStorage.getItem(ROOF_TYPES_CACHE_KEY);
+    var arr = raw ? JSON.parse(raw) : [];
+    if (Array.isArray(arr)) customRoofTypes = arr.filter(function(t){ return typeof t === "string"; });
+  }catch(e){}
+  populateRoofSystemSelect();
+  if (!fdb) return;
+  try{
+    var snap = await fdb.collection("app_settings").doc(ROOF_TYPES_DOC_ID).get();
+    var data = snap && snap.exists ? snap.data() : null;
+    if (data && Array.isArray(data.types)){
+      customRoofTypes = data.types.filter(function(t){ return typeof t === "string"; });
+      try{ localStorage.setItem(ROOF_TYPES_CACHE_KEY, JSON.stringify(customRoofTypes)); }catch(e){}
+      populateRoofSystemSelect(); /* re-render, preserving the current selection */
+    }
+  }catch(e){ /* offline / rules hiccup — builtins + device cache still work */ }
+}
+
 var FIELD_IDS = ["jobName","location","serviceDate","jobNo","projectManager","billTo","billContact","billPhone",
   "siteContact","technician","roofSystem","reportedArea","warrantable","nonWarrantable","summary",
   "woCost","woManHours","woMaterials","woDescription","woPONumber","woDateCompleted","repairDescription",
@@ -1058,6 +1186,11 @@ function fill(o){
      whichever order was open before this one. */
   inspectionChecklist = (o.inspectionChecklist || []).slice();
   FIELD_IDS.forEach(function(k){ setVal(k, o[k]); });
+  /* setVal on a select silently lands on "" when the value matches no
+     option — a roofSystem added on another device (or later pruned) would
+     display blank and then be SAVED back blank on the next save. Rebuild
+     the options around this record's own value instead. */
+  populateRoofSystemSelect(o.roofSystem || "");
   populateWoTypeSelect();
   setVal("woType", o.woType || WORK_ORDER_TYPES[0]);
   onWoTypeChange();
