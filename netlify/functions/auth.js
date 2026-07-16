@@ -135,19 +135,20 @@ async function sendInviteEmail(opts) {
   // stop after setting their password is straight into "how do I..." rather
   // than a blank Home screen. Added 2026-07-12 alongside the Help Center.
   const helpLink = opts.appUrl + "/?openHelp=1";
-  // Add-to-home-screen instructions are platform-specific and, critically,
-  // BROWSER-specific on iOS: "Add to Home Screen" only exists in Safari's
-  // share sheet -- it does not exist in Chrome-on-iOS at all (Apple's own
-  // restriction, not a bug in this app), so a crew member on an iPhone who
-  // opens the invite link in Chrome will never find the option and will
-  // reasonably conclude the app is broken. Called out explicitly for that
-  // reason rather than assumed obvious.
+  // Add-to-home-screen instructions are platform-specific. On iOS BOTH
+  // Safari and Chrome can do it: iOS 16.4+ (March 2023) lets third-party
+  // browsers add web apps to the Home Screen, and Chrome-on-iOS exposes it
+  // in its share/menu -- Mark uses Chrome on iOS exclusively and it works.
+  // (This copy previously insisted Safari was the only iOS browser that
+  // could do it; that was stale pre-16.4 knowledge and told Chrome-on-iOS
+  // users their working browser couldn't do the thing it can. Corrected
+  // 2026-07-16; tests/inviteEmailA2hsCopy.test.js guards the fix.)
   const text = "Hi" + (opts.displayName ? " " + opts.displayName : "") + ",\n\n" +
     opts.inviterEmail + " has added you to RoofOps (Watkins Roofing's field work order app) as a " + roleLabel + ".\n\n" +
     "1. SET YOUR PASSWORD (this link works for " + INVITE_TTL_DAYS + " days)\n" + opts.inviteLink + "\n" +
     "   If it's expired, ask " + opts.inviterEmail + " to tap \"Resend invite\" on your account -- a fresh link arrives in seconds.\n\n" +
     "2. ADD ROOFOPS TO YOUR HOME SCREEN (do this once, in the field it's much faster than a browser tab)\n" +
-    "   iPhone/iPad: open " + opts.appUrl + " in SAFARI (must be Safari, not Chrome -- the option doesn't exist there) -> tap the Share button -> scroll down -> \"Add to Home Screen\" -> Add.\n" +
+    "   iPhone/iPad (Safari or Chrome): open " + opts.appUrl + " -> tap the Share button (or the ... menu in Chrome) -> \"Add to Home Screen\" -> Add.\n" +
     "   Android: open " + opts.appUrl + " in Chrome -> tap the three-dot menu -> \"Install app\" or \"Add to Home screen.\"\n" +
     "   Computer (Chrome/Edge): click the install icon in the address bar, or the three-dot menu -> \"Install RoofOps.\"\n" +
     "   This makes it open full-screen like a real app, one tap from your home screen.\n\n" +
@@ -161,7 +162,7 @@ async function sendInviteEmail(opts) {
     "<p style=\"color:#666;font-size:13px;margin:6px 0 0\">This link works for " + INVITE_TTL_DAYS + " days. If it's expired, ask " + escapeHtml(opts.inviterEmail) + " to tap “Resend invite” on your account — a fresh link arrives in seconds.</p>" +
     "<p style=\"margin:22px 0 8px\"><b>2. Add RoofOps to your home screen</b> (do this once — in the field it's much faster than a browser tab)</p>" +
     "<ul style=\"margin:0 0 16px;padding-left:20px;line-height:1.6\">" +
-    "<li><b>iPhone/iPad:</b> open the app in <b>Safari</b> (must be Safari — the option doesn't exist in Chrome on iOS) → tap the Share button → scroll down → <b>Add to Home Screen</b> → Add.</li>" +
+    "<li><b>iPhone/iPad (Safari or Chrome):</b> open the app → tap the Share button (or the ⋯ menu in Chrome) → <b>Add to Home Screen</b> → Add.</li>" +
     "<li><b>Android:</b> open the app in Chrome → three-dot menu → <b>Install app</b> or <b>Add to Home screen</b>.</li>" +
     "<li><b>Computer (Chrome/Edge):</b> the install icon in the address bar, or three-dot menu → <b>Install RoofOps</b>.</li>" +
     "</ul>" +
