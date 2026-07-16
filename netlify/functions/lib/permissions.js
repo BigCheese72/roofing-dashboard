@@ -73,6 +73,45 @@ const PERMISSION_KEYS = [
   "foundation.read"
 ];
 
+// Which permission keys may hold a SCOPED value (beyond plain true/false),
+// and which scopes each accepts. Derived from what SEED_ROLES actually
+// uses today -- a key not listed here is strictly boolean, and the roles
+// editor (Admin page > Roles & Permissions) renders a checkbox for it
+// instead of a scope dropdown. Server-side validation in admin.js's
+// set_role_permissions rejects any scoped value not listed here, so a
+// scope can never be attached to a key whose enforcement code wouldn't
+// know what to do with it. Adding a new scoped key means adding it HERE
+// (a code change, same rule as PERMISSION_KEYS itself).
+const PERMISSION_SCOPES = {
+  "buildings.view.full": ["proj"],
+  "workorder.view.all": ["proj", "billing"],
+  "workorder.create": ["proj"],
+  "workorder.edit": ["proj"],
+  "internal.notes.view": ["proj"],
+  "internal.notes.edit": ["proj"],
+  "capture.photos": ["proj"],
+  "capture.roofmap": ["proj"],
+  "capture.dimensions": ["proj"],
+  "capture.signature": ["proj"],
+  "companycam.link": ["proj"],
+  "changeorder.approve_pricing": ["proj"],
+  "changeorder.approve_report": ["proj"],
+  "doc.email_customer": ["proj"],
+  "billing.view": ["proj"],
+  "attachments.archive": ["proj", "own"],
+  "attachments.supersede": ["proj", "own"]
+};
+
+// True when `value` is a legal permission VALUE for `key`: booleans are
+// always legal; a scope string is legal only if PERMISSION_SCOPES lists it
+// for that specific key. Everything else (numbers, objects, unknown
+// strings, a scope on a boolean-only key) is rejected.
+function isValidPermissionValue(key, value) {
+  if (value === true || value === false) return true;
+  const scopes = PERMISSION_SCOPES[key];
+  return Array.isArray(scopes) && scopes.indexOf(value) !== -1;
+}
+
 // Every key granted `true`, for roles whose spec is "everything" or
 // "everything except a short exclusion list".
 function allTrue() {
@@ -321,4 +360,4 @@ const SEED_ROLES = [
   }
 ];
 
-module.exports = { PERMISSION_KEYS, SEED_ROLES };
+module.exports = { PERMISSION_KEYS, PERMISSION_SCOPES, isValidPermissionValue, SEED_ROLES };

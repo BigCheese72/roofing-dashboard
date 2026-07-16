@@ -179,6 +179,19 @@
       <p class="hint" style="margin:4px 0 0" id="warranty-check-status">Auto-checks every 30 minutes. Unmatched reports land in the Review Queue for manual assignment — never silently guessed.</p>
     </div>
     </div>
+
+    <!-- Roles & Permissions editor (owner-only -- hidden for non-owner
+         admins by updateAdminUI(), server-gated on settings.security either
+         way). Edits the LIVE roles/{roleId} permission grids; rendered and
+         saved entirely by js/roles-admin.js. First modular section of the
+         consolidated Admin page — see "Admin page" in DEV_NOTES.md. -->
+    <div class="card no-print" id="roles-admin-card" style="display:none;margin-top:12px;padding:10px 14px">
+      <h2 class="cond" style="margin:0 0 4px">🔑 Roles &amp; Permissions <span class="hint" style="font-size:12px">(owner only)</span></h2>
+      <p class="hint" style="margin:0 0 8px">Check what each role is allowed to do, then Save. Changes are live
+        immediately — every server action re-reads the role grid on each request. The Owner column is locked to
+        all permissions so you can never lock yourself out. Every save is recorded in the Audit Log.</p>
+      <div id="roles-admin-body"><p class="hint">Loading…</p></div>
+    </div>
   </div>
 
   <!-- ================= HOME / LAUNCHER VIEW ================= -->
@@ -1487,6 +1500,7 @@
 <script src="js/workorders.js"></script>
 <script src="js/roofmapper.js"></script>
 <script src="js/dpr.js"></script>
+<script src="js/roles-admin.js"></script>
 <!-- Help Center / tooltips / first-run walkthrough (see js/help.js). Loaded
      last among the modules since it wraps showView() from the outside and
      needs that + every other global already defined; builds its own DOM at

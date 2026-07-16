@@ -1486,6 +1486,16 @@ function updateAdminUI(){
       loadAuditLogBacklog();
     }
   }
+  /* Roles & Permissions editor (js/roles-admin.js) is OWNER-only, not
+     admin -- a non-owner admin sees the Admin page without this card.
+     Convenience-only hiding, as always: the server actions behind it
+     (list_roles/set_role_permissions in netlify/functions/admin.js)
+     require settings.security regardless of what any client shows. */
+  var rolesCard = document.getElementById("roles-admin-card");
+  if (rolesCard){
+    var claimsOwner = !!(currentAuthClaims && currentAuthClaims.owner === true);
+    rolesCard.style.display = claimsOwner ? "" : "none";
+  }
 }
 
 function esc(s){
@@ -3072,6 +3082,7 @@ function showView(v){
   if (v === "reports"){ renderReportsList(); if (isAdmin){ loadFeedbackBacklog(); loadAuditLogBacklog(); } }
   if (v === "roofmapper") rmOnShow();
   if (v === "dpr" && typeof dprOnShow === "function") dprOnShow();
+  if (v === "admin" && typeof rolesAdminOnShow === "function") rolesAdminOnShow();
   window.scrollTo(0,0);
   if (v === "edit" && pendingPinFindingId){
     var fid = pendingPinFindingId;
