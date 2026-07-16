@@ -1837,11 +1837,15 @@ async function sendEmailNow(){
   var isCO = o.woType === "Change Order";
   var subject = emailTypeSubject(o.woType) + " \u2014 " + (o.jobName || "Job") +
     (o.jobNo ? " #" + o.jobNo : "") + (o.location ? " (" + o.location + ")" : "");
+  /* Leak/no-job note auto-inserted into the tech's outgoing email (not a
+     separate system email — see leakNoJobEmailNote() in js/workorders.js). */
+  var njNote = (typeof leakNoJobEmailNote === "function") ? leakNoJobEmailNote(o) : "";
   var body = (isCO ?
       "Change order documentation for " + (o.jobName || "the job") +
       (o.jobNo ? " (Job No. " + o.jobNo + ")" : "") + " is attached as a PDF." :
       emailTypeNoun(o.woType) + " documentation for " + (o.jobName || "the job") +
       (o.jobNo ? " (Job No. " + o.jobNo + ")" : "") + " is attached as a PDF, including photo documentation.") +
+    (njNote ? "\n\n" + njNote : "") +
     "\n\nDate of Service: " + (o.serviceDate || "") +
     "\nLocation: " + (o.location || "") +
     "\n\nSent from the RoofOps app.";
@@ -1884,9 +1888,11 @@ async function sharePdf(){
     var o = collect();
     var subject = emailTypeSubject(o.woType) + " \u2014 " + (o.jobName || "Job") +
       (o.jobNo ? " #" + o.jobNo : "") + (o.location ? " (" + o.location + ")" : "");
+    var njNote = (typeof leakNoJobEmailNote === "function") ? leakNoJobEmailNote(o) : "";
     var body = emailTypeNoun(o.woType) + " documentation for " + (o.jobName || "the job") +
       (o.jobNo ? " (Job No. " + o.jobNo + ")" : "") +
       " is attached as a PDF, including photo documentation." +
+      (njNote ? "\n\n" + njNote : "") +
       "\n\nDate of Service: " + (o.serviceDate || "") +
       "\nLocation: " + (o.location || "");
     var addrList = parseEmailRecipients(val("emailTo"));

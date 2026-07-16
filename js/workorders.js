@@ -995,6 +995,63 @@ function populateWarrantyGuidelines(){
       "<b style='color:#D64545'>Typically Not Warrantable</b>" + list(WARRANTY_GUIDELINES.notWarrantable) +
     "</div>";
 }
+/* ================= "Leak – No Job" catch-all flag ================= *
+   Shop convention: a leak call with no real Foundation job yet gets
+   written against the "Leak – No Job" catch-all job; Charlotte (Foundation
+   record-keeper) later creates the real job and the ticket reconciles to
+   its number. The app's job (Mark): make such a ticket impossible to miss —
+   a banner on the form, a chip in the Saved list, and an auto-inserted
+   note in the outgoing work-order email (which already defaults leaks to
+   Charlotte — EMAIL_DEFAULT_TO_LEAK) — until a real job is linked.
+
+   ALL DERIVED, NOTHING STORED: the flag is computed from the job names on
+   the record every time it renders, so it clears by itself the moment the
+   order is re-linked to the real Foundation job (fill/edit/list all agree,
+   on every device, with zero migration or reconciliation bookkeeping).
+
+   ASSUMPTION (flagged for Mark): the catch-all is detected by NAME —
+   "leak" followed closely by "no job" in the Foundation-linked job name or
+   the visible job name ("Leak - No Job", "LEAK–NO JOB", "leak no job"...).
+   If the real Foundation catch-all uses a different name or a well-known
+   job number, LEAK_NO_JOB_RE below is the single thing to adjust. */
+var LEAK_NO_JOB_RE = /\bleak\b[^A-Za-z0-9]{0,8}no[^A-Za-z0-9]{0,3}job\b/i;
+function isLeakNoJobName(name){
+  return LEAK_NO_JOB_RE.test(String(name || ""));
+}
+function isLeakNoJobOrder(o){
+  o = o || {};
+  /* Rides the catch-all Foundation job itself -> flagged. */
+  if (isLeakNoJobName(o.foundationJobName)) return true;
+  /* A real (non-catch-all) Foundation job is linked -> reconciled, even if
+     the visible job name still says "Leak - No Job" from before. */
+  if (o.foundationJobNo && o.foundationJobName) return false;
+  return isLeakNoJobName(o.jobName);
+}
+/* Auto-inserted paragraph for the OUTGOING work-order email (Mark: not a
+   separate system email — the tech is emailing the work order to Charlotte
+   anyway, the note rides along in that email). "" when not applicable. */
+function leakNoJobEmailNote(o){
+  if (!isLeakNoJobOrder(o)) return "";
+  return "⚠️ LEAK – NO JOB TICKET: This work order is on the “Leak – No Job” catch-all " +
+    "and has no real Foundation job number yet. Please create the job/work order in Foundation " +
+    "and assign the real job number so this ticket can be reconciled.";
+}
+function renderLeakNoJobBadge(){
+  var el = document.getElementById("wo-leaknojob-banner");
+  if (!el) return;
+  el.style.display = isLeakNoJobOrder({
+    jobName: val("jobName"),
+    foundationJobNo: (typeof fdnLinkedJobNo !== "undefined" && fdnLinkedJobNo) ? fdnLinkedJobNo : null,
+    foundationJobName: (typeof fdnLinkedJobName !== "undefined" && fdnLinkedJobName) ? fdnLinkedJobName : ""
+  }) ? "" : "none";
+}
+/* Live re-evaluation while the tech types the job name; fill() and
+   fdnSetLinkedJob() (js/foundation.js) cover load and job-link changes. */
+document.addEventListener("DOMContentLoaded", function(){
+  var jn = document.getElementById("jobName");
+  if (jn) jn.addEventListener("input", renderLeakNoJobBadge);
+});
+
 /* ================= shared roof-type list ================= *
    The Roof System options are an APP-WIDE, GROWING list (Mark): when a tech
    adds a type that isn't offered, it should stay on the list for every
@@ -1242,6 +1299,7 @@ function fill(o){
      twice. */
   if (val("woType") === "Inspection"){ ensureInspectionChecklist(); renderInspectionChecklist(); }
   if (typeof refreshInspectionRoofPickerIfNeeded === "function") refreshInspectionRoofPickerIfNeeded();
+  renderLeakNoJobBadge();
   scheduleInlineBuildingHistoryRefresh();
 }
 /* ================= Change Order autofill =================
