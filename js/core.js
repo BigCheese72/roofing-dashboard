@@ -390,7 +390,10 @@ async function renderUserManagementModal(){
    the account was still created (a real, recoverable state, not a dead
    end). appUrl is this browser's own origin -- same environment-aware
    principle as passwordResetActionCodeSettings(), just sent to the server
-   since the reset link has to be generated server-side now. */
+   since the invite link (a 7-day custom token as of 2026-07-16 -- see the
+   invite-token comment block in netlify/functions/auth.js, and the
+   ?invite= handling at pendingInviteToken above) is generated
+   server-side. */
 async function inviteUser(){
   var email = val("invite-email").trim();
   var displayName = val("invite-name").trim();
@@ -513,6 +516,25 @@ async function saveUserRole(uid){
    "bootstrapped") on a read error too -- a transient Firestore hiccup
    should never be able to brick the entire app for everyone. */
 var authBootstrapStatus = null;
+/* Custom invite links (?invite=<token> -- see the invite-token comment
+   block in netlify/functions/auth.js for the whole design: 7-day expiry,
+   single-use, hashed at rest, replacing Firebase's ~1-hour password-reset
+   links that kept dying in crew inboxes). When a token is present and
+   nobody's signed in, the login gate renders a set-your-password form
+   instead of the sign-in form, and on success signs the new user straight
+   in with the password they just chose -- no retyping, no bouncing
+   through Firebase's hosted pages. If someone's ALREADY signed in the
+   param is simply ignored (renderLoginGate() hides the gate entirely for
+   a signed-in user) -- an admin clicking their own test invite shouldn't
+   get logged out. */
+var pendingInviteToken = null;
+try { pendingInviteToken = new URLSearchParams(window.location.search).get("invite") || null; } catch(e){ /* ancient browser: invite links just fall back to normal sign-in */ }
+function clearPendingInvite(){
+  pendingInviteToken = null;
+  /* Drop ?invite= from the address bar so a refresh (or a bookmark of the
+     landed page) doesn't re-run a burned token through the gate. */
+  try { history.replaceState(null, "", window.location.pathname); } catch(e){}
+}
 async function checkAuthBootstrapStatus(){
   if (!fdb){ authBootstrapStatus = true; renderLoginGate(); return; }
   try{
@@ -532,7 +554,14 @@ function renderLoginGate(){
   lockBodyScroll();
   var host = document.getElementById("login-gate-body");
   if (!host) return;
-  host.innerHTML = authBootstrapStatus ? loginGateSignInHtml() : loginGateBootstrapHtml();
+  if (!authBootstrapStatus){
+    host.innerHTML = loginGateBootstrapHtml();
+  } else if (pendingInviteToken){
+    host.innerHTML = loginGateAcceptInviteHtml();
+    checkPendingInvite(); // async on purpose -- greet/fail-fast fills in when the server answers
+  } else {
+    host.innerHTML = loginGateSignInHtml();
+  }
 }
 /* This screen is the one door into the app -- a failure here (wrong
    secret, weak password, a misconfigured env var) MUST be impossible to
@@ -586,6 +615,69 @@ async function gateForgotPassword(){
     await fauth.sendPasswordResetEmail(email, passwordResetActionCodeSettings());
     setLoginGateStatus("Password reset email sent (if that account exists) ✓", false);
   }catch(e){ setLoginGateStatus("Couldn't send reset email: " + e.message, true); }
+}
+/* ---- Accept-invite mode (see pendingInviteToken above) ---- */
+function loginGateAcceptInviteHtml(){
+  return '<p class="hint" style="margin:0 0 4px">Welcome to RoofOps! Choose a password to finish setting up your account.</p>' +
+    '<p id="invite-email-line" class="hint" style="display:none;font-weight:600;margin:0 0 10px"></p>' +
+    '<div class="fld"><label>New Password (at least 8 characters)</label><input type="password" id="invite-password" autocomplete="new-password"></div>' +
+    '<div class="fld"><label>Confirm Password</label><input type="password" id="invite-password2" autocomplete="new-password"></div>' +
+    '<div class="btnrow"><button class="btn primary" id="invite-accept-btn" onclick="gateAcceptInvite()">Set Password &amp; Sign In</button>' +
+    '<button class="btn" onclick="dismissInviteMode()">Back to Sign In</button></div>' +
+    '<p id="login-gate-status" style="display:none"></p>';
+}
+function dismissInviteMode(){
+  clearPendingInvite();
+  renderLoginGate();
+}
+/* Greets the recipient by the email the invite is for, and -- the part
+   that actually matters in the field -- fails FAST on a dead link: the
+   old Firebase flow let you click through to a hosted page, and only
+   told you the link was dead after the fact. Here the form disables
+   itself with the one message that says what to do next, before anyone
+   has typed a password twice. */
+async function checkPendingInvite(){
+  var token = pendingInviteToken;
+  try{
+    var r = await fetch("/.netlify/functions/auth", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "check_invite", token: token })
+    });
+    var out = await r.json().catch(function(){ return null; });
+    /* Stale response guard: the user may have tapped "Back to Sign In"
+       (or accepted) while this was in flight -- never write into a form
+       that's no longer the invite form. */
+    if (pendingInviteToken !== token) return;
+    if (!r.ok || !out || !out.ok) throw new Error((out && out.error) || ("server error " + r.status));
+    var line = document.getElementById("invite-email-line");
+    if (line){ line.textContent = "Setting up: " + out.email; line.style.display = "block"; }
+  }catch(e){
+    if (pendingInviteToken !== token) return;
+    var btn = document.getElementById("invite-accept-btn");
+    if (btn) btn.disabled = true;
+    setLoginGateStatus(e.message, true);
+  }
+}
+async function gateAcceptInvite(){
+  var p1 = val("invite-password");
+  var p2 = val("invite-password2");
+  if (p1.length < 8){ setLoginGateStatus("Password must be at least 8 characters.", true); return; }
+  if (p1 !== p2){ setLoginGateStatus("Passwords don't match.", true); return; }
+  setLoginGateStatus("Setting your password…", false);
+  try{
+    var r = await fetch("/.netlify/functions/auth", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "accept_invite", token: pendingInviteToken, password: p1 })
+    });
+    var out = await r.json().catch(function(){ return null; });
+    if (!r.ok || !out || !out.ok) throw new Error((out && out.error) || ("server error " + r.status));
+    /* Token is burned server-side the moment the password is set -- clear
+       it locally BEFORE signing in so nothing ever retries it. */
+    clearPendingInvite();
+    setLoginGateStatus("Password set ✓ — signing you in…", false);
+    await fauth.signInWithEmailAndPassword(out.email, p1);
+    /* onAuthStateChanged hides the gate from here. */
+  }catch(e){ setLoginGateStatus(e.message, true); }
 }
 /* One-time owner bootstrap -- creates the owner account, signs into it in
    THIS browser, force-refreshes the ID token (claims were just set by the
