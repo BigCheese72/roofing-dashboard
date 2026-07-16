@@ -1194,7 +1194,39 @@ function inlineRoofHasGeoreferencedBaseMap(roof){
   return !!(roof && roof.roof_base_map_url &&
     roof.roof_base_map_type === "drone_ortho" && roof.roof_base_map_bounds);
 }
-function inlineResolveBuildingBaseMap(roofs, selectedRoofId){
+function inlineRoofHasSyntheticOrthoBaseMap(roof){
+  return !!(roof && roof.roof_base_map_url &&
+    roof.roof_base_map_type === "sketch" && roof.roof_base_map_synthetic);
+}
+function inlineValidComputedOrthoBounds(bounds){
+  return !!bounds &&
+    Number.isFinite(Number(bounds.north)) && Number.isFinite(Number(bounds.south)) &&
+    Number.isFinite(Number(bounds.east)) && Number.isFinite(Number(bounds.west)) &&
+    Number(bounds.north) !== Number(bounds.south) && Number(bounds.east) !== Number(bounds.west);
+}
+async function inlineSyntheticOrthoOverlay(roof){
+  if (!inlineRoofHasSyntheticOrthoBaseMap(roof)) return null;
+  if (typeof rmComputeOrthoBoundsForImageUrl !== "function") return null;
+  try{
+    var computed = await rmComputeOrthoBoundsForImageUrl(roof.roof_base_map_url);
+    var bounds = computed && computed.orthoBounds;
+    if (!inlineValidComputedOrthoBounds(bounds)) return null;
+    return { url: roof.roof_base_map_url, bounds: bounds };
+  }catch(e){
+    return null;
+  }
+}
+async function inlineFirstOtherRoofWithSyntheticOrthoOverlay(roofs, selectedRoofId){
+  roofs = roofs || [];
+  for (var i = 0; i < roofs.length; i++){
+    var roof = roofs[i];
+    if (!roof || roof.id === selectedRoofId) continue;
+    var orthoOverlay = await inlineSyntheticOrthoOverlay(roof);
+    if (orthoOverlay) return { roof: roof, orthoOverlay: orthoOverlay };
+  }
+  return null;
+}
+async function inlineResolveBuildingBaseMap(roofs, selectedRoofId){
   roofs = roofs || [];
   var selectedRoof = roofs.find(function(r){ return r.id === selectedRoofId; }) || roofs[0] || null;
   var base = {
@@ -1207,9 +1239,17 @@ function inlineResolveBuildingBaseMap(roofs, selectedRoofId){
   };
   if (!inlineRoofHasBaseMap(selectedRoof)){
     var siblingOrtho = inlineFirstOtherRoofWithGeoreferencedBaseMap(roofs, selectedRoofId);
-    if (!siblingOrtho) return base;
-    base.sourceRoof = siblingOrtho;
-    base.orthoOverlay = { url: siblingOrtho.roof_base_map_url, bounds: siblingOrtho.roof_base_map_bounds };
+    if (siblingOrtho){
+      base.sourceRoof = siblingOrtho;
+      base.orthoOverlay = { url: siblingOrtho.roof_base_map_url, bounds: siblingOrtho.roof_base_map_bounds };
+      return base;
+    }
+    var siblingSyntheticOrtho = await inlineFirstOtherRoofWithSyntheticOrthoOverlay(roofs, selectedRoofId);
+    if (siblingSyntheticOrtho){
+      base.sourceRoof = siblingSyntheticOrtho.roof;
+      base.orthoOverlay = siblingSyntheticOrtho.orthoOverlay;
+      return base;
+    }
     return base;
   }
   base.sourceRoof = selectedRoof;
@@ -1218,7 +1258,12 @@ function inlineResolveBuildingBaseMap(roofs, selectedRoofId){
     base.orthoOverlay = { url: selectedRoof.roof_base_map_url, bounds: selectedRoof.roof_base_map_bounds };
     return base;
   }
-  base.syntheticOrtho = !!(selectedRoof.roof_base_map_type === "sketch" && selectedRoof.roof_base_map_synthetic);
+  var selectedSyntheticOrtho = await inlineSyntheticOrthoOverlay(selectedRoof);
+  if (selectedSyntheticOrtho){
+    base.orthoOverlay = selectedSyntheticOrtho;
+    return base;
+  }
+  base.syntheticOrtho = !!inlineRoofHasSyntheticOrthoBaseMap(selectedRoof);
   base.customBld = selectedRoof;
   return base;
 }
@@ -1458,7 +1503,7 @@ async function refreshInlineBuildingHistory(){
     if (seq !== woInlineHistorySeq) return;
     var roofId = inlineSelectedRoofId(ctx.roofs);
     var roof = inlineRoofById(ctx, roofId);
-    var baseMap = inlineResolveBuildingBaseMap(ctx.roofs, roofId);
+    var baseMap = await inlineResolveBuildingBaseMap(ctx.roofs, roofId);
     var mapRoof = roof;
     var mapRoofId = roofId;
     var hasCustomBaseMap = !!baseMap.customBld;
