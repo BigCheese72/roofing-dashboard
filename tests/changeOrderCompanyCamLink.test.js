@@ -47,7 +47,7 @@ function makeSandbox(opts){
     currentWorkOrderBuildingId(){ return opts.buildingId === undefined ? "bld_acme_north" : opts.buildingId; }
   };
   vm.createContext(sandbox);
-  vm.runInContext(between("var CC_LINK_INFO_HOST_IDS", "function unlinkCC"), sandbox);
+  vm.runInContext(between("var CC_LINK_INFO_HOST_IDS", "async function unlinkCC"), sandbox);
   return sandbox;
 }
 
@@ -81,7 +81,7 @@ test("a Change Order on a linked building inherits the building's CompanyCam pro
     fields: { woType: "Change Order" },
     buildingSnap: { exists: true, data(){ return { companyCamProjectId: "ccp_777", name: "North Warehouse" }; } }
   });
-  const out = await s.resolveChangeOrderCompanyCamLink();
+  const out = await s.resolveBuildingCompanyCamLink();
   assert.strictEqual(out.linked, true);
   assert.strictEqual(s.ccLinkedProjectId, "ccp_777");
   /* This is exactly what uploadLinkedPdfToCompanyCam() gates on: with a
@@ -95,7 +95,7 @@ test("a building with no CompanyCam project stays unlinked — nothing is auto-c
     fields: { woType: "Change Order" },
     buildingSnap: { exists: true, data(){ return { name: "Brand New Building" }; } }
   });
-  const out = await s.resolveChangeOrderCompanyCamLink();
+  const out = await s.resolveBuildingCompanyCamLink();
   assert.strictEqual(out.skipped, true);
   assert.strictEqual(out.reason, "building-not-linked");
   assert.strictEqual(s.ccLinkedProjectId, null);
@@ -107,26 +107,39 @@ test("an explicit link made in this session is never clobbered", async () => {
     fields: { woType: "Change Order" },
     buildingSnap: { exists: true, data(){ return { companyCamProjectId: "ccp_777" }; } }
   });
-  const out = await s.resolveChangeOrderCompanyCamLink();
+  const out = await s.resolveBuildingCompanyCamLink();
   assert.strictEqual(out.alreadyLinked, true);
   assert.strictEqual(s.ccLinkedProjectId, "ccp_manual");
 });
 
-test("non-Change-Order types are not touched by the resolver", async () => {
-  for (const woType of ["Leak / Service", "Repair", "Inspection", "Warranty"]){
+test("EVERY work-order type inherits a linked building's project (audit FIX 3 — gate removed)", async () => {
+  for (const woType of ["Leak / Service", "Repair", "Inspection", "Warranty", "Change Order"]){
     const s = makeSandbox({
       fields: { woType: woType },
-      buildingSnap: { exists: true, data(){ return { companyCamProjectId: "ccp_777" }; } }
+      buildingSnap: { exists: true, data(){ return { companyCamProjectId: "ccp_777", name: "North Warehouse" }; } }
     });
-    const out = await s.resolveChangeOrderCompanyCamLink();
-    assert.strictEqual(out.reason, "not-a-change-order", woType);
-    assert.strictEqual(s.ccLinkedProjectId, null, woType + " must stay as it was");
+    const out = await s.resolveBuildingCompanyCamLink();
+    assert.strictEqual(out.linked, true, woType + " must inherit");
+    assert.strictEqual(s.ccLinkedProjectId, "ccp_777", woType);
   }
+});
+
+test("a stale in-flight resolve never links the WRONG order (currentId changed mid-read)", async () => {
+  const s = makeSandbox({
+    fields: { woType: "Leak / Service" },
+    buildingSnap: { exists: true, data(){ return { companyCamProjectId: "ccp_777" }; } }
+  });
+  s.currentId = "wo_A";
+  const p = s.resolveBuildingCompanyCamLink();
+  s.currentId = "wo_B"; /* tech opened a different order while the read was in flight */
+  const out = await p;
+  assert.strictEqual(out.reason, "order-changed");
+  assert.strictEqual(s.ccLinkedProjectId, null);
 });
 
 test("offline: no link is invented", async () => {
   const s = makeSandbox({ fdb: null, fields: { woType: "Change Order" } });
-  const out = await s.resolveChangeOrderCompanyCamLink();
+  const out = await s.resolveBuildingCompanyCamLink();
   assert.strictEqual(out.skipped, true);
   assert.strictEqual(out.reason, "offline");
   assert.strictEqual(s.ccLinkedProjectId, null);

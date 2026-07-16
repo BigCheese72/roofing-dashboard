@@ -1433,11 +1433,11 @@ async function generatePdf(){
      of them calls collect() AFTER this returns -- so resolving here is what
      guarantees o.companyCamProjectId is set, and therefore that
      uploadLinkedPdfToCompanyCam() actually pushes the signed Change Order PDF
-     instead of returning { skipped:true }. No-op for every non-Change-Order
-     type and for a CO whose building has no CompanyCam project (it never
-     creates one) -- see resolveChangeOrderCompanyCamLink() in
-     js/companycam.js. */
-  if (typeof resolveChangeOrderCompanyCamLink === "function") await resolveChangeOrderCompanyCamLink();
+     instead of returning { skipped:true }. Now inherits for EVERY work-order
+     type on a linked building (audit FIX 3 — was Change Order only); still a
+     no-op when the building has no CompanyCam project (it never creates
+     one) -- see resolveBuildingCompanyCamLink() in js/companycam.js. */
+  if (typeof resolveBuildingCompanyCamLink === "function") await resolveBuildingCompanyCamLink();
   var o = collect();
   if (o.woType === "Change Order") return generateChangeOrderPdf(o);
   /* PDF generation doesn't necessarily pass through Preview first (a
