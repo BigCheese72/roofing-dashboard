@@ -43,6 +43,7 @@ function makeFormSandbox(){
     scheduleResolveBuildingCCLink(){},
     genId(p){ return p + "_t"; },
     formatPhoneUS(v){ return String(v == null ? "" : v); },
+    renderPhoneCallLink(){},
     setTimeout, clearTimeout
   };
   vm.createContext(sandbox);

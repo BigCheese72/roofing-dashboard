@@ -1114,6 +1114,33 @@ function renderPhoneFormatting(){
   if (!el) return;
   var formatted = formatPhoneUS(el.value);
   if (formatted !== el.value) el.value = formatted;
+  renderPhoneCallLink();
+}
+
+/* ================= tap-to-call ================= *
+   The displayed contact phone is a dialer handoff (Mark) — same spirit as
+   the 🧭 Directions link on Location (#124): a 📞 Call anchor under the
+   field with a tel: href, so on a phone one tap places the call. Only a
+   positively recognized US number gets a link (tel:+1AAAPPPNNNN — E.164,
+   which every dialer accepts); extensions/international/partial input get
+   no link rather than a wrong one. */
+function telHrefFor(phone){
+  var digits = String(phone || "").replace(/\D+/g, "");
+  if (digits.length === 11 && digits.charAt(0) === "1") digits = digits.slice(1);
+  if (digits.length !== 10) return null;
+  return "tel:+1" + digits;
+}
+function renderPhoneCallLink(){
+  var a = document.getElementById("billphone-call");
+  if (!a) return;
+  var href = telHrefFor(val("billPhone"));
+  if (href){
+    a.href = href;
+    a.style.display = "";
+  } else {
+    a.style.display = "none";
+    a.removeAttribute("href");
+  }
 }
 
 /* ================= address → turn-by-turn directions ================= *
@@ -1503,6 +1530,7 @@ function fill(o){
   if (typeof refreshInspectionRoofPickerIfNeeded === "function") refreshInspectionRoofPickerIfNeeded();
   renderLeakNoJobBadge();
   renderLocationDirectionsLink();
+  renderPhoneCallLink();
   scheduleInlineBuildingHistoryRefresh();
 }
 /* ================= Change Order autofill =================

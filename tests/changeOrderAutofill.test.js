@@ -70,6 +70,7 @@ function makeSandbox(opts){
     scheduleInlineBuildingHistoryRefresh(){},
     genId(p){ return p + "_test"; },
     formatPhoneUS(v){ return String(v == null ? "" : v); },
+    renderPhoneCallLink(){},
     setTimeout, clearTimeout
   };
   vm.createContext(sandbox);

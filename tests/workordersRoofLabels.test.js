@@ -43,6 +43,7 @@ function makeSandbox(fields){
        (repair-area pin contract) — the real one lives in the same file. */
     genId(prefix){ return prefix + "_t" + Math.random().toString(36).slice(2, 8); },
     formatPhoneUS(v){ return String(v == null ? "" : v); },
+    renderPhoneCallLink(){},
     slugify(s){
       return String(s || "").toLowerCase().trim()
         .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "unknown";

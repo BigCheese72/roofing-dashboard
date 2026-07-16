@@ -264,7 +264,12 @@
         <div class="fld"><label>Project Manager</label><input type="text" id="projectManager" list="dl-projectManager"></div>
         <div class="fld"><label>Bill To</label><input type="text" id="billTo" list="dl-billTo" onblur="rememberFieldValue('billTo', this.value); refreshInspectionRoofPickerIfNeeded();"></div>
         <div class="fld"><label>Billing Contact</label><input type="text" id="billContact" list="dl-contactName" onblur="rememberFieldValue('contactName', this.value)"></div>
-        <div class="fld"><label>Contact Phone</label><input type="text" id="billPhone" list="dl-contactPhone" onblur="rememberFieldValue('contactPhone', this.value)"></div>
+        <div class="fld"><label>Contact Phone</label><input type="text" id="billPhone" list="dl-contactPhone" onblur="rememberFieldValue('contactPhone', this.value)">
+          <!-- Tap-to-call (same spirit as 🧭 Directions on Location): a tel:
+               handoff to the dialer — see telHrefFor() in js/workorders.js.
+               Hidden until the field holds a recognizable US number. -->
+          <a id="billphone-call" href="#" style="display:none;font-size:13px;font-weight:600;margin-top:4px">📞 Call</a>
+        </div>
         <div class="fld"><label>Site Contact</label><input type="text" id="siteContact" list="dl-contactName" onblur="rememberFieldValue('contactName', this.value)"></div>
         <div class="fld"><label>Technician</label><input type="text" id="technician" list="dl-technician" onblur="rememberFieldValue('technician', this.value)"></div>
         <div class="fld"><label>Roof System</label>
