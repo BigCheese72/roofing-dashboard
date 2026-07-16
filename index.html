@@ -905,6 +905,15 @@
         </div>
       </div>
 
+      <!-- Job-to-date labor hours (admin-grade). Same pattern as the WO form's
+           card: hidden by default, populated only when the linked job's hours
+           come back authorized from the server (foundation.read) — see
+           dprRefreshLaborCard() in js/dpr.js. Live, never cached. -->
+      <div class="card" id="dpr-foundation-labor-card" style="display:none">
+        <h2 class="cond">🕒 Labor Hours (job to date)</h2>
+        <div id="dpr-foundation-labor-body" class="hint">Loading…</div>
+      </div>
+
       <!-- ============ Yes/No-gated sections (DPR Phase 2) ============
            Each defaults to No and stays out of the way; flipping to Yes reveals
            the details via dprGate() (js/dpr.js). Data stored on the DPR doc as

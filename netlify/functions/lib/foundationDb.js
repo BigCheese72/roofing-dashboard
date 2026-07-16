@@ -299,13 +299,77 @@ function mapJobForCache(job) {
   };
 }
 
+// The unposted tail: pending_timecards rows for the job strictly AFTER the
+// newest posted (his_timecard) date. Same columns/trim discipline as
+// buildJobHoursQuery; `after` is optional (a job with no posted labor yet
+// takes its whole pending history). Rows persist in pending after posting, so
+// the strict `dated > @after` cutoff is what prevents double-counting a row
+// that exists in both tables.
+function buildPendingTailQuery(jobNo, afterIso) {
+  const inputs = [{ name: "job_no", value: normalizeJobNo(jobNo) }];
+  let where = "LTRIM(RTRIM(job_no)) = @job_no AND record_status = 'A'";
+  if (afterIso) {
+    inputs.push({ name: "after", value: afterIso });
+    where += " AND dated > @after";
+  }
+  const text =
+    "SELECT LTRIM(RTRIM(job_no)) AS job_no," +
+    " dated," +
+    " LTRIM(RTRIM(employee_no)) AS employee_no," +
+    " hours," +
+    " LTRIM(RTRIM(phase_no)) AS phase_no," +
+    " LTRIM(RTRIM(cost_code_no)) AS cost_code_no" +
+    " FROM dbo.pending_timecards" +
+    " WHERE " + where +
+    " ORDER BY dated ASC";
+  return { text: text, inputs: inputs };
+}
+
+// Job labor = the posted record (his_timecard) PLUS the not-yet-posted tail
+// from pending_timecards, so the card is CURRENT (punches land in pending days
+// before payroll posts them — validated 2026-07-16: his stopped at 07-11 with
+// punches in pending through 07-15). Names joined from the cached employee
+// master. Response stays backward compatible (job_no/total_hours/row_count/
+// hours[]); rows gain `name` + `posted`, and the posted/unposted split rides
+// alongside so the UI can say what's still pending payroll.
 async function fetchJobHours(password, jobNo) {
   const trimmed = normalizeJobNo(jobNo);
-  const rows = await runSelect(password, buildJobHoursQuery(trimmed));
-  const hours = rows.map(mapHoursRow);
+  const postedRows = await runSelect(password, buildJobHoursQuery(trimmed));
+  const posted = postedRows.map(mapHoursRow);
+  // Cutoff = newest posted date (ISO); pending rows after it are the fresh tail.
+  let cutoff = null;
+  posted.forEach(function (r) { if (r.date && (!cutoff || r.date > cutoff)) cutoff = r.date; });
+  let unposted = [];
+  try {
+    const pendingRows = await runSelect(password, buildPendingTailQuery(trimmed, cutoff));
+    unposted = pendingRows.map(mapHoursRow);
+  } catch (e) {
+    // The posted record still answers — a pending-tail failure must not take
+    // the whole card down. Logged by the caller's generic handler if rethrown;
+    // here we degrade to posted-only.
+    unposted = [];
+  }
+  let names = {};
+  if (posted.length || unposted.length) {
+    try { names = await employeeNamesByNo(password); } catch (e) { names = {}; }
+  }
+  const decorate = function (isPosted) {
+    return function (r) {
+      r.name = names[r.employee_no] || "";
+      r.posted = isPosted;
+      return r;
+    };
+  };
+  const hours = posted.map(decorate(true)).concat(unposted.map(decorate(false)));
+  const unpostedTotal = sumHours(unposted);
+  let unpostedThrough = null;
+  unposted.forEach(function (r) { if (r.date && (!unpostedThrough || r.date > unpostedThrough)) unpostedThrough = r.date; });
   return {
     job_no: trimmed,
     total_hours: sumHours(hours),
+    posted_hours: sumHours(posted),
+    unposted_hours: unpostedTotal,
+    unposted_through: unpostedThrough ? unpostedThrough.slice(0, 10) : null,
     row_count: hours.length,
     hours: hours
   };
@@ -458,6 +522,7 @@ module.exports = {
   topClause,
   buildEmployeesQuery,
   buildDayHoursQuery,
+  buildPendingTailQuery,
   normalizeDay,
   mapEmployeeRow,
   // DB-hitting API (used by foundation.js; DB stubbed in tests)

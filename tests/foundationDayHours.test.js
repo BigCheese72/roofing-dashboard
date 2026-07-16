@@ -51,6 +51,7 @@ const fakeAdmin = {
 // exercise the his_timecard fallback. Records every query for assertions. ----
 const dbCalls = [];
 let pendingHasRows = true;
+let postedHasRows = true;
 function makeFakeMssql() {
   return {
     NVarChar: "NVARCHAR",
@@ -69,15 +70,29 @@ function makeFakeMssql() {
                   { employee_no: "WALKEL ", first_name: "Kelly", last_name: "Walker" }
                 ] };
               }
+              // Grouped = the per-day SUM queries (action=day_hours); raw =
+              // the per-entry ledger queries (action=job_hours blend).
+              const grouped = /SUM\(hours\)/.test(text) && /GROUP BY/.test(text);
               if (/pending_timecards/.test(text)) {
+                if (grouped) {
+                  return { recordset: pendingHasRows ? [
+                    { employee_no: "ABECHR ", hours: 8 },
+                    { employee_no: "WALKEL ", hours: 7.5 },
+                    { employee_no: "ZZGONE ", hours: 4 }   // not in the master — name unknown
+                  ] : [] };
+                }
+                // raw pending tail (fresh punches after the posted cutoff)
                 return { recordset: pendingHasRows ? [
-                  { employee_no: "ABECHR ", hours: 8 },
-                  { employee_no: "WALKEL ", hours: 7.5 },
-                  { employee_no: "ZZGONE ", hours: 4 }   // not in the master — name unknown
+                  { job_no: "17053", dated: new Date("2026-07-14T00:00:00Z"), employee_no: "ABECHR ", hours: 12.42, phase_no: "01 ", cost_code_no: "100 ", pay_rate: 55 }
                 ] : [] };
               }
               if (/his_timecard/.test(text)) {
-                return { recordset: [ { employee_no: "ABECHR ", hours: 6 } ] };
+                if (grouped) return { recordset: [ { employee_no: "ABECHR ", hours: 6 } ] };
+                // raw posted history (action=job_hours)
+                return { recordset: postedHasRows ? [
+                  { job_no: "17053", dated: new Date("2026-07-10T00:00:00Z"), employee_no: "ABECHR ", hours: 8, phase_no: "01 ", cost_code_no: "100 ", amount: 999 },
+                  { job_no: "17053", dated: new Date("2026-07-11T00:00:00Z"), employee_no: "WALKEL ", hours: 7.5, phase_no: "01 ", cost_code_no: "100 " }
+                ] : [] };
               }
               return { recordset: [] };
             }
@@ -109,7 +124,7 @@ function ev(token, qs) {
   if (token) headers.authorization = "Bearer " + token;
   return { httpMethod: "GET", headers, queryStringParameters: qs || {} };
 }
-function fresh() { fdb._resetPoolForTest(); dbCalls.length = 0; pendingHasRows = true; }
+function fresh() { fdb._resetPoolForTest(); dbCalls.length = 0; pendingHasRows = true; postedHasRows = true; }
 
 /* ==================== query builders (pure) ==================== */
 
@@ -204,6 +219,64 @@ test("day_hours: employee master is cached per warm instance (one master query a
   await foundation.handler(ev(OWNER, { action: "day_hours", job_no: "17053", date: "2026-07-15" }));
   const masterQueries = dbCalls.filter((c) => /dbo\.employees/.test(c.text));
   assert.strictEqual(masterQueries.length, 1);
+});
+
+/* ==================== handler: job_hours (posted + unposted blend) ==================== */
+
+test("job_hours blends posted history with the unposted pending tail — names joined, flags set, totals split", async () => {
+  fresh();
+  const res = await foundation.handler(ev(OWNER, { action: "job_hours", job_no: "17053" }));
+  assert.strictEqual(res.statusCode, 200);
+  const body = JSON.parse(res.body);
+  assert.strictEqual(body.total_hours, 27.92);       // 8 + 7.5 posted, 12.42 punched
+  assert.strictEqual(body.posted_hours, 15.5);
+  assert.strictEqual(body.unposted_hours, 12.42);
+  assert.strictEqual(body.unposted_through, "2026-07-14");
+  assert.strictEqual(body.row_count, 3);
+  assert.strictEqual(body.hours[0].posted, true);
+  assert.strictEqual(body.hours[0].name, "Christian Abernathy");   // master join
+  const tail = body.hours[body.hours.length - 1];
+  assert.strictEqual(tail.posted, false);
+  assert.strictEqual(tail.hours, 12.42);
+  // Pay data on the fake rows must not survive into the response.
+  assert.doesNotMatch(res.body, /pay_rate|amount/i);
+  assert.ok(!res.body.includes(FAKE_PASSWORD));
+});
+
+test("the pending tail is cut off strictly AFTER the newest posted date (no double count)", async () => {
+  fresh();
+  await foundation.handler(ev(OWNER, { action: "job_hours", job_no: "17053" }));
+  const tailCall = dbCalls.find((c) => /pending_timecards/.test(c.text) && !/SUM\(hours\)/.test(c.text));
+  assert.ok(tailCall, "a pending-tail query must have run");
+  assert.match(tailCall.text, /dated > @after/);
+  assert.match(tailCall.text, /record_status = 'A'/);
+  assert.ok(!/pay_rate|amount/i.test(tailCall.text), "tail SQL must not touch pay columns");
+  const after = tailCall.inputs.find((i) => i.name === "after");
+  assert.ok(after && after.value.startsWith("2026-07-11"), "cutoff must be the newest posted date");
+});
+
+test("a job with no posted history yet takes its whole pending ledger (no cutoff bound)", async () => {
+  fresh();
+  postedHasRows = false;
+  const res = await foundation.handler(ev(OWNER, { action: "job_hours", job_no: "17053" }));
+  const body = JSON.parse(res.body);
+  assert.strictEqual(body.posted_hours, 0);
+  assert.strictEqual(body.total_hours, 12.42);
+  assert.ok(body.hours.every((h) => h.posted === false));
+  const tailCall = dbCalls.find((c) => /pending_timecards/.test(c.text) && !/SUM\(hours\)/.test(c.text));
+  assert.ok(!/dated > @after/.test(tailCall.text), "no cutoff clause without posted history");
+  assert.ok(!tailCall.inputs.some((i) => i.name === "after"));
+});
+
+test("buildPendingTailQuery: trimmed job match, optional cutoff, SELECT-only, no pay columns", () => {
+  const withAfter = fdb.buildPendingTailQuery(" 17053 ", "2026-07-11T00:00:00.000Z");
+  assert.match(withAfter.text, /^SELECT /);
+  assert.match(withAfter.text, /LTRIM\(RTRIM\(job_no\)\) = @job_no/);
+  assert.match(withAfter.text, /dated > @after/);
+  assert.strictEqual(withAfter.inputs.find((i) => i.name === "job_no").value, "17053");
+  const noAfter = fdb.buildPendingTailQuery("17053", null);
+  assert.ok(!/dated > @after/.test(noAfter.text));
+  assert.ok(!/pay_rate|amount/i.test(withAfter.text));
 });
 
 /* ==================== handler: employees ==================== */

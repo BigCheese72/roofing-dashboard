@@ -307,25 +307,42 @@ async function fdnRefreshLaborCard() {
 }
 
 function fdnRenderLaborCard(data) {
-  var body = document.getElementById("wo-foundation-labor-body");
+  fdnRenderLaborInto(document.getElementById("wo-foundation-labor-body"), data);
+}
+// Shared renderer for a labor-hours card body — used by the WO/leak form
+// (above) and the DPR's card (js/dpr.js). The server now blends the posted
+// record (his_timecard) with the not-yet-posted pending tail, so this shows
+// CURRENT hours: rows carry `name` (employee-master join, falls back to the
+// raw mnemonic) and `posted` (false = punched but pending payroll, shown with
+// the same ⏱ tag the DPR crew rows use).
+function fdnRenderLaborInto(body, data) {
   if (!body) return;
   var rows = (data && data.hours) || [];
   var total = (data && typeof data.total_hours === "number") ? data.total_hours : 0;
+  var unposted = (data && typeof data.unposted_hours === "number") ? data.unposted_hours : 0;
   var head = "<div style=\"margin-bottom:8px\"><b>" + fdnEsc(String(total)) + "</b> total hours across <b>" +
-    fdnEsc(String((data && data.row_count) || rows.length)) + "</b> entries</div>";
+    fdnEsc(String((data && data.row_count) || rows.length)) + "</b> entries" +
+    (unposted > 0
+      ? " — <b>" + fdnEsc(String(unposted)) + "</b> of that punched but not yet posted to payroll" +
+        (data.unposted_through ? " (through " + fdnEsc(data.unposted_through) + ")" : "")
+      : "") +
+    "</div>";
   if (!rows.length) { body.innerHTML = head + "<span class=\"hint\" style=\"margin:0\">No labor logged for this job yet.</span>"; return; }
-  // Show the most recent 25 entries; date/employee/hours/phase/cost code only
+  // Show the most recent 25 entries; date/person/hours/phase/cost code only
   // (the server never sends pay data).
   var recent = rows.slice(-25).reverse();
   var trs = recent.map(function (h) {
-    return "<tr><td>" + fdnEsc((h.date || "").slice(0, 10)) + "</td><td>" + fdnEsc(h.employee_no) +
+    var pendingTag = (h.posted === false)
+      ? " <span title=\"Punched on the clock, not yet posted to payroll\">⏱</span>" : "";
+    return "<tr><td>" + fdnEsc((h.date || "").slice(0, 10)) + "</td><td>" + fdnEsc(h.name || h.employee_no) + pendingTag +
       "</td><td style=\"text-align:right\">" + fdnEsc(String(h.hours == null ? "" : h.hours)) +
       "</td><td>" + fdnEsc(h.phase_no) + "</td><td>" + fdnEsc(h.cost_code_no) + "</td></tr>";
   }).join("");
   body.innerHTML = head +
     "<div style=\"overflow-x:auto\"><table style=\"width:100%;border-collapse:collapse;font-size:13px\">" +
-    "<thead><tr><th style=\"text-align:left\">Date</th><th style=\"text-align:left\">Employee</th>" +
+    "<thead><tr><th style=\"text-align:left\">Date</th><th style=\"text-align:left\">Person</th>" +
     "<th style=\"text-align:right\">Hours</th><th style=\"text-align:left\">Phase</th><th style=\"text-align:left\">Cost code</th></tr></thead>" +
     "<tbody>" + trs + "</tbody></table></div>" +
-    (rows.length > 25 ? "<span class=\"hint\" style=\"margin:6px 0 0;display:block\">Showing the 25 most recent of " + fdnEsc(String(rows.length)) + " entries.</span>" : "");
+    (rows.length > 25 ? "<span class=\"hint\" style=\"margin:6px 0 0;display:block\">Showing the 25 most recent of " + fdnEsc(String(rows.length)) + " entries.</span>" : "") +
+    (unposted > 0 ? "<span class=\"hint\" style=\"margin:6px 0 0;display:block\">⏱ = punched, awaiting payroll posting — hours are current, dollars aren't booked yet.</span>" : "");
 }
