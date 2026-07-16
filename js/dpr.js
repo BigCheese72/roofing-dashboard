@@ -226,6 +226,7 @@ function dprPickFoundationJob(jobNo){
   setVal("dpr-bld-search", "");
   var host = document.getElementById("dpr-bld-results");
   if (host) host.innerHTML = "";
+  dprHideJobSelect();
   dprScheduleSameDayLoad();
   toast("Linked Foundation job " + (j.job_no || "") + " — fill in today's progress");
 }
@@ -316,13 +317,31 @@ function dprApplyPermissionUI(){
 /* ================= building selection (inline, self-contained) =================
    A lightweight inline picker living right in the Job Info card — deliberately
    NOT the work-order bp-modal (that one writes into the work-order fields).
-   Same buildings collection, same read-only load. */
+   Same buildings collection, same read-only load.
+
+   The "🔍 Select Job" BUTTON is the front door (Mark: the search box alone
+   didn't read as a way to pick a job): tap it and the recent jobs list shows
+   IMMEDIATELY — no typing needed — with the filter box above it. */
+function dprShowJobSelect(){
+  if (dprIsLocked()){ toast("This report is signed and locked."); return; }
+  var wrap = document.getElementById("dpr-job-select");
+  if (!wrap) return;
+  if (wrap.style.display !== "none"){ wrap.style.display = "none"; return; } /* second tap closes */
+  wrap.style.display = "";
+  setVal("dpr-bld-search", "");
+  dprSearchBuildings(); /* empty query = recent jobs, so there's a list to tap right away */
+  var inp = document.getElementById("dpr-bld-search");
+  if (inp) try{ inp.focus(); }catch(e){}
+}
+function dprHideJobSelect(){
+  var wrap = document.getElementById("dpr-job-select");
+  if (wrap) wrap.style.display = "none";
+}
 async function dprSearchBuildings(){
   var q = (val("dpr-bld-search") || "").trim().toLowerCase();
   var host = document.getElementById("dpr-bld-results");
   if (!host) return;
-  if (!q){ host.innerHTML = ""; return; }
-  if (!fdb){ host.innerHTML = '<p class="hint">Building search needs an internet connection.</p>'; return; }
+  if (!fdb){ host.innerHTML = '<p class="hint">The job list needs an internet connection.</p>'; return; }
   if (!dprBldCache){
     host.innerHTML = '<p class="hint">Loading buildings…</p>';
     try{
@@ -339,7 +358,9 @@ async function dprSearchBuildings(){
       (b.customerName || "").toLowerCase().indexOf(q) > -1 ||
       (b.location || "").toLowerCase().indexOf(q) > -1;
   }).slice(0, 25);
-  var html = matches.map(function(b){
+  /* Empty query (fresh "Select Job" tap) = the recent list, labeled as such. */
+  var html = (!q && matches.length) ? '<div class="hint" style="margin:0 0 4px;font-weight:600">Recent jobs</div>' : "";
+  html += matches.map(function(b){
     return '<div class="bld-item" onclick="dprPickBuilding(\'' + esc(b.id) + '\')"><div class="info">' +
       '<div class="name">' + esc(b.name) + '</div>' +
       '<div class="meta">' + esc(b.customerName || "") + (b.location ? ' · ' + esc(b.location) : "") +
@@ -379,6 +400,7 @@ function dprPickBuilding(buildingId){
   setVal("dpr-bld-search", "");
   var host = document.getElementById("dpr-bld-results");
   if (host) host.innerHTML = "";
+  dprHideJobSelect();
   dprState.buildingId = buildingId;
   dprState.roofs = getBuildingRoofs(b);
   dprRenderRoofPicker();
@@ -881,6 +903,7 @@ function dprNewReport(){
   dprApplySignoffLock();
   var results = document.getElementById("dpr-bld-results");
   if (results) results.innerHTML = "";
+  dprHideJobSelect();
   window.scrollTo(0, 0);
   toast("New daily progress report");
 }
