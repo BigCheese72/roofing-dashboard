@@ -287,3 +287,40 @@ test("a locked report blocks edits at the entry points", () => {
   s.dprClearSection();
   assert.ok(s.dprState.section, "section clear is blocked when locked");
 });
+
+// ---------------- 6. Foundation job autofill ----------------
+
+test("dprApplyFoundationJobNo fills Job No. from the building's Foundation link", () => {
+  const s = makeSandbox();
+  // building with a Foundation job number -> returns true, sets the field
+  assert.strictEqual(s.dprApplyFoundationJobNo({ foundationJobNo: "24-1053", foundationCustomerNo: 771 }), true);
+  assert.strictEqual(s.val("dpr-jobNo"), "24-1053");
+  assert.strictEqual(s.dprState.foundationJobNo, "24-1053");
+  assert.strictEqual(s.dprState.foundationCustomerNo, "771");
+  // a building with no Foundation link -> false (caller falls back to history)
+  const s2 = makeSandbox();
+  assert.strictEqual(s2.dprApplyFoundationJobNo({ name: "X" }), false);
+  assert.strictEqual(s2.val("dpr-jobNo"), "");
+});
+
+test("dprApplyFoundationJobNo never stomps a foreman-typed Job No.", () => {
+  const s = makeSandbox();
+  s.setVal("dpr-jobNo", "MINE");
+  s.dprJobNoAutoVal = "";            // the typed value is not an auto value
+  const linked = s.dprApplyFoundationJobNo({ foundationJobNo: "24-1053" });
+  assert.strictEqual(linked, true);  // building is linked...
+  assert.strictEqual(s.val("dpr-jobNo"), "MINE"); // ...but the typed value stands
+});
+
+test("dprPickFoundationJob fills job name/location/number and stamps the link", () => {
+  const s = makeSandbox();
+  s.dprFdnJobsCache = [{ job_no: "24-1053", name: "Acme Roof Replacement", address: "123 Main St", city: "Cleveland", state: "OH", zip: "44101", customer_no: 771 }];
+  s.dprPickFoundationJob("24-1053");
+  assert.strictEqual(s.val("dpr-jobName"), "Acme Roof Replacement");
+  assert.strictEqual(s.val("dpr-location"), "123 Main St, Cleveland, OH, 44101");
+  assert.strictEqual(s.val("dpr-jobNo"), "24-1053");
+  assert.strictEqual(s.dprState.foundationJobNo, "24-1053");
+  const out = s.dprCollect();
+  assert.strictEqual(out.foundationJobNo, "24-1053");   // saved on the DPR -> stamps the building
+  assert.strictEqual(out.foundationCustomerNo, "771");
+});
