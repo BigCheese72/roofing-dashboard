@@ -104,10 +104,34 @@ function isBackdatedEvent(e){
   var enteredDay = new Date(e.enteredAt); enteredDay.setHours(0,0,0,0);
   return eventDay < enteredDay.getTime();
 }
+/* Timeline entry → its source work order (Mark: the timeline follows the
+   job, and now each entry OPENS it). Reuses the exact open path the photo→
+   pin jump uses (jumpToAdjustPin(), js/photos.js): loadOrder(workOrderId) —
+   full cloud-vs-local resolution, photo hydration, edit view — just without
+   the pending-pin step. Guarded so a missing id (legacy event, manually
+   logged activity) explains itself instead of erroring. */
+function openTimelineSourceWorkOrder(workOrderId){
+  if (!workOrderId){
+    toast("This entry has no linked work order — it may predate work-order linking, or be a manually logged activity.");
+    return;
+  }
+  loadOrder(workOrderId);
+}
 function timelineEventHtml(e, buildingId, opts){
   opts = opts || {};
   var backdated = isBackdatedEvent(e);
-  return '<div class="evt-item"' + (e._dup ? ' style="border-left-color:#D64545"' : '') + '><div class="evt-head">' +
+  /* Whole card opens the source work order when the event carries its
+     workOrderId (reports/evt_wo_<id> docs always do; manually logged
+     activities and rare legacy events don't → card simply isn't clickable,
+     no dead affordance). readOnly (the inline history card on the edit
+     form) deliberately stays non-clickable — tapping it mid-edit would
+     swap the order out from under the tech. Inner controls (Delete,
+     View saved PDF) stopPropagation so their taps are never hijacked. */
+  var canOpen = !!(e.workOrderId && !opts.readOnly);
+  var itemStyle = (e._dup ? 'border-left-color:#D64545;' : '') + (canOpen ? 'cursor:pointer' : '');
+  return '<div class="evt-item"' + (itemStyle ? ' style="' + itemStyle + '"' : '') +
+    (canOpen ? ' onclick="openTimelineSourceWorkOrder(\'' + esc(e.workOrderId) + '\')" title="Open the source work order"' : '') +
+    '><div class="evt-head">' +
     '<span class="evt-date">' + esc(e.date || fmtTs(e.createdAt)) + '</span>' +
     '<span class="evt-tag">' + esc(e.reportType || "") + '</span>' +
     (e.workOrderType && e.workOrderType !== WORK_ORDER_TYPES[0] ?
@@ -118,7 +142,8 @@ function timelineEventHtml(e, buildingId, opts){
     (backdated ? '<span class="evt-tag" style="background:#ECEFF1;color:#5B6770" title="Entered ' +
       esc(fmtTs(e.enteredAt)) + ', for an event dated ' + esc(e.date) + '">🕓 Added later</span>' : '') +
     (e._dup ? '<span class="evt-tag" style="background:#FBE2E2;color:#D64545">Possible duplicate</span>' : '') +
-    (isAdmin && !opts.readOnly ? '<span class="sp"></span><button class="btn danger" onclick="deleteHistoryEventAdmin(\'' + e._id + '\', \'' + buildingId + '\')">Delete (admin)</button>' : '') +
+    (canOpen ? '<span class="evt-tag" style="background:#EAF2FB;color:#1976D2">📂 Open work order ›</span>' : '') +
+    (isAdmin && !opts.readOnly ? '<span class="sp"></span><button class="btn danger" onclick="event.stopPropagation(); deleteHistoryEventAdmin(\'' + e._id + '\', \'' + buildingId + '\')">Delete (admin)</button>' : '') +
     '</div>' +
     (e.workOrderNo ? '<div class="evt-row">Job No. ' + esc(e.workOrderNo) + '</div>' : '') +
     (e.technician ? '<div class="evt-row">Technician: ' + esc(e.technician) + '</div>' : '') +
@@ -144,7 +169,7 @@ function timelineEventHtml(e, buildingId, opts){
       e.photos.map(function(p){
         return '<img src="' + esc(p.img) + '" style="width:64px;height:64px;object-fit:cover;border:1px solid var(--line);border-radius:4px">';
       }).join('') + '</div>' : '') +
-    (e.pdfRef && e.pdfRef.url ? '<div class="evt-row"><a href="' + esc(e.pdfRef.url) + '" target="_blank" rel="noopener">View saved PDF</a></div>' : '') +
+    (e.pdfRef && e.pdfRef.url ? '<div class="evt-row"><a href="' + esc(e.pdfRef.url) + '" target="_blank" rel="noopener" onclick="event.stopPropagation()">View saved PDF</a></div>' : '') +
     '</div>';
 }
 function renderTimelineList(){
