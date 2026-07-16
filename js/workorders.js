@@ -746,6 +746,15 @@ function pinImageFrameUrlForFinding(f){
   return ((roof.roof_base_map_type === "roof_plan" || roof.roof_base_map_type === "sketch") &&
     roof.roof_base_map_url) ? roof.roof_base_map_url : null;
 }
+/* Suite TAG (Mark): strip-mall / multi-tenant buildings share one address,
+   one roof, one base map — Suite never splits any of that, it's just an
+   attribute on the work order (FIELD_IDS "suite", optional/blank for
+   single-tenant) that also rides on pins so pins on the shared roof can be
+   labeled and filtered by suite. Pins stamp the WO's CURRENT Suite value
+   at save time — the tag source of truth is the record's own field. */
+function currentSuiteTag(){
+  return (val("suite") || "").trim() || null;
+}
 function pinCoordIsNumber(value){
   return typeof value === "number" && Number.isFinite(value);
 }
@@ -776,12 +785,13 @@ function savePinFromModal(){
       y: ll.lat / pinXYSize.h,
       source: xySource,
       imageFrame: "roof_base_map",
-      imageFrameUrl: pinImageFrameUrlForFinding(f)
+      imageFrameUrl: pinImageFrameUrlForFinding(f),
+      suite: currentSuiteTag()
     };
   } else {
     var source = pinDeviceGpsUsed ? "device_gps" :
       (pinInitialSource === "photo_gps" ? (pinInteracted ? "gps_corrected" : "photo_gps") : pinInitialSource);
-    f.pin = { lat: ll.lat, lng: ll.lng, x: null, y: null, source: source };
+    f.pin = { lat: ll.lat, lng: ll.lng, x: null, y: null, source: source, suite: currentSuiteTag() };
   }
   renderFindings();
   closePinModal();
@@ -832,6 +842,14 @@ function clearPinFromModal(){
      non-georeferenced roof plan / sketch:
        { lat:null, lng:null, x:0..1, y:0..1, source:"tech_placed",
          imageFrame:"roof_base_map", imageFrameUrl:<the exact image placed against> }
+     plus, on BOTH shapes, the optional multi-tenant tag (see
+     currentSuiteTag()):
+       suite: String|null — e.g. "Suite 12"; a TAG for filtering pins on a
+         shared strip-mall roof, never a boundary. The popup may set it
+         explicitly (including null); when it's absent, setRepairAreaPin()
+         stamps the work order's own Suite field automatically, so the
+         popup normally doesn't have to care. Finding pins carry the same
+         field (savePinFromModal()).
    Guards enforced here (defense in depth — the popup should uphold them too):
      - Null Island: (0,0) is this codebase's synthetic "no real location"
        convention (#40) — never storable as a real repair pin.
@@ -858,6 +876,11 @@ function setRepairAreaPin(repairAreaId, pin){
   var r = repairAreaById(repairAreaId);
   if (!r) return false;
   if (pin !== null && !repairAreaPinValid(pin)) return false;
+  /* Suite tag rides on every pin (see currentSuiteTag()): an explicit
+     suite from the popup (including null) is respected; absent means
+     "stamp the work order's own Suite field", so the popup normally
+     doesn't have to care. */
+  if (pin && pin.suite === undefined) pin.suite = currentSuiteTag();
   r.pin = pin;
   renderRepairs();
   return true;
@@ -1180,7 +1203,7 @@ async function loadRoofTypes(){
   }catch(e){ /* offline / rules hiccup — builtins + device cache still work */ }
 }
 
-var FIELD_IDS = ["jobName","location","serviceDate","jobNo","projectManager","billTo","billContact","billPhone",
+var FIELD_IDS = ["jobName","location","suite","serviceDate","jobNo","projectManager","billTo","billContact","billPhone",
   "siteContact","technician","roofSystem","reportedArea","warrantable","nonWarrantable","summary",
   "woCost","woManHours","woMaterials","woDescription","woPONumber","woDateCompleted","repairDescription",
   "mfgServiceNo"];

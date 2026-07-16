@@ -798,6 +798,7 @@ test("work order image-space pins persist their base image frame", () => {
     lookupRoofInfoMatchesBuilding(info, buildingId){
       return !!(info && info.buildingId && buildingId && info.buildingId === buildingId);
     },
+    val(){ return ""; }, /* suite tag field — blank in these scenarios */
     findingById(id){ return id === "finding-1" ? finding : null; },
     renderFindings(){},
     closePinModal(){},
@@ -833,6 +834,7 @@ test("work order xy save leaves untouched GPS-only photo pins unchanged", () => 
     pinDeviceGpsUsed: false,
     pinInitialSource: "photo_gps",
     pinInteracted: false,
+    val(){ return ""; }, /* suite tag field — blank in these scenarios */
     findingById(id){ return id === "finding-1" ? finding : null; },
     renderFindings(){ events.push("render"); },
     closePinModal(){ events.push("close"); },
@@ -866,6 +868,7 @@ test("work order xy save preserves existing source without fabricating tech plac
     pinDeviceGpsUsed: false,
     pinInitialSource: "tech_placed",
     pinInteracted: false,
+    val(){ return ""; }, /* suite tag field — blank in these scenarios */
     findingById(id){ return id === "finding-1" ? finding : null; },
     renderFindings(){},
     closePinModal(){},

@@ -51,6 +51,7 @@ function buildLeakReportText(o){
   L.push("Work Order Type: " + woTypeLabel(o.woType));
   L.push("Job Name: " + o.jobName);
   L.push("Location: " + o.location);
+  if (o.suite) L.push("Suite: " + o.suite);
   L.push("Date of Service: " + o.serviceDate);
   L.push("Job No.: " + o.jobNo);
   L.push("Bill To: " + o.billTo);
@@ -147,6 +148,7 @@ function buildChangeOrderText(o){
   L.push("JOB INFORMATION");
   L.push("Job Name: " + o.jobName);
   L.push("Location: " + o.location);
+  if (o.suite) L.push("Suite: " + o.suite);
   L.push("Date: " + o.serviceDate);
   L.push("Job No.: " + o.jobNo);
   L.push("Bill To: " + o.billTo);
@@ -929,7 +931,7 @@ function renderLeakReportDoc(o){
   h += "<h3 class='cond'>Job Information</h3>" + kvTable([
     /* Display label, never the raw stored value — see WORK_ORDER_TYPE_LABELS. */
     ["Work Order Type",woTypeLabel(o.woType)],
-    ["Job Name",o.jobName],["Location",o.location],["Date of Service",o.serviceDate],
+    ["Job Name",o.jobName],["Location",o.location],["Suite",o.suite],["Date of Service",o.serviceDate],
     ["Job No.",o.jobNo],["Bill To",o.billTo],["Billing Contact",o.billContact],
     ["Contact Phone",o.billPhone],["Site Contact",o.siteContact],["Technician",o.technician]]
     .concat(isInspection ? [] : [["Reported Leak Area",o.reportedArea]])
@@ -1119,7 +1121,7 @@ function renderChangeOrderDoc(o){
        "<div class='t2'>" + esc(o.jobName) + (o.location ? " — " + esc(o.location) : "") + "</div></div></div>";
 
   h += "<h3 class='cond'>Job Information</h3>" + kvTable([
-    ["Job Name",o.jobName],["Location",o.location],["Date",o.serviceDate],
+    ["Job Name",o.jobName],["Location",o.location],["Suite",o.suite],["Date",o.serviceDate],
     ["Job No.",o.jobNo],["Bill To",o.billTo],["Billing Contact",o.billContact],
     ["Contact Phone",o.billPhone],["Site Contact",o.siteContact],["Technician",o.technician],
     ["PO Number",o.woPONumber],["Date Completed",o.woDateCompleted]]);
@@ -1520,7 +1522,7 @@ async function generateLeakReportPdf(o, roofPlanData){
   kvTablePdf([
     /* Display label, never the raw stored value — see WORK_ORDER_TYPE_LABELS. */
     ["Work Order Type", woTypeLabel(o.woType)],
-    ["Job Name", o.jobName], ["Location", o.location], ["Date of Service", o.serviceDate],
+    ["Job Name", o.jobName], ["Location", o.location], ["Suite", o.suite], ["Date of Service", o.serviceDate],
     ["Job No.", o.jobNo], ["Bill To", o.billTo], ["Billing Contact", o.billContact],
     ["Contact Phone", o.billPhone], ["Site Contact", o.siteContact], ["Technician", o.technician]
   ].concat(isInspection ? [] : [["Reported Leak Area", o.reportedArea]]).concat([["Roof System", o.roofSystem]]));
@@ -1813,7 +1815,7 @@ async function generateChangeOrderPdf(o){
 
   heading("Job Information");
   kvTablePdf([
-    ["Job Name", o.jobName], ["Location", o.location], ["Date", o.serviceDate],
+    ["Job Name", o.jobName], ["Location", o.location], ["Suite", o.suite], ["Date", o.serviceDate],
     ["Job No.", o.jobNo], ["Bill To", o.billTo], ["Billing Contact", o.billContact],
     ["Contact Phone", o.billPhone], ["Site Contact", o.siteContact], ["Technician", o.technician],
     ["PO Number", o.woPONumber], ["Date Completed", o.woDateCompleted]
