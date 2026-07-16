@@ -11,6 +11,19 @@ function findingHasPhotos(f){
 function filledFindings(){ return findings.filter(function(f){ return f.condition || f.location || findingHasPhotos(f); }); }
 function filledRepairs(){ return repairs.filter(function(r){ return r.repair || r.location; }); }
 function filledRepairItems(){ return repairItems.filter(function(it){ return it.qty || it.notes; }); }
+function filledMaterials(){ return materials.filter(function(m){ return m.material || m.qty || m.notes; }); }
+/* "Repair #N" exactly as the Work Performed section numbers it
+   (filledRepairs() order) for a material row linked to that repair area —
+   "" when the row isn't linked, or the linked repair was emptied out and
+   no longer prints (a dangling number would point at nothing). */
+function materialRepairRefLabel(repairId){
+  if (!repairId) return "";
+  var fr = filledRepairs();
+  for (var i = 0; i < fr.length; i++){
+    if (fr[i].id === repairId) return "Repair #" + (i + 1);
+  }
+  return "";
+}
 function filledPhotos(){ return photos.filter(function(p){ return p.img || (p.caption||"").trim(); }); }
 
 /* Routes by work order type — Change Order gets its own distinct
@@ -87,6 +100,19 @@ function buildLeakReportText(o){
     L.push("WORK PERFORMED");
     fr.forEach(function(r,i){
       L.push((i+1) + ". " + r.repair + (r.location ? " — " + r.location : ""));
+    });
+    L.push("");
+  }
+  /* Print-if-present like WORK PERFORMED above — the Material List card is
+     only OFFERED on the Repair form (see onWoTypeChange()), but any record
+     that has rows prints them. */
+  var fmat = filledMaterials();
+  if (fmat.length){
+    L.push("MATERIAL LIST");
+    fmat.forEach(function(m,i){
+      var ref = materialRepairRefLabel(m.repair_id);
+      L.push((i+1) + ". " + m.material + (m.qty ? " x" + m.qty : "") + (m.unit ? " " + m.unit : "") +
+        (m.notes ? " — " + m.notes : "") + (ref ? " [" + ref + "]" : ""));
     });
     L.push("");
   }
@@ -1033,6 +1059,20 @@ function renderLeakReportDoc(o){
       }).join("") + "</tbody></table>";
   }
 
+  /* Print-if-present like Work Performed above (the card is only OFFERED on
+     the Repair form — see onWoTypeChange()). "For" ties a row back to the
+     Work Performed numbering when the tech linked it to a repair area. */
+  var fmat = filledMaterials();
+  if (fmat.length){
+    h += "<h3 class='cond'>Material List</h3><table><thead><tr>" +
+      "<th style='width:36px'>No.</th><th>Material / Description</th><th style='width:60px'>Qty</th>" +
+      "<th style='width:80px'>Unit</th><th>Notes</th><th style='width:100px'>For</th></tr></thead><tbody>" +
+      fmat.map(function(m,i){
+        return "<tr><td>" + (i+1) + "</td><td>" + esc(m.material) + "</td><td>" + esc(m.qty) + "</td><td>" +
+          esc(m.unit) + "</td><td>" + esc(m.notes) + "</td><td>" + (esc(materialRepairRefLabel(m.repair_id)) || "—") + "</td></tr>";
+      }).join("") + "</tbody></table>";
+  }
+
   if (!isInspection){
     var wd = kvTable([["Warrantable Repairs",o.warrantable],["Non-Warrantable Repairs",o.nonWarrantable],["Manufacturer Service #",o.mfgServiceNo]]);
     if (wd) h += "<h3 class='cond'>Warranty Determination</h3>" + wd;
@@ -1598,6 +1638,26 @@ async function generateLeakReportPdf(o, roofPlanData){
       headStyles: { fillColor: [38, 50, 56], fontSize: 8 },
       styles: { fontSize: 9, cellPadding: 4, textColor: [30, 39, 46], lineColor: [154, 165, 172], lineWidth: 0.5 },
       columnStyles: { 0: { cellWidth: 28 } },
+      margin: { left: M, right: M }
+    });
+    y = doc.lastAutoTable.finalY + 18;
+  }
+
+  /* Print-if-present like Work Performed above — see the HTML builder's
+     Material List block for the reasoning; identical content here. */
+  var fmat = filledMaterials();
+  if (fmat.length){
+    heading("Material List");
+    doc.autoTable({
+      startY: y,
+      head: [["No.", "Material / Description", "Qty", "Unit", "Notes", "For"]],
+      body: fmat.map(function(m, i){
+        return [i + 1, m.material, m.qty, m.unit, m.notes, materialRepairRefLabel(m.repair_id) || "—"];
+      }),
+      theme: "grid",
+      headStyles: { fillColor: [38, 50, 56], fontSize: 8 },
+      styles: { fontSize: 9, cellPadding: 4, textColor: [30, 39, 46], lineColor: [154, 165, 172], lineWidth: 0.5 },
+      columnStyles: { 0: { cellWidth: 28 }, 2: { cellWidth: 40 } },
       margin: { left: M, right: M }
     });
     y = doc.lastAutoTable.finalY + 18;

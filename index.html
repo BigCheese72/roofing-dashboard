@@ -291,6 +291,16 @@
       <div class="btnrow"><button class="btn" onclick="addRepair()">+ Add Repair</button></div>
     </div>
 
+    <!-- Work Order (stored type "Repair") only — see onWoTypeChange(). Change
+         Order keeps its own free-text Materials textarea (#woMaterials) inside
+         its own card; this is the itemized list for executed work. Rows live in
+         materials[] (js/workorders.js) and persist with the work order. -->
+    <div class="card" id="wo-materials-card" style="display:none">
+      <h2 class="cond">Material List</h2>
+      <div id="materials-list"></div>
+      <div class="btnrow"><button class="btn" onclick="addMaterial()">+ Add Material</button></div>
+    </div>
+
     <div class="card" id="wo-changeorder-card" style="display:none">
       <h2 class="cond">Change Order Details</h2>
       <div class="grid">
@@ -1462,6 +1472,8 @@
 <datalist id="dl-technician"></datalist>
 <datalist id="dl-roofLocationDetail"></datalist>
 <datalist id="dl-repairItemNotes"></datalist>
+<datalist id="dl-materialName"></datalist>
+<datalist id="dl-materialUnit"></datalist>
 <datalist id="dl-photoCaption"></datalist>
 <datalist id="dl-assetLabel"></datalist>
 <!-- Foremen roster for the Daily Progress Report's Foreman field. Populated

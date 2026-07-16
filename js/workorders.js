@@ -307,6 +307,7 @@ var currentId = null;
 var findings = [];
 var repairs = [];
 var repairItems = []; /* Repair-type only — see wo-repair-card / addRepairItem() */
+var materials = []; /* Repair-type only — see wo-materials-card / addMaterial() below */
 /* Inspection-type only — component-by-component condition checklist (see
    "Inspection form overhaul" in DEV_NOTES.md). A fixed set of 8 rows
    (ensureInspectionChecklist() backfills any missing ones, always in this
@@ -870,6 +871,77 @@ function openBaseMapPinPicker(repairAreaId){
   toast("Base-map pin placement for repair areas is coming shortly — this repair area is saved without a pin for now.");
 }
 
+/* ================= Work Order material list ================= *
+   Itemized materials used on a Work Order (stored type "Repair") — the
+   type that executes work and burns material. Same job-centric shape as
+   repairs[]/repairItems[]: rows live in materials[] on the work-order
+   record (collect()/fill() below), so the list follows the job everywhere
+   it's opened — never screen-local.
+
+   Row shape: { id, material, qty, unit, notes, repair_id }
+   - id: stable genId("mat"), same plumbing role as finding/repair ids.
+   - repair_id: OPTIONAL link to a Work Performed row (repairs[].id) — the
+     job-centric tie-in: a material can hang off the same repair area its
+     scope line and base-map pin do. null = general/whole-job material.
+     Kept loose on purpose (a select per row, photos' finding_id pattern):
+     removing a repair area just nulls the link back to "General", the
+     material row itself is never deleted with it — the material was still
+     used on the job.
+   - USER-ENTERED ONLY, nothing is ever written to Foundation. Clean seam
+     for later: a Foundation catalog picker would just prefill material/
+     unit on this same row shape (and could stamp e.g. foundationItemNo as
+     an extra key — collect()/cloudSaveOrder copy whole objects, so no
+     schema change needed here). */
+function addMaterial(data){
+  materials.push(data || {id: genId("mat"), material:"", qty:"", unit:"", notes:"", repair_id:null});
+  renderMaterials();
+}
+function removeMaterial(i){ materials.splice(i,1); renderMaterials(); }
+/* "General / whole job" + one option per repair area, labeled by its row
+   number and text so the tech recognizes it without ids. Rows without an
+   id can't be linked (legacy rows get ids via fill()'s self-heal). */
+function materialRepairAreaOptionsHtml(selectedId){
+  var opts = ['<option value="">General / whole job</option>'];
+  repairs.forEach(function(r, i){
+    if (!r || !r.id) return;
+    var text = (r.repair || r.location || "").slice(0, 40);
+    opts.push('<option value="' + esc(r.id) + '"' + (r.id === selectedId ? " selected" : "") + '>' +
+      esc("Repair #" + (i+1) + (text ? " — " + text : "")) + '</option>');
+  });
+  return opts.join("");
+}
+function renderMaterials(){
+  var host = document.getElementById("materials-list");
+  if (!host) return;
+  host.innerHTML = "";
+  materials.forEach(function(m, i){
+    var d = document.createElement("div");
+    d.className = "rowcard";
+    d.style.borderLeftColor = "#00838F";
+    d.innerHTML =
+      '<div class="rowhead"><b>Material #' + (i+1) + '</b><span class="sp"></span>' +
+      '<button class="btn danger" onclick="removeMaterial(' + i + ')">Remove</button></div>' +
+      '<div class="fld"><label>Material / Description</label>' +
+      '<input type="text" data-i="' + i + '" data-f="material" value="' + esc(m.material) + '" list="dl-materialName" onblur="rememberFieldValue(\'materialName\', this.value)"></div>' +
+      '<div class="grid">' +
+      '<div class="fld"><label>Quantity</label><input type="number" min="0" step="any" data-i="' + i + '" data-f="qty" value="' + esc(m.qty) + '"></div>' +
+      '<div class="fld"><label>Unit (optional)</label><input type="text" data-i="' + i + '" data-f="unit" value="' + esc(m.unit) + '" list="dl-materialUnit" onblur="rememberFieldValue(\'materialUnit\', this.value)" placeholder="rolls, tubes, sq ft…"></div>' +
+      '</div>' +
+      '<div class="fld"><label>Notes (optional)</label>' +
+      '<input type="text" data-i="' + i + '" data-f="notes" value="' + esc(m.notes) + '"></div>' +
+      '<div class="fld"><label>For Repair Area</label>' +
+      '<select data-i="' + i + '" data-f="repair_id">' + materialRepairAreaOptionsHtml(m.repair_id) + '</select></div>';
+    host.appendChild(d);
+  });
+  host.querySelectorAll("[data-f]").forEach(function(el){
+    el.addEventListener("input", function(){
+      /* An empty select value means "General / whole job" — store the same
+         null a never-linked row has, not "". */
+      materials[+el.dataset.i][el.dataset.f] = (el.dataset.f === "repair_id") ? (el.value || null) : el.value;
+    });
+  });
+}
+
 /* ================= warranty guidelines (display-only reference) =================
    Plain tech guidelines, NOT manufacturer-official — Mark: "just guidelines
    for the techs." Two arrays, easy to edit (add/remove a line to change what
@@ -940,6 +1012,7 @@ function collect(){
   o.findings = findings.slice();
   o.repairs = repairs.slice();
   o.repairItems = repairItems.slice();
+  o.materials = materials.slice();
   o.inspectionChecklist = inspectionChecklist.slice();
   o.photos = photos.slice();
   o.companyCamProjectId = ccLinkedProjectId || null;
@@ -1006,6 +1079,13 @@ function fill(o){
     if (r.pin === undefined) r.pin = null;
   });
   repairItems = (o.repairItems || []).slice(); /* Repair type only — no forced minimum row, optional */
+  materials = (o.materials || []).slice(); /* Repair type only — no forced minimum row, optional */
+  /* Same self-heal as findings/repairs above: id is plumbing (row identity
+     for the repair-area link), repair_id gets an explicit null. */
+  materials.forEach(function(m){
+    if (!m.id) m.id = genId("mat");
+    if (m.repair_id === undefined) m.repair_id = null;
+  });
   photos = (o.photos || []).slice();
   photos.forEach(function(p){ if (p.finding_id === undefined) p.finding_id = null; });
   ccLinkedProjectId = o.companyCamProjectId || null;
@@ -1021,7 +1101,7 @@ function fill(o){
   coJobNoAutoValue = null;
   changeOrderSignature = o.changeOrderSignature || null;
   clearStaleLookupRoofInfoForCurrentOrder();
-  renderFindings(); renderRepairs(); renderRepairItems(); renderPhotos(); renderCCLinkInfo(); renderChangeOrderSignature();
+  renderFindings(); renderRepairs(); renderRepairItems(); renderMaterials(); renderPhotos(); renderCCLinkInfo(); renderChangeOrderSignature();
   /* Re-render the checklist now that photos[]/findings[] are the truly
      loaded values, not whatever onWoTypeChange() saw mid-load above --
      otherwise a checklist item's photo gallery could briefly reflect the
@@ -1150,7 +1230,8 @@ function hasContent(){
   try{
     var o = collect();
     return !!(o.jobName || o.jobNo || o.reportedArea || o.summary ||
-      (photos && photos.length) || filledFindings().length || filledRepairs().length);
+      (photos && photos.length) || filledFindings().length || filledRepairs().length ||
+      filledMaterials().length);
   }catch(e){ return false; }
 }
 /* "+ New" (header) and "+ New Work Order" (Building History's empty

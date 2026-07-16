@@ -1519,7 +1519,8 @@ function esc(s){
    list and what was deliberately left out. */
 var FIELD_HISTORY_CAP = 25;
 var FIELD_HISTORY_KEYS = ["jobName","location","billTo","contactName","contactPhone",
-  "technician","roofLocationDetail","repairItemNotes","photoCaption","assetLabel"];
+  "technician","roofLocationDetail","repairItemNotes","photoCaption","assetLabel",
+  "materialName","materialUnit"];
 function fieldHistoryStorageKey(key){ return "field-history:" + key; }
 function getFieldHistory(key){
   try{
@@ -2146,6 +2147,14 @@ function onWoTypeChange(){
   var isRepair = val("woType") === "Repair";
   var rc = document.getElementById("wo-repair-card");
   if (rc) rc.style.display = isRepair ? "" : "none";
+  /* Material List: Work Order (Repair) only — the type that executes work
+     and burns material. Change Order keeps its own free-text #woMaterials
+     inside its card; Leak is a pure investigation; Inspection/Warranty
+     don't record material usage. DISPLAY GATING ONLY — like repairs[],
+     collect()/fill() round-trip materials[] for every type, so a record
+     that somehow has rows never loses them. */
+  var mc = document.getElementById("wo-materials-card");
+  if (mc) mc.style.display = isRepair ? "" : "none";
   /* Repair is a project/scope report, not a leak diagnosis — findings
      (leak pins/conditions) don't apply to it, per Mark. Change Order is a
      scope of work, not a leak diagnosis either — same reasoning. */

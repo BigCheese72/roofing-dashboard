@@ -929,7 +929,17 @@ function addRepair(data){
 }
 function removeRepair(i){
   syncRepairScopeLine(repairScopeLineFor(repairs[i]), "");
-  repairs.splice(i,1); renderRepairs();
+  var removedId = repairs[i] && repairs[i].id;
+  repairs.splice(i,1);
+  /* Material rows linked to this repair area go back to "General / whole
+     job" — the material was still used on the job, so the row itself is
+     never deleted with the repair (see materials[] in js/workorders.js).
+     Same pattern removeFinding() uses for photos' finding_id. */
+  if (removedId){
+    materials.forEach(function(m){ if (m.repair_id === removedId) m.repair_id = null; });
+    renderMaterials();
+  }
+  renderRepairs();
 }
 function renderRepairs(){
   var host = document.getElementById("repairs-list");
@@ -962,6 +972,10 @@ function renderRepairs(){
       r[el.dataset.f] = el.value;
       syncRepairScopeLine(oldLine, repairScopeLineFor(r));
     });
+    /* Material rows label their "For Repair Area" options with this row's
+       text — refresh those labels once the tech finishes editing (change =
+       on blur), not per keystroke. */
+    el.addEventListener("change", function(){ renderMaterials(); });
   });
 }
 
