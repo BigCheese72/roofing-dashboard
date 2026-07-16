@@ -303,6 +303,7 @@ function dprPickFoundationJob(jobNo){
   dprHideJobSelect();
   dprScheduleSameDayLoad();
   dprScheduleCrewHoursAutofill();
+  dprRefreshLaborCard();
   toast("Linked Foundation job " + (j.job_no || "") + " — fill in today's progress");
 }
 
@@ -484,6 +485,7 @@ function dprPickBuilding(buildingId){
   if (!dprApplyFoundationJobNo(b)) dprAutofillJobNo(buildingId);
   dprScheduleSameDayLoad();
   dprScheduleCrewHoursAutofill();
+  dprRefreshLaborCard();
   toast("Loaded “" + b.name + "” — review the fields, then fill in today's progress");
 }
 function dprRenderRoofPicker(){
@@ -785,6 +787,39 @@ function dprApplyCrewHoursToDom(){
   dprSyncHours();
 }
 
+/* ================= job-to-date labor card (admin-gated, live) =================
+   The same "🕒 Labor Hours" card the WO/leak form shows, on the daily: current
+   job-to-date hours for the linked job — the server blends the posted record
+   with the not-yet-posted punch tail, so it's up to date, not payroll-lagged.
+   Same self-gating pattern as fdnRefreshLaborCard (js/foundation.js): the card
+   renders ONLY if the hours fetch comes back authorized (foundation.read);
+   any 401/403/error hides it, so a non-admin foreman never sees it. Rendering
+   is shared via fdnRenderLaborInto — resolved at call time, so script order
+   doesn't matter. */
+var dprLaborCardJobAtFetch = null;
+async function dprRefreshLaborCard(){
+  var card = document.getElementById("dpr-foundation-labor-card");
+  var body = document.getElementById("dpr-foundation-labor-body");
+  if (!card) return;
+  var jobNo = String(dprState.foundationJobNo || val("dpr-jobNo") || "").trim();
+  if (!jobNo || typeof fdnFetchHours !== "function" || typeof fdnRenderLaborInto !== "function"){
+    card.style.display = "none";
+    return;
+  }
+  if (body) body.innerHTML = "Loading…";
+  card.style.display = "";
+  dprLaborCardJobAtFetch = jobNo;
+  try{
+    var data = await fdnFetchHours(jobNo);
+    if (dprLaborCardJobAtFetch !== jobNo) return; /* a newer job superseded this fetch */
+    fdnRenderLaborInto(body, data);
+  }catch(e){
+    /* Not authorized or no hours path — hide entirely (fail closed on display;
+       the server is the real gate). */
+    if (dprLaborCardJobAtFetch === jobNo) card.style.display = "none";
+  }
+}
+
 /* ================= material quantities (Phase-2 gated section) =================
    Repeatable {item, qty, unit} rows, same pattern as the crew roster. Only
    collected when the Quantities toggle is Yes. */
@@ -1050,6 +1085,7 @@ function dprFill(o){
   dprRenderSectionStatus();
   dprSyncHours();                  /* a loaded report's crew hours roll up too */
   dprScheduleCrewHoursAutofill();  /* punches may exist for this job + date */
+  dprRefreshLaborCard();           /* job-to-date hours for the linked job (admin) */
 }
 
 /* ================= save (client-direct Firestore write, permission-gated by rules) ================= */
@@ -1164,6 +1200,7 @@ function dprNewReport(){
    "dpr-incidents-type", "dpr-incidents-reportedto", "dpr-incidents-desc", "dpr-equipment-notes", "dpr-visitors-notes"].forEach(function(id){ setVal(id, ""); });
   setVal("dpr-roofSystem", "");
   setVal("dpr-date", dprTodayStr());
+  dprRefreshLaborCard(); /* job link + jobNo both cleared now -> hides the labor card */
   /* Gated sections back to No / hidden. */
   dprQuantities = [];
   dprSetGate("dpr-delays-toggle", "dpr-delays-body", false);

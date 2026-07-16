@@ -94,6 +94,12 @@ function makeFakeMssql() {
               input(name, type, value) { inputs.push({ name, type, value }); return this; },
               query: async (text) => {
                 dbCalls.push({ text, inputs });
+                // job_hours now also asks for the unposted pending tail and the
+                // employee-name master — this file's scenarios exercise the
+                // posted path, so both come back empty (the blend has its own
+                // dedicated coverage in tests/foundationDayHours.test.js).
+                if (/pending_timecards/.test(text)) return { recordset: [] };
+                if (/dbo\.employees/.test(text)) return { recordset: [] };
                 if (/his_timecard/.test(text)) {
                   return { recordset: [
                     { job_no: "17053", dated: new Date("2026-05-01T00:00:00Z"), employee_no: "E1 ", hours: 8, phase_no: "01 ", cost_code_no: "100 ", amount: 999, pay_rate: 55 },
