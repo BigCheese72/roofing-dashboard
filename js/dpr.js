@@ -1005,32 +1005,66 @@ var dprPreUse = null; /* { completedBy, items: [{id, label, ok}] } — saved ans
 var DPR_RENTED_TYPES = ["SkyTrak / Telehandler", "Boom Lift", "Scissor Lift", "Aerial Lift",
   "Forklift", "Crane", "Generator", "Air Compressor", "Welder", "Kettle", "Dumpster", "Other"];
 var DPR_RENTED_LIFT_RX = /skytrak|telehandler|boom|scissor|aerial|mewp|man\s*lift|manlift|forklift|lull|genie|jlg/i;
-/* Daily pre-use inspection items for rented lift equipment — one practical
-   list covering BOTH machine families a roofing crew rents:
-     * telehandler / forklift (SkyTrak, Lull, …): OSHA 1910.178(q)(7) requires
-       a daily examination before the truck is placed in service;
-     * MEWP boom/scissor/aerial lifts (JLG, Genie, …): ANSI/SAIA A92.22
-       requires an operator pre-use inspection each day before use.
-   Items that only exist on one family read naturally as "n/a = check it off"
-   on the other (e.g. platform guardrails on a telehandler) — one list keeps
-   the daily simple, which is the point. IDs are stable — saved reports key
-   answers by id, so never reuse or repurpose one; add new items at the end. */
+/* Daily pre-use inspection for rented lift equipment — the checklist from
+   Mark's researched source list (docs/RoofingSafetyDocumentSources.md §4),
+   which combines OSHA 29 CFR 1910.178(q)(7) daily-examination items for the
+   telehandler/rough-terrain forklift (SkyTrak, Lull) with ANSI/SAIA A92 MEWP
+   pre-use items for the boom/scissor lift. Four phases, in the order a crew
+   actually inspects: walk-around engine OFF → operator station → function
+   test engine ON → worksite before lifting. Machine-specific items are
+   prefixed ("Boom:", "Telehandler:") and read as confirmed/n-a on the other
+   machine. Per the source doc: complete for EACH machine, EACH day, before
+   first use; any failed item = machine out of service (see the result field
+   in dprCollectPreUse). The rented machine's own operator manual remains the
+   controlling document.
+   IDs are stable — saved reports key answers by id; never reuse or repurpose
+   one, append new items to their group instead. */
+var DPR_PREUSE_GROUPS = [
+  { key: "walk",     label: "A. Walk-around — engine OFF" },
+  { key: "station",  label: "B. Operator station & safety devices" },
+  { key: "function", label: "C. Function test — engine ON (clear area)" },
+  { key: "site",     label: "D. Worksite — before lifting" }
+];
 var DPR_PREUSE_CHECKLIST = [
-  { id: "tires",          label: "Tires & wheels — condition, pressure, no loose lug nuts" },
-  { id: "fluids",         label: "Fluid levels OK, no leaks (engine oil, hydraulic, coolant, fuel)" },
-  { id: "hydraulics",     label: "Hydraulic hoses & cylinders — no damage, no leaks" },
-  { id: "structure",      label: "Boom / forks / scissor arms / chassis — no cracks, bends, or damage; attachments secured" },
-  { id: "controls",       label: "All operating controls & gauges work smoothly (no binding or jerking)" },
-  { id: "ground_controls",label: "Ground/lower controls override the platform; emergency lowering works" },
-  { id: "estop",          label: "Emergency stop works" },
-  { id: "horn_alarms",    label: "Horn, backup alarm, lights & beacons work" },
-  { id: "brakes_steering",label: "Steering & brakes tested at low speed (incl. parking brake)" },
-  { id: "guardrails",     label: "Platform guardrails, gate/latch & anchor points in place and sound" },
-  { id: "restraint",      label: "Seat belt / operator restraint OK; harness & lanyard on for boom work" },
-  { id: "outriggers",     label: "Outriggers / stabilizers & level indicators work; unit level" },
-  { id: "placards",       label: "Load chart, capacity plate & warning decals present and legible" },
-  { id: "battery_fuel",   label: "Battery charged / fueled; charger disconnected before moving" },
-  { id: "work_area",      label: "Work area: firm level ground, no holes or drop-offs, overhead power lines cleared, wind acceptable" }
+  /* A. Walk-around — engine OFF */
+  { id: "tires",         group: "walk", label: "Tires/tracks — inflation, cuts, wear; wheel lugs tight" },
+  { id: "leaks",         group: "walk", label: "No fluid leaks under machine (oil, hydraulic, fuel, coolant)" },
+  { id: "fluids",        group: "walk", label: "Fluid levels OK (engine oil, hydraulic, coolant, fuel); battery secure/charged" },
+  { id: "hoses",         group: "walk", label: "Hoses, cylinders & fittings — no leaks, chafing, or damage" },
+  { id: "forks_platform",group: "walk", label: "Forks/carriage or platform/basket — no cracks, bends, or damaged welds" },
+  { id: "chains",        group: "walk", label: "Chains, cables & boom wear pads — intact, adjusted, lubricated" },
+  { id: "load_chart",    group: "walk", label: "Data/capacity plate & load chart present and legible" },
+  { id: "decals",        group: "walk", label: "Decals, warnings & control labels present and readable" },
+  { id: "guards",        group: "walk", label: "Guards, covers & counterweight secure — no missing hardware" },
+  { id: "anchors",       group: "walk", label: "Seatbelt/restraint/lanyard anchor points present and undamaged" },
+  { id: "extinguisher",  group: "walk", label: "Fire extinguisher present & charged (if equipped/required)" },
+  { id: "structure",     group: "walk", label: "Overall structure — no cracks, corrosion, or visible damage" },
+  /* B. Operator station & safety devices */
+  { id: "restraint",     group: "station", label: "Seat & seatbelt (telehandler) / harness anchor & gate (boom) functional" },
+  { id: "horn",          group: "station", label: "Horn works" },
+  { id: "alarms",        group: "station", label: "Backup alarm & warning lights/beacon work" },
+  { id: "gauges",        group: "station", label: "Gauges/indicators & hour meter functional" },
+  { id: "access",        group: "station", label: "Steps, grab rails & platform gate/chain secure and clean" },
+  { id: "estop",         group: "station", label: "Emergency stop button works" },
+  { id: "em_lowering",   group: "station", label: "Boom: emergency lowering / auxiliary power tested and working" },
+  { id: "stability_sys", group: "station", label: "Telehandler: load/moment indicator or stability system functional (if equipped)" },
+  /* C. Function test — engine ON */
+  { id: "starts",        group: "function", label: "Starts normally — no unusual noise, smoke, or vibration" },
+  { id: "brakes",        group: "function", label: "Service brakes hold; parking brake holds on a grade" },
+  { id: "steering",      group: "function", label: "Steering responds normally (incl. crab/4-wheel modes on telehandler)" },
+  { id: "lift_functions",group: "function", label: "Lift, lower, extend, retract — smooth through full range" },
+  { id: "outriggers",    group: "function", label: "Tilt / frame level / outriggers or stabilizers deploy and hold" },
+  { id: "boom_functions",group: "function", label: "Boom: rotate, articulate, jib & platform level all function; controls return to neutral" },
+  { id: "dual_controls", group: "function", label: "Platform controls AND ground controls both work" },
+  { id: "drift",         group: "function", label: "No hydraulic drift when holding a raised load/platform" },
+  { id: "lights",        group: "function", label: "Lights / work lights operate" },
+  /* D. Worksite — before lifting */
+  { id: "ground",        group: "site", label: "Ground firm, level & rated for the load — no drop-offs or trenches" },
+  { id: "overhead",      group: "site", label: "Overhead clearances checked — power lines (required clearance), structures" },
+  { id: "capacity",      group: "site", label: "Load within rated capacity for boom angle/extension (check load chart)" },
+  { id: "path",          group: "site", label: "Travel path clear of workers, obstructions & debris" },
+  { id: "weather",       group: "site", label: "Weather acceptable — wind within rated limit; no lightning/ice" },
+  { id: "tied_off",      group: "site", label: "Fall protection worn & tied off in boom platform per manufacturer" }
 ];
 
 function dprRentedHasLift(){
@@ -1086,21 +1120,38 @@ function dprRenderPreUse(){
   var locked = dprIsLocked();
   var saved = {};
   ((dprPreUse && dprPreUse.items) || []).forEach(function(it){ if (it && it.id) saved[it.id] = !!it.ok; });
-  block.innerHTML =
+  var html =
     '<h3 style="margin:14px 0 4px">Daily Pre-Use Safety Checklist (lift equipment)</h3>' +
-    '<p class="hint" style="margin:0 0 8px">Complete before first use each day (OSHA 1910.178 / ANSI A92).</p>' +
-    DPR_PREUSE_CHECKLIST.map(function(it){
-      return '<label style="display:flex;gap:8px;align-items:center;margin:0 0 6px">' +
-        '<input type="checkbox" data-dprpreuse="' + esc(it.id) + '"' + (saved[it.id] ? " checked" : "") + (locked ? " disabled" : "") + '>' +
-        '<span>' + esc(it.label) + '</span></label>';
-    }).join("") +
-    '<div class="fld" style="max-width:260px"><label>Checklist completed by</label>' +
+    '<p class="hint" style="margin:0 0 8px">Complete for each machine, each day, before first use (OSHA 1910.178 / ANSI A92). ' +
+    'Any failed item = machine out of service &amp; tagged. The machine’s own operator manual is the controlling document.</p>';
+  DPR_PREUSE_GROUPS.forEach(function(g){
+    html += '<h4 style="margin:12px 0 4px">' + esc(g.label) + '</h4>' +
+      DPR_PREUSE_CHECKLIST.filter(function(it){ return it.group === g.key; }).map(function(it){
+        return '<label style="display:flex;gap:8px;align-items:center;margin:0 0 6px">' +
+          '<input type="checkbox" data-dprpreuse="' + esc(it.id) + '"' + (saved[it.id] ? " checked" : "") + (locked ? " disabled" : "") + '>' +
+          '<span>' + esc(it.label) + '</span></label>';
+      }).join("");
+  });
+  var savedResult = (dprPreUse && dprPreUse.result) || "";
+  html +=
+    '<div class="fld" style="max-width:320px;margin-top:10px"><label>Result</label>' +
+    '<select id="dpr-preuse-result"' + (locked ? " disabled" : "") + '>' +
+      '<option value=""' + (savedResult === "" ? " selected" : "") + '>— pick after inspecting —</option>' +
+      '<option value="safe"' + (savedResult === "safe" ? " selected" : "") + '>Machine SAFE to operate</option>' +
+      '<option value="defects"' + (savedResult === "defects" ? " selected" : "") + '>Defects found — REMOVED from service &amp; tagged</option>' +
+    '</select></div>' +
+    '<div class="fld"><label>Defects / notes</label>' +
+    '<textarea id="dpr-preuse-notes" rows="2"' + (locked ? " readonly" : "") + '>' + esc((dprPreUse && dprPreUse.notes) || "") + '</textarea></div>' +
+    '<div class="fld" style="max-width:260px"><label>Checklist completed by (operator)</label>' +
     '<input type="text" id="dpr-preuse-by" list="dl-dprCrew" value="' + esc((dprPreUse && dprPreUse.completedBy) || "") + '"' + (locked ? " readonly" : "") + '></div>';
+  block.innerHTML = html;
   block.querySelectorAll("[data-dprpreuse]").forEach(function(el){
     el.addEventListener("change", function(){ dprPreUse = dprCollectPreUse(); });
   });
-  var by = block.querySelector("#dpr-preuse-by");
-  if (by) by.addEventListener("input", function(){ dprPreUse = dprCollectPreUse(); });
+  ["dpr-preuse-by", "dpr-preuse-notes", "dpr-preuse-result"].forEach(function(id){
+    var el = block.querySelector("#" + id);
+    if (el) el.addEventListener(id === "dpr-preuse-result" ? "change" : "input", function(){ dprPreUse = dprCollectPreUse(); });
+  });
 }
 /* Reads the checklist UI back into the saved shape. Pure-ish (DOM read). */
 function dprCollectPreUse(){
@@ -1111,8 +1162,12 @@ function dprCollectPreUse(){
     byId[el.getAttribute("data-dprpreuse")] = !!el.checked;
   });
   var by = block.querySelector("#dpr-preuse-by");
+  var res = block.querySelector("#dpr-preuse-result");
+  var notes = block.querySelector("#dpr-preuse-notes");
   return {
     completedBy: by ? by.value : ((dprPreUse && dprPreUse.completedBy) || ""),
+    result: res ? res.value : ((dprPreUse && dprPreUse.result) || ""),
+    notes: notes ? notes.value : ((dprPreUse && dprPreUse.notes) || ""),
     items: DPR_PREUSE_CHECKLIST.map(function(it){ return { id: it.id, label: it.label, ok: !!byId[it.id] }; })
   };
 }
@@ -2217,7 +2272,13 @@ async function generateDprPdf(o){
     if (pc && pc.items && pc.items.length){
       heading("Pre-Use Safety Checklist (lift equipment)");
       kvTable(pc.items.map(function(it){ return [it.label, it.ok ? "Pass" : "NOT CHECKED"]; })
-        .concat(pc.completedBy ? [["Completed By", pc.completedBy]] : []));
+        .concat([[
+          "Result",
+          pc.result === "safe" ? "Machine SAFE to operate"
+            : pc.result === "defects" ? "DEFECTS FOUND - removed from service & tagged" : ""
+        ]])
+        .concat(pc.notes ? [["Defects / Notes", pc.notes]] : [])
+        .concat(pc.completedBy ? [["Completed By (operator)", pc.completedBy]] : []));
     }
   }
   if (o.visitors && o.visitors.notes && o.visitors.notes.trim()){
