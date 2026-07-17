@@ -8301,7 +8301,7 @@ Delete in Saved, "remove pushed photo" in the gallery, asset Delete in its
 modal) — this consolidates the app-wide tools, not the in-context ones. Each
 handler still enforces its own server-side permission (defense in depth).
 
-## AI-drafted report summary (scaffold on dev — NO AI wired yet)
+## AI-drafted report summary (Phase 1 wired — live on DEV only; prod stays stub)
 
 Mark's current flow for a report's Summary: export the PDF, paste it into
 ChatGPT, paste the result back into the Summary box. This feature moves that
@@ -8329,19 +8329,23 @@ signed urls only, never public, minted only when an LLM call consumes them
 (`sanitizeReport()`), including a hard `workorders/`-prefix + no-traversal
 check on refs.
 
-**Scaffold (built)**: the composer is a DETERMINISTIC TEMPLATE — restates the
-report's own data, infers/recommends nothing, no external calls, no API key
-anywhere. **Phase 1 (not built — blocked on Mark provisioning an API key)**:
-swap the composer call for a server-side **vision-capable Anthropic call**
-(photos attach as image blocks via the signed urls; Haiku tier ≈ a few cents
-per report). The prompt is already built and tested (`buildLlmPrompt()`):
-length is tuned by the single `SUMMARY_TARGET_WORDS` constant (Mark's verdict
-on his ChatGPT Flat Branch Pub summary: right voice, "a little long" — so we
-target tighter), and his exact Flat Branch text drops into `STYLE_EXEMPLAR`
-verbatim when the relay supplies it. Key lives ONLY in a Netlify env var
-(`ANTHROPIC_API_KEY`), never client-side; template stays as the fallback when
-the call fails. This is also the codebase's first concrete step toward the
-"AI auto-detection of rooftop features" ROADMAP item.
+**Phase 1 (WIRED 2026-07-16)**: the handler routes through the shared
+provider seam (`lib/aiProvider.js`, PR #122) — `resolveProvider(process.env)`
+decides stub vs live per deploy context. **Mark provisioned
+`ANTHROPIC_API_KEY` on the DEV (Branch deploys) context only; the Production
+context deliberately has no key**, so prod keeps answering with the
+deterministic template until a promotion Mark chooses arms it (mint a
+separate `roofops-prod` key then — never reuse the dev key). On the live
+path the photos attach as image blocks via the signed urls (aiProvider caps
+8/call) and the feature-tuned system prompt rides as `opts.system`: length
+tuned by the single `SUMMARY_TARGET_WORDS` constant (Mark's verdict on his
+ChatGPT Flat Branch Pub summary: right voice, "a little long" — so we target
+tighter), and his exact Flat Branch text drops into `STYLE_EXEMPLAR` verbatim
+when the relay supplies it. The deterministic template remains as both the
+no-key answer AND the outage fallback (`fallback: true` in the response) — a
+roof-side flow never dead-ends on an AI failure. Model choice is env config
+(`ANTHROPIC_MODEL`), not code. This is also the codebase's first concrete
+step toward the "AI auto-detection of rooftop features" ROADMAP item.
 
 Auth: `requirePermission(event, "doc.generate")` — the semantically matching,
 boolean-only key every seed role holds (field-first: a tech on the roof can
@@ -8352,6 +8356,8 @@ Tests: `tests/generateSummaryDraft.test.js` — payload projection/leak guards,
 storage-ref validation (traversal/foreign-tree refs nulled), signed-url
 helper contract (v4/read-only/short expiry, bad refs skipped not fatal),
 prompt contract (grounded, draft-only, length from the constant),
-401/403/405/400 auth surface, composer determinism, and a `global.fetch` trap
-that fails the suite if the stub ever grows a network call before the key
-decision.
+401/403/405/400 auth surface, composer determinism, plus the wiring: stub
+path never mints a signed URL, live path signs + sends the image block and
+the tuned system prompt (asserted on the mocked wire), provider outage falls
+back to the template with `fallback: true` and still 200. A `global.fetch`
+trap still fails the suite if the NO-KEY path ever reaches the network.

@@ -12,36 +12,40 @@
 // (button -> auth -> server -> editable draft) is real and testable before
 // any AI is wired.
 //
-// PHASE 1 = LLM WITH PHOTO VISION (NOT BUILT -- blocked on Mark provisioning
-// a key). Mark's requirement: the model must actually LOOK AT the photos,
-// not just the written findings. The seams are all below, built and tested:
-//   * buildLlmPrompt(report) -- the prompt, with the length target in ONE
-//     tunable constant (SUMMARY_TARGET_WORDS). Style calibration: Mark liked
-//     his ChatGPT Flat Branch Pub summary but called it "a little long", so
-//     the prompt asks for that voice, tighter; his exact text drops into
+// PHASE 1 = LLM WITH PHOTO VISION -- NOW WIRED, through the shared provider
+// seam (lib/aiProvider.js, PR #122). Mark provisioned ANTHROPIC_API_KEY on
+// the DEV deploy context (2026-07-16); production's context deliberately has
+// no key, so prod resolves to the stub until a promotion Mark chooses.
+// Mark's requirement: the model actually LOOKS AT the photos, not just the
+// written findings. How a draft is produced:
+//   * resolveProvider(process.env) decides stub vs live -- purely from which
+//     env vars exist on THIS deploy context. No key -> deterministic
+//     template below, byte-identical to the pre-wiring behavior.
+//   * Live path: collectSignedPhotoUrls() turns the payload's Storage refs
+//     into SHORT-LIVED V4 SIGNED READ URLS (SIGNED_URL_TTL_MS) which ride to
+//     the vision model as image blocks. Signed URLs ONLY -- no photo is ever
+//     made public, no bucket ACL changes, and the stub path never signs
+//     anything (URLs are minted only when a live call consumes them).
+//   * buildLlmPrompt(report) supplies the feature-tuned system prompt: the
+//     length target in ONE constant (SUMMARY_TARGET_WORDS -- Mark liked his
+//     ChatGPT Flat Branch Pub summary but called it "a little long", so we
+//     target tighter) and his exact Flat Branch text drops into
 //     STYLE_EXEMPLAR verbatim when the relay supplies it.
-//   * collectSignedPhotoUrls(bucket, photos) -- turns the payload's Storage
-//     refs into SHORT-LIVED V4 SIGNED READ URLS (SIGNED_URL_TTL_MS) for the
-//     model's image blocks. Signed URLs ONLY -- no photo is ever made
-//     public, no bucket ACL changes, and the stub path never signs anything
-//     (URLs are minted only when there's an LLM call to consume them).
-//   * The handler swap: call Anthropic's Messages API (vision-capable model;
-//     claude-haiku tier reads a dozen photos for a few cents per report,
-//     sonnet tier ~10-15c) with buildLlmPrompt() + the signed-URL image
-//     blocks. Cost control is the BUTTON: drafts fire on demand only, never
-//     automatically on save/open.
+//   * Cost control is the BUTTON: drafts fire on demand only, never
+//     automatically on save/open. aiProvider caps photos at 8 per call.
 // Requirements already decided, do not relitigate here:
 //   * The key lives ONLY in a Netlify environment variable
 //     (ANTHROPIC_API_KEY), same handling as RESEND_API_KEY /
 //     COMPANYCAM_TOKEN. It is never sent to, stored in, or readable by the
-//     client. MARK PROVISIONS THE KEY -- this file must not gain a key, a
-//     default, or a fallback provider without his explicit sign-off.
+//     client. This file must never gain a key, a default, or a new provider
+//     without Mark's explicit sign-off.
 //   * The output stays a DRAFT: this function returns text for the client to
 //     put in the (editable) Summary textarea. It never writes to Firestore,
 //     never marks anything final, and the normal save/send paths (and their
 //     own permission gates) are unchanged.
-//   * If the LLM call fails or the key is absent, fall back to the template
-//     -- the field flow must never dead-end on a roof.
+//   * If the LLM call fails or the key is absent, the template below answers
+//     instead (flagged fallback) -- the field flow must never dead-end on a
+//     roof.
 //
 // AUTH: identity-first, same trust boundary as every other function here.
 // requirePermission() verifies the Firebase ID token signature and then
@@ -51,7 +55,8 @@
 // Nothing here writes anywhere, so no stronger gate is needed: the draft
 // only becomes part of the record through the normal workorder.edit-gated
 // save the tech performs afterward.
-const { requirePermission } = require("./lib/authGuard");
+const { requirePermission, getAdmin, hostnameFromEvent } = require("./lib/authGuard");
+const { resolveProvider, generateSummary } = require("./lib/aiProvider");
 
 // ---- Length/style tuning knobs for the Phase-1 LLM prompt. Mark's verdict
 // on his ChatGPT Flat Branch Pub summary: right voice, "a little long" --
@@ -238,26 +243,21 @@ function composeTemplateSummary(r) {
   return paras.join("\n\n");
 }
 
-// ---- Phase-1 seam: the LLM prompt. Built and tested NOW so wiring the
-// Messages API later is only a transport change, not a design session. The
-// photos do NOT ride inside this text -- they attach as image content
-// blocks (via collectSignedPhotoUrls() below), one per photo, with the
-// caption list in the JSON tying them to findings. ----
+// ---- The feature-tuned SYSTEM prompt, passed to aiProvider's
+// generateSummary() as opts.system (the report JSON + photo image blocks are
+// the provider seam's job -- see lib/aiProvider.js). Returns the system
+// string only. ----
 function buildLlmPrompt(r) {
   var style = STYLE_EXEMPLAR
     ? "Match the voice of this example summary, but run tighter and more concise than it:\n---\n" + STYLE_EXEMPLAR + "\n---"
     : "Write in a professional commercial-roofing service-report voice addressed to the building's customer.";
-  return {
-    system: "You draft the Summary section of a commercial roofing report. " +
-      "Use ONLY the report data and the attached photos -- never invent conditions, causes, " +
-      "measurements, or recommendations that they do not support. Where a photo shows a condition, " +
-      "ground the description in what is visible. " + style + " " +
-      "Target about " + SUMMARY_TARGET_WORDS + " words in at most " + SUMMARY_MAX_PARAGRAPHS + " short paragraphs, covering: " +
-      "what was done on site, the key findings/conditions, and recommended next actions. " +
-      "Plain text only, no headings or markdown. This is a DRAFT a technician will review and edit before it is sent.",
-    user: "Report data (JSON):\n" + JSON.stringify(r, null, 2) +
-      "\n\nThe report's photos follow as attached images, in the same order as the photos array above."
-  };
+  return "You draft the Summary section of a commercial roofing report. " +
+    "Use ONLY the report data and the attached photos -- never invent conditions, causes, " +
+    "measurements, or recommendations that they do not support. Where a photo shows a condition, " +
+    "ground the description in what is visible. " + style + " " +
+    "Target about " + SUMMARY_TARGET_WORDS + " words in at most " + SUMMARY_MAX_PARAGRAPHS + " short paragraphs, covering: " +
+    "what was done on site, the key findings/conditions, and recommended next actions. " +
+    "Plain text only, no headings or markdown. This is a DRAFT a technician will review and edit before it is sent.";
 }
 
 // ---- Phase-1 seam: photo access for the vision model. Turns the sanitized
@@ -298,12 +298,37 @@ exports.handler = async function (event) {
     const report = sanitizeReport(body.report);
     if (!report) return resp(400, { error: "Missing report" });
 
-    const draft = composeTemplateSummary(report);
-    // source/llm flag the draft's provenance for the client (and for anyone
-    // reading a network trace later): template_stub_v1 = the deterministic
-    // Phase-1 composer, no AI involved. The Phase-2 LLM path will report
-    // source:"llm" + llm:true so the UI can label the two differently.
-    return resp(200, { ok: true, draft: draft, source: "template_stub_v1", llm: false });
+    // Stub vs live is decided by which env vars exist on THIS deploy context
+    // (dev holds ANTHROPIC_API_KEY; production deliberately doesn't yet).
+    // Signed photo URLs are minted ONLY when a live model will consume them
+    // -- the stub path must never create a live URL with no purpose.
+    const provider = resolveProvider(process.env);
+    let photoUrls = [];
+    if (provider.name !== "stub" && (report.photos || []).some(function (p) { return p.storageRef; })) {
+      try {
+        const bucket = getAdmin(hostnameFromEvent(event)).storage().bucket();
+        photoUrls = (await collectSignedPhotoUrls(bucket, report.photos)).map(function (p) { return p.url; });
+      } catch (e) { /* vision degrades to text-only; a draft must never dead-end on Storage */ }
+    }
+
+    const result = await generateSummary(
+      { report: report, photoUrls: photoUrls },
+      { stubText: composeTemplateSummary(report), system: buildLlmPrompt(report) }
+    );
+
+    // Provenance for the client (and anyone reading a network trace later):
+    // source "template_stub_v1" = the deterministic composer answered (no
+    // key, or provider failure -> fallback:true); otherwise the provider
+    // name + model that actually wrote the draft. Always a draft either way.
+    return resp(200, {
+      ok: true,
+      draft: result.text,
+      source: result.llm ? result.provider : "template_stub_v1",
+      llm: !!result.llm,
+      model: result.model || null,
+      fallback: !!result.fallback,
+      photosSeen: result.llm ? photoUrls.length : 0
+    });
   } catch (e) {
     if (e.statusCode === 401) return resp(401, { error: "Unauthorized" });
     if (e.statusCode === 403) return resp(403, { error: "Forbidden" });

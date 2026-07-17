@@ -142,10 +142,27 @@ test("payload clamps oversized text and row counts", () => {
 const VALID_TECH = "VALID_TECH_TOKEN";     // field_tech: doc.generate === true
 const VALID_NOPERM = "VALID_NOPERM_TOKEN"; // real user, role grants nothing
 
+/* Storage stub: every getSignedUrl call is recorded so tests can assert the
+   ONE signing invariant that matters — the stub path never signs; only a
+   live provider call mints URLs. The returned URL carries X-Goog-Signature
+   so it passes aiProvider's isSignedPhotoUrl gate, like a real V4 URL. */
+const signedCalls = [];
 const fakeAdmin = {
   apps: [],
   credential: { cert: () => ({}) },
   initializeApp(cfg) { this.apps.push(cfg); return this; },
+  storage() {
+    return {
+      bucket: () => ({
+        file: (path) => ({
+          getSignedUrl: async (opts) => {
+            signedCalls.push({ path, opts });
+            return ["https://storage.googleapis.com/fake/" + path + "?X-Goog-Signature=abc123"];
+          }
+        })
+      })
+    };
+  },
   auth() {
     return {
       verifyIdToken: async (token) => {
@@ -183,9 +200,14 @@ require.cache["FAKE_FIREBASE_ADMIN"] = {
 };
 // Dev service account + dev host so authGuard's cross-project guard passes.
 process.env.FIREBASE_SERVICE_ACCOUNT = JSON.stringify({ project_id: "watkins-service-orders-dev" });
-// Phase-1 promise: the stub NEVER reaches the network. If someone wires an
-// LLM call in before Mark provisions and approves a key, this trips.
-global.fetch = async () => { throw new Error("REACHED AN EXTERNAL NETWORK CALL — Phase 1 must stay offline"); };
+// No AI key in the test env -> provider resolves to stub. The trap still
+// stands for every stub-path test: WITHOUT a key there must be zero network.
+// Live-path tests below temporarily swap in a mock fetch, then restore this.
+delete process.env.ANTHROPIC_API_KEY;
+delete process.env.OPENAI_API_KEY;
+delete process.env.AI_PROVIDER;
+const NETWORK_TRAP = async () => { throw new Error("REACHED AN EXTERNAL NETWORK CALL with no key configured"); };
+global.fetch = NETWORK_TRAP;
 
 const fn = require("../netlify/functions/generate-summary.js");
 
@@ -322,14 +344,13 @@ test("sanitizeReport rejects any photo ref outside our own workorders/ tree", ()
    transport change only. ---- */
 test("buildLlmPrompt: grounded, draft-only, and length-tunable via the one constant", () => {
   const p = fn.buildLlmPrompt(fn.sanitizeReport(REPORT));
-  assert.ok(p.system.includes(String(fn.SUMMARY_TARGET_WORDS)), "word target comes from the constant");
-  assert.ok(/never invent/i.test(p.system), "anti-fabrication instruction");
-  assert.ok(/DRAFT/.test(p.system), "draft-only framing");
-  assert.ok(/photo/i.test(p.system), "photos are part of the grounding instructions");
-  assert.ok(p.user.includes("Tri-Delta Warehouse"), "report data rides in the user turn");
-  assert.ok(!/base64|data:image/.test(p.user), "photo BYTES never ride in the prompt text");
+  assert.equal(typeof p, "string", "system prompt string (report JSON + images are aiProvider's job)");
+  assert.ok(p.includes(String(fn.SUMMARY_TARGET_WORDS)), "word target comes from the constant");
+  assert.ok(/never invent/i.test(p), "anti-fabrication instruction");
+  assert.ok(/DRAFT/.test(p), "draft-only framing");
+  assert.ok(/photo/i.test(p), "photos are part of the grounding instructions");
   // Style exemplar not supplied yet -> generic professional-voice fallback.
-  assert.ok(/professional/i.test(p.system));
+  assert.ok(/professional/i.test(p));
 });
 
 test("collectSignedPhotoUrls signs only clean workorders/ refs, short-lived, and never throws on a bad one", async () => {
@@ -360,6 +381,77 @@ test("collectSignedPhotoUrls signs only clean workorders/ refs, short-lived, and
   // Expiry is bounded: at most the default TTL from now (no long-lived URLs).
   assert.ok(o.expires <= before + fn.SIGNED_URL_TTL_MS + 60000, "expiry within default TTL");
   assert.ok(o.expires > before, "expiry in the future");
+});
+
+/* ---- Live-provider wiring (Phase 1). These tests set a fake key and mock
+   fetch, then restore the no-key trap — proving the handler's stub/live
+   switch, the vision plumbing (signed URL -> image block), the feature-tuned
+   system prompt reaching the wire, and the fallback that keeps a roof-side
+   flow alive through an API outage. ---- */
+test("stub path (no key): drafts fine and NEVER mints a signed URL", async () => {
+  signedCalls.length = 0;
+  const r = await fn.handler(ev({ action: "draft_summary", report: REPORT }, VALID_TECH));
+  assert.equal(r.statusCode, 200);
+  const out = JSON.parse(r.body);
+  assert.equal(out.llm, false);
+  assert.equal(out.source, "template_stub_v1");
+  assert.equal(out.photosSeen, 0);
+  assert.equal(signedCalls.length, 0, "no signing without a live model to consume the URL");
+});
+
+test("live path (key set): signs the photo, sends it + the tuned prompt, returns the model's draft", async () => {
+  process.env.ANTHROPIC_API_KEY = "sk-test-fake";
+  const wireCalls = [];
+  global.fetch = async (url, init) => {
+    wireCalls.push({ url, body: JSON.parse(init.body) });
+    return { ok: true, status: 200, json: async () => ({ content: [{ type: "text", text: "LIVE DRAFT: seam repair summary." }] }) };
+  };
+  signedCalls.length = 0;
+  try {
+    const r = await fn.handler(ev({ action: "draft_summary", report: REPORT }, VALID_TECH));
+    assert.equal(r.statusCode, 200);
+    const out = JSON.parse(r.body);
+    assert.equal(out.ok, true);
+    assert.equal(out.llm, true);
+    assert.equal(out.source, "anthropic");
+    assert.equal(out.draft, "LIVE DRAFT: seam repair summary.");
+    assert.equal(out.photosSeen, 1);
+    // The photo was signed (v4, read-only) and rode to the API as an image block.
+    assert.equal(signedCalls.length, 1);
+    assert.equal(signedCalls[0].path, "workorders/wo_123/0.jpg");
+    assert.equal(signedCalls[0].opts.action, "read");
+    assert.equal(wireCalls.length, 1);
+    assert.ok(wireCalls[0].url.includes("api.anthropic.com"));
+    const content = wireCalls[0].body.messages[0].content;
+    const img = content.find(c => c.type === "image");
+    assert.ok(img && /X-Goog-Signature/.test(img.source.url), "signed URL reached the model as an image block");
+    // The feature-tuned system prompt (word target) is what went on the wire,
+    // not aiProvider's generic default.
+    assert.ok(wireCalls[0].body.system.includes(String(fn.SUMMARY_TARGET_WORDS)));
+    // The key itself only ever appears in the auth header set by aiProvider —
+    // never in the response body we hand the client.
+    assert.ok(!r.body.includes("sk-test-fake"));
+  } finally {
+    delete process.env.ANTHROPIC_API_KEY;
+    global.fetch = NETWORK_TRAP;
+  }
+});
+
+test("live path outage: provider error falls back to the template draft, flagged, still 200", async () => {
+  process.env.ANTHROPIC_API_KEY = "sk-test-fake";
+  global.fetch = async () => ({ ok: false, status: 500, json: async () => ({}) });
+  try {
+    const r = await fn.handler(ev({ action: "draft_summary", report: REPORT }, VALID_TECH));
+    assert.equal(r.statusCode, 200, "an AI outage must never dead-end the field flow");
+    const out = JSON.parse(r.body);
+    assert.equal(out.llm, false);
+    assert.equal(out.fallback, true);
+    assert.equal(out.source, "template_stub_v1");
+    assert.equal(out.draft, fn.composeTemplateSummary(fn.sanitizeReport(REPORT)), "fallback IS the deterministic template");
+  } finally {
+    delete process.env.ANTHROPIC_API_KEY;
+    global.fetch = NETWORK_TRAP;
+  }
 });
 
 test("composer covers the Work Order (Repair) scope fields", () => {
