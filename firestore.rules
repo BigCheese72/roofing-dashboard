@@ -240,31 +240,6 @@ service cloud.firestore {
       allow create, update, delete: if false;
     }
 
-    // Login history (Admin page > Login History & Online Now -- see
-    // js/activity.js). A signed-in user may CREATE a login event for
-    // THEMSELF only (uid pinned to their own verified token, so nobody can
-    // forge someone else's login), and that's the only client path there
-    // is: no reads (admins list these through admin.js's list_login_events,
-    // Admin SDK), no update/delete ever -- same append-only spirit as
-    // audit_logs above.
-    match /login_events/{eventId} {
-      allow create: if request.auth != null && request.resource.data.uid == request.auth.uid;
-      allow read, update, delete: if false;
-    }
-
-    // Presence heartbeat (Admin page > Login History & Online Now). Each
-    // signed-in user writes ONLY their own presence/{uid} doc (~every 60s
-    // while the tab is visible -- see the heartbeat in js/activity.js).
-    // Firestore has no onDisconnect, so "online" is a staleness threshold
-    // over lastActiveAt, computed by the reader. Never client-readable:
-    // who's-online is admin information, served through admin.js's
-    // list_user_activity (audit.view-gated), not a client query.
-    match /presence/{uid} {
-      allow create, update: if request.auth != null && request.auth.uid == uid &&
-        request.resource.data.uid == uid;
-      allow read, delete: if false;
-    }
-
     // Server-only secrets — currently just the Microsoft Graph delegated
     // OAuth refresh token (netlify/functions/lib/graphDelegatedAuth.js),
     // written and read exclusively via the Firebase Admin SDK, which is

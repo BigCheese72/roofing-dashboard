@@ -530,13 +530,6 @@ var HELP_ARTICLES = [
       "The Owner column is locked (🔒) so you can never lock yourself out. Tap \"Save Changes\" -- changes apply immediately, and every save is recorded in the Audit Log.",
       "Changing the ADMIN role, or your own role's security-sensitive permissions, asks for an extra confirm first -- read it before tapping through."
     ] },
-  { id: "admin-login-history", title: "How do I see who's online and who's been logging in?", screens: ["home"], roles: "admin",
-    keywords: "online now login history last seen presence device sessions",
-    body: [
-      "On the 🔧 Admin tab, \"🕐 Login History & Online Now\" shows 🟢 who's active right now (green = active in the last 3 minutes), when everyone was last seen, and the latest logins.",
-      "Each login shows the coarse device only (e.g. \"iOS · Safari\") -- enough to spot something odd, nothing invasive.",
-      "Logins are recorded once per browser session, so a page refresh doesn't count twice. Filter by user or tap Refresh any time."
-    ] },
   { id: "admin-tools", title: "What are the maintenance tools on the Admin tab?", screens: ["home"], roles: "admin",
     keywords: "admin tools photo size migrate sync foundation thumbnails backfill inspection review queue",
     body: [
