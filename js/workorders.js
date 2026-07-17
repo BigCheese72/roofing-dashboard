@@ -1382,6 +1382,52 @@ var FIELD_IDS = ["jobName","location","suite","serviceDate","jobNo","projectMana
   "woCost","woManHours","woMaterials","woDescription","woPONumber","woDateCompleted","repairDescription",
   "mfgServiceNo"];
 
+/* ===== Service Manager dispatch + proposal linkage =====
+   Held as module globals (mirroring the fdnLinked* pattern in js/foundation.js)
+   so a dispatched work order survives a normal edit-form round-trip: collect()
+   writes them onto the WO and fill() restores them, so a manager who opens a
+   dispatched WO in the ordinary edit form and saves never drops its crew / day
+   / proposal linkage. cloudSaveOrder() does a FULL-doc ref.set(), so anything
+   not carried here would be lost on an edit-form save — hence dispatch lives as
+   ONE nested object thread through this one place. js/servicemanager.js is the
+   primary WRITER (pre-create builds the object directly; assign/clear use
+   targeted Firestore updates); the edit form only preserves what it loaded. */
+var smDispatchCrew = null;        // foreman name = the crew key (see DPR_FOREMEN)
+var smDispatchDate = null;        // "YYYY-MM-DD" the crew is to run it
+var smDispatchStatus = null;      // "assigned" | "cleared" (null = never dispatched)
+var smDispatchAssignedAt = null;
+var smDispatchAssignedBy = null;
+var smDispatchClearedAt = null;
+var smDispatchClearedBy = null;
+var smProposalRef = null;         // { source, messageId?, attachmentId?, fileName?, subject?, from?, receivedDate?, folder?, upload? }
+/* Restores dispatch/proposal globals from a loaded WO. Called by fill(); also
+   safe for any caller that needs to reset them (pass {} to clear). */
+function smSetDispatchState(o){
+  var d = (o && o.dispatch && typeof o.dispatch === "object") ? o.dispatch : {};
+  smDispatchCrew = d.crew || null;
+  smDispatchDate = d.date || null;
+  smDispatchStatus = d.status || null;
+  smDispatchAssignedAt = d.assignedAt || null;
+  smDispatchAssignedBy = d.assignedBy || null;
+  smDispatchClearedAt = d.clearedAt || null;
+  smDispatchClearedBy = d.clearedBy || null;
+  smProposalRef = (o && o.proposal && typeof o.proposal === "object") ? o.proposal : null;
+}
+/* Assembles the nested dispatch object from the current globals (or null when
+   this WO was never dispatched, so an ordinary WO doesn't grow the field). */
+function smBuildDispatchField(){
+  if (!(smDispatchCrew || smDispatchDate || smDispatchStatus)) return null;
+  return {
+    crew: smDispatchCrew || null,
+    date: smDispatchDate || null,
+    status: smDispatchStatus || null,
+    assignedAt: smDispatchAssignedAt || null,
+    assignedBy: smDispatchAssignedBy || null,
+    clearedAt: smDispatchClearedAt || null,
+    clearedBy: smDispatchClearedBy || null
+  };
+}
+
 function collect(){
   var o = { id: currentId || ("wo_" + Date.now()) };
   FIELD_IDS.forEach(function(k){ o[k] = val(k); });
@@ -1440,6 +1486,13 @@ function collect(){
   o.roofLabels = (lookupRoofInfoMatchesBuilding(lastLookupRoofInfo, buildingId) && lastLookupRoofInfo.roofs) ?
     lastLookupRoofInfo.roofs.reduce(function(m, r){ m[r.id] = r.label || "Roof"; return m; }, {}) : null;
   o.changeOrderSignature = changeOrderSignature || null;
+  /* Service Manager dispatch (crew + day + status) and proposal linkage. Both
+     null for an ordinary WO; carried here so an edit-form save never drops a
+     dispatched WO's assignment or its source proposal (see the globals block
+     above). The board queries dispatch.date/dispatch.status; assign/clear write
+     these via targeted updates, but this keeps them alive across full re-saves. */
+  o.dispatch = smBuildDispatchField();
+  o.proposal = smProposalRef || null;
   return o;
 }
 /* ============ AI-drafted summary, Phase 1 (see DEV_NOTES.md) ============ */
@@ -1633,6 +1686,9 @@ function fill(o){
      load/new. */
   coJobNoAutoValue = null;
   changeOrderSignature = o.changeOrderSignature || null;
+  /* Restore Service Manager dispatch + proposal linkage (or clear it for a WO
+     that carries none) so a subsequent collect() preserves it. */
+  smSetDispatchState(o);
   clearStaleLookupRoofInfoForCurrentOrder();
   renderFindings(); renderRepairs(); renderRepairItems(); renderMaterials(); renderPhotos(); renderCCLinkInfo(); renderChangeOrderSignature();
   /* Re-render the checklist now that photos[]/findings[] are the truly

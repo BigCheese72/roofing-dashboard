@@ -59,6 +59,13 @@
   <button class="tab cond" id="tab-reports" onclick="showView('reports')" title="Reports">📋<span class="tab-label"> Reports</span></button>
   <button class="tab cond" id="tab-roofmapper" onclick="showView('roofmapper')" title="RoofMapper">🗺️<span class="tab-label"> RoofMapper</span></button>
   <button class="tab cond" id="tab-dpr" onclick="showView('dpr')" title="Daily Progress Report">📅<span class="tab-label"> Daily Report</span></button>
+  <!-- Service Manager tab (dispatch + proposals). Hidden by default; shown by
+       updateServiceManagerUI() only for owner / admin / ops_manager /
+       service_manager (canServiceManage()) — the SAME role set that already
+       holds warranty.manage_reports, which server-gates the proposal source
+       (contacts-sync). UI-hiding is convenience only, per docs/AUTH_DESIGN.md;
+       no new permission key (see js/servicemanager.js header). -->
+  <button class="tab cond" id="tab-servicemanager" onclick="showView('servicemanager')" style="display:none" title="Service Manager — dispatch &amp; proposals">🚚<span class="tab-label"> Service Manager</span></button>
   <!-- Admin-only tab (hidden for field techs; shown/hidden by updateAdminUI()
        off the signed-in user's real role, never a toggle). Consolidates every
        admin/maintenance control on one page — see #view-admin. -->
@@ -1131,6 +1138,142 @@
     </div>
   </div>
 
+  <!-- ================= SERVICE MANAGER VIEW (dispatch + proposals) =================
+       One place to pre-create a work order from a proposal (or blank), cross-
+       reference it to the real Foundation job, assign it to a CREW for a DAY,
+       and watch a live per-crew dispatch board that clears as work completes.
+       Gated to service_manager-and-up via tab visibility (updateServiceManagerUI);
+       all logic in js/servicemanager.js. See that file's header for the model. -->
+  <div id="view-servicemanager" style="display:none">
+    <h2 class="cond" style="margin:0 0 10px">🚚 Service Manager</h2>
+
+    <!-- Sign-in / permission gate (defence-in-depth; the tab is already hidden
+         for non-managers, this just keeps the body from flashing if reached
+         directly). Shown/hidden by smApplyPermissionUI(). -->
+    <div class="card" id="sm-gate" style="display:none;background:#FFF4E5;border:1px solid #E8A33D">
+      <p style="margin:0">The Service Manager workspace is available to service managers and up. Sign in with a manager account to use it.</p>
+    </div>
+
+    <div id="sm-body">
+      <!-- Segmented control: Proposals inbox vs live Dispatch board. -->
+      <div class="btnrow" style="margin:0 0 12px">
+        <button class="btn" id="sm-seg-proposals" onclick="smShowSection('proposals')">📨 Proposals</button>
+        <button class="btn" id="sm-seg-board" onclick="smShowSection('board')">🚚 Dispatch Board</button>
+      </div>
+
+      <!-- ---------- PROPOSALS ---------- -->
+      <div id="sm-section-proposals">
+        <div class="card">
+          <div class="btnrow" style="margin:0 0 10px;align-items:center">
+            <div class="fld" style="margin:0;min-width:180px">
+              <label style="font-size:12px">Proposal source</label>
+              <select id="sm-proposal-source" onchange="smLoadProposals()">
+                <option value="Proposals">📁 Proposals folder</option>
+                <option value="sentitems">📤 Sent Items (sent by me)</option>
+              </select>
+            </div>
+            <button class="btn" onclick="smLoadProposals()" title="Reload proposals from Outlook">🔄 Refresh</button>
+            <button class="btn" onclick="document.getElementById('sm-proposal-upload').click()" title="Upload a proposal PDF from this device">⬆️ Upload PDF</button>
+            <input type="file" id="sm-proposal-upload" accept="application/pdf" style="display:none" onchange="smUploadProposal(this)">
+          </div>
+          <p class="hint" style="margin:0 0 10px">Proposals from Nathan or sent by you. A <b>✅ WO exists</b> flag is a best-effort
+            match by customer / address / subject — always confirm. Pick a proposal to pre-create its work order.</p>
+          <div id="sm-proposals-list" class="hint">Loading proposals…</div>
+        </div>
+      </div>
+
+      <!-- ---------- DISPATCH BOARD ---------- -->
+      <div id="sm-section-board" style="display:none">
+        <div class="card">
+          <div class="btnrow" style="margin:0 0 10px;align-items:center;flex-wrap:wrap">
+            <div class="fld" style="margin:0;min-width:160px">
+              <label style="font-size:12px">Day</label>
+              <input type="date" id="sm-board-date" onchange="smRenderBoard()">
+            </div>
+            <button class="btn" onclick="smBoardSetDay(0)" title="Today">Today</button>
+            <button class="btn" onclick="smBoardSetDay(1)" title="Tomorrow">Tomorrow</button>
+            <button class="btn" onclick="smBoardSetDay(2)" title="Day after tomorrow">+2</button>
+            <span style="flex:1"></span>
+            <button class="btn primary" onclick="smOpenPrecreate(null)" title="Pre-create a blank work order and assign it">➕ New Work Order</button>
+            <button class="btn" onclick="smOpenAssignExisting()" title="Assign an already-saved work order to a crew/day">📋 Assign Existing</button>
+            <button class="btn" onclick="smRenderBoard()" title="Refresh the board">🔄</button>
+          </div>
+          <p class="hint" style="margin:0 0 10px">Live board for the selected day. A crew's work order <b>drops off when it's cleared</b>.
+            Run low? Add more with the buttons above.</p>
+          <div id="sm-board" class="hint">Loading board…</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ================= Service Manager: Pre-create Work Order =================
+     Compact create form (from a selected proposal or blank). Prefills customer/
+     address/scope, cross-references Foundation for the real job, and assigns a
+     crew + day. On save it builds the WO and writes it through the same
+     cloud-save path as the edit form (js/servicemanager.js). -->
+<div id="sm-precreate-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)smClosePrecreate()">
+  <div style="background:#fff;max-width:620px;margin:4vh auto;border-radius:8px;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;width:96%">
+    <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
+      <b class="cond" style="font-size:17px" id="sm-precreate-title">Pre-create Work Order</b>
+      <span style="flex:1"></span>
+      <button class="btn" onclick="smClosePrecreate()">Close</button>
+    </div>
+    <div style="padding:14px 16px;overflow:auto">
+      <div id="sm-precreate-proposal" class="card" style="display:none;background:#EFF6FF;border:1px solid #90C2F0;margin:0 0 12px"></div>
+      <div class="grid">
+        <div class="fld"><label>Work Order Type</label><select id="sm-pc-woType"></select></div>
+        <div class="fld"><label>Target date (crew day)</label><input type="date" id="sm-pc-date"></div>
+        <div class="fld"><label>Customer / Bill To</label><input type="text" id="sm-pc-billTo" list="dl-billTo"></div>
+        <div class="fld"><label>Job / Building name</label><input type="text" id="sm-pc-jobName" list="dl-jobName"></div>
+      </div>
+      <div class="fld"><label>Address / Location</label><input type="text" id="sm-pc-location" list="dl-location"></div>
+      <div class="fld"><label>Scope of work (repair description)</label><textarea id="sm-pc-scope" rows="3" placeholder="What needs doing…"></textarea></div>
+
+      <!-- Foundation cross-reference: match this proposal's address/name to the
+           real Foundation job so accounting identity is bound from creation. -->
+      <div class="card" style="margin:12px 0;background:#F6FBF6;border:1px solid #B5D9B5">
+        <div class="btnrow" style="margin:0;align-items:center">
+          <b style="font-size:13px">🏗️ Foundation job</b>
+          <span style="flex:1"></span>
+          <button class="btn" type="button" onclick="smMatchFoundationFromForm()" title="Find the matching Foundation job by address/name">🔎 Cross-reference</button>
+        </div>
+        <div id="sm-pc-foundation" class="hint" style="margin:8px 0 0">Not linked. Cross-reference to bind the real job number.</div>
+      </div>
+
+      <!-- AI scope-prefill (Phase 2). Hidden until the endpoint reports a key is
+           configured (capability probe) — inert on keyless deploys. -->
+      <div class="btnrow" id="sm-pc-ai-row" style="display:none;margin:0 0 8px">
+        <button class="btn" type="button" onclick="smAiPrefillScope()" title="Read the proposal PDF and draft the scope for you to confirm">✨ AI: draft scope from proposal</button>
+      </div>
+
+      <div class="fld"><label>Assign to crew (foreman)</label><input type="text" id="sm-pc-crew" list="dl-smCrew" placeholder="e.g. Kelly Walker"></div>
+      <p class="hint" style="margin:2px 0 0">Leave crew blank to pre-create without dispatching yet — it'll be a saved work order you can assign later.</p>
+    </div>
+    <div style="padding:12px 16px;border-top:1px solid var(--line)">
+      <button class="btn primary" style="width:100%" onclick="smSubmitPrecreate()">Create &amp; Assign Work Order</button>
+    </div>
+  </div>
+</div>
+
+<!-- Service Manager: assign an EXISTING saved work order to a crew/day. -->
+<div id="sm-assign-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)smCloseAssignExisting()">
+  <div style="background:#fff;max-width:620px;margin:5vh auto;border-radius:8px;max-height:88vh;display:flex;flex-direction:column;overflow:hidden;width:96%">
+    <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
+      <b class="cond" style="font-size:17px">Assign Existing Work Order</b>
+      <span style="flex:1"></span>
+      <button class="btn" onclick="smCloseAssignExisting()">Close</button>
+    </div>
+    <div style="padding:14px 16px;overflow:auto">
+      <div class="grid">
+        <div class="fld"><label>Assign to crew (foreman)</label><input type="text" id="sm-assign-crew" list="dl-smCrew"></div>
+        <div class="fld"><label>Target date (crew day)</label><input type="date" id="sm-assign-date"></div>
+      </div>
+      <input type="text" id="sm-assign-search" placeholder="Search saved work orders by job, address, customer…" style="width:100%;margin:6px 0 10px;box-sizing:border-box" oninput="smRenderAssignList()">
+      <div id="sm-assign-list" class="hint">Loading work orders…</div>
+    </div>
+  </div>
 </div>
 
 <div id="cc-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)closeCC()">
@@ -1597,6 +1740,10 @@
      this one is the app-wide list. -->
 <datalist id="dl-roofSystem"></datalist>
 <datalist id="dl-photoCaption"></datalist>
+<!-- Service Manager crew (foreman) picker — seeded from DPR_FOREMEN by
+     js/servicemanager.js (a "crew" is keyed by its foreman name, matching how
+     the DPR already identifies a crew). -->
+<datalist id="dl-smCrew"></datalist>
 <datalist id="dl-assetLabel"></datalist>
 <!-- Foremen roster for the Daily Progress Report's Foreman field. Populated
      from DPR_FOREMEN in js/dpr.js (see dprPopulateForemen()). Empty until
@@ -1636,6 +1783,11 @@
 <script src="js/workorders.js"></script>
 <script src="js/roofmapper.js"></script>
 <script src="js/dpr.js"></script>
+<!-- Service Manager workspace: proposals inbox, Foundation cross-ref, pre-create
+     work order, crew/day assignment, live dispatch board. Loaded after dpr.js
+     (reuses DPR_FOREMEN as the crew roster) and workorders.js (dispatch fields
+     live in collect()/fill()). See js/servicemanager.js header. -->
+<script src="js/servicemanager.js"></script>
 <script src="js/roles-admin.js"></script>
 <!-- AI training-label write path (see js/ailabels.js). Pure data plumbing,
      no UI of its own and deliberately no callers yet — loaded so the flows
@@ -1670,6 +1822,7 @@ populateWarrantyGuidelines();
 showView("home");
 renderSaved();
 updateAdminUI();
+updateServiceManagerUI();
 registerServiceWorker();
 </script>
 </body>

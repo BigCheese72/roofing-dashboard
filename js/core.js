@@ -1350,6 +1350,32 @@ var isAdmin = false;
 function recomputeIsAdmin(){
   isAdmin = !!(currentAuthClaims && (currentAuthClaims.owner === true || currentAuthClaims.role === "admin"));
   updateAdminUI();
+  updateServiceManagerUI();
+}
+/* Service-Manager-and-up gate for the dispatch/proposals workspace. Same
+   claims-based, UI-only convenience as isAdmin (see the "admin mode" comment
+   above): owner + admin + ops_manager + service_manager — the EXACT role set
+   that already holds warranty.manage_reports, which server-gates the proposal
+   source (contacts-sync). No new permission key: WO writes are client-direct
+   under the existing open `workorders` rules and the proposal source is
+   already gated, so there is nothing new to enforce server-side in v1. See the
+   header of js/servicemanager.js. */
+function canServiceManage(){
+  if (!currentAuthClaims) return false;
+  if (currentAuthClaims.owner === true) return true;
+  var r = currentAuthClaims.role;
+  return r === "admin" || r === "ops_manager" || r === "service_manager";
+}
+/* Shows/hides the Service Manager tab off the signed-in user's real role, the
+   same pattern updateAdminUI() uses for tab-admin. Bounces off the SM view if
+   access is revoked while it's open. */
+function updateServiceManagerUI(){
+  var tab = document.getElementById("tab-servicemanager");
+  var can = canServiceManage();
+  if (tab) tab.style.display = can ? "" : "none";
+  if (!can && typeof currentViewName !== "undefined" && currentViewName === "servicemanager"){
+    showView("edit");
+  }
 }
 /* Attaches the signed-in user's Firebase ID token as a Bearer header --
    the actual trust boundary every claims-gated server function verifies
@@ -3297,11 +3323,14 @@ function showView(v){
   if (v === "admin" && !isAdmin){
     v = "edit";
   }
+  if (v === "servicemanager" && !canServiceManage()){
+    v = "edit";
+  }
   currentViewName = v;
   /* "home" has no header tab (reached via "+ New", the empty-state button
      in Building History, or tapping the logo) — every other view still
      keeps its tab exactly as before. */
-  ["home","edit","preview","saved","history","reports","roofmapper","dpr","admin"].forEach(function(name){
+  ["home","edit","preview","saved","history","reports","roofmapper","dpr","servicemanager","admin"].forEach(function(name){
     var viewEl = document.getElementById("view-" + name);
     if (viewEl) viewEl.style.display = (name === v ? "" : "none");
     var tabEl = document.getElementById("tab-" + name);
@@ -3314,6 +3343,7 @@ function showView(v){
   if (v === "reports"){ renderReportsList(); if (isAdmin){ loadFeedbackBacklog(); loadAuditLogBacklog(); } }
   if (v === "roofmapper") rmOnShow();
   if (v === "dpr" && typeof dprOnShow === "function") dprOnShow();
+  if (v === "servicemanager" && typeof smOnShow === "function") smOnShow();
   if (v === "admin" && typeof rolesAdminOnShow === "function") rolesAdminOnShow();
   window.scrollTo(0,0);
   if (v === "edit" && pendingPinFindingId){
