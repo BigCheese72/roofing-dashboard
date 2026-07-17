@@ -1595,18 +1595,14 @@ function updateAdminUI(){
   if (!isAdmin && typeof currentViewName !== "undefined" && currentViewName === "admin"){
     showView("edit");
   }
-  /* Saved view access control (Mark) -- Import Work Order File and, per
-     saved work order, Delete, are admin-only (Export was removed
+  /* Saved view access control (Mark) -- per saved work order, Delete is
+     admin-only (Import Work Order File and Export were both removed
      entirely, not gated -- see "Export button removed" in DEV_NOTES.md).
      updateAdminUI() re-draws the Saved list immediately on every auth-state
      change (drawSaved() itself checks isAdmin for the per-row Delete
      button) so signing in/out or a role change takes effect without
      needing a tab change. See "Saved view access control" in
      DEV_NOTES.md. */
-  var importBtn = document.getElementById("saved-import-btn");
-  if (importBtn) importBtn.style.display = isAdmin ? "" : "none";
-  var importHint = document.getElementById("saved-import-hint");
-  if (importHint) importHint.style.display = isAdmin ? "" : "none";
   if (document.getElementById("saved-list")) drawSaved();
   renderCCLinkInfo();
   if (document.getElementById("view-history") && document.getElementById("view-history").style.display !== "none"){
@@ -3230,34 +3226,6 @@ function deleteOrder(id){
     cloudDeleteOrder(id).then(function(){ toast("Deleted everywhere \u2713"); })
       .catch(function(){ toast("Deleted on this device \u2014 cloud copy may remain (check internet)"); });
   } else toast("Deleted on this device");
-}
-/* Admin-only — see deleteOrder() above for why the check lives here too,
-   not just on the button. */
-function importOrderFile(files){
-  if (!isAdmin){ toast("Admin mode required to import."); return; }
-  var f = files && files[0];
-  if (!f) return;
-  var r = new FileReader();
-  r.onload = function(){
-    try{
-      var o = JSON.parse(r.result);
-      if (!o || !o.id || typeof o !== "object") throw new Error("bad file");
-      var db = loadDb();
-      db.orders[o.id] = o;
-      db.index = db.index.filter(function(e){ return e.id !== o.id; });
-      db.index.unshift({ id:o.id, jobName:o.jobName || "(untitled)", jobNo:o.jobNo,
-        location:o.location, serviceDate:o.serviceDate, savedAt:Date.now() });
-      if (saveDb(db)){
-        renderSaved();
-        toast("Imported \u2713 \u2014 it's in your Saved list now.");
-      }
-      if (fdb) cloudSaveOrder(o).catch(function(){});
-    }catch(e){
-      toast("That file isn't a valid work order export.");
-    }
-  };
-  r.onerror = function(){ toast("Couldn't read that file."); };
-  r.readAsText(f);
 }
 function mergedIndex(){
   var db = loadDb();
