@@ -1575,6 +1575,27 @@ function buildSummaryDraftPayload(o){
    where a key exists (dev), deterministic placeholder elsewhere (prod) —
    see generate-summary.js's header. */
 async function draftReportSummary(btn){
+  /* Teaser gate (Mark, 2026-07-17): on a keyless deploy — production today, no
+     ANTHROPIC/OPENAI key — the button is SHOWN but drafting isn't wired up yet,
+     so a tap is a friendly "coming soon", never an error and never a
+     half-generated placeholder. Whether a key exists lives server-side only, so
+     read the cached capability probe: aiSummaryConfigured() is true (keyed),
+     false (keyless), or null (not yet probed — await the probe so a fast first
+     tap still branches correctly). The moment a key is provisioned this returns
+     true and the real generate flow below runs completely untouched. */
+  var configured = (typeof aiSummaryConfigured === "function") ? aiSummaryConfigured() : null;
+  if (configured === null && typeof probeAiSummaryCapability === "function"){
+    /* Disable ONLY across the probe await (a disabled button fires no onclick),
+       so a double-tap before the probe resolves can't start two drafts. The
+       probe is pre-warmed on type-select, so this branch is almost never taken;
+       when it is, the finally re-enables on every outcome — no leaked-disabled
+       button, and the paths below (confirm-cancel, etc.) are untouched. */
+    if (btn) btn.disabled = true;
+    try{ configured = await probeAiSummaryCapability(); }
+    catch(e){ configured = false; }
+    finally{ if (btn) btn.disabled = false; }
+  }
+  if (!configured){ toast("✨ AI Draft Summary — coming soon"); return; }
   var existing = val("summary");
   if (existing && existing.trim() &&
       !confirm("Replace the current Summary text with a generated draft?")) return;
