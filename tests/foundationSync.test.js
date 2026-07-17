@@ -148,7 +148,7 @@ test("signed-in user WITHOUT foundation.read: action=sync is 403, nothing writte
   assert.strictEqual(stored.size, 0);
 });
 
-test("valid sync key authorizes ONLY action=sync — any other action is 403 (not a skeleton key)", async () => {
+test("valid sync key authorizes ONLY the whitelisted scheduled actions — anything else is 403 (not a skeleton key)", async () => {
   clearStore();
   const r = await sync.handler(ev({ syncKey: SYNC_SECRET, body: { action: "delete_everything" } }));
   assert.strictEqual(r.statusCode, 403);

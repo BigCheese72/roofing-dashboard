@@ -22,8 +22,9 @@
 //      now". Verified via a real Firebase ID token; a plain signed-in user
 //      without the permission gets 403.
 // An unauthenticated caller gets an opaque 401 and learns nothing. And the
-// sync key is scoped to action=sync ONLY — any other action from the
-// automated caller is refused (it is not a general-purpose credential).
+// sync key is scoped to the WHITELISTED scheduled actions ONLY (action=sync
+// and action=dpr_hours_backfill) — anything else from the automated caller is
+// refused (it is not a general-purpose credential).
 //
 // Foundation's password (FOUNDATION_SQL_PASSWORD) and the sync secret are
 // never returned, thrown to the caller, or logged.
@@ -144,6 +145,153 @@ function safeDocId(jobNo) {
   return s.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 200);
 }
 
+// ---------------------------------------------------------------------
+// DPR punch-hours backfill (Mark: "run them once at like 8pm every night for
+// the day's reports submitted … the Time could fill in at Midnight also").
+// ---------------------------------------------------------------------
+// A foreman often saves the daily BEFORE the crew's punches have synced into
+// Foundation (pending_timecards fills in batches through the evening). This
+// scheduled pass revisits the day's saved reports and fills each crew
+// member's punch hours in — with EXACTLY the client's manual-wins rule
+// (js/dpr.js dprCrewHoursFillValue): only an empty value or a previous
+// auto-fill is ever replaced; a hand-typed number never moves. Locked
+// (signed) reports are never touched — the lock is a promise.
+
+const DPR_COLLECTION = "daily_progress_reports";
+
+// The run covers Central "today" AND "yesterday": the 8 PM pass fills today's
+// reports; the just-after-midnight pass closes out the day that just ended
+// (by then "today" has rolled over, so yesterday is the target).
+function centralDates(now) {
+  const fmt = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Chicago", year: "numeric", month: "2-digit", day: "2-digit" });
+  const today = fmt.format(now);                                       // en-CA formats as YYYY-MM-DD
+  const yesterday = fmt.format(new Date(now.getTime() - 24 * 3600 * 1000));
+  return [today, yesterday];
+}
+
+// Same name key as the client (js/dpr.js dprNameKey): case/spacing-
+// insensitive, folds "Last, First" to "first last".
+function nameKey(s) {
+  let t = String(s == null ? "" : s).trim();
+  const parts = t.indexOf(",") > -1 ? t.split(",") : null;
+  if (parts && parts.length === 2) t = parts[1].trim() + " " + parts[0].trim();
+  return t.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+// Client's crew-hours total (js/dpr.js dprCrewHoursTotal): named rows only,
+// garbage-proof, 2dp.
+function crewHoursTotal(crew) {
+  const total = (crew || []).reduce(function (acc, c) {
+    if (!String((c && c.name) || "").trim()) return acc;
+    const h = Number(c && c.hours);
+    return acc + (isFinite(h) && h > 0 ? h : 0);
+  }, 0);
+  return Math.round(total * 100) / 100;
+}
+
+// Applies a day's punch totals ({nameKey -> hours}) to crew rows. Returns
+// { crew, changed } — rows are copied, never mutated in place.
+function applyPunchesToCrew(crew, byName) {
+  let changed = false;
+  const out = (crew || []).map(function (c) {
+    const row = Object.assign({}, c);
+    const k = nameKey(row.name);
+    const punch = k ? byName[k] : undefined;
+    if (punch == null) return row;
+    const cur = String(row.hours == null ? "" : row.hours).trim();
+    const isAuto = row.hoursSource === "foundation";
+    if (cur !== "" && !isAuto) return row;          // hand-typed — never move
+    const hs = String(punch);
+    if (cur === hs && isAuto) return row;           // already current
+    row.hours = hs;
+    row.hoursSource = "foundation";
+    changed = true;
+    return row;
+  });
+  return { crew: out, changed: changed };
+}
+
+// The day's "Hours Worked" total follows the same never-stomp rule the client
+// uses: replace it only when it's empty or it demonstrably WAS the derived
+// crew sum (equals the old total) — a deliberately different hand-typed
+// number (drive time on top of roof hours) survives.
+function newHoursWorked(oldHoursWorked, oldTotal, newTotal) {
+  const cur = String(oldHoursWorked == null ? "" : oldHoursWorked).trim();
+  if (cur === "" || (oldTotal > 0 && cur === String(oldTotal))) return String(newTotal);
+  return cur;
+}
+
+// Turns fetchDayHours rows into {nameKey -> hours} (accumulating rows that
+// fold to the same person, mirroring the client's dprDayHoursByName).
+function punchesByName(rows) {
+  const byName = {};
+  (rows || []).forEach(function (r) {
+    const k = nameKey(r && r.name);
+    const h = Number(r && r.hours);
+    if (!k || !isFinite(h) || h <= 0) return;
+    byName[k] = (byName[k] || 0) + h;
+  });
+  Object.keys(byName).forEach(function (k) { byName[k] = Math.round(byName[k] * 100) / 100; });
+  return byName;
+}
+
+async function backfillDprHours(opts) {
+  const dates = (opts.dates && opts.dates.length) ? opts.dates : centralDates(new Date());
+  const db = getDb(opts.hostname);
+  const summary = {
+    ok: true, action: "dpr_hours_backfill", dryRun: !!opts.dryRun, dates: dates,
+    seen: 0, updated: 0, unchanged: 0, skipped_locked: 0, skipped_no_job: 0, no_punches: 0, errors: 0
+  };
+  const punchCache = {}; // "jobNo|date" -> byName (one Foundation read per job+day)
+  for (const date of dates) {
+    const qs = await db.collection(DPR_COLLECTION).where("date", "==", date).get();
+    for (const docSnap of qs.docs) {
+      summary.seen++;
+      const r = docSnap.data() || {};
+      if (r.signoff && r.signoff.locked) { summary.skipped_locked++; continue; }
+      const jobNo = String(r.foundationJobNo || r.jobNo || "").trim();
+      if (!jobNo) { summary.skipped_no_job++; continue; }
+      if (!(r.crew && r.crew.length)) { summary.unchanged++; continue; }
+      try {
+        const key = jobNo + "|" + date;
+        let byName = punchCache[key];
+        if (byName === undefined) {
+          const dh = await foundationDb.fetchDayHours(opts.password, jobNo, date);
+          byName = punchCache[key] = punchesByName(dh && dh.rows);
+        }
+        if (!Object.keys(byName).length) { summary.no_punches++; continue; }
+        const res = applyPunchesToCrew(r.crew, byName);
+        if (!res.changed) { summary.unchanged++; continue; }
+        const oldTotal = (typeof r.crewHoursTotal === "number" && isFinite(r.crewHoursTotal))
+          ? r.crewHoursTotal : crewHoursTotal(r.crew);
+        const newTotal = crewHoursTotal(res.crew);
+        const update = {
+          crew: res.crew,
+          crewHoursTotal: newTotal,
+          hoursWorked: newHoursWorked(r.hoursWorked, oldTotal, newTotal),
+          hoursBackfilledAt: opts.nowMs,
+          hoursBackfilledBy: opts.actor
+        };
+        if (!opts.dryRun) await docSnap.ref.set(update, { merge: true });
+        summary.updated++;
+      } catch (e) {
+        summary.errors++;
+        console.error("dpr_hours_backfill: report " + docSnap.id + " failed:", e && e.message ? e.message : e);
+      }
+    }
+  }
+  // Observability meta doc, best-effort (same convention as the job sync).
+  try {
+    if (!opts.dryRun) {
+      await db.collection(META_COLLECTION).doc("dpr_hours_backfill_last").set(
+        Object.assign({ ran_at: opts.nowIso, actor: opts.actor }, summary), { merge: true });
+    }
+  } catch (e) {
+    console.error("dpr_hours_backfill: meta write failed (non-fatal):", e && e.message ? e.message : e);
+  }
+  return summary;
+}
+
 exports.handler = async function (event) {
   if (event.httpMethod !== "POST") return resp(405, { error: "Method not allowed" });
 
@@ -193,10 +341,49 @@ exports.handler = async function (event) {
     }
   }
 
-  // The sync key authorizes action=sync ONLY — it is not a skeleton key.
+  if (action === "dpr_hours_backfill") {
+    // Human path must hold foundation.read (punch hours are Foundation data);
+    // the automated caller is already proven by its secret.
+    if (!isSyncCaller && !(await callerHas(caller, "foundation.read"))) {
+      return resp(403, { error: "Forbidden: missing permission foundation.read" });
+    }
+    const password = process.env.FOUNDATION_SQL_PASSWORD;
+    if (!password) {
+      return resp(500, { error: "FOUNDATION_SQL_PASSWORD is not set. Add it in Netlify > Environment variables, then redeploy." });
+    }
+    // Optional explicit dates (YYYY-MM-DD, validated, capped) for a manual
+    // catch-up run; the scheduled caller sends none and gets today+yesterday.
+    let dates = null;
+    if (Array.isArray(body.dates)) {
+      dates = body.dates.map(function (d) { return foundationDb.normalizeDay(d); }).filter(Boolean).slice(0, 7);
+      if (!dates.length) return resp(400, { error: "No valid dates (want YYYY-MM-DD)" });
+    }
+    try {
+      const result = await backfillDprHours({
+        password: password,
+        dryRun: !!body.dryRun,
+        dates: dates,
+        hostname: hostnameFromEvent(event),
+        nowIso: new Date().toISOString(),
+        nowMs: Date.now(),
+        actor: isSyncCaller ? "dpr-hours-backfill (scheduled)" : (caller.email || caller.uid || "unknown")
+      });
+      return resp(200, result);
+    } catch (e) {
+      console.error("dpr_hours_backfill error:", e && e.message ? e.message : e);
+      return resp(502, { error: "DPR hours backfill failed. See function logs." });
+    }
+  }
+
+  // The sync key authorizes the whitelisted scheduled actions above ONLY — it
+  // is not a skeleton key.
   if (isSyncCaller) return resp(403, { error: "Forbidden" });
   return resp(400, { error: "Unknown action" });
 };
 
 // Exposed for unit tests (pure/logic pieces) — the handler is the real entry.
-exports._internals = { timingSafeEqualStr, hasValidSyncKey, safeDocId, syncActiveJobs, JOBS_COLLECTION, META_COLLECTION };
+exports._internals = {
+  timingSafeEqualStr, hasValidSyncKey, safeDocId, syncActiveJobs, JOBS_COLLECTION, META_COLLECTION,
+  centralDates, nameKey, crewHoursTotal, applyPunchesToCrew, newHoursWorked, punchesByName,
+  backfillDprHours, DPR_COLLECTION
+};
