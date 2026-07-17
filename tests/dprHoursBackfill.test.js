@@ -34,6 +34,8 @@ let dprDocs = [];      // [{ id, data }]
 const writes = [];     // [{ id, data, opts }]
 const metaWrites = []; // meta doc sets
 const auditWrites = []; // audit_logs entries
+let jobDocs = {};      // safeDocId(jobNo) -> foundation_jobs doc (carries project_manager_no)
+const resendCalls = []; // captured Resend email payloads
 function makeDocSnap(d) {
   return {
     id: d.id,
@@ -46,6 +48,7 @@ const fakeFirestore = {
     doc: (id) => ({
       get: async () => {
         if (col === "roles") { const d = ROLE_DOCS[id]; return d ? { exists: true, data: () => d } : { exists: false }; }
+        if (col === "foundation_jobs") { const d = jobDocs[id]; return d ? { exists: true, data: () => d } : { exists: false }; }
         return { exists: false };
       },
       set: async (data, opts) => {
@@ -130,6 +133,17 @@ process.env.FIREBASE_SERVICE_ACCOUNT = JSON.stringify({ project_id: "watkins-ser
 process.env.FOUNDATION_SQL_PASSWORD = SQL_PASSWORD;
 process.env.FOUNDATION_SYNC_SECRET = SYNC_SECRET;
 
+// Capture Resend calls (the amend notification's only network use). The
+// backfill otherwise hits mssql via the fake driver, so stubbing global.fetch
+// only intercepts the email send.
+global.fetch = async (url, opts) => {
+  if (String(url).indexOf("api.resend.com") !== -1) {
+    resendCalls.push(JSON.parse(opts.body));
+    return { ok: true, status: 200, text: async () => "ok" };
+  }
+  throw new Error("unexpected fetch to " + url);
+};
+
 const sync = require("../netlify/functions/foundation-sync.js");
 const fdb = require("../netlify/functions/lib/foundationDb.js");
 const I = sync._internals;
@@ -143,7 +157,11 @@ function ev(opts) {
 }
 function seed() {
   fdb._resetPoolForTest();
-  writes.length = 0; metaWrites.length = 0; auditWrites.length = 0; sqlQueries = 0;
+  writes.length = 0; metaWrites.length = 0; auditWrites.length = 0; sqlQueries = 0; resendCalls.length = 0;
+  jobDocs = { "17355": { project_manager_no: "NATE" }, "17300": { project_manager_no: "" } };
+  delete process.env.RESEND_API_KEY;
+  delete process.env.DPR_PM_EMAILS;
+  delete process.env.DPR_AMEND_NOTIFY_EMAIL;
   dprDocs = [
     { id: "dpr_a", data: { date: "2026-07-16", foundationJobNo: "17355", hoursWorked: "",
       crew: [
@@ -328,4 +346,104 @@ test("newHoursWorked: empty or derived totals update; a different hand-typed tot
   assert.strictEqual(I.newHoursWorked("", 0, 17.42), "17.42");
   assert.strictEqual(I.newHoursWorked("14.5", 14.5, 17.42), "17.42");  // was the derived sum
   assert.strictEqual(I.newHoursWorked("20", 14.5, 17.42), "20");        // deliberate — keep
+});
+
+/* ============= SIGNED-AMEND NOTIFICATION (admin + recorded PM) ============= */
+
+test("resolvePmEmail: maps a PM code case-insensitively; safe-empty otherwise", () => {
+  process.env.DPR_PM_EMAILS = JSON.stringify({ NATE: "nate@watkinsroofing.net", PAT: "pat@watkinsroofing.net" });
+  assert.strictEqual(I.resolvePmEmail("NATE"), "nate@watkinsroofing.net");
+  assert.strictEqual(I.resolvePmEmail(" nate "), "nate@watkinsroofing.net");
+  assert.strictEqual(I.resolvePmEmail("UNKNOWN"), "", "no entry -> nobody (never guesses)");
+  assert.strictEqual(I.resolvePmEmail(""), "");
+  delete process.env.DPR_PM_EMAILS;
+  assert.strictEqual(I.resolvePmEmail("NATE"), "", "no map -> nobody");
+  process.env.DPR_PM_EMAILS = "{not json";
+  assert.strictEqual(I.resolvePmEmail("NATE"), "", "malformed map -> nobody, never throws");
+  process.env.DPR_PM_EMAILS = JSON.stringify({ NATE: "not-an-email" });
+  assert.strictEqual(I.resolvePmEmail("NATE"), "", "non-email value rejected");
+  delete process.env.DPR_PM_EMAILS;
+});
+
+test("buildAmendEmail: subject + before/after hours; PM line reflects whether an email is on file", () => {
+  const ctx = {
+    jobName: "North Warehouse", jobNo: "17355", date: "2026-07-16", foreman: "Dax Dollens",
+    pmCode: "NATE", pmEmail: "nate@watkinsroofing.net",
+    note: "Hours amended 2026-07-17 — late Foundation timecard entries",
+    before: { hoursWorked: "", crew: [{ name: "Christian Abernathy", hours: "" }] },
+    after: { hoursWorked: "12.42", crew: [{ name: "Christian Abernathy", hours: "12.42" }] }
+  };
+  const mail = I.buildAmendEmail(ctx);
+  assert.match(mail.subject, /Signed DPR hours amended/);
+  assert.match(mail.subject, /North Warehouse #17355/);
+  assert.match(mail.subject, /2026-07-16/);
+  assert.match(mail.text, /Foreman: Dax Dollens/);
+  assert.match(mail.text, /nate@watkinsroofing\.net/);
+  assert.match(mail.text, /Christian Abernathy: 12\.42 hr/);
+  assert.match(mail.text, /signature\/sign-off is unchanged/);
+  // no email on file -> the code is named with guidance, no address invented
+  const ctx2 = Object.assign({}, ctx, { pmEmail: "" });
+  const mail2 = I.buildAmendEmail(ctx2);
+  assert.match(mail2.text, /NATE \(no email on file/);
+  assert.ok(!/nate@/.test(mail2.text));
+  assert.ok(!/pay|rate/i.test(mail.text), "email carries no pay data");
+});
+
+test("amending a signed report emails the admin + the mapped PM (one send, both recipients)", async () => {
+  seed();
+  process.env.RESEND_API_KEY = "re_test_key";
+  process.env.DPR_PM_EMAILS = JSON.stringify({ NATE: "nate@watkinsroofing.net" });
+  const r = await sync.handler(ev({ syncKey: SYNC_SECRET, body: { action: "dpr_hours_backfill", dates: ["2026-07-16"] } }));
+  const body = JSON.parse(r.body);
+  assert.strictEqual(body.amended_signed, 1);
+  assert.strictEqual(body.amend_emails_sent, 2, "admin + PM");
+  assert.strictEqual(resendCalls.length, 1, "one email carrying both recipients");
+  const mail = resendCalls[0];
+  assert.deepStrictEqual(mail.to.slice().sort(), ["marks@watkinsroofing.net", "nate@watkinsroofing.net"]);
+  assert.match(mail.subject, /Signed DPR hours amended/);
+  assert.match(mail.text, /late Foundation timecard entries/);
+  delete process.env.RESEND_API_KEY; delete process.env.DPR_PM_EMAILS;
+});
+
+test("no PM map: only the admin is emailed, and the PM code is named in the body (never guessed)", async () => {
+  seed();
+  process.env.RESEND_API_KEY = "re_test_key";
+  const r = await sync.handler(ev({ syncKey: SYNC_SECRET, body: { action: "dpr_hours_backfill", dates: ["2026-07-16"] } }));
+  const body = JSON.parse(r.body);
+  assert.strictEqual(body.amend_emails_sent, 1);
+  assert.strictEqual(resendCalls.length, 1);
+  assert.deepStrictEqual(resendCalls[0].to, ["marks@watkinsroofing.net"]);
+  assert.match(resendCalls[0].text, /NATE \(no email on file/);
+  delete process.env.RESEND_API_KEY;
+});
+
+test("a custom admin address (DPR_AMEND_NOTIFY_EMAIL) is honored", async () => {
+  seed();
+  process.env.RESEND_API_KEY = "re_test_key";
+  process.env.DPR_AMEND_NOTIFY_EMAIL = "ops@watkinsroofing.net";
+  await sync.handler(ev({ syncKey: SYNC_SECRET, body: { action: "dpr_hours_backfill", dates: ["2026-07-16"] } }));
+  assert.deepStrictEqual(resendCalls[0].to, ["ops@watkinsroofing.net"]);
+  delete process.env.RESEND_API_KEY; delete process.env.DPR_AMEND_NOTIFY_EMAIL;
+});
+
+test("dryRun never sends email (and never writes)", async () => {
+  seed();
+  process.env.RESEND_API_KEY = "re_test_key";
+  process.env.DPR_PM_EMAILS = JSON.stringify({ NATE: "nate@watkinsroofing.net" });
+  const r = await sync.handler(ev({ syncKey: SYNC_SECRET, body: { action: "dpr_hours_backfill", dates: ["2026-07-16"], dryRun: true } }));
+  assert.strictEqual(resendCalls.length, 0);
+  assert.strictEqual(writes.length, 0);
+  assert.strictEqual(JSON.parse(r.body).amend_emails_sent, 0);
+  delete process.env.RESEND_API_KEY; delete process.env.DPR_PM_EMAILS;
+});
+
+test("with no RESEND_API_KEY the amendment still lands (write + audit); just no email", async () => {
+  seed();  // seed() deletes RESEND_API_KEY
+  const r = await sync.handler(ev({ syncKey: SYNC_SECRET, body: { action: "dpr_hours_backfill", dates: ["2026-07-16"] } }));
+  const body = JSON.parse(r.body);
+  assert.strictEqual(body.amended_signed, 1, "hours still amended");
+  assert.strictEqual(body.amend_emails_sent, 0);
+  assert.strictEqual(resendCalls.length, 0);
+  assert.ok(writes.some((w) => w.id === "dpr_locked"), "the signed report was still written");
+  assert.strictEqual(auditWrites.length, 1, "audit still recorded");
 });

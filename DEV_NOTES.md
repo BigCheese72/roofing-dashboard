@@ -7062,6 +7062,8 @@ console clean throughout.
 | `FROM_EMAIL` | `send-workorder.js` | optional (has a default). Also the source of the sending *domain* for per-job From addresses — see below. |
 | `REPLY_TO_EMAIL` | `send-workorder.js` | optional, comma-separated. Defaults to `marks@<domain>` + `charlottew@<domain>` (Mark's and Charlotte's real monitored mailboxes, per his decision). See "Per-job From address" below. |
 | `FEEDBACK_TO_EMAIL` | `send-feedback.js` | optional (defaults to `marks@watkinsroofing.net`). See "Send Feedback" above. |
+| `DPR_AMEND_NOTIFY_EMAIL` | `foundation-sync.js` (`dpr_hours_backfill`) | optional (defaults to `marks@watkinsroofing.net`) | The **admin** recipient of the "signed DPR hours amended" notice, sent when the nightly late-punch sync corrects an already-signed report. Uses the existing `RESEND_API_KEY` / `FROM_EMAIL`. |
+| `DPR_PM_EMAILS` | `foundation-sync.js` (`dpr_hours_backfill`) | optional (no default) | JSON map of **Foundation PM code → email**, e.g. `{"NATE":"nate@watkinsroofing.net"}`, used to also notify the **recorded PM** of a signed-report hours amendment. **Safe default: with no map (or no entry for a job's PM code) only the admin is emailed** and the PM code is named in the body — a missing/blocked map never emails the wrong person. Malformed JSON resolves to nobody. |
 | `ADMIN_PIN` | `admin.js` | yes, for admin mode to work | The real PIN check — not present anywhere in `index.html` anymore. |
 | `FIREBASE_SERVICE_ACCOUNT` | `admin.js` | yes, for admin mode to work | Entire JSON contents of a Firebase service account key. Full project access — treat as a secret, never commit it. |
 | `GRAPH_TENANT_ID` | `outlook.js` / `lib/graphAuth.js` | yes, for the Outlook/M365 integration to work | Azure AD tenant id. |

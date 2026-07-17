@@ -258,6 +258,103 @@ async function writeHoursAmendAudit(db, entry) {
   }
 }
 
+// ---------------------------------------------------------------------
+// Signed-amendment notification (Mark: email the admin + the recorded PM
+// when a signed DPR's hours are amended).
+// ---------------------------------------------------------------------
+// Admin recipient: DPR_AMEND_NOTIFY_EMAIL (defaults to marks@watkinsroofing.net).
+// PM recipient: the DPR's Foundation job carries a PM CODE (project_manager_no,
+// e.g. "NATE"), not an email — DPR_PM_EMAILS is a JSON map {CODE: email} that
+// resolves it. SAFE DEFAULT: with no map (or no entry for this code), the PM
+// is simply not emailed — the admin still is, and the PM code is named in the
+// body — so a missing map never sends mail to the wrong person.
+function resolvePmEmail(pmCode) {
+  const code = String(pmCode == null ? "" : pmCode).trim();
+  if (!code) return "";
+  let map = null;
+  try { map = JSON.parse(process.env.DPR_PM_EMAILS || "{}"); }
+  catch (e) { return ""; } // a malformed map resolves to nobody, never guesses
+  if (!map || typeof map !== "object") return "";
+  // case-insensitive code match
+  const wantLc = code.toLowerCase();
+  for (const k of Object.keys(map)) {
+    if (String(k).trim().toLowerCase() === wantLc) {
+      const v = String(map[k] || "").trim();
+      return /.+@.+\..+/.test(v) ? v : "";
+    }
+  }
+  return "";
+}
+
+// Builds the amendment email (pure — unit-tested). Hours only; no pay data.
+function buildAmendEmail(ctx) {
+  const jobLabel = [ctx.jobName, ctx.jobNo ? "#" + ctx.jobNo : ""].filter(Boolean).join(" ");
+  const subject = ("[RoofOps] Signed DPR hours amended — " + (jobLabel || "job") + " · " + (ctx.date || "")).slice(0, 200);
+  const fmtCrew = function (snap) {
+    const rows = (snap && snap.crew) || [];
+    if (!rows.length) return "  (none)";
+    return rows.map(function (c) { return "  " + c.name + ": " + (c.hours === "" ? "—" : c.hours) + " hr"; }).join("\n");
+  };
+  const pmLine = ctx.pmEmail
+    ? "Project manager: " + (ctx.pmCode || "") + " <" + ctx.pmEmail + ">"
+    : "Project manager: " + (ctx.pmCode ? ctx.pmCode + " (no email on file — add to DPR_PM_EMAILS to notify them directly)" : "(none on the job)");
+  const lines = [
+    "A SIGNED Daily Progress Report had its hours amended by the nightly Foundation time-clock sync.",
+    "The signature/sign-off is unchanged; this is a corrective update, and it is recorded in the audit log.",
+    "",
+    "Job: " + (jobLabel || "(unknown)"),
+    "Date: " + (ctx.date || ""),
+    "Foreman: " + (ctx.foreman || "(not recorded)"),
+    pmLine,
+    "Amended: " + (ctx.note || ""),
+    "",
+    "Hours before:",
+    "  Total: " + (ctx.before && ctx.before.hoursWorked ? ctx.before.hoursWorked : "—"),
+    fmtCrew(ctx.before),
+    "",
+    "Hours after:",
+    "  Total: " + (ctx.after && ctx.after.hoursWorked ? ctx.after.hoursWorked : "—"),
+    fmtCrew(ctx.after),
+    "",
+    "— RoofOps (automated). Reply-to is unmonitored; open the report in the app to review."
+  ];
+  return { subject: subject, text: lines.join("\n") };
+}
+
+// Sends the amendment notice via Resend (same shape as send-workorder.js /
+// send-feedback.js). Best-effort: a mail failure NEVER fails the amendment —
+// the corrected hours + audit_logs entry are the source of truth. Returns a
+// small result for the run summary. Never called on dryRun.
+async function sendAmendNotification(ctx) {
+  const key = process.env.RESEND_API_KEY;
+  if (!key) return { sent: 0, skipped: "no RESEND_API_KEY" };
+  const adminTo = String(process.env.DPR_AMEND_NOTIFY_EMAIL || "marks@watkinsroofing.net").trim();
+  const pmEmail = resolvePmEmail(ctx.pmCode);
+  ctx.pmEmail = pmEmail;
+  const to = [];
+  if (adminTo) to.push(adminTo);
+  if (pmEmail && pmEmail.toLowerCase() !== adminTo.toLowerCase()) to.push(pmEmail);
+  if (!to.length) return { sent: 0, skipped: "no recipients" };
+  const from = process.env.FROM_EMAIL || "Watkins Roofing Work Orders <workorders@watkinsroofing.net>";
+  const mail = buildAmendEmail(ctx);
+  try {
+    const resp = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: { "Authorization": "Bearer " + key, "Content-Type": "application/json" },
+      body: JSON.stringify({ from: from, to: to, subject: mail.subject, text: mail.text })
+    });
+    if (!resp.ok) {
+      const body = await resp.text();
+      console.error("dpr_hours_backfill: amend email rejected:", resp.status, body.slice(0, 200));
+      return { sent: 0, error: "resend " + resp.status };
+    }
+    return { sent: to.length, to: to };
+  } catch (e) {
+    console.error("dpr_hours_backfill: amend email failed:", e && e.message ? e.message : e);
+    return { sent: 0, error: "exception" };
+  }
+}
+
 // A compact before/after snapshot for the audit trail — hours only, never
 // any pay/PII. Used when a SIGNED report is amended so the change to a
 // finalized record is provable.
@@ -278,9 +375,11 @@ async function backfillDprHours(opts) {
     // amended_signed = signed/locked reports corrected with late hours (Mark's
     // AMEND decision — the signature is kept, an audit note + audit_log record
     // the change). updated = unsigned reports filled normally.
-    seen: 0, updated: 0, amended_signed: 0, unchanged: 0, skipped_no_job: 0, no_punches: 0, errors: 0
+    seen: 0, updated: 0, amended_signed: 0, unchanged: 0, skipped_no_job: 0, no_punches: 0, errors: 0,
+    amend_emails_sent: 0
   };
   const punchCache = {}; // "jobNo|date" -> byName (one Foundation read per job+day)
+  const pmCache = {};    // jobNo -> Foundation PM code (project_manager_no from the jobs cache)
   for (const date of dates) {
     const qs = await db.collection(DPR_COLLECTION).where("date", "==", date).get();
     for (const docSnap of qs.docs) {
@@ -326,6 +425,26 @@ async function backfillDprHours(opts) {
               before: hoursSnapshot(r.crew, oldTotal, r.hoursWorked),
               after: hoursSnapshot(res.crew, newTotal, update.hoursWorked)
             });
+            // Notify the admin + the recorded PM (Mark's ask). The PM CODE
+            // comes from the linked Foundation job (jobs cache), resolved to
+            // an email via DPR_PM_EMAILS; best-effort, a mail failure never
+            // fails the amendment.
+            let pmCode = pmCache[jobNo];
+            if (pmCode === undefined) {
+              pmCode = "";
+              try {
+                const jsnap = await db.collection(JOBS_COLLECTION).doc(safeDocId(jobNo)).get();
+                if (jsnap.exists) pmCode = String((jsnap.data() || {}).project_manager_no || "").trim();
+              } catch (e) { /* no PM code — admin still notified */ }
+              pmCache[jobNo] = pmCode;
+            }
+            const mailRes = await sendAmendNotification({
+              docId: docSnap.id, jobNo: jobNo, jobName: r.jobName || "", date: date,
+              foreman: r.foreman || "", pmCode: pmCode, note: note,
+              before: hoursSnapshot(r.crew, oldTotal, r.hoursWorked),
+              after: hoursSnapshot(res.crew, newTotal, update.hoursWorked)
+            });
+            summary.amend_emails_sent += (mailRes && mailRes.sent) || 0;
           }
           summary.amended_signed++;
         } else {
@@ -443,5 +562,5 @@ exports.handler = async function (event) {
 exports._internals = {
   timingSafeEqualStr, hasValidSyncKey, safeDocId, syncActiveJobs, JOBS_COLLECTION, META_COLLECTION,
   centralDates, nameKey, crewHoursTotal, applyPunchesToCrew, newHoursWorked, punchesByName,
-  hoursSnapshot, backfillDprHours, DPR_COLLECTION
+  hoursSnapshot, resolvePmEmail, buildAmendEmail, backfillDprHours, DPR_COLLECTION
 };
