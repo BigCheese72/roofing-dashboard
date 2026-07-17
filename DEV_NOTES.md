@@ -8128,19 +8128,40 @@ work, which needs `ANTHROPIC_API_KEY`).
   Loaded from `index.html` but has **no callers yet, on purpose** — the flows that
   own the confirm/correct UI (work orders, photos, inspections, DPR) belong to
   other sessions tonight; they call in when they wire up.
-- **Controlled vocabulary** — `AI_ISSUE_LABELS` (26 starter keys: ponding_water,
+- **Controlled vocabulary** — `AI_ISSUE_LABELS` (28 starter keys: ponding_water,
   flashing_failed, open_seam, blister, fastener_backout, puncture, drain_clogged,
-  scupper_blocked, pitch_pan_deteriorated, membrane_split, coping_failure,
-  penetration_seal_failed, expansion_joint_failed, granule_loss, alligatoring,
-  ridging_wrinkling, hail_damage, wind_uplift, debris_accumulation,
+  scupper_blocked, pitch_pan_deteriorated, sealant_deteriorated, membrane_split,
+  coping_failure, penetration_seal_failed, expansion_joint_failed, granule_loss,
+  alligatoring, ridging_wrinkling, hail_damage, wind_uplift, debris_accumulation,
   vegetation_growth, skylight_failure, equipment_related, wall_intrusion,
-  insulation_saturated, no_defect_found, other). Free-text labels are rejected —
-  useless for training. `no_defect_found` is deliberate (negative examples matter);
-  `other` requires `labelOther` text so the escape hatch still yields a string
-  worth promoting into a real key later. **Admin seam**: extra labels come from
-  `app_settings/ai_label_vocab` (`{ extraLabels: [{key,label}] }`) — a data change,
-  never a code deploy; keys are permanent once data exists against them, display
-  labels rename freely.
+  insulation_saturated, no_defect_found, indeterminate, other). Free-text labels
+  are rejected — useless for training. `no_defect_found` and `indeterminate` are
+  deliberately DISTINCT (vocab-convergence follow-up, 2026-07-17): "looked,
+  confirmed nothing wrong" and "couldn't tell from this photo" are different
+  training signals — collapsing them would teach a model that unreadable photos
+  are clean roofs. `other` requires `labelOther` text so the escape hatch still
+  yields a string worth promoting into a real key later. **Admin seam**: extra
+  labels come from `app_settings/ai_label_vocab` (`{ extraLabels: [{key,label}] }`)
+  — a data change, never a code deploy; keys are permanent once data exists
+  against them, display labels rename freely.
+- **Vocabulary parity with the issue-ID model** (convergence follow-up to the
+  #122/#123 cross-coordination): `netlify/functions/lib/aiProvider.js`'s
+  `ISSUE_VOCABULARY` (what the leak-photo issue-ID model may answer with) now
+  uses the SAME canonical keys and must stay a SUBSET of `AI_ISSUE_LABELS` — a
+  model suggestion the tech confirms is always directly storable as a training
+  label, no mapping table anywhere. The original `clogged_drain_or_scupper` key
+  was split into `drain_clogged`/`scupper_blocked` (richer training signal);
+  `membrane_puncture`→`puncture`, `flashing_failure`→`flashing_failed`,
+  `blistering`→`blister`, `pitch_pan_failure`→`pitch_pan_deteriorated`,
+  `coping_or_edge_metal_failure`→`coping_failure`,
+  `penetration_seal_failure`→`penetration_seal_failed`,
+  `deteriorated_sealant`→`sealant_deteriorated`, `wind_damage`→`wind_uplift`,
+  `no_visible_issue`→`no_defect_found`. Safe to rename because NO issue-ID
+  key had shipped to any UI and no data exists against the old spellings —
+  this was exactly the "converge before either UI freezes" window. The two
+  lists live on opposite sides of the browser/CommonJS split, so they're
+  hand-synced (`getBuildingRoofsServer()` discipline) with a parity test in
+  `tests/aiLabels.test.js` as the tripwire.
 - **Signed-URL discipline** — a record stores photo REFERENCES only
   (workOrderId+photoIndex for sealed-bucket/embedded photos, CompanyCam ids for CC
   photos), never a URL, never image bytes. `aiLabelBuildDoc()` rebuilds the ref

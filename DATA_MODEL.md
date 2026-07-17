@@ -1170,7 +1170,7 @@ callers yet). One confirm/correct action writes one clean row.
   schemaVersion: 1,
   source,          // "leak" | "inspection" | "workorder" — which flow confirmed it
   label,           // CONTROLLED-VOCABULARY key, e.g. "ponding_water" — one of
-                   // AI_ISSUE_LABELS in js/ailabels.js (26 starter keys) plus the
+                   // AI_ISSUE_LABELS in js/ailabels.js (28 starter keys) plus the
                    // admin-extendable app_settings/ai_label_vocab doc's extraLabels.
                    // Keys are permanent once data exists against them; labels
                    // (display text) can be reworded freely. Free text is rejected.
