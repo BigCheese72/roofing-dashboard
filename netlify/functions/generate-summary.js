@@ -288,7 +288,9 @@ function buildLlmPrompt(r) {
   var style = STYLE_EXEMPLAR
     ? "Match the voice and structure of this example summary from an approved report -- short plain " +
       "paragraphs, then a plain-text 'Recommended Repairs' section when the findings warrant repairs -- " +
-      "but run tighter and more concise than it:\n---\n" + STYLE_EXEMPLAR + "\n---\n"
+      "but run tighter and more concise than it. The example's FACTS describe a DIFFERENT roof: imitate " +
+      "its voice and structure only; every fact in your output must come from THIS report's data and " +
+      "photos.\n---\n" + STYLE_EXEMPLAR + "\n---\n"
     : "Write in a professional commercial-roofing service-report voice addressed to the building's " +
       "customer, in at most " + SUMMARY_MAX_PARAGRAPHS + " short paragraphs. ";
   return "You draft the Summary section of a commercial roofing report. " +
@@ -297,7 +299,13 @@ function buildLlmPrompt(r) {
     "ground the description in what is visible. " + style +
     "Target about " + SUMMARY_TARGET_WORDS + " words, covering: what was done on site, the key " +
     "findings/conditions, and recommended next actions. " +
-    "Plain text only, no markdown. This is a DRAFT a technician will review and edit before it is sent.";
+    // Output hygiene, learned from the first two live drafts (2026-07-16):
+    // one added its own "Summary" heading (the PDF already prints one), the
+    // other appended a "Note: this is a draft" disclaimer -- both would
+    // print to the customer if the tech didn't catch them.
+    "Plain text only, no markdown. Output the summary body only: do not add a 'Summary' title or any " +
+    "heading except 'Recommended Repairs', and do not add any note, disclaimer, or mention that this " +
+    "is a draft. This is a DRAFT a technician will review and edit before it is sent.";
 }
 
 // ---- Phase-1 seam: photo access for the vision model. Turns the sanitized
