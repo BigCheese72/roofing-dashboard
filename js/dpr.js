@@ -1005,9 +1005,33 @@ var dprPreUse = null; /* { completedBy, items: [{id, label, ok}] } — saved ans
 var DPR_RENTED_TYPES = ["SkyTrak / Telehandler", "Boom Lift", "Scissor Lift", "Aerial Lift",
   "Forklift", "Crane", "Generator", "Air Compressor", "Welder", "Kettle", "Dumpster", "Other"];
 var DPR_RENTED_LIFT_RX = /skytrak|telehandler|boom|scissor|aerial|mewp|man\s*lift|manlift|forklift|lull|genie|jlg/i;
-/* Items land here from Mark's checklist research (OSHA 1910.178 + ANSI A92):
-   [{ id: "tires", label: "Tires/wheels — condition & pressure" }, ...] */
-var DPR_PREUSE_CHECKLIST = [];
+/* Daily pre-use inspection items for rented lift equipment — one practical
+   list covering BOTH machine families a roofing crew rents:
+     * telehandler / forklift (SkyTrak, Lull, …): OSHA 1910.178(q)(7) requires
+       a daily examination before the truck is placed in service;
+     * MEWP boom/scissor/aerial lifts (JLG, Genie, …): ANSI/SAIA A92.22
+       requires an operator pre-use inspection each day before use.
+   Items that only exist on one family read naturally as "n/a = check it off"
+   on the other (e.g. platform guardrails on a telehandler) — one list keeps
+   the daily simple, which is the point. IDs are stable — saved reports key
+   answers by id, so never reuse or repurpose one; add new items at the end. */
+var DPR_PREUSE_CHECKLIST = [
+  { id: "tires",          label: "Tires & wheels — condition, pressure, no loose lug nuts" },
+  { id: "fluids",         label: "Fluid levels OK, no leaks (engine oil, hydraulic, coolant, fuel)" },
+  { id: "hydraulics",     label: "Hydraulic hoses & cylinders — no damage, no leaks" },
+  { id: "structure",      label: "Boom / forks / scissor arms / chassis — no cracks, bends, or damage; attachments secured" },
+  { id: "controls",       label: "All operating controls & gauges work smoothly (no binding or jerking)" },
+  { id: "ground_controls",label: "Ground/lower controls override the platform; emergency lowering works" },
+  { id: "estop",          label: "Emergency stop works" },
+  { id: "horn_alarms",    label: "Horn, backup alarm, lights & beacons work" },
+  { id: "brakes_steering",label: "Steering & brakes tested at low speed (incl. parking brake)" },
+  { id: "guardrails",     label: "Platform guardrails, gate/latch & anchor points in place and sound" },
+  { id: "restraint",      label: "Seat belt / operator restraint OK; harness & lanyard on for boom work" },
+  { id: "outriggers",     label: "Outriggers / stabilizers & level indicators work; unit level" },
+  { id: "placards",       label: "Load chart, capacity plate & warning decals present and legible" },
+  { id: "battery_fuel",   label: "Battery charged / fueled; charger disconnected before moving" },
+  { id: "work_area",      label: "Work area: firm level ground, no holes or drop-offs, overhead power lines cleared, wind acceptable" }
+];
 
 function dprRentedHasLift(){
   return dprRented.some(function(r){ return DPR_RENTED_LIFT_RX.test(String(r.type || "")); });

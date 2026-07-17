@@ -135,13 +135,43 @@ test("with items injected, a lift's checklist collects {completedBy, items[{id,l
   });
 });
 
-test("scaffold phase (empty item list): a previously SAVED checklist survives a re-save untouched", () => {
-  const s = makeSandbox();   // DPR_PREUSE_CHECKLIST is empty
+test("empty item list (scaffold guarantee): a previously SAVED checklist survives a re-save untouched", () => {
+  const s = makeSandbox();
+  s.DPR_PREUSE_CHECKLIST.length = 0;   // simulate the pre-items scaffold phase
   const saved = { completedBy: "Dax Dollens", items: [{ id: "x", label: "Old item", ok: true }] };
   s.dprFill({ date: "2026-07-16", jobName: "N", billTo: "A",
     rentedEquipment: [{ type: "Scissor Lift", company: "United", unitId: "", note: "" }],
     preUseChecklist: saved });
   assert.deepStrictEqual(plain(s.dprCollect().preUseChecklist), saved);
+});
+
+// ---------------- the shipped OSHA/ANSI item list ----------------
+
+test("the shipped pre-use checklist: 15 items, stable unique ids, key checks present", () => {
+  const s = makeSandbox();
+  const list = plain(s.DPR_PREUSE_CHECKLIST);
+  assert.strictEqual(list.length, 15);
+  const ids = list.map((it) => it.id);
+  assert.strictEqual(new Set(ids).size, ids.length, "ids must be unique (saved answers key on them)");
+  list.forEach((it) => {
+    assert.ok(it.id && /^[a-z_]+$/.test(it.id), "id must be a stable slug: " + it.id);
+    assert.ok(it.label && it.label.length > 10, "label must be a real instruction: " + it.id);
+  });
+  // the checks that anchor each standard must exist
+  ["tires", "estop", "guardrails", "brakes_steering", "outriggers", "placards", "work_area"]
+    .forEach((must) => assert.ok(ids.includes(must), "missing key item: " + must));
+});
+
+test("a SkyTrak with the shipped items collects a full 15-answer checklist by default (all unchecked)", () => {
+  const s = makeSandbox();
+  s.dprFill({ date: "2026-07-16", jobName: "N", billTo: "A",
+    rentedEquipment: [{ type: "SkyTrak / Telehandler", company: "United", unitId: "8842", note: "" }] });
+  // no saved answers and no DOM -> dprCollectPreUse falls back to null saved
+  // state; simulate the render/answer cycle instead:
+  s.dprPreUse = { completedBy: "", items: s.DPR_PREUSE_CHECKLIST.map((it) => ({ id: it.id, label: it.label, ok: false })) };
+  const out = plain(s.dprCollect().preUseChecklist);
+  assert.strictEqual(out.items.length, 15);
+  assert.ok(out.items.every((it) => it.ok === false));
 });
 
 test("no rented rows -> checklist collects null regardless of any leftover state", () => {
