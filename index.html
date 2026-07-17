@@ -452,12 +452,12 @@
         <option value="">Send to…</option>
       </select>
       <input type="text" id="emailTo" placeholder="or type any email (separate with commas)" style="width:280px">
-      <button class="btn primary" onclick="sendEmailNow()">Send Email Now</button>
-      <button class="btn primary" onclick="sharePdf()">Share / Email PDF</button>
-      <button class="btn primary" onclick="downloadPdf()">Download PDF</button>
-      <button class="btn" onclick="emailDoc()">Email (text only)</button>
-      <button class="btn" onclick="copyDoc()">Copy Text</button>
-      <button class="btn" onclick="window.print()">Print</button>
+      <button class="btn primary" onclick="sendEmailNow()" title="Emails the finished PDF straight to the recipients above — no mail app needed. Saves the work order and builds the PDF first.">Send Email Now</button>
+      <button class="btn primary" onclick="sharePdf()" title="Hands the PDF to your device's own share sheet / mail app instead of sending it directly.">Share / Email PDF</button>
+      <button class="btn primary" onclick="downloadPdf()" title="Saves the report PDF to this device.">Download PDF</button>
+      <button class="btn" onclick="emailDoc()" title="Sends a plain-text version through your mail app — no photos, no PDF.">Email (text only)</button>
+      <button class="btn" onclick="copyDoc()" title="Copies the report as plain text to your clipboard.">Copy Text</button>
+      <button class="btn" onclick="window.print()" title="Opens your device's print dialog for the on-screen report.">Print</button>
     </div>
     <p class="hint no-print">"Send Email Now" emails the finished PDF directly to the recipients above — no mail app needed,
       works the same on phone and computer. The other buttons are backups: "Share / Email PDF" uses your own mail app,
@@ -832,16 +832,17 @@
            free Esri World_Imagery tiles the live map uses and render them
            beneath the line art. See rmFetchBasemapImage()/"Export layout
            pass" in DEV_NOTES.md. -->
-      <label class="hint" style="display:flex;align-items:center;gap:6px;margin:0 0 10px">
+      <label class="hint" style="display:flex;align-items:center;gap:6px;margin:0 0 10px"
+        title="Export only: draws the satellite image beneath the outline so the export isn't just line art. Off by default because it makes the export slower and heavier.">
         <input type="checkbox" id="rm-export-basemap-cb" onchange="rmState.exportIncludeBasemap = this.checked">
         🛰️ Include satellite imagery under the drawing
       </label>
       <div class="btnrow">
-        <button class="btn" onclick="rmZoomToOutline()">🔍 Zoom to Roof</button>
-        <button class="btn primary" onclick="rmPreviewExport()">👁️ Preview Export</button>
-        <button class="btn" onclick="rmExportSVG()">Export SVG</button>
-        <button class="btn" onclick="rmExportPNG()">Export PNG</button>
-        <button class="btn" onclick="rmExportPDF()">Export PDF</button>
+        <button class="btn" onclick="rmZoomToOutline()" title="Fits the map tight to this roof's outline.">🔍 Zoom to Roof</button>
+        <button class="btn primary" onclick="rmPreviewExport()" title="Shows exactly what you'll get — outline, edge measurements, features, legend, and scale bar — before you export. You can export from inside the preview too.">👁️ Preview Export</button>
+        <button class="btn" onclick="rmExportSVG()" title="Exports as SVG — a sharp line drawing that scales to any size (good for editing later).">Export SVG</button>
+        <button class="btn" onclick="rmExportPNG()" title="Exports as PNG — a plain image, easy to drop into an email or report.">Export PNG</button>
+        <button class="btn" onclick="rmExportPDF()" title="Exports as a print-ready PDF.">Export PDF</button>
       </div>
       <p class="hint" id="rm-export-hint" style="margin:8px 0 0"></p>
     </div>
