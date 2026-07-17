@@ -261,6 +261,24 @@ var HELP_ARTICLES = [
     ] },
 
   // ---- RoofMapper ----
+  { id: "rm-step-guide", title: "RoofMapper, start to finish (step-by-step)", screens: ["roofmapper"], roles: "all",
+    keywords: "roofmapper guide steps how to full walkthrough directions start finish",
+    body: [
+      "1. Open 🗺️ RoofMapper. Tap \"📍 Use My Location\" if you're standing at the job, or type the address and tap 🔍 Search, or pull the job with \"🔍 Select Job.\"",
+      "2. Tap the correct building's outline, then \"✏️ Generate Roof Outline.\" No outline shown? Tap \"🛰️ Satellite View\" then \"✏️ Trace Manually\" to tap the corners yourself, or \"🚶 Walk the Corners\" to record them by walking the roof edge.",
+      "3. While tracing: tap the corners in order, all the way around (at least 3). Drag any numbered point to move it, tap a + between points to insert one, double-tap (or right-click) a point to delete it, \"↩️ Undo Last Point\" for the most recent. Leave \"🧲 Snap\" on so corners lock onto roofs already traced next door. Tap \"✓ Finish Outline\" when you're back at the start.",
+      "4. Clean it up: \"🟦 Square Up\" snaps near-90° corners straight (a real diagonal is left alone). Then calibrate: tap any edge's length label on the map (like \"142 ft\") and type the tape-measured length -- the whole roof rescales to match. Trace → Square Up → Calibrate, in that order.",
+      "5. Tap \"💾 Save Outline to Building\" and link it to an existing building or create a new one. Save before you leave the screen -- an unfinished trace does not survive a page refresh.",
+      "6. From there: add permanent Roof Features (drains, RTUs), mark it up (arrows, notes, clouds, measurements), and \"👁️ Preview Export\" for the SVG/PNG/PDF. Finding and repair pins get placed from the work order, not here."
+    ] },
+  { id: "rm-trace-points", title: "How do I add, move, or delete a point while tracing?", screens: ["roofmapper"], roles: "all",
+    keywords: "trace points vertex add move delete insert drag undo corner",
+    body: [
+      "While a trace is open, every point you've placed is a numbered dot: drag it to move it, double-tap or right-click it to delete it, and tap the small + between two dots to insert a new point on that edge.",
+      "\"↩️ Undo Last Point\" removes the most recent one; \"✕ Cancel\" throws the whole trace away.",
+      "After the outline is finished and saved, \"✏️ Edit Shape\" lets you drag corners to new spots -- moving only. To add or remove a corner on a finished roof, re-trace it.",
+      "Moving a corner by hand resets Square Up and calibration, since a hand edit can change what those relied on."
+    ] },
   { id: "rm-first-trace", title: "How do I map a roof for the first time?", screens: ["roofmapper"], roles: "all",
     keywords: "roofmapper trace new roof outline generate",
     body: [
@@ -274,7 +292,8 @@ var HELP_ARTICLES = [
     body: [
       "This is not done from the RoofMapper tab itself yet -- it only starts new traces.",
       "Instead: tap 🏢 Building History → open the building → find the roof in the Roof Map card → tap \"🗺️ Open in RoofMapper.\"",
-      "That's currently the only path back into a saved roof to keep editing it. If a building has just one roof, there's no dropdown to pick from -- the \"🗺️ Open in RoofMapper\" button sits right next to the roof's name."
+      "That's currently the only path back into a saved roof to keep editing it. If a building has just one roof, there's no dropdown to pick from -- the \"🗺️ Open in RoofMapper\" button sits right next to the roof's name.",
+      "Opening a roof this way also reloads the building's saved drone ortho under it, if there is one -- which is why it's the right starting point before tracing another roof on that image."
     ] },
   { id: "rm-rename-roof", title: "How do I rename a roof?", screens: ["roofmapper", "history"], roles: "all",
     keywords: "rename roof label name change",
@@ -340,6 +359,45 @@ var HELP_ARTICLES = [
       "Before saving, tap \"✂️ Split Into Roof Sections,\" then tap two points on the outline's edge to draw a split line.",
       "Rename each section if you want, then tap \"💾 Save All N Sections as Roofs.\"",
       "If you're splitting an already-saved roof, the first section keeps that roof's existing history and features -- the rest start brand-new and blank, so double check nothing needs to move over by hand afterward."
+    ] },
+  { id: "rm-basemap-vs-ortho", title: "Base map vs. drone ortho -- what's the difference?", screens: ["roofmapper", "history"], roles: "all",
+    keywords: "base map ortho orthomosaic drone image satellite roof plan sketch difference",
+    body: [
+      "The BASE MAP is the permanent roof drawing that follows the job everywhere -- it's what you see behind pins in Building History, on the work-order form, and in the daily report's section trace. Out of the box it's satellite imagery.",
+      "A DRONE ORTHO is an optional upgrade to that base map: a georeferenced top-down drone image, far sharper than satellite. Because it's georeferenced (the app knows the exact GPS of its corners), pins and traced outlines sit on it as real GPS points.",
+      "That's why replacing an old ortho with a new flight doesn't lose anything -- traces and pins are stored as GPS coordinates, not as marks on the picture, so they land in the right spot on the new image automatically.",
+      "A roof plan or sketch can also be the base map -- but those aren't georeferenced, so their pins are tied to that exact image. The app will refuse to swap out a plan/sketch that already has pins or outlines tied to it."
+    ] },
+  { id: "rm-ortho-update", title: "How do I upload or update a drone ortho after a flight?", screens: ["history", "roofmapper"], roles: "admin",
+    keywords: "upload update drone ortho orthomosaic geotiff bounds north south east west base map replace",
+    body: [
+      "1. On a computer, run tools/geotiff_to_webmap.py on the flight's GeoTIFF (from DJI Terra, DroneDeploy, Pix4D…). It shrinks the huge file to a web-sized JPG and prints the exact North / South / East / West numbers you'll paste into the app. (It can also upload directly -- ask for the --upload option -- and then there's nothing left to do in the app.)",
+      "2. In the app: Building History → open the building → the \"Roof Base Map (admin)\" card. This card, not any of the photo buttons -- photos added elsewhere become report photos, not the base map.",
+      "3. Set the type to \"Drone Orthomosaic — needs an extra step first, see below,\" paste the four North/South/East/West numbers from step 1, pick the JPG, and tap \"Upload Base Map.\" (The card also shows this building's ID with a Copy button, for the script.)",
+      "4. Updating after a NEW flight is the exact same steps -- the new ortho replaces the old one in place. Traces and pins carry over automatically because they're stored as GPS, not drawn on the image.",
+      "The building needs a linked CompanyCam project (the image is stored there). \"Clear Base Map\" puts the building back on satellite."
+    ] },
+  { id: "rm-ortho-reload", title: "Why isn't my drone image showing when I trace another roof?", screens: ["roofmapper", "history"], roles: "all",
+    keywords: "ortho missing gone satellite trace another roof add roof reload drone image",
+    body: [
+      "\"➕ Trace Another Roof\" and \"+ Add Roof\" start a fresh trace on whatever's currently on the map -- they don't go fetch the building's saved drone ortho on their own.",
+      "To trace on the ortho: Building History → open the building → \"🗺️ Open in RoofMapper\" on an existing roof (that's what loads the saved drone image) → THEN tap \"➕ Trace Another Roof.\" The ortho stays under your new trace.",
+      "Cold-starting a trace from the RoofMapper tab or \"+ Add Roof\" shows plain satellite -- your trace still lands in the right place (it's all GPS), you just won't have the sharp drone picture to trace against."
+    ] },
+  { id: "rm-dont-refresh", title: "Will I lose my trace if the page refreshes?", screens: ["roofmapper"], roles: "all",
+    keywords: "refresh reload lose trace unsaved fail safe saved device",
+    body: [
+      "An UNFINISHED trace (corners tapped, outline not finished) lives only on the screen -- a refresh, a closed tab, or a dead battery loses it. Finish and save before you put the phone away.",
+      "A FINISHED outline whose save couldn't reach the server is protected: it's kept on your device, a red status bar tells you (\"your roof is saved on THIS DEVICE ✓\"), and the app retries automatically when you're back on signal.",
+      "So the habit is: trace it, ✓ Finish Outline, 💾 save it -- then relax. Everything after that point can survive bad signal."
+    ] },
+  { id: "rm-own-drone-image", title: "What does \"📷 Trace on My Own Drone Image\" do?", screens: ["roofmapper"], roles: "all",
+    keywords: "trace own drone image upload jpg png geotiff kmz kml flat canvas",
+    body: [
+      "It lets any tech trace a roof on top of their own image, right now, no admin needed. What you get depends on the file:",
+      "A GeoTIFF or KMZ/KML keeps its real GPS -- every tap during the trace is a true location, and no calibration is needed.",
+      "A plain JPG or PNG has no GPS at all, so it becomes a flat canvas: the SHAPE you trace is exact, but you must calibrate one edge (tap its length label, enter the tape measurement) to make the sizes real.",
+      "This is different from the admin \"Roof Base Map\" card in Building History -- that one sets the permanent, georeferenced base map the whole building uses for pin placement. Use this button to get an outline traced; use the base-map card to make a drone ortho the job's permanent background."
     ] },
 
   // ---- Building History ----
@@ -452,11 +510,11 @@ var HELP_ARTICLES = [
       "Archive is reversible (Unarchive puts it back and hides it from the normal list in the meantime). Delete removes the building and its report/history records, but leaves the underlying work orders themselves alone."
     ] },
   { id: "admin-basemap", title: "How do I set a custom roof base map (drone photo or sketch)?", screens: ["history"], roles: "admin",
-    keywords: "base map drone orthomosaic sketch roof plan custom",
+    keywords: "base map drone orthomosaic sketch roof plan custom upload",
     body: [
-      "Open the building in Building History -- the \"Roof Base Map (admin)\" card lets you upload a roof plan, sketch, or drone orthomosaic instead of the default satellite view for pin placement.",
-      "A drone orthomosaic needs the companion script (tools/geotiff_to_webmap.py) run first to get exact corner coordinates.",
-      "This is separate from RoofMapper's own drone-image tracing (📷 Trace on My Own Drone Image) -- that's for tracing an outline, any tech can do it, and RoofMapper's live map always shows satellite/street imagery regardless of what base map is set here."
+      "Open the building in Building History -- the \"Roof Base Map (admin)\" card lets you upload a Roof Plan, Sketch, or Drone Orthomosaic to replace the default satellite view for pin placement, everywhere the building's map appears.",
+      "Roof Plan and Sketch images are ready to use as-is. A Drone Orthomosaic needs one extra step first: run tools/geotiff_to_webmap.py on the flight's GeoTIFF to get the web-sized JPG and the North/South/East/West numbers -- the full walkthrough is under RoofMapper: \"How do I upload or update a drone ortho after a flight?\"",
+      "This is separate from RoofMapper's \"📷 Trace on My Own Drone Image\" -- that's for tracing an outline and any tech can do it; this card sets the building's permanent background."
     ] },
   { id: "admin-logs", title: "How do I check the audit log or feedback backlog?", screens: ["reports"], roles: "admin",
     keywords: "audit log feedback backlog admin review append only before after",
