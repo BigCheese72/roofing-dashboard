@@ -8324,8 +8324,10 @@ and each photo's **caption + Storage ref**. The ref is how the Phase-1 vision
 model will actually SEE the photo: the server turns refs into **short-lived
 V4 signed READ urls** (`collectSignedPhotoUrls()`, `SIGNED_URL_TTL_MS`) —
 signed urls only, never public, minted only when an LLM call consumes them
-(the stub never signs). Never photo BYTES, pins, GPS, ids, or signatures
-(tests assert the boundary). The server re-clamps everything
+(the stub never signs). Never photo BYTES, pins, GPS, per-row ids, or
+signatures (tests assert the boundary); the work-order id itself rides as of
+Phase 1.5 — it is the server's handle for reading INLINE photo bytes out of
+Firestore itself (see below). The server re-clamps everything
 (`sanitizeReport()`), including a hard `workorders/`-prefix + no-traversal
 check on refs.
 
@@ -8349,6 +8351,28 @@ roof-side flow never dead-ends on an AI failure. Model choice is env config
 (`ANTHROPIC_MODEL`), not code. This is also the codebase's first concrete
 step toward the "AI auto-detection of rooftop features" ROADMAP item.
 
+**Phase 1.5 (2026-07-16): INLINE photos see the model too.** The signed-URL
+path alone left vision untestable ANYWHERE: dev (the only context with a
+key) has **no Storage bucket** (Spark plan — see "Dev Storage requires
+Blaze"), so every dev photo — app-saved or seeded by
+`tools/seed_dev_from_prod.js` — is a base64 data-URL on the Firestore photo
+doc with **no storageRef to sign**, while prod has Storage but deliberately
+no key. Now: the payload carries the **work-order id** (an id, never bytes —
+`workOrderId` in `buildSummaryDraftPayload()`), and on the live path only
+the server reads that order's photo docs ITSELF
+(`collectInlinePhotoImages()`, field-masked to `img` + `storageRef`) and
+attaches base64 image blocks (`{mediaType, data}` → aiProvider's
+`image_b64` part kind; Anthropic base64 source / OpenAI data-URL). Gates:
+id-shaped `workOrderId` or nothing (it becomes a doc path);
+`cleanInlineImage()` in aiProvider allowlists media types
+(jpeg/png/webp/gif — no svg), base64 charset only, ~5MB cap; docs that still
+carry a signable storageRef are skipped (their signed URL already covers
+them — prod's cooling-off backups never ride twice); vision budget is the
+SHARED `MAX_VISION_PHOTOS` (8) — signed urls first, inline fills the rest;
+the stub path reads no bytes at all. Exposure class unchanged:
+`doc.generate` already lets the caller export the full PDF carrying every
+photo; the bytes go only into the model call, never the response.
+
 Auth: `requirePermission(event, "doc.generate")` — the semantically matching,
 boolean-only key every seed role holds (field-first: a tech on the roof can
 draft their own summary). The function writes nothing server-side; the draft
@@ -8359,7 +8383,11 @@ storage-ref validation (traversal/foreign-tree refs nulled), signed-url
 helper contract (v4/read-only/short expiry, bad refs skipped not fatal),
 prompt contract (grounded, draft-only, length from the constant),
 401/403/405/400 auth surface, composer determinism, plus the wiring: stub
-path never mints a signed URL, live path signs + sends the image block and
-the tuned system prompt (asserted on the mocked wire), provider outage falls
-back to the template with `fallback: true` and still 200. A `global.fetch`
-trap still fails the suite if the NO-KEY path ever reaches the network.
+path never mints a signed URL AND never reads photo bytes, live path signs +
+sends the image block and the tuned system prompt (asserted on the mocked
+wire), inline photos ride as base64 blocks in photo-index order with
+`photosSeen` counting both kinds, provider outage falls back to the template
+with `fallback: true` and still 200. `tests/aiService.test.js` adds the
+`cleanInlineImage` gate contract, both providers' base64 wire shapes, and
+the shared-budget cap. A `global.fetch` trap still fails the suite if the
+NO-KEY path ever reaches the network.

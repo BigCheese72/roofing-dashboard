@@ -31,8 +31,19 @@
 //     ChatGPT Flat Branch Pub summary but called it "a little long", so we
 //     target tighter) and his exact Flat Branch text drops into
 //     STYLE_EXEMPLAR verbatim when the relay supplies it.
+//   * PHASE 1.5 -- INLINE photos see the model too. The dev Firebase project
+//     has no Storage bucket (Spark plan), so every photo there -- app-saved
+//     or seeded by tools/seed_dev_from_prod.js -- is a base64 data-URL on
+//     the Firestore photo doc with NO storageRef to sign. Without this, dev
+//     (the only context with a key) could never exercise vision at all. The
+//     client sends the work-order ID (never bytes); the server reads those
+//     photo docs itself (collectInlinePhotoImages()) and hands the model
+//     base64 image blocks. See that function's comment for the exposure
+//     argument.
 //   * Cost control is the BUTTON: drafts fire on demand only, never
-//     automatically on save/open. aiProvider caps photos at 8 per call.
+//     automatically on save/open. aiProvider caps vision inputs at
+//     MAX_VISION_PHOTOS (8) per call across BOTH kinds -- signed URLs take
+//     the budget first, inline images fill what's left.
 // Requirements already decided, do not relitigate here:
 //   * The key lives ONLY in a Netlify environment variable
 //     (ANTHROPIC_API_KEY), same handling as RESEND_API_KEY /
@@ -56,7 +67,7 @@
 // only becomes part of the record through the normal workorder.edit-gated
 // save the tech performs afterward.
 const { requirePermission, getAdmin, hostnameFromEvent } = require("./lib/authGuard");
-const { resolveProvider, generateSummary } = require("./lib/aiProvider");
+const { resolveProvider, generateSummary, cleanInlineImage, MAX_VISION_PHOTOS } = require("./lib/aiProvider");
 
 // ---- Length/style tuning knobs for the Phase-1 LLM prompt. Mark's verdict
 // on his ChatGPT Flat Branch Pub summary (the exemplar below, ~340 words):
@@ -112,9 +123,17 @@ function cleanStorageRef(v) {
   if (!ref || ref.indexOf("workorders/") !== 0 || ref.indexOf("..") !== -1) return null;
   return ref;
 }
+// The work-order id is the server's handle for reading INLINE photo bytes
+// back out of Firestore itself (Phase 1.5) -- it becomes a Firestore doc
+// path, so it is id-shaped or it is nothing.
+function cleanWorkOrderId(v) {
+  var id = s(v, 80);
+  return /^[A-Za-z0-9_-]{1,80}$/.test(id) ? id : null;
+}
 function sanitizeReport(raw) {
   if (!raw || typeof raw !== "object") return null;
   return {
+    workOrderId: cleanWorkOrderId(raw.workOrderId),
     woType: s(raw.woType, 40),
     jobName: s(raw.jobName, 200),
     location: s(raw.location, 300),
@@ -305,6 +324,46 @@ async function collectSignedPhotoUrls(bucket, photos, ttlMs) {
   return out;
 }
 
+// ---- Phase-1.5 seam: vision for INLINE photos. Dev's Firebase project has
+// no Storage bucket (Spark plan), so a photo there lives as a base64
+// data-URL on the Firestore photo doc (`img`) with no storageRef -- nothing
+// for collectSignedPhotoUrls() to sign, which made vision untestable on the
+// one deploy context that has a key. This reads the photo docs SERVER-SIDE
+// (same admin handle the request's hostname already resolved) and returns
+// aiProvider-shaped { mediaType, data } image blocks.
+//   * The client still never sends bytes -- it sends the work-order id.
+//   * Exposure class is unchanged: doc.generate already lets this caller
+//     generate the full report PDF carrying every photo on a work order;
+//     these bytes go only to the model call, never into the response.
+//   * Only photos WITHOUT a signable storageRef ride this path -- a doc
+//     carrying both (prod's cooling-off base64 backup) is already covered
+//     by its signed URL, and sending both would duplicate the image.
+//   * Docs are walked in photo-index order (ids are numeric indexes) so
+//     which photos make the budget is deterministic.
+//   * Per-image gates (media type, base64 charset, ~5MB cap) live in
+//     aiProvider's cleanInlineImage(), applied here so the count we report
+//     as photosSeen is the count that actually rode.
+// NOT called on the stub path -- no bytes are read without a live model to
+// consume them.
+async function collectInlinePhotoImages(db, workOrderId, max) {
+  var out = [];
+  if (!workOrderId || !(max > 0)) return out;
+  var snap = await db.collection("workorders").doc(workOrderId)
+    .collection("photos").select("img", "storageRef").get();
+  var docs = snap.docs.slice().sort(function (a, b) {
+    return (parseInt(a.id, 10) || 0) - (parseInt(b.id, 10) || 0);
+  });
+  for (var i = 0; i < docs.length && out.length < max; i++) {
+    var d = docs[i].data() || {};
+    if (cleanStorageRef(d.storageRef)) continue; // the signed-URL path owns this one
+    var m = /^data:(image\/[a-z0-9.+-]+);base64,(.+)$/.exec(typeof d.img === "string" ? d.img : "");
+    if (!m) continue;
+    var im = cleanInlineImage({ mediaType: m[1], data: m[2] });
+    if (im) out.push(im);
+  }
+  return out;
+}
+
 exports.handler = async function (event) {
   if (event.httpMethod !== "POST") return resp(405, { error: "Method not allowed" });
   try {
@@ -325,15 +384,27 @@ exports.handler = async function (event) {
     // -- the stub path must never create a live URL with no purpose.
     const provider = resolveProvider(process.env);
     let photoUrls = [];
-    if (provider.name !== "stub" && (report.photos || []).some(function (p) { return p.storageRef; })) {
-      try {
-        const bucket = getAdmin(hostnameFromEvent(event)).storage().bucket();
-        photoUrls = (await collectSignedPhotoUrls(bucket, report.photos)).map(function (p) { return p.url; });
-      } catch (e) { /* vision degrades to text-only; a draft must never dead-end on Storage */ }
+    let photoImages = [];
+    if (provider.name !== "stub") {
+      if ((report.photos || []).some(function (p) { return p.storageRef; })) {
+        try {
+          const bucket = getAdmin(hostnameFromEvent(event)).storage().bucket();
+          photoUrls = (await collectSignedPhotoUrls(bucket, report.photos)).map(function (p) { return p.url; });
+        } catch (e) { /* vision degrades to text-only; a draft must never dead-end on Storage */ }
+      }
+      // Inline photos (Phase 1.5) fill whatever vision budget the signed
+      // URLs left. On dev this is ALL the photos (no Storage bucket to
+      // sign against); on prod it covers a photo saved before migration.
+      if (report.workOrderId && photoUrls.length < MAX_VISION_PHOTOS) {
+        try {
+          const db = getAdmin(hostnameFromEvent(event)).firestore();
+          photoImages = await collectInlinePhotoImages(db, report.workOrderId, MAX_VISION_PHOTOS - photoUrls.length);
+        } catch (e) { /* same rule: degrade, never dead-end */ }
+      }
     }
 
     const result = await generateSummary(
-      { report: report, photoUrls: photoUrls },
+      { report: report, photoUrls: photoUrls, photoImages: photoImages },
       { stubText: composeTemplateSummary(report), system: buildLlmPrompt(report) }
     );
 
@@ -348,7 +419,7 @@ exports.handler = async function (event) {
       llm: !!result.llm,
       model: result.model || null,
       fallback: !!result.fallback,
-      photosSeen: result.llm ? photoUrls.length : 0
+      photosSeen: result.llm ? photoUrls.length + photoImages.length : 0
     });
   } catch (e) {
     if (e.statusCode === 401) return resp(401, { error: "Unauthorized" });
@@ -363,5 +434,6 @@ exports.composeTemplateSummary = composeTemplateSummary;
 exports.sanitizeReport = sanitizeReport;
 exports.buildLlmPrompt = buildLlmPrompt;
 exports.collectSignedPhotoUrls = collectSignedPhotoUrls;
+exports.collectInlinePhotoImages = collectInlinePhotoImages;
 exports.SUMMARY_TARGET_WORDS = SUMMARY_TARGET_WORDS;
 exports.SIGNED_URL_TTL_MS = SIGNED_URL_TTL_MS;

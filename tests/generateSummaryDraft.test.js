@@ -76,6 +76,9 @@ const FULL_ORDER = {
 
 test("payload carries the summary-relevant text and nothing else", () => {
   const p = buildSummaryDraftPayload(FULL_ORDER);
+  // The work-order id rides (Phase 1.5): it is the server's handle for
+  // reading INLINE photo bytes out of Firestore itself — an id, not bytes.
+  assert.equal(p.workOrderId, "wo_123");
   assert.equal(p.woType, "Inspection");
   assert.equal(p.jobName, "Tri-Delta Warehouse");
   assert.equal(p.technician, "J. Alvarez");
@@ -92,10 +95,10 @@ test("payload carries the summary-relevant text and nothing else", () => {
   // photoCount still reflects everything on the order.
   assert.deepEqual(p.photos, [{ caption: "Open seam at north lap", storageRef: "workorders/wo_123/0.jpg" }]);
   assert.equal(p.photoCount, 2);
-  // NOTHING heavy or sensitive leaves the client: no bytes, pins, ids, gps,
-  // signature — the exact fields the future LLM prompt must never receive
-  // accidentally. (storageRef is deliberately NOT on this list: it's the
-  // photo's cloud path, not its bytes, and the vision call needs it.)
+  // NOTHING heavy or sensitive leaves the client: no bytes, pins, per-row
+  // ids, gps, signature — the exact fields the LLM prompt must never receive
+  // accidentally. (storageRef and workOrderId are deliberately NOT on this
+  // list: they are cloud handles the vision path needs, not bytes.)
   const flat = JSON.stringify(p);
   ["img", "thumb", "base64", "pin", "gps", "fnd_1", "chk_1", "SIG", "signature"].forEach(tok => {
     assert.equal(flat.indexOf(tok), -1, "payload leaked: " + tok);
@@ -184,12 +187,27 @@ const fakeAdmin = {
               return { exists: true, data: () => ({ permissions: { "doc.generate": false } }) };
             }
             return { exists: false };
-          }
+          },
+          /* Photos subcollection (Phase 1.5 inline-vision path): served from
+             the mutable photoDocs fixture below; every read is recorded so
+             tests can assert the stub path never touches photo bytes. */
+          collection: (sub) => ({
+            select: (...fields) => ({
+              get: async () => {
+                photoReads.push({ parent: name, id, sub, fields });
+                return { docs: photoDocs.map(d => ({ id: d.id, data: () => d.data })) };
+              }
+            })
+          })
         })
       })
     };
   }
 };
+/* Inline-photo fixtures for the fake Firestore above. Tests that need inline
+   photos push docs in and MUST clear both arrays when done. */
+const photoDocs = [];
+const photoReads = [];
 const origResolve = Module._resolveFilename;
 Module._resolveFilename = function (req, ...rest) {
   if (req === "firebase-admin") return "FAKE_FIREBASE_ADMIN";
@@ -391,8 +409,9 @@ test("collectSignedPhotoUrls signs only clean workorders/ refs, short-lived, and
    switch, the vision plumbing (signed URL -> image block), the feature-tuned
    system prompt reaching the wire, and the fallback that keeps a roof-side
    flow alive through an API outage. ---- */
-test("stub path (no key): drafts fine and NEVER mints a signed URL", async () => {
+test("stub path (no key): drafts fine, NEVER mints a signed URL, NEVER reads photo bytes", async () => {
   signedCalls.length = 0;
+  photoReads.length = 0;
   const r = await fn.handler(ev({ action: "draft_summary", report: REPORT }, VALID_TECH));
   assert.equal(r.statusCode, 200);
   const out = JSON.parse(r.body);
@@ -400,6 +419,7 @@ test("stub path (no key): drafts fine and NEVER mints a signed URL", async () =>
   assert.equal(out.source, "template_stub_v1");
   assert.equal(out.photosSeen, 0);
   assert.equal(signedCalls.length, 0, "no signing without a live model to consume the URL");
+  assert.equal(photoReads.length, 0, "no inline-photo Firestore read without a live model to consume the bytes");
 });
 
 test("live path (key set): signs the photo, sends it + the tuned prompt, returns the model's draft", async () => {
@@ -438,6 +458,96 @@ test("live path (key set): signs the photo, sends it + the tuned prompt, returns
     delete process.env.ANTHROPIC_API_KEY;
     global.fetch = NETWORK_TRAP;
   }
+});
+
+test("live path, inline photos (Phase 1.5): server reads the bytes itself, model sees base64 blocks", async () => {
+  process.env.ANTHROPIC_API_KEY = "sk-test-fake";
+  const wireCalls = [];
+  global.fetch = async (url, init) => {
+    wireCalls.push({ url, body: JSON.parse(init.body) });
+    return { ok: true, status: 200, json: async () => ({ content: [{ type: "text", text: "LIVE DRAFT with vision." }] }) };
+  };
+  signedCalls.length = 0;
+  photoReads.length = 0;
+  // Dev-shaped photo docs: one migrated doc that ALSO kept its storageRef
+  // (must NOT ride inline — its signed URL already covers it), two genuine
+  // inline docs pushed out of index order (must come back in index order),
+  // and one legacy/garbage doc that must be skipped, not fatal.
+  photoDocs.push(
+    { id: "3", data: { img: "data:image/png;base64,CCCC", caption: "later inline" } },
+    { id: "0", data: { img: "data:image/jpeg;base64,AAAA", storageRef: "workorders/wo_123/0.jpg" } },
+    { id: "1", data: { img: "data:image/jpeg;base64,BBBB", caption: "inline only" } },
+    { id: "2", data: { img: "not-a-data-url" } }
+  );
+  try {
+    const r = await fn.handler(ev({ action: "draft_summary", report: REPORT }, VALID_TECH));
+    assert.equal(r.statusCode, 200);
+    const out = JSON.parse(r.body);
+    assert.equal(out.llm, true);
+    // 1 signed (payload ref) + 2 inline (docs "1" and "3") — the ref-carrying
+    // doc and the garbage doc contribute nothing extra.
+    assert.equal(out.photosSeen, 3);
+    // The read went to THIS work order's photos, fields-masked to what the
+    // path needs (img + storageRef — never captions/gps/pins wholesale).
+    assert.equal(photoReads.length, 1);
+    assert.equal(photoReads[0].id, "wo_123");
+    assert.deepEqual(photoReads[0].fields.sort(), ["img", "storageRef"]);
+    // Wire shape: signed-URL block first, then the inline blocks in photo-
+    // index order as base64 image sources.
+    const content = wireCalls[0].body.messages[0].content;
+    const images = content.filter(c => c.type === "image");
+    assert.equal(images.length, 3);
+    assert.ok(/X-Goog-Signature/.test(images[0].source.url), "signed URL rides first");
+    assert.deepEqual(images[1].source, { type: "base64", media_type: "image/jpeg", data: "BBBB" });
+    assert.deepEqual(images[2].source, { type: "base64", media_type: "image/png", data: "CCCC" });
+    // The bytes went ONLY to the model call — never into the client response.
+    assert.ok(!r.body.includes("BBBB") && !r.body.includes("CCCC"));
+  } finally {
+    photoDocs.length = 0;
+    delete process.env.ANTHROPIC_API_KEY;
+    global.fetch = NETWORK_TRAP;
+  }
+});
+
+test("collectInlinePhotoImages: budget-capped, ref-owning and invalid docs skipped, id-shaped input only", async () => {
+  const reads = [];
+  const fakeDb = {
+    collection: (name) => ({
+      doc: (id) => ({
+        collection: (sub) => ({
+          select: (...fields) => ({
+            get: async () => {
+              reads.push({ id, fields });
+              return {
+                docs: [
+                  { id: "0", data: () => ({ img: "data:image/jpeg;base64,AA" }) },
+                  { id: "1", data: () => ({ img: "data:image/jpeg;base64,BB" }) },
+                  { id: "2", data: () => ({ img: "data:image/jpeg;base64,CC" }) }
+                ]
+              };
+            }
+          })
+        })
+      })
+    })
+  };
+  // max caps how many ride, in index order.
+  const two = await fn.collectInlinePhotoImages(fakeDb, "wo_9", 2);
+  assert.deepEqual(two.map(i => i.data), ["AA", "BB"]);
+  // No id / zero budget -> no read at all.
+  assert.deepEqual(await fn.collectInlinePhotoImages(fakeDb, null, 2), []);
+  assert.deepEqual(await fn.collectInlinePhotoImages(fakeDb, "wo_9", 0), []);
+  assert.equal(reads.length, 1);
+});
+
+test("sanitizeReport: workOrderId is id-shaped or nothing (it becomes a Firestore doc path)", () => {
+  const ok = fn.sanitizeReport({ woType: "Inspection", workOrderId: "wo_ABC-123" });
+  assert.equal(ok.workOrderId, "wo_ABC-123");
+  ["wo/123", "wo 123", "../secrets", "wo.123", "", null].forEach(bad => {
+    assert.equal(fn.sanitizeReport({ woType: "Inspection", workOrderId: bad }).workOrderId, null, JSON.stringify(bad));
+  });
+  // Oversized ids clamp to 80 first — the clamp result is still id-shaped.
+  assert.equal(fn.sanitizeReport({ woType: "Inspection", workOrderId: "x".repeat(81) }).workOrderId, "x".repeat(80));
 });
 
 test("live path outage: provider error falls back to the template draft, flagged, still 200", async () => {

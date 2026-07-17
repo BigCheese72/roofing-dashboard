@@ -1422,7 +1422,12 @@ function collect(){
    caption AND Storage ref (the ref is how the Phase-1 vision model will
    actually SEE the photo: the server turns it into a short-lived SIGNED url
    there, never here, never public). Still never photo BYTES, pins, GPS,
-   ids, or signatures. A photo captured but not yet cloud-saved has no
+   per-row ids, or signatures. The work-order ID itself DOES ride (Phase
+   1.5): dev's Firebase project has no Storage bucket, so its photos live
+   INLINE in Firestore with no storageRef to sign — the id is how the server
+   reads those bytes back out ITSELF (collectInlinePhotoImages() in
+   generate-summary.js) to show the vision model. Bytes stay server-side in
+   both directions. A photo captured but not yet cloud-saved has no
    storageRef yet — it rides caption-only, so drafting right after a save
    sees everything. Checklist keys become their display labels here because
    the server has no INSPECTION_CHECKLIST_COMPONENTS; N/A rows are dropped.
@@ -1433,6 +1438,7 @@ function buildSummaryDraftPayload(o){
   var labelByKey = {};
   INSPECTION_CHECKLIST_COMPONENTS.forEach(function(c){ labelByKey[c.key] = c.label; });
   return {
+    workOrderId: s(o.id, 80),
     woType: s(o.woType, 40),
     jobName: s(o.jobName, 200),
     location: s(o.location, 300),

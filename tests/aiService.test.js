@@ -289,6 +289,55 @@ test("openai path: correct wire shape, image_url block, text extracted", async (
   assert.deepEqual(userContent[0], { type: "image_url", image_url: { url: SIGNED_URL } });
 });
 
+test("anthropic path: inline base64 photo rides as a base64 image source (Phase 1.5)", async () => {
+  const calls = mockFetch(() => jsonRes({ content: [{ type: "text", text: "Drafted with vision." }] }));
+  const out = await ai.generateSummary(
+    { report: ai.sanitizeReport(REPORT), photoImages: [{ mediaType: "image/jpeg", data: "QUJD" }] },
+    { env: { ANTHROPIC_API_KEY: "test-key" } }
+  );
+  assert.equal(out.llm, true);
+  const content = calls[0].body.messages[0].content;
+  assert.deepEqual(content[0], { type: "image", source: { type: "base64", media_type: "image/jpeg", data: "QUJD" } });
+  assert.equal(content[1].type, "text");
+});
+
+test("openai path: inline base64 photo rides as a data-URL image_url (its inline form)", async () => {
+  const calls = mockFetch(() => jsonRes({ choices: [{ message: { content: "Drafted with vision." } }] }));
+  await ai.generateSummary(
+    { report: ai.sanitizeReport(REPORT), photoImages: [{ mediaType: "image/png", data: "QUJD" }] },
+    { env: { OPENAI_API_KEY: "test-key" } }
+  );
+  const userContent = calls[0].body.messages[1].content;
+  assert.deepEqual(userContent[0], { type: "image_url", image_url: { url: "data:image/png;base64,QUJD" } });
+});
+
+test("vision budget is SHARED: signed URLs take it first, inline images only fill what's left", async () => {
+  const calls = mockFetch(() => jsonRes({ content: [{ type: "text", text: "ok" }] }));
+  const urls = Array.from({ length: ai.MAX_VISION_PHOTOS + 2 }, (_, i) => SIGNED_URL + "&i=" + i);
+  const images = Array.from({ length: 4 }, (_, i) => ({ mediaType: "image/jpeg", data: "AA" + i }));
+  await ai.generateSummary(
+    { report: ai.sanitizeReport(REPORT), photoUrls: urls, photoImages: images },
+    { env: { ANTHROPIC_API_KEY: "test-key" } }
+  );
+  const sent = calls[0].body.messages[0].content.filter(c => c.type === "image");
+  assert.equal(sent.length, ai.MAX_VISION_PHOTOS, "cap holds across both kinds");
+  assert.ok(sent.every(c => c.source.type === "url"), "URLs filled the whole budget; no inline rode");
+});
+
+test("cleanInlineImage: the base64 gate — media-type allowlist, charset, size, shape", () => {
+  assert.deepEqual(ai.cleanInlineImage({ mediaType: "image/jpeg", data: "QUJD" }),
+    { mediaType: "image/jpeg", data: "QUJD" });
+  assert.deepEqual(ai.cleanInlineImage({ mediaType: "image/webp", data: "QQ==" }),
+    { mediaType: "image/webp", data: "QQ==" });
+  assert.equal(ai.cleanInlineImage({ mediaType: "application/pdf", data: "QUJD" }), null, "non-image media type");
+  assert.equal(ai.cleanInlineImage({ mediaType: "image/svg+xml", data: "QUJD" }), null, "scriptable image type");
+  assert.equal(ai.cleanInlineImage({ mediaType: "image/jpeg", data: "not base64!!" }), null, "charset");
+  assert.equal(ai.cleanInlineImage({ mediaType: "image/jpeg", data: "" }), null, "empty");
+  assert.equal(ai.cleanInlineImage({ mediaType: "image/jpeg", data: "A".repeat(5 * 1024 * 1024 + 1) }), null, "over the ~5MB provider limit");
+  assert.equal(ai.cleanInlineImage(null), null);
+  assert.equal(ai.cleanInlineImage("data:image/jpeg;base64,QUJD"), null, "a raw data-URL string is not the shape");
+});
+
 test("issue_id via anthropic: model JSON is vocab-clamped even when wrapped in prose", async () => {
   mockFetch(() => jsonRes({
     content: [{ type: "text", text: 'Here you go: {"issue":"open_seam","likelyCause":"weathering_age","confidence":"high","rationale":"Visible lap separation."}' }]

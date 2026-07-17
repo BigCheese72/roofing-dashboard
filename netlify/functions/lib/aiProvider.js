@@ -19,9 +19,15 @@
 //     Precedence: AI_PROVIDER env forces a provider; otherwise Anthropic
 //     wins when both keys exist. AI_MODEL / ANTHROPIC_MODEL / OPENAI_MODEL
 //     override the per-provider default model.
-//   * Vision inputs are SIGNED URLs ONLY (Firebase Storage tokens, GCS/S3
-//     signature params) -- isSignedPhotoUrl() is the gate. Never a public
-//     URL, never raw bytes through this layer.
+//   * Vision inputs are SIGNED URLs (Firebase Storage tokens, GCS/S3
+//     signature params -- isSignedPhotoUrl() is the gate) or SERVER-READ
+//     inline base64 blocks (cleanInlineImage() is the gate). Never a public
+//     URL. Inline base64 exists because the dev Firebase project has no
+//     Storage bucket (Spark plan) -- its photos live as data-URLs on the
+//     Firestore photo docs, so there is nothing to sign; passing the bytes
+//     as an in-request image block exposes strictly LESS than a signed URL
+//     (no fetchable URL ever exists). The bytes come from the server's own
+//     Firestore read (generate-summary.js), never from the client request.
 //   * Every result is a DRAFT for human confirmation. Nothing here writes to
 //     Firestore or marks anything final; callers put the output in front of a
 //     person. The `draft: true` in ai-service.js's response is a contract
@@ -38,6 +44,17 @@
 
 const MAX_SUMMARY_TOKENS = 1000; // ~ half-page draft
 const MAX_ISSUE_TOKENS = 400;    // small JSON object + short rationale
+
+// Vision budget PER CALL, shared across both input kinds (signed URLs are
+// taken first, inline base64 fills what's left) -- this cap is the image
+// token-cost ceiling the same way the text clamps are the prompt ceiling.
+const MAX_VISION_PHOTOS = 8;
+// Inline base64 gates: the media types Anthropic/OpenAI vision accept, and a
+// per-image size cap under the providers' ~5MB image limit (chars of base64,
+// so ~3.7MB decoded). Anything outside these is dropped, never an error --
+// the draft degrades to that photo's caption.
+const INLINE_IMAGE_MEDIA_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"];
+const MAX_INLINE_IMAGE_B64_CHARS = 5 * 1024 * 1024;
 
 // Default models. Anthropic default follows current guidance (Opus 4.8);
 // Mark can dial cost down via ANTHROPIC_MODEL / AI_MODEL when he provisions
@@ -132,6 +149,23 @@ function isSignedPhotoUrl(url) {
     if (SIGNATURE_PARAMS.indexOf(key.toLowerCase()) !== -1) return true;
   }
   return false;
+}
+
+// ---- Inline-image gate --------------------------------------------------------
+// The base64 counterpart of isSignedPhotoUrl(): an inline photo enters a
+// prompt only as { mediaType, data } that passes ALL of these -- an accepted
+// image media type, base64-charset-only payload, bounded size. Anything else
+// returns null and the photo simply doesn't ride. The charset check also
+// means nothing here can smuggle text/JSON into what the model is told is an
+// image.
+function cleanInlineImage(p) {
+  if (!p || typeof p !== "object") return null;
+  const mediaType = String(p.mediaType || "");
+  const data = typeof p.data === "string" ? p.data : "";
+  if (INLINE_IMAGE_MEDIA_TYPES.indexOf(mediaType) === -1) return null;
+  if (!data || data.length > MAX_INLINE_IMAGE_B64_CHARS) return null;
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(data)) return null;
+  return { mediaType: mediaType, data: data };
 }
 
 // ---- Shared input clamps ----------------------------------------------------
@@ -282,12 +316,13 @@ function buildIssueSystem() {
 // ---- Provider HTTP calls ----------------------------------------------------
 // Raw fetch on purpose (see header): two providers behind one seam, no SDK
 // dependency for a path that cannot run until a key exists. `parts` is a
-// provider-neutral content list: [{kind:"image", url}] and [{kind:"text", text}].
+// provider-neutral content list: {kind:"image", url}, {kind:"image_b64",
+// mediaType, data}, and {kind:"text", text}.
 async function callAnthropic(provider, system, parts, maxTokens) {
   const content = parts.map(function (p) {
-    return p.kind === "image"
-      ? { type: "image", source: { type: "url", url: p.url } }
-      : { type: "text", text: p.text };
+    if (p.kind === "image") return { type: "image", source: { type: "url", url: p.url } };
+    if (p.kind === "image_b64") return { type: "image", source: { type: "base64", media_type: p.mediaType, data: p.data } };
+    return { type: "text", text: p.text };
   });
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -312,9 +347,11 @@ async function callAnthropic(provider, system, parts, maxTokens) {
 
 async function callOpenAI(provider, system, parts, maxTokens) {
   const content = parts.map(function (p) {
-    return p.kind === "image"
-      ? { type: "image_url", image_url: { url: p.url } }
-      : { type: "text", text: p.text };
+    if (p.kind === "image") return { type: "image_url", image_url: { url: p.url } };
+    // OpenAI has no separate base64 shape -- an image_url carrying a data-URL
+    // is its inline form.
+    if (p.kind === "image_b64") return { type: "image_url", image_url: { url: "data:" + p.mediaType + ";base64," + p.data } };
+    return { type: "text", text: p.text };
   });
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
@@ -372,7 +409,11 @@ function clampIssueResult(raw) {
 //   fallback  true when a key WAS configured but the provider call failed and
 //             the stub answered instead (field flows must not dead-end)
 
-// (a) SUMMARY: structured report findings + signed photo URLs -> draft text.
+// (a) SUMMARY: structured report findings + photos (signed URLs and/or
+//     server-read inline base64 images) -> draft text. Signed URLs take the
+//     MAX_VISION_PHOTOS budget first; inline images fill what's left.
+//     input.photoImages  [{mediaType, data}] -- each re-gated by
+//                        cleanInlineImage() here regardless of caller.
 //     opts.env      env object (default process.env)
 //     opts.stubText caller-supplied deterministic composer output to use as
 //                   the stub/fallback text -- this is how generate-summary.js
@@ -386,7 +427,8 @@ function clampIssueResult(raw) {
 async function generateSummary(input, opts) {
   opts = opts || {};
   const report = input.report;
-  const photoUrls = (input.photoUrls || []).filter(isSignedPhotoUrl).slice(0, 8);
+  const photoUrls = (input.photoUrls || []).filter(isSignedPhotoUrl).slice(0, MAX_VISION_PHOTOS);
+  const photoImages = rows(input.photoImages, Math.max(0, MAX_VISION_PHOTOS - photoUrls.length), cleanInlineImage);
   const provider = resolveProvider(opts.env || process.env);
   const stubText = opts.stubText || composeStubSummary(report);
   const system = opts.system || SUMMARY_SYSTEM;
@@ -396,6 +438,7 @@ async function generateSummary(input, opts) {
   }
   try {
     const parts = photoUrls.map(function (u) { return { kind: "image", url: u }; });
+    photoImages.forEach(function (im) { parts.push({ kind: "image_b64", mediaType: im.mediaType, data: im.data }); });
     parts.push({
       kind: "text",
       text: "Draft the Summary for this report. Report data (JSON):\n" + JSON.stringify(report)
@@ -440,8 +483,10 @@ module.exports = {
   CAUSE_VOCABULARY,
   CONFIDENCE_LEVELS,
   STUB_MARKER,
+  MAX_VISION_PHOTOS,
   resolveProvider,
   isSignedPhotoUrl,
+  cleanInlineImage,
   sanitizeReport,
   sanitizeIssueContext,
   extractJson,
