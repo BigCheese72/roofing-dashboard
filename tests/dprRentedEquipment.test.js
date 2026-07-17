@@ -135,13 +135,55 @@ test("with items injected, a lift's checklist collects {completedBy, items[{id,l
   });
 });
 
-test("scaffold phase (empty item list): a previously SAVED checklist survives a re-save untouched", () => {
-  const s = makeSandbox();   // DPR_PREUSE_CHECKLIST is empty
+test("empty item list (scaffold guarantee): a previously SAVED checklist survives a re-save untouched", () => {
+  const s = makeSandbox();
+  s.DPR_PREUSE_CHECKLIST.length = 0;   // simulate the pre-items scaffold phase
   const saved = { completedBy: "Dax Dollens", items: [{ id: "x", label: "Old item", ok: true }] };
   s.dprFill({ date: "2026-07-16", jobName: "N", billTo: "A",
     rentedEquipment: [{ type: "Scissor Lift", company: "United", unitId: "", note: "" }],
     preUseChecklist: saved });
   assert.deepStrictEqual(plain(s.dprCollect().preUseChecklist), saved);
+});
+
+// ---------------- the shipped OSHA/ANSI item list (from the researched
+// source doc — docs/RoofingSafetyDocumentSources.md §4) ----------------
+
+test("the shipped pre-use checklist: 35 items across the doc's four phases, stable unique ids", () => {
+  const s = makeSandbox();
+  const list = plain(s.DPR_PREUSE_CHECKLIST);
+  const groups = plain(s.DPR_PREUSE_GROUPS);
+  assert.strictEqual(list.length, 35);
+  assert.deepStrictEqual(groups.map((g) => g.key), ["walk", "station", "function", "site"]);
+  const groupKeys = new Set(groups.map((g) => g.key));
+  const ids = list.map((it) => it.id);
+  assert.strictEqual(new Set(ids).size, ids.length, "ids must be unique (saved answers key on them)");
+  list.forEach((it) => {
+    assert.ok(it.id && /^[a-z_]+$/.test(it.id), "id must be a stable slug: " + it.id);
+    assert.ok(groupKeys.has(it.group), "item must belong to a real phase: " + it.id);
+    assert.ok(it.label && it.label.length >= 5, "label must be a real instruction: " + it.id); // "Horn works" is legitimately short
+  });
+  // phase sizes straight from the source doc: 12 walk-around, 8 station, 9 function, 6 worksite
+  const byGroup = (k) => list.filter((it) => it.group === k).length;
+  assert.deepStrictEqual([byGroup("walk"), byGroup("station"), byGroup("function"), byGroup("site")], [12, 8, 9, 6]);
+  // the checks that anchor each standard must exist
+  ["tires", "estop", "em_lowering", "brakes", "outriggers", "load_chart", "overhead", "tied_off", "drift", "dual_controls"]
+    .forEach((must) => assert.ok(ids.includes(must), "missing key item: " + must));
+});
+
+test("a SkyTrak with the shipped items collects a full 35-answer checklist + result + notes", () => {
+  const s = makeSandbox();
+  s.dprFill({ date: "2026-07-16", jobName: "N", billTo: "A",
+    rentedEquipment: [{ type: "SkyTrak / Telehandler", company: "United", unitId: "8842", note: "" }] });
+  // no DOM -> dprCollectPreUse falls back to the saved state; simulate the
+  // render/answer cycle with the sign-off fields included:
+  s.dprPreUse = { completedBy: "Cletus Bagby", result: "defects", notes: "Left front tire flat — tagged out.",
+    items: s.DPR_PREUSE_CHECKLIST.map((it) => ({ id: it.id, label: it.label, ok: it.id !== "tires" })) };
+  const out = plain(s.dprCollect().preUseChecklist);
+  assert.strictEqual(out.items.length, 35);
+  assert.strictEqual(out.result, "defects");
+  assert.strictEqual(out.notes, "Left front tire flat — tagged out.");
+  assert.strictEqual(out.items.filter((it) => !it.ok).length, 1);
+  assert.strictEqual(out.items.find((it) => !it.ok).id, "tires");
 });
 
 test("no rented rows -> checklist collects null regardless of any leftover state", () => {
