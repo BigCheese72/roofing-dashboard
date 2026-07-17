@@ -751,7 +751,19 @@ window.helpBackToList = helpBackToList;
 var HELP_TOOLTIPS = [
   { id: "rm-edit-shape-btn", text: "Edit Shape — drag any corner to move it. Tap \"Done Editing\" when it looks right. Resets Square Up and calibration, since a hand edit can change what those relied on." },
   { id: "rm-square-up-btn", text: "Square Up — snaps near-90° corners and straight edges clean. Use it right after tracing, before you calibrate a measurement. A real diagonal or curve is left as traced." },
-  { id: "rm-snap-toggle-wrap", text: "Snap to existing corners/edges — while tracing, taps near an already-mapped roof's edge lock onto it exactly, so adjoining roofs share the same boundary with no gaps. Turn off for a genuinely free point." }
+  { id: "rm-snap-toggle-wrap", text: "Snap to existing corners/edges — while tracing, taps near an already-mapped roof's edge lock onto it exactly, so adjoining roofs share the same boundary with no gaps. Turn off for a genuinely free point." },
+  // Sweep of the remaining non-obvious RoofMapper action buttons (all have
+  // stable ids in index.html). Same tap-to-reveal badge as above -- no
+  // index.html edits, so this stays clear of the DPR markup other sessions
+  // are actively rewriting tonight (PRs #136/#141).
+  { id: "rm-ortho-upload-btn", text: "Trace on Your Own Drone Image — upload a GeoTIFF or KMZ (keeps real GPS, no calibrating) or a plain photo (a flat canvas: trace the shape, then calibrate one edge for real sizes). Any tech, no admin. This is for tracing an outline — the admin \"Roof Base Map\" card in Building History is what sets a building's permanent background." },
+  { id: "rm-baselayer-btn", text: "Satellite View — flips the map between the street map and satellite imagery. Switch to satellite to see the actual roof when you're tracing corners by hand." },
+  { id: "rm-trace-btn", text: "Trace Manually — draw the outline by tapping the roof's corners on the map yourself. Use it when no footprint auto-generates, or the one that does is the wrong shape." },
+  { id: "rm-walk-btn", text: "Walk the Corners — walk the roof's edge and tap \"Record This Corner\" at each corner; your phone's GPS drops the point. Best where satellite imagery is too blurry to trace against." },
+  { id: "rm-generate-btn", text: "Generate Roof Outline — draws the outline automatically from the building footprint you tapped. Wrong shape, or nothing appears? Use Trace Manually or Walk the Corners instead." },
+  { id: "rm-align-btn", text: "Move/Rotate/Scale Outline — grab the whole outline and shift, turn, or resize it as one piece. The fast fix when an entire trace is off (a satellite trace vs. a sharper drone ortho). Fine-tune single corners afterward with Edit Shape." },
+  { id: "rm-resnap-btn", text: "Re-Snap to Neighbors — snaps this roof's corners onto an adjoining roof already traced next door, closing sliver gaps or overlaps. For roofs traced before corner-snapping existed." },
+  { id: "rm-split-btn", text: "Split Into Roof Sections — cut one traced shape into separate roofs (a warehouse plus its office annex, say). Tap two points on the edge to draw the cut, then save each piece as its own roof." }
 ];
 function injectHelpTooltips() {
   HELP_TOOLTIPS.forEach(function (t) {
