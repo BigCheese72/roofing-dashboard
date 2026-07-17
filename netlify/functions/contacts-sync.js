@@ -341,6 +341,93 @@ function splitName(displayName, email) {
 }
 
 // ---------------------------------------------------------------------------
+// INBOX RULE BUILDER — the safe, additive, move-only rule spec used by the
+// rules_create action. Kept as a pure function so the guardrails can be unit
+// tested without a mailbox.
+//
+// A caller rule may carry any of three condition arrays, matching the Graph
+// messageRule predicate properties of the same name:
+//   * senderContains  — substrings matched against the sender address/name
+//   * subjectContains — substrings matched against the subject line
+//   * bodyContains     — substrings matched against the body text
+// Type-based auto-filing (Leaks / Invoices / Warranties …) lives on subject/
+// body; sender-based filing is the original behaviour. All three are OR-combined
+// by Graph, so any one hit files the mail — which is exactly why every keyword
+// must be high-confidence (see the guardrail below).
+//
+// The action a built rule carries is ALWAYS move-only: moveToFolder +
+// stopProcessingRules, both hard-coded here. There is no path that emits
+// forward, redirect, delete, or markAsRead — regardless of what the caller
+// sends. This preserves the file-wide never-send / never-delete guarantee.
+const RULE_CONDITION_FIELDS = ["senderContains", "subjectContains", "bodyContains"];
+const RULE_MIN_KEYWORD_LEN = 3;
+// Tokens too broad to anchor a high-confidence auto-file rule. A subject/body
+// rule keyed on any of these would sweep up unrelated mail, so we reject the
+// whole rule rather than file mail wrongly.
+const RULE_BROAD_TOKENS = new Set([
+  "the", "a", "an", "and", "or", "of", "to", "in", "on", "at", "is", "it",
+  "for", "re", "fw", "fwd", "hi", "hey", "fyi", "all", "you", "your", "www",
+]);
+// A bare mail domain (gmail.com, yahoo.com, acme.com, "@acme.com") is a fine
+// SENDER anchor — that is the whole point of senderContains — but inside a
+// subject/body match it is over-broad (it would hit every quoted address), so
+// it is rejected there only.
+const RULE_BARE_DOMAIN_RE = /^@?[a-z0-9-]+(?:\.[a-z0-9-]+)+$/i;
+
+// Returns a human-readable reason string if a keyword is unsafe for `field`,
+// or null if it passes. field is one of RULE_CONDITION_FIELDS.
+function ruleKeywordProblem(kw, field) {
+  if (typeof kw !== "string") return "non-string keyword in " + field;
+  const t = kw.trim();
+  if (!t) return "empty keyword in " + field;
+  if (t.length < RULE_MIN_KEYWORD_LEN) {
+    return "keyword '" + t + "' in " + field + " is shorter than " + RULE_MIN_KEYWORD_LEN + " chars";
+  }
+  if (RULE_BROAD_TOKENS.has(t.toLowerCase())) return "over-broad token '" + t + "' in " + field;
+  if ((field === "subjectContains" || field === "bodyContains") && RULE_BARE_DOMAIN_RE.test(t)) {
+    return "bare domain '" + t + "' in " + field + " is over-broad";
+  }
+  return null;
+}
+
+// Build the Graph messageRule payload for one caller rule, or return a skip
+// reason. A rule is VALID only if it has a destinationId AND at least one
+// non-empty, all-keywords-safe condition array among sender/subject/body.
+// If ANY keyword fails a guardrail the whole rule is skipped — we never
+// silently drop the bad keyword and file on the rest.
+function buildInboxRule(r) {
+  if (!r || !r.destinationId) return { skip: "needs destinationId" };
+  const conditions = {};
+  let total = 0;
+  for (const field of RULE_CONDITION_FIELDS) {
+    const raw = r[field];
+    if (raw == null) continue;
+    if (!Array.isArray(raw)) return { skip: field + " must be an array" };
+    const cleaned = [];
+    for (const kw of raw) {
+      const problem = ruleKeywordProblem(kw, field);
+      if (problem) return { skip: problem };
+      cleaned.push(kw.trim());
+    }
+    if (cleaned.length) { conditions[field] = cleaned; total += cleaned.length; }
+  }
+  if (!total) {
+    return { skip: "needs destinationId + at least one non-empty condition (senderContains/subjectContains/bodyContains)" };
+  }
+  return {
+    matchCount: total,
+    payload: {
+      displayName: r.displayName,
+      sequence: r.sequence,
+      isEnabled: true,
+      conditions,
+      // HARD-CODED move-only action. Never forward/redirect/delete/markRead.
+      actions: { moveToFolder: r.destinationId, stopProcessingRules: true },
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------------
 exports.handler = async function (event) {
@@ -768,24 +855,18 @@ exports.handler = async function (event) {
       const wanted = (body.rules || []).slice(0, 12);
       const results = [];
       for (const r of wanted) {
-        if (!r.destinationId || !Array.isArray(r.senderContains) || !r.senderContains.length) {
-          results.push({ name: r.displayName, status: "skipped", reason: "needs destinationId + senderContains" });
+        const built = buildInboxRule(r);
+        if (built.skip) {
+          results.push({ name: r.displayName, status: "skipped", reason: built.skip });
           continue;
         }
-        const payload = {
-          displayName: r.displayName,
-          sequence: r.sequence,
-          isEnabled: true,
-          conditions: { senderContains: r.senderContains },
-          actions: { moveToFolder: r.destinationId, stopProcessingRules: true },
-        };
         try {
           const created = await gj("/me/mailFolders/inbox/messageRules", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
+            body: JSON.stringify(built.payload),
           });
-          results.push({ name: r.displayName, status: "created", id: created && created.id, matchCount: r.senderContains.length });
+          results.push({ name: r.displayName, status: "created", id: created && created.id, matchCount: built.matchCount });
         } catch (e) {
           results.push({ name: r.displayName, status: "error", error: String(e.message || e).slice(0, 180) });
         }
@@ -802,4 +883,4 @@ exports.handler = async function (event) {
 };
 
 // Exported for reasoning/testing about the filter and parser without a mailbox.
-module.exports._internals = { classify, parseSignature, splitName, sigLines };
+module.exports._internals = { classify, parseSignature, splitName, sigLines, buildInboxRule, ruleKeywordProblem };
