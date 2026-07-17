@@ -8300,3 +8300,66 @@ check/Review-Queue. Contextual admin actions stay where they belong (per-order
 Delete in Saved, "remove pushed photo" in the gallery, asset Delete in its
 modal) — this consolidates the app-wide tools, not the in-context ones. Each
 handler still enforces its own server-side permission (defense in depth).
+
+## AI-drafted report summary (Phase 1 wired — live on DEV only; prod stays stub)
+
+Mark's current flow for a report's Summary: export the PDF, paste it into
+ChatGPT, paste the result back into the Summary box. This feature moves that
+into the app across all THREE summary-bearing report types — **Inspection,
+Leak, and Work Order (stored type "Repair")** — which already share the ONE
+`#summary` textarea (index.html's Summary card, never hidden by
+`onWoTypeChange()`), the one `summary` field on the workorders doc, and the
+one PDF Summary block (js/export.js). A **"✨ Draft Summary"** button in that
+card (shown for those three types; Change Order/Warranty excluded) sends the
+report's OWN structured data to the ONE shared function
+`netlify/functions/generate-summary.js`, which returns a draft into the
+**editable** textarea. Nothing is saved or sent by the draft step; replacing
+non-empty Summary text asks first. Drafts fire from the button ONLY — on
+demand is the cost control; drafting never runs on save/open.
+
+What travels: `buildSummaryDraftPayload()` (js/workorders.js) projects
+summary-relevant text — job info, checklist label+rating+notes (N/A dropped),
+findings, repair scope (`repairDescription` + `repairItems`), work performed,
+and each photo's **caption + Storage ref**. The ref is how the Phase-1 vision
+model will actually SEE the photo: the server turns refs into **short-lived
+V4 signed READ urls** (`collectSignedPhotoUrls()`, `SIGNED_URL_TTL_MS`) —
+signed urls only, never public, minted only when an LLM call consumes them
+(the stub never signs). Never photo BYTES, pins, GPS, ids, or signatures
+(tests assert the boundary). The server re-clamps everything
+(`sanitizeReport()`), including a hard `workorders/`-prefix + no-traversal
+check on refs.
+
+**Phase 1 (WIRED 2026-07-16)**: the handler routes through the shared
+provider seam (`lib/aiProvider.js`, PR #122) — `resolveProvider(process.env)`
+decides stub vs live per deploy context. **Mark provisioned
+`ANTHROPIC_API_KEY` on the DEV (Branch deploys) context only; the Production
+context deliberately has no key**, so prod keeps answering with the
+deterministic template until a promotion Mark chooses arms it (mint a
+separate `roofops-prod` key then — never reuse the dev key). On the live
+path the photos attach as image blocks via the signed urls (aiProvider caps
+8/call) and the feature-tuned system prompt rides as `opts.system`: length
+tuned by the single `SUMMARY_TARGET_WORDS` constant (Mark's verdict on his
+ChatGPT Flat Branch Pub summary: right voice, "a little long" — the exemplar
+runs ~340 words, so the target is 280), and his exact Flat Branch text
+(inspection job #17455) now sits in `STYLE_EXEMPLAR` verbatim — the prompt
+says "this voice and structure, tighter", including the plain-text
+"Recommended Repairs" section pattern. The deterministic template remains as both the
+no-key answer AND the outage fallback (`fallback: true` in the response) — a
+roof-side flow never dead-ends on an AI failure. Model choice is env config
+(`ANTHROPIC_MODEL`), not code. This is also the codebase's first concrete
+step toward the "AI auto-detection of rooftop features" ROADMAP item.
+
+Auth: `requirePermission(event, "doc.generate")` — the semantically matching,
+boolean-only key every seed role holds (field-first: a tech on the roof can
+draft their own summary). The function writes nothing server-side; the draft
+only enters the record via the tech's own `workorder.edit`-gated save.
+
+Tests: `tests/generateSummaryDraft.test.js` — payload projection/leak guards,
+storage-ref validation (traversal/foreign-tree refs nulled), signed-url
+helper contract (v4/read-only/short expiry, bad refs skipped not fatal),
+prompt contract (grounded, draft-only, length from the constant),
+401/403/405/400 auth surface, composer determinism, plus the wiring: stub
+path never mints a signed URL, live path signs + sends the image block and
+the tuned system prompt (asserted on the mocked wire), provider outage falls
+back to the template with `fallback: true` and still 200. A `global.fetch`
+trap still fails the suite if the NO-KEY path ever reaches the network.

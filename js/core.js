@@ -2386,6 +2386,15 @@ function onWoTypeChange(){
      -- see "Inspection form overhaul" in DEV_NOTES.md. */
   var raf = document.getElementById("wo-reportedarea-fld");
   if (raf) raf.style.display = isInspection ? "none" : "";
+  /* "Draft Summary" (AI-drafted summary — see "AI-drafted report summary"
+     in DEV_NOTES.md): Mark's three summary-bearing report types —
+     Inspection, Leak, and Work Order (stored type "Repair") — all share the
+     ONE #summary field and the ONE generate-summary server function; this
+     only gates the button. Change Order (its own document, no Summary
+     section in its PDF) and Warranty stay hidden — widening later is just
+     this condition. */
+  var dsr = document.getElementById("wo-draft-summary-row");
+  if (dsr) dsr.style.display = (isInspection || isLeakType || isRepair) ? "" : "none";
   var ic = document.getElementById("wo-inspection-card");
   if (ic) ic.style.display = isInspection ? "" : "none";
   if (isInspection){ ensureInspectionChecklist(); renderInspectionChecklist(); renderInspectionRoofPicker(); }

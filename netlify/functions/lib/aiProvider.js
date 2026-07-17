@@ -378,12 +378,18 @@ function clampIssueResult(raw) {
 //                   the stub/fallback text -- this is how generate-summary.js
 //                   (PR #119) plugs its richer composeTemplateSummary() in as
 //                   the no-key placeholder while sharing this provider seam.
+//     opts.system   caller-supplied system prompt override -- how
+//                   generate-summary.js supplies its feature-tuned prompt
+//                   (SUMMARY_TARGET_WORDS length dial + Mark's STYLE_EXEMPLAR
+//                   voice sample). Default stays this file's generic
+//                   SUMMARY_SYSTEM so other callers are unaffected.
 async function generateSummary(input, opts) {
   opts = opts || {};
   const report = input.report;
   const photoUrls = (input.photoUrls || []).filter(isSignedPhotoUrl).slice(0, 8);
   const provider = resolveProvider(opts.env || process.env);
   const stubText = opts.stubText || composeStubSummary(report);
+  const system = opts.system || SUMMARY_SYSTEM;
 
   if (provider.name === "stub") {
     return { text: stubText, provider: "stub", model: null, llm: false };
@@ -394,7 +400,7 @@ async function generateSummary(input, opts) {
       kind: "text",
       text: "Draft the Summary for this report. Report data (JSON):\n" + JSON.stringify(report)
     });
-    const text = await callProvider(provider, SUMMARY_SYSTEM, parts, MAX_SUMMARY_TOKENS);
+    const text = await callProvider(provider, system, parts, MAX_SUMMARY_TOKENS);
     return { text: String(text).slice(0, 8000), provider: provider.name, model: provider.model, llm: true };
   } catch (e) {
     return { text: stubText, provider: "stub", model: null, llm: false, fallback: true };
