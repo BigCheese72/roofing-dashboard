@@ -1010,6 +1010,26 @@
         </div>
       </div>
 
+      <!-- Rented equipment — structured (type / rental company / unit # / note),
+           distinct from the free-text "Equipment On Site" notes above. When a
+           rented LIFT is recorded, the daily pre-use safety checklist scaffold
+           reveals (items pending Mark's OSHA/ANSI list — js/dpr.js
+           DPR_PREUSE_CHECKLIST). -->
+      <div class="card">
+        <h2 class="cond">Rented Equipment</h2>
+        <div class="fld" style="max-width:220px">
+          <label>Any rented equipment on site today?</label>
+          <select id="dpr-rented-toggle" onchange="dprGate('dpr-rented-toggle','dpr-rented-body','Yes')">
+            <option>No</option><option>Yes</option>
+          </select>
+        </div>
+        <div id="dpr-rented-body" style="display:none">
+          <div id="dpr-rented-list"></div>
+          <div class="btnrow"><button class="btn" onclick="dprAddRentedRow()">+ Add Rented Item</button></div>
+          <div id="dpr-preuse-block" style="display:none"></div>
+        </div>
+      </div>
+
       <div class="card">
         <h2 class="cond">Site Visitors</h2>
         <div class="fld" style="max-width:220px">
@@ -1548,6 +1568,7 @@
 <datalist id="dl-dprLocation"></datalist>
 <datalist id="dl-dprJobNo"></datalist>
 <datalist id="dl-dprCrew"></datalist>
+<datalist id="dl-dprRentedType"></datalist>
 
 <!-- Modularized (see DEV_NOTES.md) -- index.html is now just markup + these
      script tags in order. Plain globals, not ES modules: this app's
