@@ -1513,8 +1513,13 @@ async function draftReportSummary(btn){
       toast("AI draft inserted (" + (out.model || "model") + ", " + seen + " photo" + (seen === 1 ? "" : "s") +
         " reviewed) — review and edit it before saving or sending.");
     } else if (out.fallback){
-      toast("⚠️ AI didn't answer — a plain placeholder draft was inserted instead. Try again in a minute; " +
-        "if it keeps happening, the AI key/credits need a look.");
+      /* The provider's own (truncated) rejection rides back as out.aiError —
+         "invalid x-api-key", "model not found", credit exhaustion — so the
+         person clicking can see WHY instead of guessing (added while
+         diagnosing the 2026-07-16 dev test, where this took three rounds). */
+      toast("⚠️ AI didn't answer — a plain placeholder draft was inserted instead." +
+        (out.aiError ? " (" + out.aiError + ")" :
+          " Try again in a minute; if it keeps happening, the AI key/credits need a look."));
     } else {
       toast("Placeholder draft inserted (no AI on this site) — review and edit it before saving or sending.");
     }

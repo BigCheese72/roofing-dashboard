@@ -338,7 +338,15 @@ async function callAnthropic(provider, system, parts, maxTokens) {
       messages: [{ role: "user", content: content }]
     })
   });
-  if (!res.ok) throw new Error("Anthropic API error " + res.status);
+  if (!res.ok) {
+    // Carry the provider's own words: Anthropic's error bodies name the
+    // exact problem ("invalid x-api-key", "model not found", credit
+    // exhaustion) and this message is what the caller's fallback surfaces
+    // for diagnosis. Body only, truncated -- never the request (the key
+    // lives in the request headers).
+    const detail = await res.text().catch(function () { return ""; });
+    throw new Error("Anthropic API error " + res.status + (detail ? ": " + detail.slice(0, 300) : ""));
+  }
   const json = await res.json();
   const block = (json.content || []).find(function (b) { return b.type === "text"; });
   if (!block || !block.text) throw new Error("Anthropic API returned no text");
@@ -368,7 +376,11 @@ async function callOpenAI(provider, system, parts, maxTokens) {
       ]
     })
   });
-  if (!res.ok) throw new Error("OpenAI API error " + res.status);
+  if (!res.ok) {
+    // Same as callAnthropic: the provider's error body is the diagnosis.
+    const detail = await res.text().catch(function () { return ""; });
+    throw new Error("OpenAI API error " + res.status + (detail ? ": " + detail.slice(0, 300) : ""));
+  }
   const json = await res.json();
   const text = json.choices && json.choices[0] && json.choices[0].message && json.choices[0].message.content;
   if (!text) throw new Error("OpenAI API returned no text");
@@ -446,7 +458,14 @@ async function generateSummary(input, opts) {
     const text = await callProvider(provider, system, parts, MAX_SUMMARY_TOKENS);
     return { text: String(text).slice(0, 8000), provider: provider.name, model: provider.model, llm: true };
   } catch (e) {
-    return { text: stubText, provider: "stub", model: null, llm: false, fallback: true };
+    // Netlify function logs get the full story; the caller gets a truncated
+    // detail to surface for diagnosis (safe: it is the provider's RESPONSE
+    // body -- the key travels only in request headers and is never echoed).
+    console.error("generateSummary provider call failed:", e && e.message);
+    return {
+      text: stubText, provider: "stub", model: null, llm: false, fallback: true,
+      errorDetail: String((e && e.message) || "unknown error").slice(0, 300)
+    };
   }
 }
 

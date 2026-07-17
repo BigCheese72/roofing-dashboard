@@ -552,7 +552,13 @@ test("sanitizeReport: workOrderId is id-shaped or nothing (it becomes a Firestor
 
 test("live path outage: provider error falls back to the template draft, flagged, still 200", async () => {
   process.env.ANTHROPIC_API_KEY = "sk-test-fake";
-  global.fetch = async () => ({ ok: false, status: 500, json: async () => ({}) });
+  // Realistic Anthropic rejection: status + JSON error body (the shape the
+  // real API returns for auth/model/credit failures).
+  global.fetch = async () => ({
+    ok: false, status: 401,
+    text: async () => '{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}',
+    json: async () => ({})
+  });
   try {
     const r = await fn.handler(ev({ action: "draft_summary", report: REPORT }, VALID_TECH));
     assert.equal(r.statusCode, 200, "an AI outage must never dead-end the field flow");
@@ -561,6 +567,29 @@ test("live path outage: provider error falls back to the template draft, flagged
     assert.equal(out.fallback, true);
     assert.equal(out.source, "template_stub_v1");
     assert.equal(out.draft, fn.composeTemplateSummary(fn.sanitizeReport(REPORT)), "fallback IS the deterministic template");
+    // The provider's rejection text surfaces (truncated) for diagnosis --
+    // and it is the RESPONSE body: the API key itself must never appear.
+    assert.ok(out.aiError.includes("Anthropic API error 401"), "status surfaces");
+    assert.ok(out.aiError.includes("invalid x-api-key"), "provider's own message surfaces");
+    assert.ok(out.aiError.length <= 300);
+    assert.ok(!r.body.includes("sk-test-fake"), "key never echoes");
+  } finally {
+    delete process.env.ANTHROPIC_API_KEY;
+    global.fetch = NETWORK_TRAP;
+  }
+});
+
+test("live success carries no aiError field content", async () => {
+  process.env.ANTHROPIC_API_KEY = "sk-test-fake";
+  global.fetch = async () => ({
+    ok: true, status: 200,
+    json: async () => ({ content: [{ type: "text", text: "LIVE DRAFT." }] })
+  });
+  try {
+    const r = await fn.handler(ev({ action: "draft_summary", report: REPORT }, VALID_TECH));
+    const out = JSON.parse(r.body);
+    assert.equal(out.llm, true);
+    assert.equal(out.aiError, null);
   } finally {
     delete process.env.ANTHROPIC_API_KEY;
     global.fetch = NETWORK_TRAP;
