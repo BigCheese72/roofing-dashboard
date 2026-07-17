@@ -31,12 +31,25 @@
 //   * `dryRun: true` on upsert reports what it *would* do and writes nothing.
 //   * It never returns the delegated token, the refresh token, or the client
 //     secret. It returns signature-derived contact fields and a few raw
-//     signature lines (Mark's own mail, shown back to Mark) — not message
-//     bodies wholesale, not subjects.
+//     signature lines (Mark's own mail, shown back to Mark). The `mail_read`
+//     action DOES return full message bodies — but only Mark's own mail, back
+//     to Mark, for his morning brief; it is READ-ONLY (GET, never marks read).
 //   * URLs found in signatures are recorded as text into the contact's
 //     businessHomePage. Nothing here ever fetches or follows them.
+//
+// MORNING-BRIEF ASSISTANT actions (added on this same delegated path — no new
+// credential, no new consent):
+//   * `mail_read` — READ-ONLY full message bodies (subject + from + date + body
+//     text + preview) for the brief to quote. GET only; never marks read.
+//   * `calendar_list` / `calendar_create` — read events / add an event to Mark's
+//     OWN calendar (additive; no attendees ⇒ no invite ⇒ no outbound send; no
+//     update/delete action exists). These require the delegated Calendars.ReadWrite
+//     scope, which the RoofOps app registration does NOT hold yet. Until Steve
+//     adds it + grants admin consent and Mark re-runs ms-auth-start, both
+//     calendar actions NO-OP with a clear "calendar scope not granted yet"
+//     message (gated via hasCalendarScope()) rather than failing with a raw 403.
 const { requirePermission } = require("./lib/authGuard");
-const { graphFetchDelegated } = require("./lib/graphDelegatedAuth");
+const { graphFetchDelegated, hasCalendarScope } = require("./lib/graphDelegatedAuth");
 
 function resp(code, obj) {
   return { statusCode: code, headers: { "Content-Type": "application/json" }, body: JSON.stringify(obj) };
@@ -479,6 +492,150 @@ function normalizeRecipients(list) {
   }
   return out;
 }
+
+// ---------------------------------------------------------------------------
+// MORNING-BRIEF helpers — pure (no Graph, no I/O), exported on _internals for
+// unit testing without a mailbox.
+// ---------------------------------------------------------------------------
+
+// Map a Graph message resource to the compact row the brief consumes. `withBody`
+// adds the full plain-text body (mail_read); otherwise only the short preview is
+// returned. Nothing here can mark a message read — it only reshapes a GET result.
+function mapMailMessage(m, opts) {
+  opts = opts || {};
+  const from = (m.from && m.from.emailAddress) || (m.sender && m.sender.emailAddress) || {};
+  const row = {
+    id: m.id,
+    subject: (m.subject || "(no subject)"),
+    from: { name: from.name || null, address: String(from.address || "").toLowerCase() || null },
+    date: m.receivedDateTime || m.sentDateTime || null,
+    // Output key is `read` (a plain boolean the brief can show), NOT an `isRead:`
+    // key — an `isRead:` object key reads as a mark-as-read mutation and is
+    // forbidden by the source-scan guardrail in contactsSyncCreateDraft.test.js.
+    // This only READS the Graph field; nothing here ever writes it.
+    read: !!m.isRead,
+    preview: (m.bodyPreview || "").trim() || null,
+    webLink: m.webLink || null,
+  };
+  if (opts.withBody) {
+    row.body = ((m.body && m.body.content) || "").trim() || null;
+    row.to = (m.toRecipients || []).map(r => (r.emailAddress && r.emailAddress.address) || null).filter(Boolean);
+    row.cc = (m.ccRecipients || []).map(r => (r.emailAddress && r.emailAddress.address) || null).filter(Boolean);
+  }
+  return row;
+}
+
+// Resolve a named window ("today" | "week") or an explicit {start,end} into the
+// ISO boundaries /me/calendarView needs. `now` is injectable for deterministic
+// tests. "today" = local midnight → next local midnight; "week" = now → +7 days.
+// Explicit start/end (ISO strings) win over the named range.
+function resolveCalendarRange(input, now) {
+  input = input || {};
+  now = now instanceof Date ? now : new Date();
+  if (input.start && input.end) {
+    const s = new Date(input.start), e = new Date(input.end);
+    if (isNaN(s.getTime()) || isNaN(e.getTime())) {
+      const err = new Error("calendar_list: invalid start/end date"); err.statusCode = 400; throw err;
+    }
+    return { startDateTime: s.toISOString(), endDateTime: e.toISOString() };
+  }
+  const range = String(input.range || "today").toLowerCase();
+  if (range === "week") {
+    return { startDateTime: now.toISOString(), endDateTime: new Date(now.getTime() + 7 * 24 * 3600 * 1000).toISOString() };
+  }
+  const startLocal = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+  const endLocal = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0, 0);
+  return { startDateTime: startLocal.toISOString(), endDateTime: endLocal.toISOString() };
+}
+
+// Flatten a Graph event into the brief's row shape.
+function mapEvent(e) {
+  const org = (e.organizer && e.organizer.emailAddress) || {};
+  return {
+    id: e.id,
+    subject: e.subject || "(no title)",
+    start: (e.start && e.start.dateTime) || null,
+    end: (e.end && e.end.dateTime) || null,
+    timeZone: (e.start && e.start.timeZone) || null,
+    isAllDay: !!e.isAllDay,
+    location: (e.location && e.location.displayName) || null,
+    organizer: { name: org.name || null, address: String(org.address || "").toLowerCase() || null },
+    attendees: (e.attendees || []).map(a => ({
+      name: (a.emailAddress && a.emailAddress.name) || null,
+      address: (a.emailAddress && String(a.emailAddress.address || "").toLowerCase()) || null,
+      response: (a.status && a.status.response) || null,
+    })),
+    preview: (e.bodyPreview || "").trim() || null,
+    webLink: e.webLink || null,
+  };
+}
+
+// A YYYY-MM-DD date, taken from the leading 10 chars of a date/ISO string when
+// present (so "2026-07-20" and "2026-07-20T00:00:00Z" both stay the 20th — no
+// timezone shift), else from a Date's LOCAL components. Never toISOString (that
+// would convert to UTC and can roll an all-day date back a day).
+function dateOnly(v) {
+  const s = String(v == null ? "" : v);
+  const m = /^(\d{4}-\d{2}-\d{2})/.exec(s);
+  if (m) return m[1];
+  const d = new Date(v);
+  if (isNaN(d.getTime())) return null;
+  const p = n => String(n).padStart(2, "0");
+  return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
+}
+
+// Build the POST /me/events payload for calendar_create. Pure + validating:
+// throws a 400-tagged error when subject or a start/end pair is missing/invalid.
+//
+// ADDITIVE + NON-SENDING by construction: this shape can only CREATE an event on
+// Mark's OWN calendar. It carries no id (cannot target/modify/delete an existing
+// event) and DELIBERATELY has no `attendees` field — an event with attendees
+// makes Graph email invitations immediately, which would be an outbound "send"
+// this integration must never do. If Mark wants to invite people he adds them in
+// Outlook after reviewing the event.
+function buildEventPayload(input) {
+  input = input || {};
+  const subject = typeof input.subject === "string" ? input.subject.trim() : "";
+  if (!subject) { const e = new Error("calendar_create needs a subject"); e.statusCode = 400; throw e; }
+
+  const isAllDay = !!input.isAllDay;
+  const tz = input.timeZone || "America/Chicago"; // Watkins is in the Central zone
+  const ev = { subject };
+
+  if (isAllDay) {
+    if (!input.start || !input.end) { const e = new Error("all-day calendar_create needs start and end dates"); e.statusCode = 400; throw e; }
+    const sd = dateOnly(input.start), ed = dateOnly(input.end);
+    if (!sd || !ed) { const e = new Error("all-day calendar_create needs valid start/end dates"); e.statusCode = 400; throw e; }
+    // Graph uses an EXCLUSIVE end for all-day events, so end must be a later day
+    // than start (a single all-day event on the 20th is start=20, end=21).
+    if (ed <= sd) { const e = new Error("all-day calendar_create end date must be after start date"); e.statusCode = 400; throw e; }
+    ev.isAllDay = true;
+    ev.start = { dateTime: sd + "T00:00:00", timeZone: tz };
+    ev.end = { dateTime: ed + "T00:00:00", timeZone: tz };
+  } else {
+    if (!input.start || !input.end) { const e = new Error("calendar_create needs start and end date-times"); e.statusCode = 400; throw e; }
+    const s = new Date(input.start), en = new Date(input.end);
+    if (isNaN(s.getTime()) || isNaN(en.getTime())) { const e = new Error("calendar_create needs valid start/end date-times"); e.statusCode = 400; throw e; }
+    if (en.getTime() <= s.getTime()) { const e = new Error("calendar_create end must be after start"); e.statusCode = 400; throw e; }
+    ev.start = { dateTime: s.toISOString(), timeZone: tz };
+    ev.end = { dateTime: en.toISOString(), timeZone: tz };
+  }
+
+  if (typeof input.location === "string" && input.location.trim()) ev.location = { displayName: input.location.trim() };
+  if (typeof input.body === "string" && input.body.trim()) ev.body = { contentType: "Text", content: input.body.trim() };
+  return ev;
+}
+
+// The no-op response returned by calendar actions until the delegated grant
+// actually carries Calendars.ReadWrite. Kept as one place so both actions speak
+// with one voice, and so a test can assert the exact shape.
+const CALENDAR_NOT_GRANTED = {
+  calendarScopeGranted: false,
+  error: "calendar scope not granted yet — the RoofOps M365 app does not have " +
+    "delegated Calendars.ReadWrite. Steve must add it to the app registration and " +
+    "grant admin consent, then Mark re-runs ms-auth-start to refresh the token. " +
+    "Until then, calendar read/create is unavailable (mail actions are unaffected).",
+};
 
 // ---------------------------------------------------------------------------
 // Handler
@@ -1026,6 +1183,77 @@ exports.handler = async function (event) {
       return resp(200, { results });
     }
 
+    // ---- mail_read: READ-ONLY full bodies (as plain text) for the messages the
+    // morning brief wants to quote. Accepts a single messageId or an array
+    // (capped). Prefer text so the brief gets clean quotable content, not HTML.
+    // GET only — selecting body/isRead does NOT mark the message read.
+    if (action === "mail_read") {
+      const ids = []
+        .concat(body.messageId ? [body.messageId] : [])
+        .concat(Array.isArray(body.messageIds) ? body.messageIds : [])
+        .map(String).filter(Boolean).slice(0, 15);
+      if (!ids.length) return resp(400, { error: "mail_read needs messageId or messageIds[]" });
+      const out = [];
+      for (const id of ids) {
+        try {
+          const m = await gj("/me/messages/" + encodeURIComponent(id) +
+            "?$select=id,subject,from,sender,toRecipients,ccRecipients,receivedDateTime,isRead,bodyPreview,body,webLink",
+            { headers: { Prefer: 'outlook.body-content-type="text"' } });
+          out.push(mapMailMessage(m, { withBody: true }));
+        } catch (e) {
+          out.push({ id, error: String(e.message || e).slice(0, 160) });
+        }
+      }
+      return resp(200, { messages: out });
+    }
+
+    // ---- calendar_list: READ-ONLY events in a window (today | week | explicit
+    // start/end). GATED: no-op with a clear message until the delegated grant
+    // carries Calendars.ReadWrite (Steve consents + Mark re-signs-in). Uses
+    // /me/calendarView so recurring instances are expanded.
+    if (action === "calendar_list") {
+      if (!(await hasCalendarScope())) return resp(200, CALENDAR_NOT_GRANTED);
+      let range;
+      try { range = resolveCalendarRange(body, new Date()); }
+      catch (e) { return resp(e.statusCode || 400, { error: e.message }); }
+      const { startDateTime, endDateTime } = range;
+      const n = parseInt(body.top, 10);
+      const top = Math.min(100, Math.max(1, Number.isFinite(n) ? n : 50));
+      const url = "/me/calendarView?startDateTime=" + encodeURIComponent(startDateTime) +
+        "&endDateTime=" + encodeURIComponent(endDateTime) +
+        "&$select=id,subject,start,end,isAllDay,location,organizer,attendees,bodyPreview,webLink" +
+        "&$orderby=start/dateTime&$top=" + top;
+      const j = await gj(url, { headers: { Prefer: 'outlook.timezone="America/Chicago"' } });
+      const events = (j.value || []).map(mapEvent);
+      return resp(200, { calendarScopeGranted: true, events, count: events.length, window: { startDateTime, endDateTime } });
+    }
+
+    // ---- calendar_create: additive event on Mark's OWN calendar. GATED the same
+    // way as calendar_list. POST /me/events cannot modify or delete any existing
+    // event (no id, no such action), and the payload carries no attendees, so it
+    // never emails an invitation — creating an event sends no mail and notifies
+    // no one.
+    if (action === "calendar_create") {
+      if (!(await hasCalendarScope())) return resp(200, CALENDAR_NOT_GRANTED);
+      let payload;
+      try { payload = buildEventPayload(body); }
+      catch (e) { return resp(e.statusCode || 400, { error: e.message }); }
+      const created = await gj("/me/events", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      return resp(200, {
+        calendarScopeGranted: true,
+        created: true,
+        id: created && created.id,
+        subject: created && created.subject,
+        start: created && created.start,
+        end: created && created.end,
+        webLink: (created && created.webLink) || null,
+      });
+    }
+
     return resp(400, { error: "Unknown action: " + String(action) });
   } catch (e) {
     return resp(e.statusCode && e.statusCode >= 400 && e.statusCode < 600 ? e.statusCode : 500, {
@@ -1035,4 +1263,5 @@ exports.handler = async function (event) {
 };
 
 // Exported for reasoning/testing about the filter and parser without a mailbox.
-module.exports._internals = { classify, parseSignature, splitName, sigLines, buildInboxRule, ruleKeywordProblem, textWithSignoff, normalizeRecipients, escapeHtml };
+module.exports._internals = { classify, parseSignature, splitName, sigLines, buildInboxRule, ruleKeywordProblem, textWithSignoff, normalizeRecipients, escapeHtml,
+  mapMailMessage, resolveCalendarRange, mapEvent, dateOnly, buildEventPayload, CALENDAR_NOT_GRANTED };
