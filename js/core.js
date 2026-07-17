@@ -2425,21 +2425,24 @@ function onWoTypeChange(){
      section in its PDF) and Warranty stay hidden — widening later is just
      this condition. */
   var dsr = document.getElementById("wo-draft-summary-row");
-  /* Two gates, both must pass: (1) a summary-bearing report type, and (2) this
-     deploy actually HAS an AI key. Production ships with no key, so the button
-     stays hidden there rather than offering a draft that can only be a
-     deterministic placeholder; it flips visible automatically the moment a key
-     is provisioned (the probe re-runs this on resolve). aiSummaryConfigured()
-     is null-until-probed, so the button starts hidden and only appears once we
-     KNOW a key exists — never a flash of a dead control. */
+  /* Teaser, not a hard gate (Mark, 2026-07-17): show the "✨ Draft Summary"
+     button on every summary-bearing report type (Inspection, Leak, Work Order)
+     regardless of whether THIS deploy has an AI key. On a keyed deploy (dev, or
+     prod once a key is provisioned) tapping generates a real draft; on a
+     keyless deploy (production today) tapping shows a friendly "coming soon"
+     toast instead of a dead no-op or an error — that branch lives in
+     draftReportSummary() (js/workorders.js), driven by the same capability
+     probe. Change Order (its own document, no Summary section in its PDF) and
+     Warranty stay hidden — widening later is just this condition. */
   var wantsSummary = (isInspection || isLeakType || isRepair);
-  /* aiSummaryConfigured()/probeAiSummaryCapability() live outside this function
-     (above), so typeof-guard them — same convention as the other neighbor
-     calls here — for isolated-function unit tests and any load order. Until the
-     probe resolves (aiReady === null) the row stays hidden. */
-  var aiReady = (typeof aiSummaryConfigured === "function") ? aiSummaryConfigured() : null;
-  if (dsr) dsr.style.display = (wantsSummary && aiReady === true) ? "" : "none";
-  if (wantsSummary && aiReady === null && typeof probeAiSummaryCapability === "function") probeAiSummaryCapability();
+  if (dsr) dsr.style.display = wantsSummary ? "" : "none";
+  /* Pre-warm the capability probe so a tap branches instantly (real draft vs
+     coming-soon) without waiting on the round-trip. Cached + typeof-guarded for
+     isolated-function unit tests and load order — same convention as the other
+     neighbor calls here; draftReportSummary() also awaits it as a fallback if
+     the button is tapped before this resolves. */
+  if (wantsSummary && typeof aiSummaryConfigured === "function" && aiSummaryConfigured() === null &&
+      typeof probeAiSummaryCapability === "function") probeAiSummaryCapability();
   var ic = document.getElementById("wo-inspection-card");
   if (ic) ic.style.display = isInspection ? "" : "none";
   if (isInspection){ ensureInspectionChecklist(); renderInspectionChecklist(); renderInspectionRoofPicker(); }
