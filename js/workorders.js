@@ -530,14 +530,19 @@ function findingPhotoGalleryHtml(f){
     (strip ? '<div class="finding-photo-strip">' + strip + '</div>' : '') +
     '</div>';
 }
-/* Checklist items only get in-app camera capture -- no library add, no
-   CompanyCam import (Mark: doesn't want those on the checklist). The tech
-   is photographing the specific condition they're looking at and rating
-   right there, not attaching photos from elsewhere. Every capture here
-   auto-pins (see maybeAutoPinInspectionItem()) -- the pin is what makes
-   this photo a "before" reference a later repair photo at the same spot
-   can be compared against (before/after-at-a-pin -- see "Inspection
-   checklist photo pinning" in ROADMAP.md/DEV_NOTES.md). */
+/* Checklist items get in-app camera capture AND library add (Mark,
+   2026-07-17 field hotfix: techs need to attach existing phone-library
+   photos to a checklist item, not only shoot a live one -- e.g. a photo
+   taken earlier in the walk, or one already on the phone). CompanyCam
+   import stays off the checklist. A live "📷 Take Photo" capture still
+   goes through the camera path and auto-pins from the device's current
+   GPS (see maybeAutoPinInspectionItem()) -- that pin is what makes the
+   photo a "before" reference a later repair photo at the same spot can be
+   compared against (before/after-at-a-pin -- see "Inspection checklist
+   photo pinning" in ROADMAP.md/DEV_NOTES.md). A library-added photo is
+   deliberately left un-pinned (addPhotosFromFiles(): it could be old or
+   from elsewhere, so no GPS is guessed) -- same as a finding's library
+   add; the tech can still place it manually. */
 function inspectionItemPhotoGalleryHtml(item){
   var safeId = esc(item.id);
   var items = photos.map(function(p, gi){ return { p: p, gi: gi }; })
@@ -553,9 +558,12 @@ function inspectionItemPhotoGalleryHtml(item){
   return '<div class="finding-photos">' +
     '<div class="btnrow" style="margin:0">' +
       '<button class="btn primary" onclick="document.getElementById(\'fcam-' + safeId + '\').click()">📷 Take Photo</button>' +
+      '<button class="btn" onclick="document.getElementById(\'flib-' + safeId + '\').click()">+ Add Photos</button>' +
     '</div>' +
     '<input type="file" id="fcam-' + safeId + '" accept="image/*" capture="environment" style="display:none" ' +
       'onchange="addPhotosFromCamera(this.files, \'' + safeId + '\'); this.value=\'\';">' +
+    '<input type="file" id="flib-' + safeId + '" accept="image/*" multiple style="display:none" ' +
+      'onchange="addPhotosFromFiles(this.files, \'' + safeId + '\'); this.value=\'\';">' +
     (strip ? '<div class="finding-photo-strip">' + strip + '</div>' : '') +
     (item.pin ? '<p class="hint" style="margin:6px 0 0">📍 Pinned on the roof map from this photo\'s location.</p>' : '') +
     '</div>';
