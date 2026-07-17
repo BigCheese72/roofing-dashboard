@@ -120,10 +120,12 @@ test("keyed (configured:true) -> a tap generates a real draft and inserts it", a
 
 test("not-yet-probed (null) -> awaits the probe; resolves false -> coming-soon, no server call", async () => {
   const h = makeHarness({ configured: null, probeResolvesTo: false });
-  await h.sandbox.draftReportSummary(null);
+  const btn = { disabled: false };
+  await h.sandbox.draftReportSummary(btn);
   assert.strictEqual(h.calls.probed, 1, "the probe is awaited when state is unknown");
   assert.deepStrictEqual(h.calls.toasts, ["✨ AI Draft Summary — coming soon"]);
   assert.strictEqual(h.calls.fetches.length, 0);
+  assert.strictEqual(btn.disabled, false, "button is re-enabled after the probe await — no leaked-disabled state");
 });
 
 test("not-yet-probed (null) -> awaits the probe; resolves true -> generates a real draft", async () => {

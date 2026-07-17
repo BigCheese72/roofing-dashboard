@@ -1532,7 +1532,15 @@ async function draftReportSummary(btn){
      true and the real generate flow below runs completely untouched. */
   var configured = (typeof aiSummaryConfigured === "function") ? aiSummaryConfigured() : null;
   if (configured === null && typeof probeAiSummaryCapability === "function"){
-    try{ configured = await probeAiSummaryCapability(); }catch(e){ configured = false; }
+    /* Disable ONLY across the probe await (a disabled button fires no onclick),
+       so a double-tap before the probe resolves can't start two drafts. The
+       probe is pre-warmed on type-select, so this branch is almost never taken;
+       when it is, the finally re-enables on every outcome — no leaked-disabled
+       button, and the paths below (confirm-cancel, etc.) are untouched. */
+    if (btn) btn.disabled = true;
+    try{ configured = await probeAiSummaryCapability(); }
+    catch(e){ configured = false; }
+    finally{ if (btn) btn.disabled = false; }
   }
   if (!configured){ toast("✨ AI Draft Summary — coming soon"); return; }
   var existing = val("summary");
