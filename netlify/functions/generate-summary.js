@@ -419,6 +419,12 @@ exports.handler = async function (event) {
       llm: !!result.llm,
       model: result.model || null,
       fallback: !!result.fallback,
+      // Present only on the fallback path: the provider's own (truncated)
+      // rejection text, so a failed AI call is diagnosable from the toast
+      // instead of requiring server-log access. Caller is already
+      // doc.generate-authenticated; the detail is the provider's RESPONSE
+      // body and never contains the key.
+      aiError: result.fallback ? (result.errorDetail || null) : null,
       photosSeen: result.llm ? photoUrls.length + photoImages.length : 0
     });
   } catch (e) {
