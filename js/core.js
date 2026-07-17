@@ -2422,8 +2422,13 @@ function onWoTypeChange(){
      is null-until-probed, so the button starts hidden and only appears once we
      KNOW a key exists — never a flash of a dead control. */
   var wantsSummary = (isInspection || isLeakType || isRepair);
-  if (dsr) dsr.style.display = (wantsSummary && aiSummaryConfigured() === true) ? "" : "none";
-  if (wantsSummary && aiSummaryConfigured() === null) probeAiSummaryCapability();
+  /* aiSummaryConfigured()/probeAiSummaryCapability() live outside this function
+     (above), so typeof-guard them — same convention as the other neighbor
+     calls here — for isolated-function unit tests and any load order. Until the
+     probe resolves (aiReady === null) the row stays hidden. */
+  var aiReady = (typeof aiSummaryConfigured === "function") ? aiSummaryConfigured() : null;
+  if (dsr) dsr.style.display = (wantsSummary && aiReady === true) ? "" : "none";
+  if (wantsSummary && aiReady === null && typeof probeAiSummaryCapability === "function") probeAiSummaryCapability();
   var ic = document.getElementById("wo-inspection-card");
   if (ic) ic.style.display = isInspection ? "" : "none";
   if (isInspection){ ensureInspectionChecklist(); renderInspectionChecklist(); renderInspectionRoofPicker(); }
