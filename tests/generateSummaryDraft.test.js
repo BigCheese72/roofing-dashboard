@@ -158,6 +158,10 @@ const fakeAdmin = {
     return {
       bucket: () => ({
         file: (path) => ({
+          // Objects exist unless the path says otherwise — a "gone" path
+          // models the live 2026-07-16 failure: a photo doc whose storageRef
+          // points at an object that was never uploaded.
+          exists: async () => [path.indexOf("gone") === -1],
           getSignedUrl: async (opts) => {
             signedCalls.push({ path, opts });
             return ["https://storage.googleapis.com/fake/" + path + "?X-Goog-Signature=abc123"];
@@ -378,6 +382,7 @@ test("collectSignedPhotoUrls signs only clean workorders/ refs, short-lived, and
   const signedCalls = [];
   const fakeBucket = {
     file: (path) => ({
+      exists: async () => [path.indexOf("gone") === -1],
       getSignedUrl: async (opts) => {
         if (path.indexOf("boom") !== -1) throw new Error("storage hiccup");
         signedCalls.push({ path, opts });
@@ -391,6 +396,11 @@ test("collectSignedPhotoUrls signs only clean workorders/ refs, short-lived, and
     { caption: "traversal", storageRef: "workorders/../secrets/key.json" },
     { caption: "foreign", storageRef: "warranty_reports/b/x.pdf" },
     { caption: "no ref (unsaved photo)", storageRef: null },
+    // The live 2026-07-16 failure: a valid-LOOKING ref whose object was
+    // never uploaded. Signing it succeeds (pure local crypto) but Anthropic
+    // 400s the whole request when the download 404s — so it must be
+    // filtered by the exists() check, BEFORE signing.
+    { caption: "object missing", storageRef: "workorders/wo_1/gone.jpg" },
     { caption: "signing fails", storageRef: "workorders/wo_1/boom.jpg" }
   ]);
   // Only the clean ref produced a URL; the failing one was skipped, not fatal.
