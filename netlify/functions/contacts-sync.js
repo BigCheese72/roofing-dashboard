@@ -13,11 +13,17 @@
 //     as outlook.js / graph-selftest.js. Auth runs FIRST, before any env read
 //     or Graph call, so an unauthenticated caller gets 401 and never a 500
 //     that leaks configuration state.
-//   * Mail is READ-ONLY. It issues GETs only. It NEVER PATCHes `isRead`, and
-//     reading a message via Graph does not mark it read as a side effect (that
-//     is an Outlook-client behaviour, not a Graph one) — so the 322 unread in
-//     Mark's inbox stay unread. It never sends, replies, forwards, moves,
-//     deletes, or creates rules.
+//   * Mail is never SENT and never DELETED. Reading is GET-only; it NEVER
+//     PATCHes `isRead`, and reading a message via Graph does not mark it read
+//     as a side effect (that is an Outlook-client behaviour, not a Graph one)
+//     — so the 322 unread in Mark's inbox stay unread. It never sends,
+//     forwards, or marks mail read. Three additive mail writes exist, each
+//     documented at its own handler and none of which can send or delete:
+//     `move` (move-to-folder only), `rules_create` (additive move-to-folder
+//     inbox rules), and `create_draft` (compose a Drafts-only reply or new
+//     message for Mark to review and send HIMSELF — never auto-sent). The
+//     delegated token holds Mail.ReadWrite and has NO Mail.Send, so a send is
+//     impossible even in principle; this code adds no send path regardless.
 //   * The ONLY writes are to /me/contacts, and only via `upsert`, and only for
 //     the exact payload the caller passes. Existing contacts are PATCHed
 //     (merge — Graph only overwrites the properties present in the body), never
@@ -425,6 +431,53 @@ function buildInboxRule(r) {
       actions: { moveToFolder: r.destinationId, stopProcessingRules: true },
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// DRAFT COMPOSITION — helpers for the `create_draft` action.
+//
+// create_draft only ever CREATES a draft (a reply draft via Graph's
+// createReply, or a fresh message via POST /me/messages — Graph files both in
+// Drafts). It never sends. Mark reviews every draft and sends it himself.
+// These helpers are pure (no Graph, no I/O) so they can be unit-tested without
+// a mailbox; they are exported on _internals below.
+// ---------------------------------------------------------------------------
+
+// Mark's house sign-off. Appended to a draft body unless the caller supplied a
+// full formatted body (bodyHtml) or the text already signs off — so a morning
+// routine that only writes the substance still produces a draft in his voice.
+const SIGNOFF_TEXT = "Respectfully,\nMark";
+
+function escapeHtml(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+// Append the sign-off to plain-text body content, unless the text already ends
+// with a "Respectfully" sign-off (idempotent — never doubles it).
+function textWithSignoff(text) {
+  const t = String(text == null ? "" : text).replace(/\s+$/, "");
+  if (/(^|\n)\s*respectfully\b/i.test(t)) return t;   // already signed off
+  return (t ? t + "\n\n" : "") + SIGNOFF_TEXT;
+}
+
+// Normalize a caller's recipient list into Graph's shape. Accepts bare address
+// strings ("a@b.com") or objects ({address|email, name}); silently drops
+// anything without a plausible "@" local so a typo can't become a bad send —
+// and this is a DRAFT anyway, so Mark sees the recipients before anything goes.
+function normalizeRecipients(list) {
+  const out = [];
+  for (const r of (Array.isArray(list) ? list : [])) {
+    let address = null, name = null;
+    if (typeof r === "string") address = r;
+    else if (r && typeof r === "object") { address = r.address || r.email || null; name = r.name || null; }
+    address = String(address == null ? "" : address).trim();
+    if (address.indexOf("@") < 1) continue;
+    out.push({ emailAddress: name ? { address, name: String(name) } : { address } });
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -847,6 +900,105 @@ exports.handler = async function (event) {
       });
     }
 
+    // ---- create_draft: THE ONLY MAIL-COMPOSE ACTION. Creates a DRAFT and
+    // nothing more. It NEVER sends — Mark reviews the draft in Outlook and
+    // sends it himself. There is deliberately no /send, no /sendMail, no
+    // send-and-reply, no delete, and no isRead here. Two forms:
+    //   reply:  { replyToMessageId, bodyText | bodyHtml }
+    //           -> POST /me/messages/{id}/createReply (Graph files the reply
+    //              draft in Drafts, quoting the original), then PATCH the BODY
+    //              of that one newly-created draft to insert Mark's message
+    //              above the quoted history.
+    //   fresh:  { toRecipients:[...], subject, bodyText | bodyHtml, ccRecipients? }
+    //           -> POST /me/messages (Graph files a plain new message in
+    //              Drafts; a message is not sent until an explicit /send this
+    //              function never issues).
+    // Every write here targets ONLY a draft this call just created. The
+    // delegated token has Mail.ReadWrite and NO Mail.Send, so a send is
+    // impossible in principle; this code adds no send path regardless.
+    if (action === "create_draft") {
+      // A caller who hands us a full formatted body (bodyHtml) has written the
+      // whole message; we use it verbatim and do NOT auto-append the sign-off.
+      // Otherwise we compose from bodyText and sign it off in Mark's voice.
+      const hasHtml = typeof body.bodyHtml === "string" && body.bodyHtml.trim() !== "";
+      const replyToMessageId = body.replyToMessageId ? String(body.replyToMessageId) : null;
+
+      if (replyToMessageId) {
+        // 1. Ask Graph to build the reply draft. This is a CREATE — it files a
+        //    draft in Drafts and sends nothing. It quotes the original thread.
+        const draft = await gj("/me/messages/" + encodeURIComponent(replyToMessageId) + "/createReply", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        });
+        const draftId = draft && draft.id;
+        if (!draftId) return resp(502, { error: "createReply did not return a draft id" });
+
+        // 2. Insert Mark's message ABOVE the quoted history, preserving the
+        //    thread, then PATCH — targeting ONLY this just-created draft's body.
+        const orig = (draft.body && draft.body.content) || "";
+        const isText = String((draft.body && draft.body.contentType) || "html").toLowerCase() === "text";
+        let contentType, content;
+        if (isText) {
+          const mine = hasHtml ? String(body.bodyHtml) : textWithSignoff(body.bodyText);
+          contentType = "Text";
+          content = orig ? mine + "\n\n" + orig : mine;
+        } else {
+          const mine = hasHtml
+            ? String(body.bodyHtml)
+            : escapeHtml(textWithSignoff(body.bodyText)).replace(/\n/g, "<br>");
+          contentType = "HTML";
+          content = orig ? mine + "<br><br>" + orig : mine;
+        }
+        await gj("/me/messages/" + encodeURIComponent(draftId), {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ body: { contentType, content } }),
+        });
+
+        return resp(200, {
+          created: true,
+          kind: "reply",
+          id: draftId,
+          webLink: draft.webLink || null,
+          replyToMessageId,
+        });
+      }
+
+      // Fresh draft. Needs at least one recipient and gets a signed-off body.
+      const toRecipients = normalizeRecipients(body.toRecipients);
+      if (!toRecipients.length) {
+        return resp(400, {
+          error: "create_draft needs either replyToMessageId (to draft a reply) " +
+            "or toRecipients (a non-empty array of email addresses, for a fresh draft)",
+        });
+      }
+      const message = {
+        subject: typeof body.subject === "string" ? body.subject : "",
+        toRecipients,
+        body: hasHtml
+          ? { contentType: "HTML", content: String(body.bodyHtml) }
+          : { contentType: "Text", content: textWithSignoff(body.bodyText) },
+      };
+      const cc = normalizeRecipients(body.ccRecipients);
+      if (cc.length) message.ccRecipients = cc;
+
+      // POST /me/messages creates a DRAFT in Drafts (Graph's default for a
+      // plain message create) — not sent, no notification, fully reversible
+      // (Mark can delete or edit it in Outlook).
+      const created = await gj("/me/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(message),
+      });
+      return resp(200, {
+        created: true,
+        kind: "fresh",
+        id: created && created.id,
+        webLink: (created && created.webLink) || null,
+      });
+    }
+
     // ---- rules_create: adds inbox rules. ADDITIVE ONLY — it never edits,
     // disables or deletes an existing rule. The only action a created rule may
     // carry is moveToFolder: this code refuses to build a rule that deletes,
@@ -883,4 +1035,4 @@ exports.handler = async function (event) {
 };
 
 // Exported for reasoning/testing about the filter and parser without a mailbox.
-module.exports._internals = { classify, parseSignature, splitName, sigLines, buildInboxRule, ruleKeywordProblem };
+module.exports._internals = { classify, parseSignature, splitName, sigLines, buildInboxRule, ruleKeywordProblem, textWithSignoff, normalizeRecipients, escapeHtml };
