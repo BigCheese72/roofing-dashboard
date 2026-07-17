@@ -183,18 +183,40 @@ function cleanInlineImage(p) {
 // ---- Shared input clamps ----------------------------------------------------
 // Request bodies are attacker-controlled text, and everything sanitized here
 // becomes LLM prompt context once a key exists -- so these bounds are both
-// the security clamp and the token-cost ceiling. sanitizeReport() is the
-// SAME projection generate-summary.js (PR #119) established client-side in
-// buildSummaryDraftPayload(): structured text only -- never photo bytes,
-// pins, GPS, ids, or signatures. Exported so the two functions converge on
-// one shape instead of drifting.
+// the security clamp and the token-cost ceiling. sanitizeReport() is the ONE
+// server-side clamp for the projection buildSummaryDraftPayload()
+// (js/workorders.js) sends -- structured text, each photo's caption AND
+// Storage ref, and the work-order id. The ref and the id exist ONLY so
+// generate-summary.js can fetch pixels server-side (signed READ url / inline
+// Firestore read); generateSummary() below strips BOTH out of prompt text.
+// Never photo bytes, pins, GPS, per-row ids, or signatures.
+// generate-summary.js requires this function (and re-exports it for its
+// tests) -- its local copy moved here after the post-#119 cross-review
+// caught the two sanitizers drifting apart.
 function s(v, max) { return String(v == null ? "" : v).slice(0, max || 300); }
 function rows(arr, max, map) {
   return (Array.isArray(arr) ? arr : []).slice(0, max).map(map).filter(Boolean);
 }
+// A photo Storage ref may be passed through to a signed READ url on the
+// vision path, so it is validated hard: our own workorders/ prefix only, no
+// traversal, sane length. Anything else becomes null (caption may still be
+// useful) -- never an error, never a signable path.
+function cleanStorageRef(v) {
+  const ref = s(v, 300);
+  if (!ref || ref.indexOf("workorders/") !== 0 || ref.indexOf("..") !== -1) return null;
+  return ref;
+}
+// The work-order id is the server's handle for reading INLINE photo bytes
+// back out of Firestore itself (Phase 1.5) -- it becomes a Firestore doc
+// path, so it is id-shaped or it is nothing.
+function cleanWorkOrderId(v) {
+  const id = s(v, 80);
+  return /^[A-Za-z0-9_-]{1,80}$/.test(id) ? id : null;
+}
 function sanitizeReport(raw) {
   if (!raw || typeof raw !== "object") return null;
   return {
+    workOrderId: cleanWorkOrderId(raw.workOrderId),
     woType: s(raw.woType, 40),
     jobName: s(raw.jobName, 200),
     location: s(raw.location, 300),
@@ -204,6 +226,7 @@ function sanitizeReport(raw) {
     reportedArea: s(raw.reportedArea, 300),
     warrantable: s(raw.warrantable, 1000),
     nonWarrantable: s(raw.nonWarrantable, 1000),
+    repairDescription: s(raw.repairDescription, 2000),
     inspectionChecklist: rows(raw.inspectionChecklist, 20, function (it) {
       if (!it || typeof it !== "object") return null;
       const label = s(it.label, 60), rating = s(it.rating, 20);
@@ -219,9 +242,16 @@ function sanitizeReport(raw) {
       const repair = s(r.repair, 500), location = s(r.location, 300);
       return (repair || location) ? { repair: repair, location: location } : null;
     }),
-    photoCaptions: rows(raw.photoCaptions, 60, function (c) {
-      const t = s(c, 300).trim();
-      return t || null;
+    repairItems: rows(raw.repairItems, 50, function (it) {
+      if (!it || typeof it !== "object") return null;
+      const type = s(it.type, 120), notes = s(it.notes, 500);
+      return (type || notes) ? { type: type, qty: s(it.qty, 20), notes: notes } : null;
+    }),
+    photos: rows(raw.photos, 60, function (p) {
+      if (!p || typeof p !== "object") return null;
+      const caption = s(p.caption, 300).trim();
+      const storageRef = cleanStorageRef(p.storageRef);
+      return (caption || storageRef) ? { caption: caption, storageRef: storageRef } : null;
     }),
     photoCount: Math.max(0, Math.min(500, parseInt(raw.photoCount, 10) || 0))
   };
@@ -450,6 +480,10 @@ function clampIssueResult(raw) {
 //                   (SUMMARY_TARGET_WORDS length dial + Mark's STYLE_EXEMPLAR
 //                   voice sample). Default stays this file's generic
 //                   SUMMARY_SYSTEM so other callers are unaffected.
+// Returns photosUsed: how many images the model call actually consumed
+// (0 on the stub/fallback paths) -- the ONLY number a caller may surface as
+// "photos reviewed" (#144's toast). Post-#119 cross-review REQUIRED fix:
+// callers must not count what they minted/collected, only what rode.
 async function generateSummary(input, opts) {
   opts = opts || {};
   const report = input.report;
@@ -460,17 +494,17 @@ async function generateSummary(input, opts) {
   const system = opts.system || SUMMARY_SYSTEM;
 
   if (provider.name === "stub") {
-    return { text: stubText, provider: "stub", model: null, llm: false };
+    return { text: stubText, provider: "stub", model: null, llm: false, photosUsed: 0 };
   }
   try {
     const parts = photoUrls.map(function (u) { return { kind: "image", url: u }; });
     photoImages.forEach(function (im) { parts.push({ kind: "image_b64", mediaType: im.mediaType, data: im.data }); });
     parts.push({
       kind: "text",
-      text: "Draft the Summary for this report. Report data (JSON):\n" + JSON.stringify(report)
+      text: "Draft the Summary for this report. Report data (JSON):\n" + JSON.stringify(promptProjection(report))
     });
     const text = await callProvider(provider, system, parts, MAX_SUMMARY_TOKENS);
-    return { text: String(text).slice(0, 8000), provider: provider.name, model: provider.model, llm: true };
+    return { text: String(text).slice(0, 8000), provider: provider.name, model: provider.model, llm: true, photosUsed: photoUrls.length + photoImages.length };
   } catch (e) {
     // Netlify function logs get the full story; the caller gets a truncated
     // detail to surface for diagnosis (safe: it is the provider's RESPONSE
@@ -478,9 +512,26 @@ async function generateSummary(input, opts) {
     console.error("generateSummary provider call failed:", e && e.message);
     return {
       text: stubText, provider: "stub", model: null, llm: false, fallback: true,
+      photosUsed: 0,
       errorDetail: String((e && e.message) || "unknown error").slice(0, 300)
     };
   }
+}
+
+// What the MODEL sees as text context. The work-order id and each photo's
+// Storage ref exist ONLY so generate-summary.js can fetch pixels server-side
+// -- they are internal identifiers/paths and never belong in prompt text
+// (post-#119 cross-review REQUIRED fix). Photos reduce to their captions;
+// the pixels themselves ride alongside as image blocks.
+function promptProjection(report) {
+  if (!report || typeof report !== "object") return report;
+  const out = Object.assign({}, report);
+  delete out.workOrderId;
+  if (Array.isArray(report.photos)) {
+    out.photoCaptions = report.photos.map(function (p) { return p && p.caption; }).filter(Boolean);
+    delete out.photos;
+  }
+  return out;
 }
 
 // (b) ISSUE-ID: one signed leak-photo URL + context -> structured
@@ -520,6 +571,8 @@ module.exports = {
   resolveProvider,
   isSignedPhotoUrl,
   cleanInlineImage,
+  cleanStorageRef,
+  cleanWorkOrderId,
   sanitizeReport,
   sanitizeIssueContext,
   extractJson,
