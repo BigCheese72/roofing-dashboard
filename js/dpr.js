@@ -1313,6 +1313,7 @@ function dprCollect(){
     summary: val("dpr-summary"),
     section: dprState.section || null,   /* the roof area traced for today (progress overlay) */
     signoff: dprState.signoff || null,   /* signature + lock state (see sign-off/lock hooks below) */
+    hoursAmendments: dprState.hoursAmendments || null,  /* late-hours amendment trail (nightly sync writes these; carried so the PDF prints them) */
     /* ---- Phase-2 gated sections: null = toggle on No (nothing to report) ---- */
     delays: dprToggleIsYes("dpr-delays-toggle") ? {
       cause: val("dpr-delays-cause"), hoursLost: val("dpr-delays-hours"), notes: val("dpr-delays-notes")
@@ -1381,6 +1382,7 @@ function dprFill(o){
   dprPhotos = (o.photos || []).map(function(p){ return Object.assign({}, p); });
   dprState.section = o.section || null;
   dprState.signoff = o.signoff || null;
+  dprState.hoursAmendments = (o.hoursAmendments && o.hoursAmendments.length) ? o.hoursAmendments : null;
   /* ---- Phase-2 gated sections (falsy / "" from Firestore's null-coercion = No) ---- */
   var dl = o.delays || null;
   dprSetGate("dpr-delays-toggle", "dpr-delays-body", !!dl);
@@ -2070,6 +2072,7 @@ function dprApplySignoffLock(){
         " — this report can no longer be edited.";
     }
   }
+  dprRenderAmendments();
   /* Save + the sign button disappear when locked; view-only actions (History,
      Download PDF, Progress Map, New) stay. */
   var saveBtn = document.getElementById("dpr-save-btn");
@@ -2090,6 +2093,20 @@ function dprApplySignoffLock(){
   var capRow = document.getElementById("dpr-capture-row");
   if (capRow && locked) capRow.style.display = "none";
   else if (capRow && dprCanCreate()) capRow.style.display = "";
+}
+/* Visible amendment note — a signed report whose hours were corrected by the
+   nightly late-punch sync says so, and when, so the finalized record is never
+   silently changed (Mark's AMEND decision; the signature stays intact). Shown
+   whether or not the report is locked. */
+function dprRenderAmendments(){
+  var el = document.getElementById("dpr-amend-note");
+  if (!el) return;
+  var list = dprState.hoursAmendments || [];
+  if (!list.length){ el.style.display = "none"; el.textContent = ""; return; }
+  var latest = list[list.length - 1];
+  el.style.display = "";
+  el.textContent = "✎ " + (latest.note || "Hours amended — late Foundation timecard entries") +
+    (list.length > 1 ? " (" + list.length + " amendments)" : "");
 }
 /* The single entry point the parallel session calls to sign + lock a report. */
 async function dprApplySignoff(signoff){
@@ -2236,6 +2253,14 @@ async function generateDprPdf(o){
     ["Hours Worked", o.hoursWorked], ["Approx. Squares Applied", o.squares],
     ["Roof Section Traced", o.section ? (o.section.areaSqFt ? "Yes · ~" + o.section.areaSqFt + " sq ft" : "Yes") : ""]
   ]);
+  /* Late-hours amendment trail on the record itself — so a signed PDF that was
+     corrected by the nightly sync carries the note, in order. */
+  if (o.hoursAmendments && o.hoursAmendments.length){
+    kvTable(o.hoursAmendments.map(function(a){
+      var when = a && a.at ? new Date(a.at).toLocaleDateString() : "";
+      return ["Hours Amendment", (a && a.note ? a.note : "Late Foundation timecard entries") + (when ? " (" + when + ")" : "")];
+    }));
+  }
 
   /* Phase-2 gated sections — only the ones the foreman flipped to Yes print. */
   if (o.delays){

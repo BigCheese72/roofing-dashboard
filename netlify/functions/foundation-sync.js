@@ -235,12 +235,50 @@ function punchesByName(rows) {
   return byName;
 }
 
+// Records a signed-report hours amendment to audit_logs, matching the app's
+// existing writer shape (admin.js writeAuditLog). Actor is the sync itself
+// (no human uid on the cron path); best-effort — a failed audit write must
+// not fail the amendment, but it IS logged so a missing trail is visible.
+async function writeHoursAmendAudit(db, entry) {
+  try {
+    await db.collection("audit_logs").doc().set({
+      ts: entry.ts,
+      actorUid: null,
+      actorEmail: null,
+      actorRole: "system",
+      actorMethod: "system-sync",
+      actorLabel: entry.actor,
+      action: "dpr_hours_amended_signed",
+      target: entry.target,
+      before: entry.before,
+      after: entry.after
+    });
+  } catch (e) {
+    console.error("dpr_hours_backfill: audit_log write failed for", entry.target, e && e.message ? e.message : e);
+  }
+}
+
+// A compact before/after snapshot for the audit trail — hours only, never
+// any pay/PII. Used when a SIGNED report is amended so the change to a
+// finalized record is provable.
+function hoursSnapshot(crew, crewHoursTotal_, hoursWorked) {
+  return {
+    hoursWorked: String(hoursWorked == null ? "" : hoursWorked),
+    crewHoursTotal: (typeof crewHoursTotal_ === "number" ? crewHoursTotal_ : null),
+    crew: (crew || []).filter(function (c) { return String((c && c.name) || "").trim(); })
+      .map(function (c) { return { name: String(c.name).trim(), hours: String(c.hours == null ? "" : c.hours) }; })
+  };
+}
+
 async function backfillDprHours(opts) {
   const dates = (opts.dates && opts.dates.length) ? opts.dates : centralDates(new Date());
   const db = getDb(opts.hostname);
   const summary = {
     ok: true, action: "dpr_hours_backfill", dryRun: !!opts.dryRun, dates: dates,
-    seen: 0, updated: 0, unchanged: 0, skipped_locked: 0, skipped_no_job: 0, no_punches: 0, errors: 0
+    // amended_signed = signed/locked reports corrected with late hours (Mark's
+    // AMEND decision — the signature is kept, an audit note + audit_log record
+    // the change). updated = unsigned reports filled normally.
+    seen: 0, updated: 0, amended_signed: 0, unchanged: 0, skipped_no_job: 0, no_punches: 0, errors: 0
   };
   const punchCache = {}; // "jobNo|date" -> byName (one Foundation read per job+day)
   for (const date of dates) {
@@ -248,7 +286,7 @@ async function backfillDprHours(opts) {
     for (const docSnap of qs.docs) {
       summary.seen++;
       const r = docSnap.data() || {};
-      if (r.signoff && r.signoff.locked) { summary.skipped_locked++; continue; }
+      const isSigned = !!(r.signoff && r.signoff.locked);
       const jobNo = String(r.foundationJobNo || r.jobNo || "").trim();
       if (!jobNo) { summary.skipped_no_job++; continue; }
       if (!(r.crew && r.crew.length)) { summary.unchanged++; continue; }
@@ -272,8 +310,28 @@ async function backfillDprHours(opts) {
           hoursBackfilledAt: opts.nowMs,
           hoursBackfilledBy: opts.actor
         };
-        if (!opts.dryRun) await docSnap.ref.set(update, { merge: true });
-        summary.updated++;
+        if (isSigned) {
+          // AMEND a signed report transparently: keep signoff intact, append a
+          // dated amendment note (rendered on the DPR + PDF), and write an
+          // audit_logs entry with before/after hours. Never silent.
+          const note = "Hours amended " + String(opts.nowIso || "").slice(0, 10) +
+            " — late Foundation timecard entries";
+          const prior = Array.isArray(r.hoursAmendments) ? r.hoursAmendments : [];
+          update.hoursAmendments = prior.concat([{ at: opts.nowMs, note: note, by: opts.actor }]);
+          update.hoursAmendedAt = opts.nowMs;
+          if (!opts.dryRun) {
+            await docSnap.ref.set(update, { merge: true });
+            await writeHoursAmendAudit(db, {
+              target: docSnap.id, actor: opts.actor, ts: opts.nowMs,
+              before: hoursSnapshot(r.crew, oldTotal, r.hoursWorked),
+              after: hoursSnapshot(res.crew, newTotal, update.hoursWorked)
+            });
+          }
+          summary.amended_signed++;
+        } else {
+          if (!opts.dryRun) await docSnap.ref.set(update, { merge: true });
+          summary.updated++;
+        }
       } catch (e) {
         summary.errors++;
         console.error("dpr_hours_backfill: report " + docSnap.id + " failed:", e && e.message ? e.message : e);
@@ -385,5 +443,5 @@ exports.handler = async function (event) {
 exports._internals = {
   timingSafeEqualStr, hasValidSyncKey, safeDocId, syncActiveJobs, JOBS_COLLECTION, META_COLLECTION,
   centralDates, nameKey, crewHoursTotal, applyPunchesToCrew, newHoursWorked, punchesByName,
-  backfillDprHours, DPR_COLLECTION
+  hoursSnapshot, backfillDprHours, DPR_COLLECTION
 };

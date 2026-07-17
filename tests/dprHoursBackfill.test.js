@@ -33,6 +33,7 @@ const ROLE_DOCS = { field_tech: { permissions: { "foundation.read": false } } };
 let dprDocs = [];      // [{ id, data }]
 const writes = [];     // [{ id, data, opts }]
 const metaWrites = []; // meta doc sets
+const auditWrites = []; // audit_logs entries
 function makeDocSnap(d) {
   return {
     id: d.id,
@@ -47,7 +48,10 @@ const fakeFirestore = {
         if (col === "roles") { const d = ROLE_DOCS[id]; return d ? { exists: true, data: () => d } : { exists: false }; }
         return { exists: false };
       },
-      set: async (data, opts) => { if (col === "foundation_sync_meta") metaWrites.push({ id, data, opts }); }
+      set: async (data, opts) => {
+        if (col === "foundation_sync_meta") metaWrites.push({ id, data, opts });
+        else if (col === "audit_logs") auditWrites.push(data);
+      }
     }),
     where: (field, op, value) => ({
       get: async () => {
@@ -139,7 +143,7 @@ function ev(opts) {
 }
 function seed() {
   fdb._resetPoolForTest();
-  writes.length = 0; metaWrites.length = 0; sqlQueries = 0;
+  writes.length = 0; metaWrites.length = 0; auditWrites.length = 0; sqlQueries = 0;
   dprDocs = [
     { id: "dpr_a", data: { date: "2026-07-16", foundationJobNo: "17355", hoursWorked: "",
       crew: [
@@ -180,15 +184,16 @@ test("signed-in tech WITHOUT foundation.read: 403, nothing read or written", asy
 
 /* ============================ THE BACKFILL ============================ */
 
-test("cron key: fills empty rows from punches, keeps manual rows, updates totals, skips locked/no-job", async () => {
+test("cron key: fills empty rows, keeps manual, AMENDS signed reports, skips no-job", async () => {
   seed();
   const r = await sync.handler(ev({ syncKey: SYNC_SECRET, body: { action: "dpr_hours_backfill", dates: DATES } }));
   assert.strictEqual(r.statusCode, 200);
   const body = JSON.parse(r.body);
   assert.strictEqual(body.seen, 5);
-  assert.strictEqual(body.updated, 3);            // dpr_a, dpr_manualtotal, dpr_prev
-  assert.strictEqual(body.skipped_locked, 1);
+  assert.strictEqual(body.updated, 3);            // dpr_a, dpr_manualtotal, dpr_prev (unsigned)
+  assert.strictEqual(body.amended_signed, 1);     // dpr_locked (Mark's AMEND decision)
   assert.strictEqual(body.skipped_no_job, 1);
+  assert.strictEqual(body.skipped_locked, undefined, "there is no skip-locked path anymore");
   assert.doesNotMatch(r.body, new RegExp(SQL_PASSWORD));
   assert.doesNotMatch(r.body, new RegExp(SYNC_SECRET));
 
@@ -203,6 +208,7 @@ test("cron key: fills empty rows from punches, keeps manual rows, updates totals
   assert.ok(a.hoursBackfilledAt > 0);
   assert.strictEqual(a.hoursBackfilledBy, "dpr-hours-backfill (scheduled)");
   assert.strictEqual(byId.dpr_a.opts.merge, true);
+  assert.ok(!a.hoursAmendments, "an unsigned backfill is not an amendment");
   // dpr_manualtotal: foundation-sourced row refreshes, hand-typed day total survives
   const m = byId.dpr_manualtotal.data;
   assert.strictEqual(m.crew[0].hours, "10.75");
@@ -210,11 +216,52 @@ test("cron key: fills empty rows from punches, keeps manual rows, updates totals
   assert.strictEqual(m.hoursWorked, "20", "a hand-typed day total must never be rewritten");
   // dpr_prev (yesterday): filled too
   assert.strictEqual(byId.dpr_prev.data.crew[0].hours, "1.73");
-  // locked + no-job docs were never written
-  assert.ok(!byId.dpr_locked, "a locked report must never be written");
+  // dpr_locked: AMENDED, signature intact, dated note appended, merge write
+  const L = byId.dpr_locked.data;
+  assert.ok(L, "a signed report IS written (amended) now");
+  assert.strictEqual(L.crew[0].hours, "12.42");
+  assert.strictEqual(L.crewHoursTotal, 12.42);
+  assert.strictEqual(byId.dpr_locked.opts.merge, true, "merge:true keeps the signature/sign-off intact");
+  assert.ok(!("signoff" in L), "the amend write never touches signoff");
+  assert.strictEqual(L.hoursAmendments.length, 1);
+  assert.match(L.hoursAmendments[0].note, /^Hours amended \d{4}-\d{2}-\d{2} — late Foundation timecard entries$/);
+  assert.ok(L.hoursAmendedAt > 0);
+  // no-job doc never written
   assert.ok(!byId.dpr_nojob);
+  // audit trail: exactly one audit_logs entry for the signed amendment, hours only
+  assert.strictEqual(auditWrites.length, 1);
+  const au = auditWrites[0];
+  assert.strictEqual(au.action, "dpr_hours_amended_signed");
+  assert.strictEqual(au.target, "dpr_locked");
+  assert.strictEqual(au.actorRole, "system");
+  assert.strictEqual(au.before.crew[0].hours, "");
+  assert.strictEqual(au.after.crew[0].hours, "12.42");
+  assert.strictEqual(au.after.hoursWorked, "12.42");
+  assert.ok(!JSON.stringify(au).match(/pay|rate/i), "audit snapshot carries no pay data");
   // meta doc recorded the run
   assert.ok(metaWrites.some((w) => w.id === "dpr_hours_backfill_last"));
+});
+
+test("a signed report already carrying the current hours is unchanged — no re-amend, no new audit", async () => {
+  seed();
+  // pre-fill the locked report with the punch value it would receive
+  dprDocs.find((d) => d.id === "dpr_locked").data.crew[0] =
+    { name: "Christian Abernathy", hours: "12.42", hoursSource: "foundation" };
+  const r = await sync.handler(ev({ syncKey: SYNC_SECRET, body: { action: "dpr_hours_backfill", dates: DATES } }));
+  const body = JSON.parse(r.body);
+  assert.strictEqual(body.amended_signed, 0, "no change -> no amendment");
+  assert.strictEqual(auditWrites.length, 0, "no change -> no audit entry");
+  assert.ok(!writes.some((w) => w.id === "dpr_locked"));
+});
+
+test("a prior amendment is preserved and the new one appended (trail grows, never overwrites)", async () => {
+  seed();
+  const locked = dprDocs.find((d) => d.id === "dpr_locked");
+  locked.data.hoursAmendments = [{ at: 1, note: "Hours amended 2026-07-16 — late Foundation timecard entries", by: "x" }];
+  await sync.handler(ev({ syncKey: SYNC_SECRET, body: { action: "dpr_hours_backfill", dates: ["2026-07-16"] } }));
+  const w = writes.find((x) => x.id === "dpr_locked");
+  assert.strictEqual(w.data.hoursAmendments.length, 2, "prior note kept, new one appended");
+  assert.strictEqual(w.data.hoursAmendments[0].at, 1);
 });
 
 test("a second report on the same job+day reuses the cached Foundation read", async () => {
