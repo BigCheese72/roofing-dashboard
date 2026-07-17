@@ -525,6 +525,30 @@ function mapMailMessage(m, opts) {
   return row;
 }
 
+// Graph resolves these well-known names in the folder path directly, so we hand
+// them straight back rather than looking them up (e.g. Sent Items = "sentitems").
+const WELL_KNOWN_FOLDERS = { inbox: 1, sentitems: 1, drafts: 1, deleteditems: 1, archive: 1, junkemail: 1, outbox: 1 };
+// Resolve a mail folder by DISPLAY NAME (or a well-known name) to its id so a
+// caller can list e.g. "Proposals" without first fetching the folder table.
+// Checks well-known names, then top-level folders, then ONE level of child
+// folders (via $expand). Returns null when nothing matches — the caller
+// surfaces "folder not found" rather than guessing a wrong folder. READ-ONLY.
+async function resolveFolderIdByName(name) {
+  const wanted = String(name || "").trim();
+  if (!wanted) return null;
+  const wk = wanted.toLowerCase().replace(/\s+/g, "");
+  if (WELL_KNOWN_FOLDERS[wk]) return wk;
+  const j = await gj("/me/mailFolders?$top=100&$select=id,displayName&$expand=childFolders($select=id,displayName)");
+  const want = wanted.toLowerCase();
+  for (const f of (j.value || [])) {
+    if (String(f.displayName || "").toLowerCase() === want) return f.id;
+    for (const c of (f.childFolders || [])) {
+      if (String(c.displayName || "").toLowerCase() === want) return c.id;
+    }
+  }
+  return null;
+}
+
 // Resolve a named window ("today" | "week") or an explicit {start,end} into the
 // ISO boundaries /me/calendarView needs. `now` is injectable for deterministic
 // tests. "today" = local midnight → next local midnight; "week" = now → +7 days.
@@ -993,9 +1017,19 @@ exports.handler = async function (event) {
       const pages = Math.min(5, Math.max(1, parseInt(body.pages || "3", 10)));
       let url = body.nextLink;
       if (!url) {
-        if (!body.folderId) return resp(400, { error: "folderId required" });
-        url = "/me/mailFolders/" + encodeURIComponent(body.folderId) + "/messages" +
-          "?$top=200&$select=id,subject,from,receivedDateTime,isRead";
+        // folderId wins; otherwise resolve folderName ("Proposals", "sentitems",
+        // …) to an id server-side so the Service Manager proposals view can
+        // point at a folder by name without a separate folders round-trip.
+        let folderId = body.folderId;
+        if (!folderId && body.folderName) {
+          folderId = await resolveFolderIdByName(body.folderName);
+          if (!folderId) return resp(404, { error: "Folder not found: " + body.folderName });
+        }
+        if (!folderId) return resp(400, { error: "folderId or folderName required" });
+        // hasAttachments added so a proposals UI can flag which mails carry a PDF
+        // (still READ-ONLY — selecting a field never mutates it).
+        url = "/me/mailFolders/" + encodeURIComponent(folderId) + "/messages" +
+          "?$top=200&$select=id,subject,from,receivedDateTime,isRead,hasAttachments";
       }
       const rows = [];
       let next = url;
@@ -1010,11 +1044,43 @@ exports.handler = async function (event) {
             n: ea.name || null,
             d: m.receivedDateTime || null,
             r: !!m.isRead,
+            a: !!m.hasAttachments,
           });
         }
         next = j["@odata.nextLink"] || null;
       }
       return resp(200, { rows, nextLink: next });
+    }
+
+    // ---- attachments_list: READ-ONLY list of a message's attachments (id, name,
+    // type, size). Used by the Service Manager proposals view to find the PDF on
+    // an emailed proposal. GET only; nothing here sends, moves, or deletes.
+    if (action === "attachments_list") {
+      if (!body.messageId) return resp(400, { error: "messageId required" });
+      const j = await gj("/me/messages/" + encodeURIComponent(body.messageId) +
+        "/attachments?$select=id,name,contentType,size,isInline");
+      const attachments = (j.value || []).map(a => ({
+        id: a.id, name: a.name || null, contentType: a.contentType || null,
+        size: a.size || 0, isInline: !!a.isInline,
+      }));
+      return resp(200, { attachments });
+    }
+
+    // ---- attachment_get: READ-ONLY fetch of ONE file attachment's bytes
+    // (base64 contentBytes), so a proposal PDF can be viewed / handed to the AI
+    // scope-prefill. Capped so a runaway attachment can't balloon the response.
+    // GET only — no mutation of any kind.
+    if (action === "attachment_get") {
+      if (!body.messageId || !body.attachmentId) return resp(400, { error: "messageId and attachmentId required" });
+      const a = await gj("/me/messages/" + encodeURIComponent(body.messageId) +
+        "/attachments/" + encodeURIComponent(body.attachmentId));
+      if ((a.size || 0) > 12 * 1024 * 1024) return resp(413, { error: "Attachment too large" });
+      return resp(200, {
+        id: a.id, name: a.name || null, contentType: a.contentType || null,
+        size: a.size || 0,
+        // Present on fileAttachment; null for item/reference attachments.
+        contentBytes: a.contentBytes || null,
+      });
     }
 
     // ---- move: THE ONLY MAIL MUTATION IN THIS FILE. POST /messages/{id}/move.
@@ -1264,4 +1330,5 @@ exports.handler = async function (event) {
 
 // Exported for reasoning/testing about the filter and parser without a mailbox.
 module.exports._internals = { classify, parseSignature, splitName, sigLines, buildInboxRule, ruleKeywordProblem, textWithSignoff, normalizeRecipients, escapeHtml,
-  mapMailMessage, resolveCalendarRange, mapEvent, dateOnly, buildEventPayload, CALENDAR_NOT_GRANTED };
+  mapMailMessage, resolveCalendarRange, mapEvent, dateOnly, buildEventPayload, CALENDAR_NOT_GRANTED,
+  resolveFolderIdByName, WELL_KNOWN_FOLDERS };
