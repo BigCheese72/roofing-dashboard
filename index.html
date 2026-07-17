@@ -307,12 +307,14 @@
       <div class="btnrow"><button class="btn" onclick="addRepair()">+ Add Repair</button></div>
     </div>
 
-    <!-- Work Order (stored type "Repair") AND Leak / Service — see
-         onWoTypeChange() (Mark, from prod: Repair-only gating made this look
-         "missing" on the Leak form). Change Order keeps its own free-text
-         Materials textarea (#woMaterials) inside its own card; this is the
-         itemized list for executed work. Rows live in materials[]
-         (js/workorders.js) and persist with the work order. -->
+    <!-- Work Order (stored type "Repair"), Leak / Service AND Change Order —
+         see onWoTypeChange() (Mark, from prod: Repair-only gating made this
+         look "missing" on the Leak form; Change Order added per "a change
+         order form needs materials too"). This itemized list is the primary
+         materials entry for all three. Rows live in materials[]
+         (js/workorders.js) and persist with the work order. The Change
+         Order card's old free-text #woMaterials survives as a hidden-until-
+         populated "Additional Material Notes" legacy field. -->
     <div class="card" id="wo-materials-card" style="display:none">
       <h2 class="cond">Material List</h2>
       <div id="materials-list"></div>
@@ -327,7 +329,15 @@
         <div class="fld"><label>PO Number (optional)</label><input type="text" id="woPONumber"></div>
         <div class="fld"><label>Date Completed (optional)</label><input type="text" id="woDateCompleted"></div>
       </div>
-      <div class="fld"><label>Materials</label>
+      <!-- Legacy free-text materials. The itemized Material List card above
+           is now the primary materials entry on a Change Order; this field
+           is hidden by default and revealed only for existing records that
+           already have text here (see onWoTypeChange()), so no historical CO
+           loses its materials note. Kept editable + printed by the Change
+           Order report builders under "Additional Material Notes". -->
+      <div class="fld" id="wo-co-materials-legacy" style="display:none">
+        <label>Additional Material Notes (legacy)</label>
+        <p class="hint" style="margin:0 0 8px">Older change orders captured materials as free text here. Prefer the itemized <b>Material List</b> above; this note is kept so nothing is lost and still prints on the change order.</p>
         <textarea id="woMaterials" rows="3" placeholder="One item per line"></textarea></div>
       <div class="fld"><label>Description of Work Performed</label>
         <textarea id="woDescription" rows="4"></textarea></div>

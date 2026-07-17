@@ -18,12 +18,13 @@ function between(source, start, end){
    {style:{display}} object — visibility gates are asserted straight off the
    ids they set. Mark's prod report: the Material List card was Repair-only
    and looked "missing" on the Leak form. */
-function runTypeChange(woType){
+function runTypeChange(woType, fieldVals){
   const els = {};
+  const vals = Object.assign({ woType }, fieldVals || {});
   const sandbox = {
     WORK_ORDER_TYPES: ["Leak / Service", "Change Order", "Inspection", "Repair", "Warranty"],
     __els: els,
-    val(id){ return id === "woType" ? woType : ""; },
+    val(id){ return Object.prototype.hasOwnProperty.call(vals, id) ? vals[id] : ""; },
     document: {
       getElementById(id){
         if (!els[id]) els[id] = { style: { display: "unset" }, textContent: "" };
@@ -51,12 +52,31 @@ test("Material List shows on the Leak / Service form (Mark's prod fix — was hi
   assert.strictEqual(runTypeChange("Leak / Service")["wo-materials-card"].style.display, "");
 });
 
-test("Change Order and Inspection stay OUT; Warranty stays out pending Mark's decision", () => {
-  assert.strictEqual(runTypeChange("Change Order")["wo-materials-card"].style.display, "none",
-    "Change Order has its own #woMaterials textarea");
+test("Material List shows on the Change Order form (Mark: 'a change order form needs materials too')", () => {
+  assert.strictEqual(runTypeChange("Change Order")["wo-materials-card"].style.display, "");
+});
+
+test("Inspection stays OUT; Warranty stays out pending Mark's decision", () => {
   assert.strictEqual(runTypeChange("Inspection")["wo-materials-card"].style.display, "none");
   assert.strictEqual(runTypeChange("Warranty")["wo-materials-card"].style.display, "none",
     "Warranty is a pending decision — deliberately not added yet");
+});
+
+test("legacy Change Order free-text field is hidden by default, revealed only when it has text", () => {
+  /* A fresh Change Order (empty #woMaterials) hides the legacy free-text box
+     so the tech sees only the itemized Material List — no double 'Materials'. */
+  assert.strictEqual(runTypeChange("Change Order")["wo-co-materials-legacy"].style.display, "none");
+  /* An existing Change Order that carries legacy text reveals it so the data
+     stays visible/editable and is not lost. */
+  assert.strictEqual(
+    runTypeChange("Change Order", { woMaterials: "50 tubes roofing cement" })["wo-co-materials-legacy"].style.display, "");
+  /* Whitespace-only legacy value is treated as empty (stays hidden). */
+  assert.strictEqual(
+    runTypeChange("Change Order", { woMaterials: "   " })["wo-co-materials-legacy"].style.display, "none");
+  /* The legacy field is Change-Order-only — never shown on other types even
+     if a stray value were present. */
+  assert.strictEqual(
+    runTypeChange("Repair", { woMaterials: "x" })["wo-co-materials-legacy"].style.display, "none");
 });
 
 test("neighbor gates unchanged by this fix (regression): Repair Scope card still Repair-only", () => {

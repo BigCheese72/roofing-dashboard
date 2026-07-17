@@ -24,6 +24,15 @@ function materialRepairRefLabel(repairId){
   }
   return "";
 }
+/* One itemized Material List row as a single human line — "Roofing cement
+   x2 tube — sealed flashing". Shared by the three Change Order report
+   builders (text / HTML doc / PDF) so their Materials section renders the
+   itemized materials[] identically. The repair-area ref label is
+   deliberately omitted: a Change Order has no Work Performed / repair-area
+   card to reference. */
+function materialLineLabel(m){
+  return m.material + (m.qty ? " x" + m.qty : "") + (m.unit ? " " + m.unit : "") + (m.notes ? " — " + m.notes : "");
+}
 /* "Finding #N" as the report's findings section numbers it
    (filledFindings() order) for a repair paired to that finding
    (before/after — see the pairing block in js/workorders.js). "" when the
@@ -177,7 +186,17 @@ function buildChangeOrderText(o){
   if (o.woDescription) L.push(o.woDescription);
   L.push("");
   L.push("MATERIALS");
-  if (o.woMaterials) L.push(o.woMaterials);
+  /* Itemized Material List (materials[]) is the primary materials entry on a
+     Change Order now; the legacy free-text #woMaterials still prints below it
+     as "Additional Material Notes" whenever a record carries it, so no
+     historical CO loses its data. */
+  var coMat = filledMaterials();
+  coMat.forEach(function(m,i){ L.push((i+1) + ". " + materialLineLabel(m)); });
+  if (o.woMaterials){
+    if (coMat.length) L.push("");
+    L.push("Additional Material Notes:");
+    L.push(o.woMaterials);
+  }
   L.push("");
   L.push("MAN-HOURS: " + (o.woManHours || ""));
   L.push("COST: " + (o.woCost ? "$" + o.woCost : ""));
@@ -1146,10 +1165,20 @@ function renderChangeOrderDoc(o){
     "<p style='white-space:pre-wrap'>" + (o.woDescription ? esc(o.woDescription) : "<span class='co-empty'>(none entered)</span>") + "</p>";
 
   h += "<h3 class='cond'>Materials</h3>";
+  /* Itemized Material List (materials[]) is primary; legacy free-text
+     #woMaterials, if present, prints beneath it as "Additional Material
+     Notes" so no historical Change Order loses its data. */
+  var coMat = filledMaterials();
+  if (coMat.length){
+    h += "<ul class='co-materials'>" +
+      coMat.map(function(m){ return "<li>" + esc(materialLineLabel(m)) + "</li>"; }).join("") + "</ul>";
+  }
   var matLines = (o.woMaterials || "").split("\n").map(function(s){ return s.trim(); }).filter(Boolean);
-  h += matLines.length ?
-    "<ul class='co-materials'>" + matLines.map(function(m){ return "<li>" + esc(m) + "</li>"; }).join("") + "</ul>" :
-    "<p class='co-empty'>(none entered)</p>";
+  if (matLines.length){
+    h += "<h4 class='cond' style='margin:8px 0 4px'>Additional Material Notes</h4>" +
+      "<ul class='co-materials'>" + matLines.map(function(m){ return "<li>" + esc(m) + "</li>"; }).join("") + "</ul>";
+  }
+  if (!coMat.length && !matLines.length) h += "<p class='co-empty'>(none entered)</p>";
 
   h += "<h3 class='cond'>Cost Summary</h3>" +
     "<table class='co-cost'><tbody>" +
@@ -1843,21 +1872,34 @@ async function generateChangeOrderPdf(o){
   wrappedTextPdf(o.woDescription || "(none entered)");
 
   heading("Materials");
-  var matLines = (o.woMaterials || "").split("\n").map(function(s){ return s.trim(); }).filter(Boolean);
-  if (matLines.length){
+  /* Itemized Material List (materials[]) is primary; legacy free-text
+     #woMaterials, if present, prints beneath it under an "Additional
+     Material Notes" sub-heading so no historical Change Order loses data. */
+  function bulletLinesPdf(lines){
     doc.setFont("helvetica", "normal");
     doc.setFontSize(9.5);
     doc.setTextColor(30, 39, 46);
-    matLines.forEach(function(m){
+    lines.forEach(function(m){
       if (y > H - M - 14){ doc.addPage(); y = M; }
       var wrapped = doc.splitTextToSize("• " + m, W - M * 2);
       doc.text(wrapped, M, y);
       y += 13 * wrapped.length;
     });
     y += 12;
-  } else {
-    wrappedTextPdf("(none entered)");
   }
+  var coMat = filledMaterials();
+  var matLines = (o.woMaterials || "").split("\n").map(function(s){ return s.trim(); }).filter(Boolean);
+  if (coMat.length) bulletLinesPdf(coMat.map(materialLineLabel));
+  if (matLines.length){
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(9.5);
+    doc.setTextColor(38, 50, 56);
+    if (y > H - M - 14){ doc.addPage(); y = M; }
+    doc.text("Additional Material Notes", M, y);
+    y += 13;
+    bulletLinesPdf(matLines);
+  }
+  if (!coMat.length && !matLines.length) wrappedTextPdf("(none entered)");
 
   heading("Cost Summary");
   var costRows = [["Man-Hours", o.woManHours || ""], ["Cost", o.woCost ? "$" + o.woCost : ""]];

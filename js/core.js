@@ -2321,19 +2321,34 @@ function onWoTypeChange(){
   var isRepair = val("woType") === "Repair";
   var rc = document.getElementById("wo-repair-card");
   if (rc) rc.style.display = isRepair ? "" : "none";
-  /* Material List: Work Order (Repair) AND Leak / Service (Mark, from prod:
-     the Repair-only gate made the card look "missing" on the Leak form — a
-     leak call burns material too, so both repair-capable forms show it).
-     Change Order keeps its own free-text #woMaterials inside its card;
-     Inspection stays out; WARRANTY is a pending decision from Mark —
-     deliberately NOT added yet. DISPLAY GATING ONLY — like repairs[],
-     collect()/fill() round-trip materials[] for every type and all three
-     report builders print materials whenever present, so nothing about
-     save/report behavior changes here. (WORK_ORDER_TYPES[0] is checked
-     inline — the isLeakType var is only declared further down in this
-     function; don't reference it before its declaration.) */
+  /* Material List: Work Order (Repair), Leak / Service AND Change Order
+     (Mark: "a change order form needs materials too"). Repair/Leak were
+     added earlier (the Repair-only gate had made the card look "missing" on
+     the Leak form — a leak call burns material too). Change Order now uses
+     this SAME itemized list as its primary materials entry; the old
+     free-text #woMaterials inside its card is demoted to a clearly-labelled
+     "Additional Material Notes" legacy field, shown only when it already
+     carries text (see the co-materials-legacy gate below) so no existing CO
+     record loses that data. Inspection stays out; WARRANTY is a pending
+     decision from Mark — deliberately NOT added yet. DISPLAY GATING ONLY —
+     like repairs[], collect()/fill() round-trip materials[] for every type,
+     and the report builders print materials whenever present (the three
+     Change Order builders were taught to print the itemized list too — see
+     export.js). (WORK_ORDER_TYPES[0] is checked inline — the isLeakType var
+     is only declared further down in this function; don't reference it
+     before its declaration.) */
   var mc = document.getElementById("wo-materials-card");
-  if (mc) mc.style.display = (isRepair || val("woType") === WORK_ORDER_TYPES[0]) ? "" : "none";
+  if (mc) mc.style.display = (isRepair || isCO || val("woType") === WORK_ORDER_TYPES[0]) ? "" : "none";
+  /* Legacy Change Order free-text materials (#woMaterials, wrapped in
+     #wo-co-materials-legacy): the itemized Material List above is now the
+     primary entry on a Change Order, so this field is hidden for new work
+     rather than presenting a confusing second "Materials" box. It is
+     revealed ONLY on a Change Order that already has text in it — an
+     existing record — so that data stays visible, editable and preserved on
+     the next save. fill() sets #woMaterials before calling this function, so
+     the value is already in place when we check it. */
+  var coLegacy = document.getElementById("wo-co-materials-legacy");
+  if (coLegacy) coLegacy.style.display = (isCO && String(val("woMaterials") || "").trim()) ? "" : "none";
   /* Repair is a project/scope report, not a leak diagnosis — findings
      (leak pins/conditions) don't apply to it, per Mark. Change Order is a
      scope of work, not a leak diagnosis either — same reasoning. */
