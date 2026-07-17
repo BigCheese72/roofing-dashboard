@@ -68,20 +68,32 @@ const DEFAULT_OPENAI_MODEL = "gpt-4o";
 // clampIssueResult() re-enforces it server-side regardless of what the model
 // actually said -- an out-of-vocab value degrades to the "indeterminate"
 // bucket rather than leaking free text into a structured field.
+//
+// PARITY CONTRACT (vocab convergence, PR #122/#123 coordination): these keys
+// are the canonical AI_ISSUE_LABELS keys from js/ailabels.js -- what the
+// model answers with is exactly what a tech's confirmation stores in
+// ai_training_labels, no mapping table anywhere. This list must stay a
+// SUBSET of AI_ISSUE_LABELS (browser/CommonJS split means hand-sync, same
+// discipline as getBuildingRoofsServer(); the parity test in
+// tests/aiLabels.test.js fails the suite if the two drift). The original
+// clogged_drain_or_scupper key is split into drain_clogged/scupper_blocked
+// to match -- a photo usually shows which one it is, and the split is a
+// richer training signal.
 const ISSUE_VOCABULARY = [
-  "membrane_puncture",
+  "puncture",
   "open_seam",
-  "flashing_failure",
+  "flashing_failed",
   "ponding_water",
-  "clogged_drain_or_scupper",
-  "penetration_seal_failure",
-  "deteriorated_sealant",
-  "pitch_pan_failure",
-  "coping_or_edge_metal_failure",
-  "blistering",
+  "drain_clogged",
+  "scupper_blocked",
+  "penetration_seal_failed",
+  "sealant_deteriorated",
+  "pitch_pan_deteriorated",
+  "coping_failure",
+  "blister",
   "hail_damage",
-  "wind_damage",
-  "no_visible_issue",
+  "wind_uplift",
+  "no_defect_found",
   "indeterminate"
 ];
 const CAUSE_VOCABULARY = [
@@ -259,18 +271,19 @@ function composeStubSummary(report) {
 // phrases before generic ones. Confidence is ALWAYS "low": the stub never saw
 // the photo, and pretending otherwise would poison the human-confirmation UX.
 const STUB_ISSUE_KEYWORDS = [
-  { re: /pitch\s*(pan|pocket)/i, issue: "pitch_pan_failure", cause: "weathering_age" },
+  { re: /pitch\s*(pan|pocket)/i, issue: "pitch_pan_deteriorated", cause: "weathering_age" },
   { re: /ponding|standing water/i, issue: "ponding_water", cause: "drainage_deficiency" },
-  { re: /drain|scupper|clog/i, issue: "clogged_drain_or_scupper", cause: "debris_accumulation" },
-  { re: /puncture|tear|hole|gouge/i, issue: "membrane_puncture", cause: "mechanical_damage" },
+  { re: /scupper/i, issue: "scupper_blocked", cause: "debris_accumulation" },
+  { re: /drain|clog/i, issue: "drain_clogged", cause: "debris_accumulation" },
+  { re: /puncture|tear|hole|gouge/i, issue: "puncture", cause: "mechanical_damage" },
   { re: /seam|lap/i, issue: "open_seam", cause: "weathering_age" },
-  { re: /flashing|counterflash/i, issue: "flashing_failure", cause: "weathering_age" },
-  { re: /coping|edge metal|drip edge/i, issue: "coping_or_edge_metal_failure", cause: "weathering_age" },
-  { re: /sealant|caulk|mastic/i, issue: "deteriorated_sealant", cause: "weathering_age" },
-  { re: /penetration|pipe boot|curb|hvac/i, issue: "penetration_seal_failure", cause: "weathering_age" },
-  { re: /blister/i, issue: "blistering", cause: "thermal_movement" },
+  { re: /flashing|counterflash/i, issue: "flashing_failed", cause: "weathering_age" },
+  { re: /coping|edge metal|drip edge/i, issue: "coping_failure", cause: "weathering_age" },
+  { re: /sealant|caulk|mastic/i, issue: "sealant_deteriorated", cause: "weathering_age" },
+  { re: /penetration|pipe boot|curb|hvac/i, issue: "penetration_seal_failed", cause: "weathering_age" },
+  { re: /blister/i, issue: "blister", cause: "thermal_movement" },
   { re: /hail/i, issue: "hail_damage", cause: "storm_event" },
-  { re: /wind|blow[- ]?off|uplift/i, issue: "wind_damage", cause: "storm_event" }
+  { re: /wind|blow[- ]?off|uplift/i, issue: "wind_uplift", cause: "storm_event" }
 ];
 function composeStubIssue(context) {
   const text = [context.reportedArea, context.notes].join(" ");
@@ -309,8 +322,9 @@ function buildIssueSystem() {
     '"likelyCause" MUST be one of: ' + CAUSE_VOCABULARY.join(", ") + ". " +
     '"confidence" MUST be one of: ' + CONFIDENCE_LEVELS.join(", ") + ". " +
     '"rationale" is at most two short sentences grounded in what the photo shows. ' +
-    'If the photo does not clearly show a roofing issue, use "no_visible_issue" or "indeterminate" ' +
-    'with cause "unconfirmed" and confidence "low". Your answer is a DRAFT for human confirmation.';
+    'If the photo clearly shows a roof with no defect, use "no_defect_found" with cause "unconfirmed". ' +
+    'If you cannot tell from this photo, use "indeterminate" with cause "unconfirmed" and confidence "low". ' +
+    "Your answer is a DRAFT for human confirmation.";
 }
 
 // ---- Provider HTTP calls ----------------------------------------------------
