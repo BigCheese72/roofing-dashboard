@@ -315,6 +315,17 @@ async function collectSignedPhotoUrls(bucket, photos, ttlMs) {
     var ref = p && cleanStorageRef(p.storageRef);
     if (!ref) continue;
     try {
+      // Existence first. V4 signing is pure local crypto -- it happily mints
+      // a valid-looking URL for an object that ISN'T THERE, and Anthropic
+      // then 400s the ENTIRE request over the one dead download ("Unable to
+      // download the file") instead of skipping it. Found live on dev
+      // 2026-07-16: Flat Branch has one photo doc whose storageRef points at
+      // an object missing in production (and so missing from the seed) --
+      // that single dead ref killed every draft. A missing object now
+      // degrades to that photo's caption, same rule as every other photo
+      // fault here.
+      var existsArr = await bucket.file(ref).exists();
+      if (!existsArr || existsArr[0] !== true) continue;
       var signed = await bucket.file(ref).getSignedUrl({
         version: "v4", action: "read", expires: Date.now() + (ttlMs || SIGNED_URL_TTL_MS)
       });
