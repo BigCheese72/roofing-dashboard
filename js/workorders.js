@@ -1477,9 +1477,9 @@ function buildSummaryDraftPayload(o){
    doc.generate) and puts the returned text into the Summary TEXTAREA only —
    a draft the tech edits, never saved or sent by this function. On-demand
    only (this button IS the cost control — drafting never fires on save or
-   open). Server side is a deterministic placeholder until the vision LLM is
-   wired (Phase 1, blocked on Mark provisioning an API key — see
-   generate-summary.js's header). */
+   open). Server side routes through lib/aiProvider.js — live vision model
+   where a key exists (dev), deterministic placeholder elsewhere (prod) —
+   see generate-summary.js's header. */
 async function draftReportSummary(btn){
   var existing = val("summary");
   if (existing && existing.trim() &&
@@ -1496,7 +1496,22 @@ async function draftReportSummary(btn){
       return;
     }
     setVal("summary", out.draft);
-    toast("Draft summary inserted — review and edit it before saving or sending.");
+    /* Tell the tech WHO answered — the server reports provenance
+       ({llm, fallback, model, photosSeen}) and the three cases mean very
+       different things: a real AI draft, an AI outage the fallback covered,
+       or a site with no AI key at all (production, deliberately). Without
+       this, a fallback draft is indistinguishable from success — exactly
+       how the first live test on dev (2026-07-16) went unnoticed. */
+    if (out.llm){
+      var seen = out.photosSeen || 0;
+      toast("AI draft inserted (" + (out.model || "model") + ", " + seen + " photo" + (seen === 1 ? "" : "s") +
+        " reviewed) — review and edit it before saving or sending.");
+    } else if (out.fallback){
+      toast("⚠️ AI didn't answer — a plain placeholder draft was inserted instead. Try again in a minute; " +
+        "if it keeps happening, the AI key/credits need a look.");
+    } else {
+      toast("Placeholder draft inserted (no AI on this site) — review and edit it before saving or sending.");
+    }
   }catch(e){
     toast("Summary draft failed: " + (e && e.message ? e.message : "network error"));
   }finally{
