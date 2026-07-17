@@ -1085,6 +1085,37 @@ function populateWarrantyGuidelines(){
       "<b style='color:#D64545'>Typically Not Warrantable</b>" + list(WARRANTY_GUIDELINES.notWarrantable) +
     "</div>";
 }
+/* ================= contact phone formatting ================= *
+   Auto-formats the work order's contact phone to a consistent US style
+   (Mark). ONE constant controls the exact style — his example was
+   "(573)489-3291"; shipping the standard "(573) 489-3291" and the space is
+   a one-character edit here if he wants it dropped:                       */
+var PHONE_DISPLAY_FORMAT = "(AAA) PPP-NNNN";
+/* Pure formatter: a clean 10-digit US number (with or without a leading 1,
+   punctuation, spaces) comes back in PHONE_DISPLAY_FORMAT — so it's
+   idempotent on already-formatted values. ANYTHING else (partial input
+   mid-typing, extensions, international) is returned untouched: never
+   mangle what we don't positively recognize. The formatted string IS what
+   gets stored (display == storage — reports/emails print o.billPhone
+   verbatim, and legacy digit-only records normalize on their next open +
+   save via fill() below). */
+function formatPhoneUS(raw){
+  var s = String(raw || "");
+  var digits = s.replace(/\D+/g, "");
+  if (digits.length === 11 && digits.charAt(0) === "1") digits = digits.slice(1);
+  if (digits.length !== 10) return s;
+  return PHONE_DISPLAY_FORMAT
+    .replace("AAA", digits.slice(0, 3))
+    .replace("PPP", digits.slice(3, 6))
+    .replace("NNNN", digits.slice(6));
+}
+function renderPhoneFormatting(){
+  var el = document.getElementById("billPhone");
+  if (!el) return;
+  var formatted = formatPhoneUS(el.value);
+  if (formatted !== el.value) el.value = formatted;
+}
+
 /* ================= address → turn-by-turn directions ================= *
    The job's Location becomes a navigation handoff (Mark): tap 🧭 Directions
    under the Location field and the device's maps app opens turn-by-turn to
@@ -1181,6 +1212,14 @@ document.addEventListener("DOMContentLoaded", function(){
   /* Directions link tracks the Location field live as the tech types. */
   var loc = document.getElementById("location");
   if (loc) loc.addEventListener("input", renderLocationDirectionsLink);
+  /* Phone auto-format: snaps to PHONE_DISPLAY_FORMAT the moment a full US
+     number is present (the 10th digit, a paste, or blur) — partial input
+     is never touched mid-typing, so the cursor never fights the tech. */
+  var bp = document.getElementById("billPhone");
+  if (bp){
+    bp.addEventListener("input", renderPhoneFormatting);
+    bp.addEventListener("blur", renderPhoneFormatting);
+  }
 });
 
 /* ================= shared roof-type list ================= *
@@ -1399,6 +1438,10 @@ function fill(o){
      display blank and then be SAVED back blank on the next save. Rebuild
      the options around this record's own value instead. */
   populateRoofSystemSelect(o.roofSystem || "");
+  /* Legacy digit-only phone values display formatted from the first open
+     (and, since display == storage, normalize on the next save). A value
+     the formatter doesn't positively recognize passes through untouched. */
+  setVal("billPhone", formatPhoneUS(o.billPhone));
   populateWoTypeSelect();
   setVal("woType", o.woType || WORK_ORDER_TYPES[0]);
   onWoTypeChange();

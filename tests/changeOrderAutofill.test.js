@@ -69,6 +69,7 @@ function makeSandbox(opts){
     clearStaleLookupRoofInfoForCurrentOrder(){},
     scheduleInlineBuildingHistoryRefresh(){},
     genId(p){ return p + "_test"; },
+    formatPhoneUS(v){ return String(v == null ? "" : v); },
     setTimeout, clearTimeout
   };
   vm.createContext(sandbox);
