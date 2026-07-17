@@ -161,11 +161,30 @@ function mapEvent(e) {
   };
 }
 
+// A YYYY-MM-DD date, taken from the leading 10 chars of a date/ISO string when
+// present (so "2026-07-20" and "2026-07-20T00:00:00Z" both stay the 20th — no
+// timezone shift), else derived from a Date's LOCAL components. Never toISOString
+// (that would convert to UTC and can roll an all-day date back a day).
+function dateOnly(v) {
+  const s = String(v == null ? "" : v);
+  const m = /^(\d{4}-\d{2}-\d{2})/.exec(s);
+  if (m) return m[1];
+  const d = new Date(v);
+  if (isNaN(d.getTime())) return null;
+  const p = n => String(n).padStart(2, "0");
+  return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
+}
+
 // Build the POST /me/events payload for calendar_create. Pure + validating:
 // throws a 400-tagged error when subject or a start/end pair is missing, so the
-// handler can return a clean error without a Graph round-trip. Additive only —
-// this shape can only CREATE an event; it carries no id and cannot target,
-// modify, or delete an existing one.
+// handler can return a clean error without a Graph round-trip.
+//
+// ADDITIVE + NON-SENDING by construction: this shape can only CREATE an event on
+// Mark's own calendar. It carries no id (cannot target/modify/delete an existing
+// event) and DELIBERATELY has no `attendees` field — an event with attendees
+// makes Graph email invitations immediately, which would be an outbound "send"
+// with no review step. The personal path never sends mail, so it never invites
+// anyone; if Mark wants to invite people he adds them in Outlook after review.
 function buildEventPayload(input) {
   input = input || {};
   const subject = typeof input.subject === "string" ? input.subject.trim() : "";
@@ -180,15 +199,21 @@ function buildEventPayload(input) {
     if (!input.start || !input.end) {
       const e = new Error("all-day calendar_create needs start and end dates"); e.statusCode = 400; throw e;
     }
+    const sd = dateOnly(input.start), ed = dateOnly(input.end);
+    if (!sd || !ed) { const e = new Error("all-day calendar_create needs valid start/end dates"); e.statusCode = 400; throw e; }
     ev.isAllDay = true;
-    ev.start = { dateTime: new Date(input.start).toISOString().slice(0, 10) + "T00:00:00", timeZone: tz };
-    ev.end = { dateTime: new Date(input.end).toISOString().slice(0, 10) + "T00:00:00", timeZone: tz };
+    ev.start = { dateTime: sd + "T00:00:00", timeZone: tz };
+    ev.end = { dateTime: ed + "T00:00:00", timeZone: tz };
   } else {
     if (!input.start || !input.end) {
       const e = new Error("calendar_create needs start and end date-times"); e.statusCode = 400; throw e;
     }
-    ev.start = { dateTime: new Date(input.start).toISOString(), timeZone: tz };
-    ev.end = { dateTime: new Date(input.end).toISOString(), timeZone: tz };
+    const s = new Date(input.start), en = new Date(input.end);
+    if (isNaN(s.getTime()) || isNaN(en.getTime())) {
+      const e = new Error("calendar_create needs valid start/end date-times"); e.statusCode = 400; throw e;
+    }
+    ev.start = { dateTime: s.toISOString(), timeZone: tz };
+    ev.end = { dateTime: en.toISOString(), timeZone: tz };
   }
 
   if (typeof input.location === "string" && input.location.trim()) {
@@ -197,11 +222,6 @@ function buildEventPayload(input) {
   if (typeof input.body === "string" && input.body.trim()) {
     ev.body = { contentType: "Text", content: input.body.trim() };
   }
-  const attendees = normalizeRecipients(input.attendees).map(r => ({
-    emailAddress: r.emailAddress,
-    type: "required",
-  }));
-  if (attendees.length) ev.attendees = attendees;
   return ev;
 }
 
@@ -316,10 +336,9 @@ exports.handler = async function (event) {
 
     // ---- calendar_create: THE ONLY CALENDAR WRITE, and it is ADDITIVE. POST
     // /me/events puts a new event on Mark's OWN calendar. It cannot modify or
-    // delete any existing event — no such action exists in this file. If the
-    // event has attendees, Graph will send them an invite, so this is guarded:
-    // by default we DO NOT invite anyone (attendees only when explicitly asked),
-    // keeping a routine event add from silently emailing people.
+    // delete any existing event — no such action exists in this file — and the
+    // payload carries no attendees, so it never emails an invitation to anyone
+    // (see buildEventPayload). Creating an event sends no mail and notifies no one.
     if (action === "calendar_create") {
       let payload;
       try { payload = buildEventPayload(body); }
@@ -336,7 +355,6 @@ exports.handler = async function (event) {
         start: created && created.start,
         end: created && created.end,
         webLink: (created && created.webLink) || null,
-        invitedAttendees: (payload.attendees || []).length,
       });
     }
 

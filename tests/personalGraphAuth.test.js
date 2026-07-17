@@ -135,3 +135,35 @@ test("the personal token store doc is SEPARATE from the business doc", () => {
   assert.notStrictEqual(m._SECRET_DOC_ID, "ms_graph_delegated",
     "must not share the business refresh-token doc");
 });
+
+// =====================================================================
+// URL guard: the personal bearer token must ONLY ever be sent to Graph. A
+// caller-supplied absolute URL (e.g. a spoofed @odata.nextLink) to any other
+// host must be refused BEFORE a token is attached.
+// =====================================================================
+test("resolveGraphUrl prefixes relative paths against Graph v1.0", () => {
+  const m = load(FULL_PA);
+  assert.strictEqual(m.resolveGraphUrl("/me/messages"), "https://graph.microsoft.com/v1.0/me/messages");
+});
+
+test("resolveGraphUrl passes through a legitimate Graph absolute URL (nextLink)", () => {
+  const m = load(FULL_PA);
+  const nl = "https://graph.microsoft.com/v1.0/me/messages?$skip=20";
+  assert.strictEqual(m.resolveGraphUrl(nl), nl);
+});
+
+test("resolveGraphUrl REFUSES a non-Graph absolute URL (token exfiltration guard)", () => {
+  const m = load(FULL_PA);
+  for (const bad of [
+    "https://attacker.example/collect",
+    "http://graph.microsoft.com/me",              // non-https
+    "https://graph.microsoft.com.evil.example/x", // lookalike host
+    "https://evilgraph.microsoft.com.attacker/x",
+  ]) {
+    assert.throws(() => m.resolveGraphUrl(bad), (err) => {
+      assert.strictEqual(err.statusCode, 400);
+      assert.match(err.message, /non-Graph host/i);
+      return true;
+    }, "must refuse: " + bad);
+  }
+});

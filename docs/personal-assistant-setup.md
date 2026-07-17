@@ -168,8 +168,10 @@ If the env vars aren't set, every action returns HTTP **503** with
 - ✅ List today's / this week's events.
 - ✅ Add a new event to Mark's own calendar (additive).
 - 🚫 No update or delete action exists — the assistant cannot move, change, or
-  cancel any existing event (his or anyone else's). By default a created event
-  invites **no** attendees; attendees are added only when Mark explicitly asks.
+  cancel any existing event (his or anyone else's).
+- 🚫 A created event never carries attendees, so it never emails an invitation
+  to anyone — creating an event sends no mail and notifies no one. (Mark adds
+  attendees himself in Outlook if he wants to invite people.)
 
 **Isolation.** This function reads only the `PA_MS_*` variables and uses a
 separate stored‑token doc. It has no access to the business Contacts, Files, or

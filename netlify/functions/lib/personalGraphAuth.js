@@ -118,6 +118,16 @@ function refreshAccessToken(refreshToken) {
 // Firestore access — duplicated (not shared) from graphDelegatedAuth.js's
 // getDb() for the same reason it does: this module can be required standalone
 // without dragging in the business auth surface.
+//
+// ORDERING DEPENDENCY (safe by construction in assistant-mail.js): this
+// initializeApp() intentionally omits authGuard.getAdmin()'s dev/prod
+// host-vs-project safety guard. It's safe ONLY because the handler runs
+// requirePermission() FIRST, which calls authGuard.getAdmin(hostname) and
+// primes the singleton `admin` app WITH the guard before any code here runs —
+// so this getDb() reuses that already-guarded app (admin.apps.length is
+// truthy) and never initializes an unguarded one. Any future caller of
+// getPersonalAccessToken()/graphFetchPersonal() MUST likewise run an
+// authGuard check first, or thread the hostname through here.
 function getDb() {
   if (!admin.apps.length) {
     const raw = process.env.FIREBASE_SERVICE_ACCOUNT;
@@ -187,13 +197,37 @@ async function getPersonalAccessToken() {
   return cachedAccess.accessToken;
 }
 
-// Thin fetch wrapper: attaches the personal bearer token and resolves relative
-// paths against Graph v1.0. Full URLs (nextLink) are used as-is.
+// Graph's own pagination links (@odata.nextLink) are absolute URLs a caller may
+// hand back in. They MUST point at Graph — otherwise a caller-supplied absolute
+// URL would receive the personal access token in its Authorization header,
+// leaking a Mail.ReadWrite + Calendars.ReadWrite bearer token to an arbitrary
+// host (SSRF / token exfiltration). Resolve relative paths against Graph v1.0;
+// for an absolute URL, REQUIRE the graph.microsoft.com host and fail closed
+// (with the bearer token never attached) on anything else.
+function resolveGraphUrl(pathOrUrl) {
+  const s = String(pathOrUrl || "");
+  if (s.indexOf("http") !== 0) return "https://graph.microsoft.com/v1.0" + s;
+  let u;
+  try { u = new URL(s); } catch (e) { u = null; }
+  const okHost = u && u.protocol === "https:" &&
+    (u.hostname === "graph.microsoft.com" || u.hostname.endsWith(".graph.microsoft.com"));
+  if (!okHost) {
+    const err = new Error("Refusing to send the personal Graph token to a non-Graph host: " +
+      (u ? u.hostname : "(unparseable URL)"));
+    err.statusCode = 400;
+    throw err;
+  }
+  return u.toString();
+}
+
+// Thin fetch wrapper: attaches the personal bearer token and resolves the URL
+// through resolveGraphUrl (which fails closed on any non-Graph absolute URL, so
+// the token is only ever sent to Graph).
 async function graphFetchPersonal(pathOrUrl, options) {
+  const url = resolveGraphUrl(pathOrUrl); // throws BEFORE a token is minted/attached
   const token = await getPersonalAccessToken();
   const opts = Object.assign({}, options);
   opts.headers = Object.assign({ Authorization: "Bearer " + token, Accept: "application/json" }, opts.headers || {});
-  const url = pathOrUrl.indexOf("http") === 0 ? pathOrUrl : "https://graph.microsoft.com/v1.0" + pathOrUrl;
   return fetch(url, opts);
 }
 
@@ -205,6 +239,7 @@ module.exports = {
   refreshAccessToken,
   getPersonalAccessToken,
   graphFetchPersonal,
+  resolveGraphUrl,
   _resetCache,
   _SECRET_DOC_ID: SECRET_DOC_ID,
 };

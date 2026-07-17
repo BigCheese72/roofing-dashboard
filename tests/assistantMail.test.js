@@ -175,7 +175,7 @@ test("buildEventPayload builds a timed event with Central tz default", () => {
   assert.strictEqual(ev.attendees, undefined, "no attendees unless explicitly asked");
 });
 
-test("buildEventPayload includes location, body and explicit attendees when given", () => {
+test("buildEventPayload includes location and body when given", () => {
   const ev = H.buildEventPayload({
     subject: "Roof inspection",
     start: "2026-07-18T14:00:00Z",
@@ -183,18 +183,23 @@ test("buildEventPayload includes location, body and explicit attendees when give
     timeZone: "America/New_York",
     location: "1600 Elm St",
     body: "Bring ladder",
-    attendees: ["sam@x.com", { address: "pat@y.com", name: "Pat" }],
   });
   assert.strictEqual(ev.location.displayName, "1600 Elm St");
   assert.strictEqual(ev.body.content, "Bring ladder");
   assert.strictEqual(ev.start.timeZone, "America/New_York");
-  assert.strictEqual(ev.attendees.length, 2);
-  assert.strictEqual(ev.attendees[0].type, "required");
-  assert.strictEqual(ev.attendees[1].emailAddress.name, "Pat");
 });
 
-test("buildEventPayload builds a date-only all-day event", () => {
-  const ev = H.buildEventPayload({ subject: "PTO", isAllDay: true, start: "2026-07-20T00:00:00Z", end: "2026-07-21T00:00:00Z" });
+test("buildEventPayload NEVER emits an attendees field (no invite = no outbound send)", () => {
+  const ev = H.buildEventPayload({
+    subject: "x", start: "2026-07-18T14:00:00Z", end: "2026-07-18T15:00:00Z",
+    attendees: ["sam@x.com", { address: "pat@y.com", name: "Pat" }], // must be ignored
+  });
+  assert.strictEqual(ev.attendees, undefined,
+    "the personal path must not create events that email invitations to anyone");
+});
+
+test("buildEventPayload builds a date-only all-day event without a UTC day-shift", () => {
+  const ev = H.buildEventPayload({ subject: "PTO", isAllDay: true, start: "2026-07-20", end: "2026-07-21" });
   assert.strictEqual(ev.isAllDay, true);
   assert.strictEqual(ev.start.dateTime, "2026-07-20T00:00:00");
   assert.strictEqual(ev.end.dateTime, "2026-07-21T00:00:00");
