@@ -1242,6 +1242,20 @@
         <div id="sm-pc-foundation" class="hint" style="margin:8px 0 0">Not linked. Cross-reference to bind the real job number.</div>
       </div>
 
+      <!-- CompanyCam link/create. DELIBERATE RULE EXCEPTION: RoofOps normally
+           never creates CompanyCam projects. This flow offers a one-click CREATE
+           only when the WO is Foundation-linked AND no existing project matches
+           the address — a gated, audit-logged action (see js/servicemanager.js
+           smCreateCompanyCamProject + netlify/functions/companycam.js). -->
+      <div class="card" style="margin:12px 0;background:#FFF7F0;border:1px solid #E8A33D">
+        <div class="btnrow" style="margin:0;align-items:center">
+          <b style="font-size:13px">📸 CompanyCam project</b>
+          <span style="flex:1"></span>
+          <button class="btn" type="button" onclick="smCheckCompanyCam()" title="Search CompanyCam for a matching project by address/name">🔎 Check CompanyCam</button>
+        </div>
+        <div id="sm-pc-companycam" class="hint" style="margin:8px 0 0">Check for an existing CompanyCam project to link. Creating one is a deliberate action, offered only when Foundation-linked with no match.</div>
+      </div>
+
       <!-- AI scope-prefill (Phase 2). Hidden until the endpoint reports a key is
            configured (capability probe) — inert on keyless deploys. -->
       <div class="btnrow" id="sm-pc-ai-row" style="display:none;margin:0 0 8px">

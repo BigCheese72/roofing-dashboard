@@ -26,7 +26,7 @@
 // NOT become a role/permission check. verifyCaller() proves WHO you are and
 // throws 401 if you're nobody; requirePermission() is the role-gate and is
 // deliberately NOT used here.
-const { uploadDocumentToCompanyCam, verifyDocumentOnCompanyCam } = require("./lib/companyCamDocuments");
+const { uploadDocumentToCompanyCam, verifyDocumentOnCompanyCam, createCompanyCamProject } = require("./lib/companyCamDocuments");
 const { uploadPhotoToCompanyCam, deletePushedPhotoFromCompanyCam } = require("./lib/companyCamPhotos");
 const { verifyCaller, requirePermission, getDb } = require("./lib/authGuard");
 
@@ -207,6 +207,49 @@ exports.handler = async function (event) {
           });
         } catch (e) { /* the deletion already happened -- the audit write is best-effort, never blocks it */ }
         return resp(200, { ok: true, deletedPhotoId: result.deletedPhotoId, projectId: result.projectId || null, alreadyGone: !!result.alreadyGone });
+      }
+
+      // ==================== DELIBERATE RULE EXCEPTION ====================
+      // create_project — the ONLY place in this codebase that CREATES a
+      // CompanyCam project. The standing hard rule everywhere else is "never
+      // auto-create CompanyCam projects; link/push to existing ones only" (see
+      // resolveBuildingCompanyCamLink() in js/companycam.js, the passive push
+      // paths in js/history.js, and the tests that assert a project is NEVER
+      // auto-created). Mark DELIBERATELY authorized THIS exception for the
+      // Service Manager dispatch flow (2026-07-17): once a proposal is
+      // Foundation-linked and NO CompanyCam project matches the address, a
+      // service manager may create one with an EXPLICIT one-click action.
+      //   * NOT silent auto-create: human-initiated only.
+      //   * PERMISSION-gated on companycam.link (admin/owner + anyone granted
+      //     it) — the same gate as the destructive remove_pushed_photo, NOT the
+      //     authentication-only push actions.
+      //   * Every create is AUDIT-LOGGED (name/address/who/when/projectId).
+      // The passive/field paths stay create-free and their tests still assert
+      // it — this is an additive, gated, logged, separate code path.
+      if (body.action === "create_project") {
+        let caller;
+        try { caller = await requirePermission(event, "companycam.link"); }
+        catch (e) { return resp(e.statusCode || 403, { error: e.message || "Forbidden" }); }
+        const result = await createCompanyCamProject(body.name, body.address || null, body.coordinates || null);
+        if (!result.ok) {
+          const code = /not set/.test(result.error) ? 500 : (/Missing/.test(result.error) ? 400 : 502);
+          return resp(code, { error: result.error });
+        }
+        try {
+          await getDb().collection("audit_logs").doc().set({
+            ts: Date.now(),
+            action: "companycam_project_created",
+            actorUid: caller.uid || null,
+            actorEmail: caller.email || null,
+            actorRole: caller.owner ? "owner" : (caller.role || null),
+            projectId: result.projectId,
+            projectName: result.name || null,
+            address: body.address || null,
+            foundationJobNo: body.foundationJobNo || null,
+            workOrderId: body.workOrderId || null
+          });
+        } catch (e) { /* project already created — the audit write is best-effort, never blocks it */ }
+        return resp(200, { ok: true, projectId: result.projectId, projectName: result.name || null, created: true });
       }
       return resp(400, { error: "Unknown action" });
     } catch (e) {

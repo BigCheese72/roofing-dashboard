@@ -69,4 +69,63 @@ async function verifyDocumentOnCompanyCam(documentId) {
   }
 }
 
-module.exports = { uploadDocumentToCompanyCam, verifyDocumentOnCompanyCam };
+// ============================ RULE EXCEPTION ==============================
+// CREATE a CompanyCam project. RoofOps' standing hard rule is "never
+// auto-create CompanyCam projects — link/push to existing ones only" (enforced
+// structurally elsewhere: every other CompanyCam call is a GET or a POST to a
+// sub-resource of a project id the caller already holds). Mark DELIBERATELY
+// authorized this ONE create path for the Service Manager dispatch flow
+// (2026-07-17): when a proposal is Foundation-linked and NO CompanyCam project
+// matches the address, a service manager may create one via an explicit,
+// permission-gated, audit-logged one-click action — NOT silent auto-create.
+// The caller (companycam.js `create_project`) owns the permission gate + audit
+// log; this function only performs the write. Uses the write token, mirrors
+// uploadDocumentToCompanyCam()'s success-requires-an-id honesty.
+async function createCompanyCamProject(name, address, coordinates) {
+  const readToken = process.env.COMPANYCAM_TOKEN;
+  const writeToken = process.env.COMPANYCAM_WRITE_TOKEN || readToken;
+  if (!writeToken) {
+    return { ok: false, error: "COMPANYCAM_WRITE_TOKEN (or COMPANYCAM_TOKEN) is not set. Add it in Netlify > Project configuration > Environment variables, then redeploy." };
+  }
+  const nm = String(name || "").trim().slice(0, 150);
+  if (!nm) return { ok: false, error: "Missing project name" };
+
+  const headers = { "Authorization": "Bearer " + writeToken, "Accept": "application/json", "Content-Type": "application/json" };
+  if (process.env.COMPANYCAM_USER_EMAIL) headers["X-CompanyCam-User"] = process.env.COMPANYCAM_USER_EMAIL;
+
+  const project = { name: nm };
+  if (address && typeof address === "object") {
+    const a = {};
+    if (address.street_address_1) a.street_address_1 = String(address.street_address_1).slice(0, 200);
+    if (address.street_address_2) a.street_address_2 = String(address.street_address_2).slice(0, 200);
+    if (address.city) a.city = String(address.city).slice(0, 100);
+    if (address.state) a.state = String(address.state).slice(0, 50);
+    if (address.postal_code) a.postal_code = String(address.postal_code).slice(0, 20);
+    if (Object.keys(a).length) project.address = a;
+  }
+  if (coordinates && typeof coordinates.lat === "number" && typeof coordinates.lon === "number") {
+    project.coordinates = { lat: coordinates.lat, lon: coordinates.lon };
+  }
+
+  try {
+    const r = await fetch("https://api.companycam.com/v2/projects", {
+      method: "POST", headers, body: JSON.stringify({ project })
+    });
+    const t = await r.text();
+    if (!r.ok) return { ok: false, error: "CompanyCam rejected the project: " + r.status + " " + t.slice(0, 300) };
+    let out = null; try { out = JSON.parse(t); } catch (e) {}
+    // Same honesty rule as uploadDocumentToCompanyCam: a 2xx WITHOUT an id is a
+    // FAILURE, never a silent "created" with a null id (which would leave the WO
+    // linked to nothing). Accept both {id,...} and {project:{id,...}} shapes.
+    const projObj = (out && out.project && out.project.id) ? out.project : out;
+    const projectId = (projObj && projObj.id) ? String(projObj.id) : null;
+    if (!projectId) {
+      return { ok: false, error: "CompanyCam returned " + r.status + " but no project id — treating as FAILED, not created. Body: " + String(t || "(empty)").slice(0, 300) };
+    }
+    return { ok: true, projectId: projectId, project: projObj, name: projObj.name || nm };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
+
+module.exports = { uploadDocumentToCompanyCam, verifyDocumentOnCompanyCam, createCompanyCamProject };
