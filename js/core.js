@@ -537,15 +537,29 @@ async function checkAuthBootstrapStatus(){
   }catch(e){ authBootstrapStatus = true; }
   renderLoginGate();
 }
+/* The gate holds AT MOST one body-scroll lock, released the instant it
+   hides. Without this guard, the hide paths below (esp. a successful login:
+   onAuthStateChanged -> renderLoginGate() with currentAuthUser set) took the
+   early return and never called unlockBodyScroll(), so body{overflow:hidden}
+   set when the gate opened stayed on forever -- a tech who freshly signed in
+   then couldn't scroll the page (WO/leak form frozen). Idempotent so repeated
+   renders (token refresh, re-render) can't stack the lock either. */
+var loginGateScrollLocked = false;
+function setLoginGateScrollLock(on){
+  if (on === loginGateScrollLocked) return;
+  loginGateScrollLocked = on;
+  if (on) lockBodyScroll(); else unlockBodyScroll();
+}
 function renderLoginGate(){
   var gate = document.getElementById("login-gate");
   if (!gate) return;
   if (!fauth || authBootstrapStatus === null || currentAuthUser){
     gate.style.display = "none";
+    setLoginGateScrollLock(false);
     return;
   }
   gate.style.display = "";
-  lockBodyScroll();
+  setLoginGateScrollLock(true);
   var host = document.getElementById("login-gate-body");
   if (!host) return;
   if (!authBootstrapStatus){
