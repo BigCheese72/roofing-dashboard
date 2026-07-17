@@ -376,6 +376,13 @@ test("buildLlmPrompt: grounded, draft-only, exemplar-styled, and length-tunable 
   assert.ok(p.includes("fully adhered EPDM system that is generally in fair condition"), "exemplar text present verbatim");
   assert.ok(p.includes("Recommended Repairs"), "exemplar's repairs-section pattern named");
   assert.ok(/tighter and more concise/i.test(p), "the 'a little long' correction is the instruction");
+  // Fences added after the first two live drafts (2026-07-16):
+  // the exemplar's facts belong to a different roof...
+  assert.ok(/FACTS describe a DIFFERENT roof/.test(p), "exemplar fact-bleed fence");
+  // ...and the output must not carry a heading or a draft disclaimer into
+  // the customer-facing PDF.
+  assert.ok(/do not add a 'Summary' title/.test(p), "no self-added Summary heading");
+  assert.ok(/do not add any note, disclaimer, or mention that this\s+is a draft/.test(p), "no draft disclaimer in the body");
 });
 
 test("collectSignedPhotoUrls signs only clean workorders/ refs, short-lived, and never throws on a bad one", async () => {
