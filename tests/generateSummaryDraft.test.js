@@ -342,15 +342,18 @@ test("sanitizeReport rejects any photo ref outside our own workorders/ tree", ()
    reachable from the stub handler (the fetch trap above proves no network
    happens) — these pin down their contracts so wiring the key later is a
    transport change only. ---- */
-test("buildLlmPrompt: grounded, draft-only, and length-tunable via the one constant", () => {
+test("buildLlmPrompt: grounded, draft-only, exemplar-styled, and length-tunable via the one constant", () => {
   const p = fn.buildLlmPrompt(fn.sanitizeReport(REPORT));
   assert.equal(typeof p, "string", "system prompt string (report JSON + images are aiProvider's job)");
   assert.ok(p.includes(String(fn.SUMMARY_TARGET_WORDS)), "word target comes from the constant");
   assert.ok(/never invent/i.test(p), "anti-fabrication instruction");
   assert.ok(/DRAFT/.test(p), "draft-only framing");
   assert.ok(/photo/i.test(p), "photos are part of the grounding instructions");
-  // Style exemplar not supplied yet -> generic professional-voice fallback.
-  assert.ok(/professional/i.test(p));
+  // Mark's approved Flat Branch Pub summary rides in verbatim as the voice/
+  // structure target, with the "tighter than it" instruction.
+  assert.ok(p.includes("fully adhered EPDM system that is generally in fair condition"), "exemplar text present verbatim");
+  assert.ok(p.includes("Recommended Repairs"), "exemplar's repairs-section pattern named");
+  assert.ok(/tighter and more concise/i.test(p), "the 'a little long' correction is the instruction");
 });
 
 test("collectSignedPhotoUrls signs only clean workorders/ refs, short-lived, and never throws on a bad one", async () => {

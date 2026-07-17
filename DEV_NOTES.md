@@ -8339,9 +8339,11 @@ separate `roofops-prod` key then — never reuse the dev key). On the live
 path the photos attach as image blocks via the signed urls (aiProvider caps
 8/call) and the feature-tuned system prompt rides as `opts.system`: length
 tuned by the single `SUMMARY_TARGET_WORDS` constant (Mark's verdict on his
-ChatGPT Flat Branch Pub summary: right voice, "a little long" — so we target
-tighter), and his exact Flat Branch text drops into `STYLE_EXEMPLAR` verbatim
-when the relay supplies it. The deterministic template remains as both the
+ChatGPT Flat Branch Pub summary: right voice, "a little long" — the exemplar
+runs ~340 words, so the target is 280), and his exact Flat Branch text
+(inspection job #17455) now sits in `STYLE_EXEMPLAR` verbatim — the prompt
+says "this voice and structure, tighter", including the plain-text
+"Recommended Repairs" section pattern. The deterministic template remains as both the
 no-key answer AND the outage fallback (`fallback: true` in the response) — a
 roof-side flow never dead-ends on an AI failure. Model choice is env config
 (`ANTHROPIC_MODEL`), not code. This is also the codebase's first concrete

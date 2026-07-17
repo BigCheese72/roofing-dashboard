@@ -875,7 +875,7 @@ Goal: turn each building into a long-term roof record.
   model LOOKS AT the report's photos via short-lived signed URLs (never
   public), on-demand-only for cost control, length tuned to run tighter
   than Mark's ChatGPT Flat Branch benchmark (`SUMMARY_TARGET_WORDS`; his
-  exact text pending for `STYLE_EXEMPLAR`). Mark provisioned
+  exact approved text now in `STYLE_EXEMPLAR` verbatim). Mark provisioned
   `ANTHROPIC_API_KEY` on the dev deploy context only — production's
   context has no key, so prod answers with the deterministic template
   until a chosen promotion arms it (separate `roofops-prod` key then).

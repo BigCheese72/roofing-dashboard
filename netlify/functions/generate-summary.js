@@ -59,16 +59,34 @@ const { requirePermission, getAdmin, hostnameFromEvent } = require("./lib/authGu
 const { resolveProvider, generateSummary } = require("./lib/aiProvider");
 
 // ---- Length/style tuning knobs for the Phase-1 LLM prompt. Mark's verdict
-// on his ChatGPT Flat Branch Pub summary: right voice, "a little long" --
-// so the word target sits deliberately under a full ChatGPT-style page.
+// on his ChatGPT Flat Branch Pub summary (the exemplar below, ~340 words):
+// right voice, "a little long" -- so the target sits meaningfully under it.
 // Tune HERE, nowhere else. ----
-const SUMMARY_TARGET_WORDS = 160;
-const SUMMARY_MAX_PARAGRAPHS = 3;
-// Mark's Flat Branch Pub summary text goes here VERBATIM when the relay
-// supplies it -- the prompt then says "this voice, but tighter" instead of
-// describing the voice abstractly. null until then (prompt degrades to the
-// generic professional-voice instruction).
-const STYLE_EXEMPLAR = null;
+const SUMMARY_TARGET_WORDS = 280;
+const SUMMARY_MAX_PARAGRAPHS = 4; // generic-voice branch only; with the exemplar, structure follows it
+// Mark's Flat Branch Pub summary, VERBATIM from the report he generated via
+// ChatGPT and approved (inspection job #17455, 2026-07-15 -- supplied
+// 2026-07-16). This is the voice/structure target; the prompt asks for the
+// same, tighter. Note the plain-text "Recommended Repairs" section is part
+// of the pattern -- the PDF's Summary block renders pre-wrap text, so it
+// prints fine.
+const STYLE_EXEMPLAR = `The roof is a fully adhered EPDM system that is generally in fair condition. Most of the main roof membrane, perimeter details, rooftop equipment, and penetrations remain serviceable. However, several areas have been damaged by prolonged exposure to grease and require corrective work.
+
+The most significant concern is the east half of the internal north gutter, where a neoprene coating or overlay has failed. Water is becoming trapped between the failed neoprene layer and the existing EPDM membrane below. Based on the visible deterioration and the reported leakage near the northeast corner and west end of the internal gutter, the underlying EPDM membrane may also be compromised.
+
+Grease discharge from three rooftop exhaust areas has caused deterioration of the EPDM membrane and flashing materials. Additional deficiencies include an open rain collar and areas of failed or missing sealant along termination bars. These conditions may allow water intrusion during heavy rainfall.
+
+The observed damage appears to be related primarily to grease contamination, failed aftermarket coating materials, and maintenance-related sealant deterioration. These conditions would generally be considered non-warrantable.
+
+Recommended Repairs
+
+Remove the failed neoprene material from the affected internal gutter area and inspect the underlying EPDM membrane, insulation, and substrate for moisture damage. Replace all damaged or contaminated roofing materials as necessary and install new compatible EPDM membrane and flashing details.
+
+Remove and replace grease-damaged membrane and flashing around the affected exhaust equipment. The exhaust systems should also be evaluated and fitted with appropriate grease containment measures to prevent continued contamination of the roof.
+
+Reseal the open termination bars, repair the open rain collar, and inspect all nearby flashing details for additional deterioration. After repairs are completed, the internal gutter and scupper areas should be water-tested to confirm proper drainage and watertightness.
+
+Due to the barrel-shaped roof configuration, appropriate fall-protection and access precautions should be used while performing the repairs.`;
 // Signed photo URLs live just long enough for one model call to fetch them.
 const SIGNED_URL_TTL_MS = 10 * 60 * 1000;
 
@@ -249,15 +267,18 @@ function composeTemplateSummary(r) {
 // string only. ----
 function buildLlmPrompt(r) {
   var style = STYLE_EXEMPLAR
-    ? "Match the voice of this example summary, but run tighter and more concise than it:\n---\n" + STYLE_EXEMPLAR + "\n---"
-    : "Write in a professional commercial-roofing service-report voice addressed to the building's customer.";
+    ? "Match the voice and structure of this example summary from an approved report -- short plain " +
+      "paragraphs, then a plain-text 'Recommended Repairs' section when the findings warrant repairs -- " +
+      "but run tighter and more concise than it:\n---\n" + STYLE_EXEMPLAR + "\n---\n"
+    : "Write in a professional commercial-roofing service-report voice addressed to the building's " +
+      "customer, in at most " + SUMMARY_MAX_PARAGRAPHS + " short paragraphs. ";
   return "You draft the Summary section of a commercial roofing report. " +
     "Use ONLY the report data and the attached photos -- never invent conditions, causes, " +
     "measurements, or recommendations that they do not support. Where a photo shows a condition, " +
-    "ground the description in what is visible. " + style + " " +
-    "Target about " + SUMMARY_TARGET_WORDS + " words in at most " + SUMMARY_MAX_PARAGRAPHS + " short paragraphs, covering: " +
-    "what was done on site, the key findings/conditions, and recommended next actions. " +
-    "Plain text only, no headings or markdown. This is a DRAFT a technician will review and edit before it is sent.";
+    "ground the description in what is visible. " + style +
+    "Target about " + SUMMARY_TARGET_WORDS + " words, covering: what was done on site, the key " +
+    "findings/conditions, and recommended next actions. " +
+    "Plain text only, no markdown. This is a DRAFT a technician will review and edit before it is sent.";
 }
 
 // ---- Phase-1 seam: photo access for the vision model. Turns the sanitized
