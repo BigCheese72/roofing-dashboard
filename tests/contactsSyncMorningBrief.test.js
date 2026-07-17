@@ -82,6 +82,11 @@ test("resolveCalendarRange honors explicit start/end over the named range", () =
   assert.strictEqual(r.endDateTime, "2026-08-02T00:00:00.000Z");
 });
 
+test("resolveCalendarRange rejects unparseable explicit dates with 400 (not a 500)", () => {
+  assert.throws(() => H.resolveCalendarRange({ start: "not-a-date", end: "also-bad" }, new Date(2026, 6, 17)),
+    (e) => { assert.strictEqual(e.statusCode, 400); return true; });
+});
+
 // ---------------------------------------------------------------------
 // mapEvent
 // ---------------------------------------------------------------------
@@ -144,6 +149,13 @@ test("buildEventPayload rejects a missing subject / missing start-end (400)", ()
   assert.throws(() => H.buildEventPayload({ start: "2026-07-18T14:00:00Z", end: "2026-07-18T15:00:00Z" }),
     (e) => { assert.strictEqual(e.statusCode, 400); assert.match(e.message, /subject/); return true; });
   assert.throws(() => H.buildEventPayload({ subject: "x", start: "2026-07-18T14:00:00Z" }),
+    (e) => { assert.strictEqual(e.statusCode, 400); return true; });
+});
+
+test("buildEventPayload rejects end <= start (timed and all-day) with 400", () => {
+  assert.throws(() => H.buildEventPayload({ subject: "x", start: "2026-07-18T15:00:00Z", end: "2026-07-18T15:00:00Z" }),
+    (e) => { assert.strictEqual(e.statusCode, 400); assert.match(e.message, /after start/); return true; });
+  assert.throws(() => H.buildEventPayload({ subject: "PTO", isAllDay: true, start: "2026-07-20", end: "2026-07-20" }),
     (e) => { assert.strictEqual(e.statusCode, 400); return true; });
 });
 

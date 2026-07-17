@@ -533,7 +533,11 @@ function resolveCalendarRange(input, now) {
   input = input || {};
   now = now instanceof Date ? now : new Date();
   if (input.start && input.end) {
-    return { startDateTime: new Date(input.start).toISOString(), endDateTime: new Date(input.end).toISOString() };
+    const s = new Date(input.start), e = new Date(input.end);
+    if (isNaN(s.getTime()) || isNaN(e.getTime())) {
+      const err = new Error("calendar_list: invalid start/end date"); err.statusCode = 400; throw err;
+    }
+    return { startDateTime: s.toISOString(), endDateTime: e.toISOString() };
   }
   const range = String(input.range || "today").toLowerCase();
   if (range === "week") {
@@ -602,6 +606,9 @@ function buildEventPayload(input) {
     if (!input.start || !input.end) { const e = new Error("all-day calendar_create needs start and end dates"); e.statusCode = 400; throw e; }
     const sd = dateOnly(input.start), ed = dateOnly(input.end);
     if (!sd || !ed) { const e = new Error("all-day calendar_create needs valid start/end dates"); e.statusCode = 400; throw e; }
+    // Graph uses an EXCLUSIVE end for all-day events, so end must be a later day
+    // than start (a single all-day event on the 20th is start=20, end=21).
+    if (ed <= sd) { const e = new Error("all-day calendar_create end date must be after start date"); e.statusCode = 400; throw e; }
     ev.isAllDay = true;
     ev.start = { dateTime: sd + "T00:00:00", timeZone: tz };
     ev.end = { dateTime: ed + "T00:00:00", timeZone: tz };
@@ -609,6 +616,7 @@ function buildEventPayload(input) {
     if (!input.start || !input.end) { const e = new Error("calendar_create needs start and end date-times"); e.statusCode = 400; throw e; }
     const s = new Date(input.start), en = new Date(input.end);
     if (isNaN(s.getTime()) || isNaN(en.getTime())) { const e = new Error("calendar_create needs valid start/end date-times"); e.statusCode = 400; throw e; }
+    if (en.getTime() <= s.getTime()) { const e = new Error("calendar_create end must be after start"); e.statusCode = 400; throw e; }
     ev.start = { dateTime: s.toISOString(), timeZone: tz };
     ev.end = { dateTime: en.toISOString(), timeZone: tz };
   }
@@ -1205,8 +1213,12 @@ exports.handler = async function (event) {
     // /me/calendarView so recurring instances are expanded.
     if (action === "calendar_list") {
       if (!(await hasCalendarScope())) return resp(200, CALENDAR_NOT_GRANTED);
-      const { startDateTime, endDateTime } = resolveCalendarRange(body, new Date());
-      const top = Math.min(100, Math.max(1, parseInt(body.top || "50", 10)));
+      let range;
+      try { range = resolveCalendarRange(body, new Date()); }
+      catch (e) { return resp(e.statusCode || 400, { error: e.message }); }
+      const { startDateTime, endDateTime } = range;
+      const n = parseInt(body.top, 10);
+      const top = Math.min(100, Math.max(1, Number.isFinite(n) ? n : 50));
       const url = "/me/calendarView?startDateTime=" + encodeURIComponent(startDateTime) +
         "&endDateTime=" + encodeURIComponent(endDateTime) +
         "&$select=id,subject,start,end,isAllDay,location,organizer,attendees,bodyPreview,webLink" +

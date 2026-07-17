@@ -49,6 +49,15 @@ That's it. No env‑var changes and no redeploy are required — the app already
 requests `Calendars.ReadWrite` in its sign‑in flow, and the calendar actions
 detect the new grant on the next call and switch themselves on.
 
+> **⚠️ Order matters — do steps 1 & 2 BEFORE step 3.** The sign‑in flow
+> (`ms-auth-start`) now always requests `Calendars.ReadWrite`. If admin consent
+> for it has **not** yet been granted, re‑running `ms-auth-start` can fail the
+> whole sign‑in (Microsoft error **AADSTS65001**, "consent required") — which
+> would also block re‑authorizing the mail/contacts scopes bundled with it. The
+> **currently stored token keeps working untouched**, so there is no rush and no
+> reason to run step 3 early. Only click `ms-auth-start` **after** Steve's
+> "Grant admin consent" shows the green check on step 2.
+
 > **Why the re‑sign‑in is needed:** the stored refresh token was issued before
 > the calendar scope existed, so it doesn't carry it. Only a fresh interactive
 > sign‑in (after admin consent) produces a token that does. The refresh path is
