@@ -67,7 +67,7 @@
 // only becomes part of the record through the normal workorder.edit-gated
 // save the tech performs afterward.
 const { requirePermission, getAdmin, hostnameFromEvent } = require("./lib/authGuard");
-const { resolveProvider, generateSummary, cleanInlineImage, MAX_VISION_PHOTOS } = require("./lib/aiProvider");
+const { resolveProvider, generateSummary, cleanInlineImage, cleanStorageRef, sanitizeReport, MAX_VISION_PHOTOS } = require("./lib/aiProvider");
 
 // ---- Length/style tuning knobs for the Phase-1 LLM prompt. Mark's verdict
 // on his ChatGPT Flat Branch Pub summary (the exemplar below, ~340 words):
@@ -106,73 +106,14 @@ function resp(code, obj) {
 }
 
 // ---- Input sanitizing: the client sends a compact projection of the work
-// order (see buildSummaryDraftPayload() in js/workorders.js), but the server
+// order (see buildSummaryDraftPayload() in js/workorders.js), and the server
 // re-clamps everything anyway -- request bodies are attacker-controlled text,
-// and in Phase 2 this exact object becomes LLM prompt context, so bounding it
-// here (lengths AND row counts) is also the token-cost ceiling. ----
-function s(v, max) { return String(v == null ? "" : v).slice(0, max || 300); }
-function rows(arr, max, map) {
-  return (Array.isArray(arr) ? arr : []).slice(0, max).map(map).filter(Boolean);
-}
-// A photo Storage ref may be passed through to a signed READ url on the
-// Phase-1 LLM path, so it is validated hard: our own workorders/ prefix
-// only, no traversal, sane length. Anything else becomes null (caption may
-// still be useful) -- never an error, never a signable path.
-function cleanStorageRef(v) {
-  var ref = s(v, 300);
-  if (!ref || ref.indexOf("workorders/") !== 0 || ref.indexOf("..") !== -1) return null;
-  return ref;
-}
-// The work-order id is the server's handle for reading INLINE photo bytes
-// back out of Firestore itself (Phase 1.5) -- it becomes a Firestore doc
-// path, so it is id-shaped or it is nothing.
-function cleanWorkOrderId(v) {
-  var id = s(v, 80);
-  return /^[A-Za-z0-9_-]{1,80}$/.test(id) ? id : null;
-}
-function sanitizeReport(raw) {
-  if (!raw || typeof raw !== "object") return null;
-  return {
-    workOrderId: cleanWorkOrderId(raw.workOrderId),
-    woType: s(raw.woType, 40),
-    jobName: s(raw.jobName, 200),
-    location: s(raw.location, 300),
-    serviceDate: s(raw.serviceDate, 40),
-    technician: s(raw.technician, 120),
-    roofSystem: s(raw.roofSystem, 200),
-    reportedArea: s(raw.reportedArea, 300),
-    warrantable: s(raw.warrantable, 1000),
-    nonWarrantable: s(raw.nonWarrantable, 1000),
-    repairDescription: s(raw.repairDescription, 2000),
-    inspectionChecklist: rows(raw.inspectionChecklist, 20, function (it) {
-      if (!it || typeof it !== "object") return null;
-      var label = s(it.label, 60), rating = s(it.rating, 20);
-      return (label && rating) ? { label: label, rating: rating, notes: s(it.notes, 500) } : null;
-    }),
-    findings: rows(raw.findings, 50, function (f) {
-      if (!f || typeof f !== "object") return null;
-      var condition = s(f.condition, 500), location = s(f.location, 300);
-      return (condition || location) ? { condition: condition, location: location, warranty: s(f.warranty, 40) } : null;
-    }),
-    repairs: rows(raw.repairs, 50, function (r) {
-      if (!r || typeof r !== "object") return null;
-      var repair = s(r.repair, 500), location = s(r.location, 300);
-      return (repair || location) ? { repair: repair, location: location } : null;
-    }),
-    repairItems: rows(raw.repairItems, 50, function (it) {
-      if (!it || typeof it !== "object") return null;
-      var type = s(it.type, 120), notes = s(it.notes, 500);
-      return (type || notes) ? { type: type, qty: s(it.qty, 20), notes: notes } : null;
-    }),
-    photos: rows(raw.photos, 60, function (p) {
-      if (!p || typeof p !== "object") return null;
-      var caption = s(p.caption, 300).trim();
-      var storageRef = cleanStorageRef(p.storageRef);
-      return (caption || storageRef) ? { caption: caption, storageRef: storageRef } : null;
-    }),
-    photoCount: Math.max(0, Math.min(500, parseInt(raw.photoCount, 10) || 0))
-  };
-}
+// and the sanitized object becomes LLM prompt context, so the bounds are also
+// the token-cost ceiling. The sanitizer itself LIVES IN lib/aiProvider.js
+// (sanitizeReport + cleanStorageRef + cleanWorkOrderId) -- one shape for
+// every AI caller, moved there after the post-#119 cross-review caught this
+// file's local copy and the lib's drifting apart. Re-exported at the bottom
+// so tests (and any reader looking here first) still find it. ----
 
 // ---- The Phase-1 composer: deterministic prose from the report's own data.
 // Every statement below is a restatement of something the tech entered --
@@ -408,7 +349,12 @@ exports.handler = async function (event) {
       if ((report.photos || []).some(function (p) { return p.storageRef; })) {
         try {
           const bucket = getAdmin(hostnameFromEvent(event)).storage().bucket();
-          photoUrls = (await collectSignedPhotoUrls(bucket, report.photos)).map(function (p) { return p.url; });
+          // Sign only what the model can consume: the provider seam sends at
+          // most MAX_VISION_PHOTOS images per call, so refs past the budget
+          // are never signed (post-#119 cross-review fix -- signing all 60
+          // minted up to 52 live URLs with no consumer).
+          const signable = report.photos.filter(function (p) { return p.storageRef; }).slice(0, MAX_VISION_PHOTOS);
+          photoUrls = (await collectSignedPhotoUrls(bucket, signable)).map(function (p) { return p.url; });
         } catch (e) { /* vision degrades to text-only; a draft must never dead-end on Storage */ }
       }
       // Inline photos (Phase 1.5) fill whatever vision budget the signed
@@ -444,7 +390,11 @@ exports.handler = async function (event) {
       // doc.generate-authenticated; the detail is the provider's RESPONSE
       // body and never contains the key.
       aiError: result.fallback ? (result.errorDetail || null) : null,
-      photosSeen: result.llm ? photoUrls.length + photoImages.length : 0
+      // photosSeen = what the model CONSUMED (result.photosUsed -- the
+      // provider seam's own count, re-gated and budget-capped there), never
+      // what this handler collected -- it feeds the "N photos reviewed"
+      // toast (#144).
+      photosSeen: result.photosUsed || 0
     });
   } catch (e) {
     if (e.statusCode === 401) return resp(401, { error: "Unauthorized" });
