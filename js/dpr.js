@@ -184,6 +184,7 @@ async function dprPopulateDataLists(force){
   dprPopulateForemen();     /* immediate/offline: roster + device history */
   dprPopulateCrewRoster();  /* immediate/offline: full crew roster */
   dprSetDatalist("dl-dprRentedType", DPR_RENTED_TYPES); /* rented-equipment type pick-list */
+  dprSetDatalist("dl-dprToolboxTalks", DPR_TOOLBOX_TALKS); /* toolbox-talk pick-list (free text still works) */
   if ((dprDataListsLoaded && !force) || !fdb) return;
   try{
     if (!dprBldCache){
@@ -634,9 +635,84 @@ function dprRenderCrew(){
     });
   });
   dprRenderCrewTotal();
+  dprRenderToolboxSignins(); /* the sign-in list mirrors the crew roster */
 }
 function dprCrewCount(){
   return dprCrew.filter(function(c){ return (c.name || "").trim(); }).length;
+}
+
+/* ================= toolbox talk (gated) + crew sign-in =====================
+   Records the day's toolbox/tailgate safety talk and each crew member's
+   acknowledgement, so a signed daily carries the signed toolbox talk as part
+   of its record (Mark). The sign-in list REUSES the crew roster — every named
+   crew member gets an "acknowledged" check; who signed is captured on the doc
+   and printed in the PDF. Gated Yes/No like the other Phase-2 sections.
+
+   Ack state is kept keyed by nameKey (not row index) so it survives crew
+   re-renders, reordering, and hour auto-fills. A short talk list seeds a
+   datalist (free text still works) — extensible later from the safety-doc
+   toolbox-talk libraries in docs/RoofingSafetyDocumentSources.md. */
+var dprToolboxSigned = {};   /* nameKey -> true (this crew member acknowledged) */
+var DPR_TOOLBOX_TALKS = [
+  "Fall Protection", "Ladder Safety", "Heat Illness Prevention", "PPE",
+  "Housekeeping", "Hot Work / Torch Safety", "Electrical / Overhead Power Lines",
+  "Material Handling", "Scaffolding", "Aerial / Scissor Lift Safety",
+  "Silica / Dust", "Fire Prevention & Extinguishers"
+];
+function dprToolboxNamedCrew(){
+  return dprCrew.filter(function(c){ return (c.name || "").trim(); });
+}
+function dprRenderToolboxSignins(){
+  var host = document.getElementById("dpr-toolbox-signins");
+  if (!host) return;
+  var crew = dprToolboxNamedCrew();
+  if (!crew.length){
+    host.innerHTML = '<p class="hint" style="margin:4px 0">Add crew above, then each person acknowledges the talk here.</p>';
+    return;
+  }
+  var locked = dprIsLocked();
+  host.innerHTML = '<div class="hint" style="margin:6px 0 4px">Crew sign-in — each person acknowledges the talk:</div>' +
+    crew.map(function(c){
+      var k = dprNameKey(c.name);
+      return '<label style="display:flex;gap:8px;align-items:center;margin:0 0 4px">' +
+        '<input type="checkbox" data-dprtbx="' + esc(k) + '"' + (dprToolboxSigned[k] ? " checked" : "") + (locked ? " disabled" : "") + '>' +
+        '<span>' + esc(c.name.trim()) + '</span></label>';
+    }).join("") +
+    '<div class="hint" id="dpr-toolbox-count" style="margin:2px 0 0"></div>';
+  host.querySelectorAll("[data-dprtbx]").forEach(function(el){
+    el.addEventListener("change", function(){
+      var k = el.getAttribute("data-dprtbx");
+      if (el.checked) dprToolboxSigned[k] = true; else delete dprToolboxSigned[k];
+      dprRenderToolboxCount();
+    });
+  });
+  dprRenderToolboxCount();
+}
+function dprRenderToolboxCount(){
+  var el = document.getElementById("dpr-toolbox-count");
+  if (!el) return;
+  var crew = dprToolboxNamedCrew();
+  var signed = crew.filter(function(c){ return dprToolboxSigned[dprNameKey(c.name)]; }).length;
+  el.innerHTML = '<b>' + signed + '</b> of ' + crew.length + ' signed in';
+}
+/* The saved toolbox record: which talk + the crew who acknowledged (names, in
+   roster order). null when the section is toggled off. */
+function dprToolboxCollect(){
+  if (!dprToggleIsYes("dpr-toolbox-toggle")) return null;
+  var talk = (val("dpr-toolbox-talk") || "").trim();
+  var signedBy = dprToolboxNamedCrew()
+    .filter(function(c){ return dprToolboxSigned[dprNameKey(c.name)]; })
+    .map(function(c){ return c.name.trim(); });
+  if (!talk && !signedBy.length) return null; /* nothing to record */
+  return { talk: talk, signedBy: signedBy };
+}
+function dprToolboxFill(o){
+  var tb = o && o.toolbox ? o.toolbox : null;
+  dprSetGate("dpr-toolbox-toggle", "dpr-toolbox-body", !!tb);
+  setVal("dpr-toolbox-talk", tb ? (tb.talk || "") : "");
+  dprToolboxSigned = {};
+  if (tb && tb.signedBy) tb.signedBy.forEach(function(n){ var k = dprNameKey(n); if (k) dprToolboxSigned[k] = true; });
+  dprRenderToolboxSignins();
 }
 /* Sum of the per-person hours across named crew rows, rounded to 2dp (defensive
    against "" / garbage — same discipline as sumHours in the Foundation lib). */
@@ -1330,6 +1406,7 @@ function dprCollect(){
       type: val("dpr-incidents-type"), reportedTo: val("dpr-incidents-reportedto"), description: val("dpr-incidents-desc")
     } : null,
     equipment: dprToggleIsYes("dpr-equipment-toggle") ? { notes: val("dpr-equipment-notes") } : null,
+    toolbox: dprToolboxCollect(),   /* toolbox/tailgate talk + crew sign-in (part of the signed daily record) */
     rentedEquipment: rentedRows,                    /* structured rentals (type/company/unit/note) */
     preUseChecklist: dprPreUseForSave(rentedRows),  /* lift pre-use inspection (scaffold — see DPR_PREUSE_CHECKLIST) */
     visitors: dprToggleIsYes("dpr-visitors-toggle") ? { notes: val("dpr-visitors-notes") } : null,
@@ -1413,6 +1490,7 @@ function dprFill(o){
   }; });
   dprPreUse = o.preUseChecklist || null;
   dprRenderRented();
+  dprToolboxFill(o);
   var vis = o.visitors || null;
   dprSetGate("dpr-visitors-toggle", "dpr-visitors-body", !!vis);
   setVal("dpr-visitors-notes", vis ? vis.notes : "");
@@ -1544,7 +1622,8 @@ function dprNewReport(){
   dprState.foundationCustomerNo = null;
   ["dpr-foreman", "dpr-jobName", "dpr-billTo", "dpr-location", "dpr-jobNo", "dpr-headcount", "dpr-hours", "dpr-squares", "dpr-summary", "dpr-bld-search",
    "dpr-delays-cause", "dpr-delays-hours", "dpr-delays-notes", "dpr-jsa-by", "dpr-jsa-crewpresent", "dpr-jsa-topics",
-   "dpr-incidents-type", "dpr-incidents-reportedto", "dpr-incidents-desc", "dpr-equipment-notes", "dpr-visitors-notes"].forEach(function(id){ setVal(id, ""); });
+   "dpr-incidents-type", "dpr-incidents-reportedto", "dpr-incidents-desc", "dpr-equipment-notes", "dpr-visitors-notes",
+   "dpr-toolbox-talk"].forEach(function(id){ setVal(id, ""); });
   setVal("dpr-roofSystem", "");
   setVal("dpr-date", dprTodayStr());
   dprRefreshLaborCard(); /* job link + jobNo both cleared now -> hides the labor card */
@@ -1552,8 +1631,11 @@ function dprNewReport(){
   dprQuantities = [];
   dprRented = [];
   dprPreUse = null;
+  dprToolboxSigned = {};
+  dprSetGate("dpr-toolbox-toggle", "dpr-toolbox-body", false);
   dprSetGate("dpr-rented-toggle", "dpr-rented-body", false);
   dprRenderRented();
+  dprRenderToolboxSignins();
   dprSetGate("dpr-delays-toggle", "dpr-delays-body", false);
   dprSetGate("dpr-quantities-toggle", "dpr-quantities-body", false);
   dprSetGate("dpr-jsa-toggle", "dpr-jsa-body", false);
@@ -2054,10 +2136,11 @@ var DPR_LOCK_READONLY_FIELDS = ["dpr-foreman", "dpr-jobName", "dpr-billTo", "dpr
   "dpr-jobNo", "dpr-roofSystem", "dpr-date", "dpr-headcount", "dpr-hours", "dpr-squares",
   "dpr-summary", "dpr-bld-search",
   "dpr-delays-hours", "dpr-delays-notes", "dpr-jsa-by", "dpr-jsa-topics",
-  "dpr-incidents-reportedto", "dpr-incidents-desc", "dpr-equipment-notes", "dpr-visitors-notes"];
+  "dpr-incidents-reportedto", "dpr-incidents-desc", "dpr-equipment-notes", "dpr-visitors-notes",
+  "dpr-toolbox-talk"];
 /* <select> has no readOnly — the gated toggles + their dropdowns lock via disabled. */
 var DPR_LOCK_DISABLED_SELECTS = ["dpr-delays-toggle", "dpr-quantities-toggle", "dpr-jsa-toggle",
-  "dpr-incidents-toggle", "dpr-equipment-toggle", "dpr-rented-toggle", "dpr-visitors-toggle",
+  "dpr-incidents-toggle", "dpr-equipment-toggle", "dpr-rented-toggle", "dpr-toolbox-toggle", "dpr-visitors-toggle",
   "dpr-delays-cause", "dpr-jsa-crewpresent", "dpr-incidents-type", "dpr-roof"];
 function dprApplySignoffLock(){
   var locked = dprIsLocked();
@@ -2093,6 +2176,7 @@ function dprApplySignoffLock(){
   var capRow = document.getElementById("dpr-capture-row");
   if (capRow && locked) capRow.style.display = "none";
   else if (capRow && dprCanCreate()) capRow.style.display = "";
+  dprRenderToolboxSignins(); /* re-render so the sign-in checkboxes lock too */
 }
 /* Visible amendment note — a signed report whose hours were corrected by the
    nightly late-punch sync says so, and when, so the finalized record is never
@@ -2305,6 +2389,14 @@ async function generateDprPdf(o){
         .concat(pc.notes ? [["Defects / Notes", pc.notes]] : [])
         .concat(pc.completedBy ? [["Completed By (operator)", pc.completedBy]] : []));
     }
+  }
+  if (o.toolbox && (o.toolbox.talk || (o.toolbox.signedBy && o.toolbox.signedBy.length))){
+    heading("Toolbox Talk");
+    var tbSigned = (o.toolbox.signedBy || []).filter(Boolean);
+    kvTable([
+      ["Talk Given", o.toolbox.talk || ""],
+      ["Crew Signed In", tbSigned.length ? String(tbSigned.length) + " — " + tbSigned.join(", ") : "None recorded"]
+    ]);
   }
   if (o.visitors && o.visitors.notes && o.visitors.notes.trim()){
     heading("Site Visitors");

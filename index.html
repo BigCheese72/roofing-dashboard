@@ -1049,6 +1049,25 @@
         </div>
       </div>
 
+      <!-- Toolbox / tailgate safety talk + crew sign-in. When the daily is
+           signed off, the talk given + the crew who acknowledged become part
+           of the signed record and print in the PDF. Sign-in reuses the crew
+           roster above (js/dpr.js dprRenderToolboxSignins). -->
+      <div class="card">
+        <h2 class="cond">Toolbox Talk</h2>
+        <div class="fld" style="max-width:220px">
+          <label>Toolbox talk given today?</label>
+          <select id="dpr-toolbox-toggle" onchange="dprGate('dpr-toolbox-toggle','dpr-toolbox-body','Yes')">
+            <option>No</option><option>Yes</option>
+          </select>
+        </div>
+        <div id="dpr-toolbox-body" style="display:none">
+          <div class="fld"><label>Talk given</label>
+            <input type="text" id="dpr-toolbox-talk" list="dl-dprToolboxTalks" placeholder="e.g. Fall Protection, Ladder Safety"></div>
+          <div id="dpr-toolbox-signins"></div>
+        </div>
+      </div>
+
       <div class="card">
         <h2 class="cond">Site Visitors</h2>
         <div class="fld" style="max-width:220px">
@@ -1588,6 +1607,7 @@
 <datalist id="dl-dprJobNo"></datalist>
 <datalist id="dl-dprCrew"></datalist>
 <datalist id="dl-dprRentedType"></datalist>
+<datalist id="dl-dprToolboxTalks"></datalist>
 
 <!-- Modularized (see DEV_NOTES.md) -- index.html is now just markup + these
      script tags in order. Plain globals, not ES modules: this app's
