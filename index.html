@@ -233,7 +233,15 @@
       <div id="fdn-link-info" class="hint" style="margin:0 0 10px;display:none"></div>
       <div class="grid">
         <div class="fld"><label>Job Name</label><input type="text" id="jobName" list="dl-jobName" onblur="rememberFieldValue('jobName', this.value); refreshInspectionRoofPickerIfNeeded();"></div>
-        <div class="fld"><label>Location</label><input type="text" id="location" list="dl-location" onblur="rememberFieldValue('location', this.value)"></div>
+        <div class="fld"><label>Location</label><input type="text" id="location" list="dl-location" onblur="rememberFieldValue('location', this.value)">
+          <!-- Turn-by-turn handoff to the device's maps app (Mark): Apple Maps
+               on iOS, Google Maps elsewhere — see directionsUrlFor() in
+               js/workorders.js. target=_blank so the tech never navigates away
+               from the form they're filling out. Hidden until there's an
+               address. -->
+          <a id="location-directions" href="#" target="_blank" rel="noopener"
+             style="display:none;font-size:13px;font-weight:600;margin-top:4px">🧭 Directions</a>
+        </div>
         <!-- Suite is a TAG for strip-mall / multi-tenant sites, never a
              boundary: one address, one roof, one base map — see
              currentSuiteTag() in js/workorders.js. Optional; blank for
@@ -244,7 +252,12 @@
         <div class="fld"><label>Project Manager</label><input type="text" id="projectManager" list="dl-projectManager"></div>
         <div class="fld"><label>Bill To</label><input type="text" id="billTo" list="dl-billTo" onblur="rememberFieldValue('billTo', this.value); refreshInspectionRoofPickerIfNeeded();"></div>
         <div class="fld"><label>Billing Contact</label><input type="text" id="billContact" list="dl-contactName" onblur="rememberFieldValue('contactName', this.value)"></div>
-        <div class="fld"><label>Contact Phone</label><input type="text" id="billPhone" list="dl-contactPhone" onblur="rememberFieldValue('contactPhone', this.value)"></div>
+        <div class="fld"><label>Contact Phone</label><input type="text" id="billPhone" list="dl-contactPhone" onblur="rememberFieldValue('contactPhone', this.value)">
+          <!-- Tap-to-call (same spirit as 🧭 Directions on Location): a tel:
+               handoff to the dialer — see telHrefFor() in js/workorders.js.
+               Hidden until the field holds a recognizable US number. -->
+          <a id="billphone-call" href="#" style="display:none;font-size:13px;font-weight:600;margin-top:4px">📞 Call</a>
+        </div>
         <div class="fld"><label>Site Contact</label><input type="text" id="siteContact" list="dl-contactName" onblur="rememberFieldValue('contactName', this.value)"></div>
         <div class="fld"><label>Technician</label><input type="text" id="technician" list="dl-technician" onblur="rememberFieldValue('technician', this.value)"></div>
         <div class="fld"><label>Roof System</label>
@@ -296,10 +309,12 @@
       <div class="btnrow"><button class="btn" onclick="addRepair()">+ Add Repair</button></div>
     </div>
 
-    <!-- Work Order (stored type "Repair") only — see onWoTypeChange(). Change
-         Order keeps its own free-text Materials textarea (#woMaterials) inside
-         its own card; this is the itemized list for executed work. Rows live in
-         materials[] (js/workorders.js) and persist with the work order. -->
+    <!-- Work Order (stored type "Repair") AND Leak / Service — see
+         onWoTypeChange() (Mark, from prod: Repair-only gating made this look
+         "missing" on the Leak form). Change Order keeps its own free-text
+         Materials textarea (#woMaterials) inside its own card; this is the
+         itemized list for executed work. Rows live in materials[]
+         (js/workorders.js) and persist with the work order. -->
     <div class="card" id="wo-materials-card" style="display:none">
       <h2 class="cond">Material List</h2>
       <div id="materials-list"></div>
@@ -377,6 +392,24 @@
 
     <div class="card">
       <h2 class="cond">Summary</h2>
+      <!-- AI-drafted summary (see "AI-drafted report summary" in
+           DEV_NOTES.md). Shown for Inspection, Leak, and Work Order — the
+           three summary-bearing types — by onWoTypeChange(); one shared
+           server function serves all three. The server side is a
+           deterministic PLACEHOLDER composer until the vision LLM is wired
+           (Phase 1, blocked on Mark provisioning an API key — it will then
+           also LOOK AT the report's photos via short-lived signed URLs).
+           Output only ever lands in the editable textarea below — a draft
+           the tech reviews, never an auto-final. Drafts fire from this
+           button only (on demand = the cost control), never automatically. -->
+      <div id="wo-draft-summary-row" style="display:none;margin:0 0 10px">
+        <div class="btnrow" style="margin:0">
+          <button class="btn" id="wo-draft-summary-btn" onclick="draftReportSummary(this)">✨ Draft Summary</button>
+        </div>
+        <p class="hint" style="margin:6px 0 0">Writes a draft from this report's findings, checklist, repair scope,
+          and photos into the box below. Placeholder generator for now (no AI yet) — always review and edit
+          before saving or sending.</p>
+      </div>
       <div class="fld"><textarea id="summary" rows="5"></textarea></div>
     </div>
 
@@ -842,6 +875,10 @@
       </div>
       <p class="hint" id="dpr-readonly-hint" style="display:none">View only — your role can browse daily progress reports but can't submit them.</p>
       <p id="dpr-lock-banner" style="display:none;margin:0 0 10px;padding:8px 12px;background:#FFF3E0;border:1px solid #E8600A;border-radius:6px;color:#8a3b00;font-weight:600"></p>
+      <!-- Late-hours amendment note: a signed report whose hours were corrected
+           by the nightly Foundation-timecard sync says so, transparently
+           (js/dpr.js dprRenderAmendments). -->
+      <p id="dpr-amend-note" style="display:none;margin:0 0 10px;padding:6px 12px;background:#EAF4FF;border:1px solid #1E88E5;border-radius:6px;color:#0d3c61;font-size:13px"></p>
 
       <div class="card">
         <h2 class="cond">Daily Progress Report</h2>
@@ -875,12 +912,26 @@
       <div class="card">
         <h2 class="cond">Crew &amp; Hours</h2>
         <div id="dpr-crew-list"></div>
-        <div class="btnrow"><button class="btn" onclick="dprAddCrewRow()">+ Add Crew Member</button></div>
+        <div class="btnrow">
+          <button class="btn" onclick="dprAddCrewRow()">+ Add Crew Member</button>
+          <!-- Deliberate merge from Foundation punches (names only via
+               action=day_crew; the auto path only fills an EMPTY roster) -->
+          <button class="btn" onclick="dprPopulateCrewFromPunches(true)">⏱ From Time Clock</button>
+        </div>
         <div class="grid" style="margin-top:10px">
           <div class="fld"><label>Headcount</label><input type="number" id="dpr-headcount" min="0" step="1"></div>
           <div class="fld"><label>Hours Worked</label><input type="number" id="dpr-hours" min="0" step="0.25"></div>
           <div class="fld"><label>Approx. Squares Applied</label><input type="number" id="dpr-squares" min="0" step="0.5"></div>
         </div>
+      </div>
+
+      <!-- Job-to-date labor hours (admin-grade). Same pattern as the WO form's
+           card: hidden by default, populated only when the linked job's hours
+           come back authorized from the server (foundation.read) — see
+           dprRefreshLaborCard() in js/dpr.js. Live, never cached. -->
+      <div class="card" id="dpr-foundation-labor-card" style="display:none">
+        <h2 class="cond">🕒 Labor Hours (job to date)</h2>
+        <div id="dpr-foundation-labor-body" class="hint">Loading…</div>
       </div>
 
       <!-- ============ Yes/No-gated sections (DPR Phase 2) ============
@@ -976,6 +1027,26 @@
         <div id="dpr-equipment-body" style="display:none">
           <div class="fld"><label>Equipment</label>
             <textarea id="dpr-equipment-notes" rows="3" placeholder="One per line — e.g. Crane (4 hrs), Kettle, Welder"></textarea></div>
+        </div>
+      </div>
+
+      <!-- Rented equipment — structured (type / rental company / unit # / note),
+           distinct from the free-text "Equipment On Site" notes above. When a
+           rented LIFT is recorded, the daily pre-use safety checklist scaffold
+           reveals (items pending Mark's OSHA/ANSI list — js/dpr.js
+           DPR_PREUSE_CHECKLIST). -->
+      <div class="card">
+        <h2 class="cond">Rented Equipment</h2>
+        <div class="fld" style="max-width:220px">
+          <label>Any rented equipment on site today?</label>
+          <select id="dpr-rented-toggle" onchange="dprGate('dpr-rented-toggle','dpr-rented-body','Yes')">
+            <option>No</option><option>Yes</option>
+          </select>
+        </div>
+        <div id="dpr-rented-body" style="display:none">
+          <div id="dpr-rented-list"></div>
+          <div class="btnrow"><button class="btn" onclick="dprAddRentedRow()">+ Add Rented Item</button></div>
+          <div id="dpr-preuse-block" style="display:none"></div>
         </div>
       </div>
 
@@ -1517,6 +1588,7 @@
 <datalist id="dl-dprLocation"></datalist>
 <datalist id="dl-dprJobNo"></datalist>
 <datalist id="dl-dprCrew"></datalist>
+<datalist id="dl-dprRentedType"></datalist>
 
 <!-- Modularized (see DEV_NOTES.md) -- index.html is now just markup + these
      script tags in order. Plain globals, not ES modules: this app's

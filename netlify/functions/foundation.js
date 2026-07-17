@@ -35,9 +35,20 @@ function resp(code, obj) {
 }
 
 exports.handler = async function (event) {
+  const p = event.queryStringParameters || {};
+  const action = p.action || "jobs";
+
   // ---- PERMISSION GATE: first, for every method and every action. ----
+  // Everything here is foundation.read (admin-grade: customers, contract
+  // values, HOURS) — with ONE deliberate exception: action=day_crew returns
+  // only WHO punched on a job+day (names, never hours), which is exactly the
+  // roster information a foreman needs to fill the daily, so it's gated on
+  // dpr.create instead (the DPR-filling roles; every foundation.read role
+  // also holds dpr.create, so this is a widening for foremen only). The
+  // unknown-action branch stays behind foundation.read, and there is still
+  // no unauthenticated path anywhere.
   try {
-    await requirePermission(event, "foundation.read");
+    await requirePermission(event, action === "day_crew" ? "dpr.create" : "foundation.read");
   } catch (e) {
     // Mirror outlook.js: surface the guard's own status code (401 missing/
     // invalid token, 403 missing permission) with its message. A thrown
@@ -55,9 +66,6 @@ exports.handler = async function (event) {
     });
   }
 
-  const p = event.queryStringParameters || {};
-  const action = p.action || "jobs";
-
   try {
     if (action === "jobs") {
       // Active jobs from dbo.jobs, optional ?search= over job no / name /
@@ -73,6 +81,38 @@ exports.handler = async function (event) {
       // total. pay_rate/amount are never selected — admin-only hours, not
       // pay. See lib/foundationDb.js.
       const result = await foundationDb.fetchJobHours(password, jobNo);
+      return resp(200, result);
+    }
+
+    if (action === "employees") {
+      // Active employees from dbo.employees — id + first/last/display name
+      // ONLY (no pay, no PII; see buildEmployeesQuery). Feeds the DPR crew
+      // roster / name join. Admin-grade like everything here (foundation.read).
+      const employees = await foundationDb.fetchEmployees(password);
+      return resp(200, { employees: employees });
+    }
+
+    if (action === "day_crew") {
+      // WHO punched on one job + one day — names/ids ONLY, never hours (the
+      // hours stay behind foundation.read via action=day_hours). Powers the
+      // DPR's "crew fills itself from the time clock" for foremen.
+      const dcJobNo = foundationDb.normalizeJobNo(p.job_no);
+      if (!dcJobNo) return resp(400, { error: "Missing job_no" });
+      if (!foundationDb.normalizeDay(p.date)) return resp(400, { error: "Bad or missing date (YYYY-MM-DD)" });
+      const dayCrew = await foundationDb.fetchDayCrew(password, dcJobNo, p.date);
+      return resp(200, dayCrew);
+    }
+
+    if (action === "day_hours") {
+      // Per-employee summed punch hours for ONE job + ONE day, names joined
+      // from the employee master. Reads the raw pre-payroll ledger
+      // (dbo.pending_timecards) first — the daily punches exist there DAYS
+      // before payroll posts them to dbo.his_timecard — falling back to the
+      // posted history for older dates. Powers the DPR crew-hours auto-fill.
+      const jobNo = foundationDb.normalizeJobNo(p.job_no);
+      if (!jobNo) return resp(400, { error: "Missing job_no" });
+      if (!foundationDb.normalizeDay(p.date)) return resp(400, { error: "Bad or missing date (YYYY-MM-DD)" });
+      const result = await foundationDb.fetchDayHours(password, jobNo, p.date);
       return resp(200, result);
     }
 

@@ -867,6 +867,20 @@ Goal: turn each building into a long-term roof record.
   imagery. Not being built now. The near-term approach stays manual
   placement plus the existing photo-GPS auto-pin (see "photo-capture
   rework" in `DEV_NOTES.md`).
+- **AI-drafted report Summary (Phase 1 wired 2026-07-16 — live on DEV
+  only; prod stays stub)**: replaces Mark's export-PDF → ChatGPT →
+  paste-back loop, on all three summary-bearing types (Inspection, Leak,
+  Work Order) through one shared `generate-summary` function riding the
+  shared provider seam (`lib/aiProvider.js`). The vision-capable Anthropic
+  model LOOKS AT the report's photos via short-lived signed URLs (never
+  public), on-demand-only for cost control, length tuned to run tighter
+  than Mark's ChatGPT Flat Branch benchmark (`SUMMARY_TARGET_WORDS`; his
+  exact approved text now in `STYLE_EXEMPLAR` verbatim). Mark provisioned
+  `ANTHROPIC_API_KEY` on the dev deploy context only — production's
+  context has no key, so prod answers with the deterministic template
+  until a chosen promotion arms it (separate `roofops-prod` key then).
+  First concrete step toward the "AI auto-detection of rooftop features"
+  item above. See "AI-drafted report summary" in `DEV_NOTES.md`.
 - ✅ **Shipped (dev only, 2026-07-10)**: RoofMapper footprint deselect. Real
   gap Mark hit — once a footprint was selected there was no way back if it
   was the wrong building. Added a "✕ Wrong Building? Choose Again" control,

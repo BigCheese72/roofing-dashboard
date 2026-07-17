@@ -27,6 +27,8 @@ function makeSandbox(opts){
     currentRoofId: null,
     currentBuildingId: null,
     currentCustomerId: null,
+    currentCcDocumentId: null,
+    currentCcDocumentHash: null,
     currentRoofIds: null,
     findings: [],
     repairs: [],
@@ -53,6 +55,7 @@ function makeSandbox(opts){
     populateWoTypeSelect(){},
     populateRoofSystemSelect(){},
     renderLeakNoJobBadge(){},
+    renderLocationDirectionsLink(){},
     onWoTypeChange(){},
     renderFindings(){},
     renderRepairs(){},
@@ -66,6 +69,8 @@ function makeSandbox(opts){
     clearStaleLookupRoofInfoForCurrentOrder(){},
     scheduleInlineBuildingHistoryRefresh(){},
     genId(p){ return p + "_test"; },
+    formatPhoneUS(v){ return String(v == null ? "" : v); },
+    renderPhoneCallLink(){},
     setTimeout, clearTimeout
   };
   vm.createContext(sandbox);

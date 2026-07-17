@@ -189,6 +189,7 @@ function bpSelectBuilding(buildingId){
   }
   currentRoofId = null;
   currentRoofIds = null;
+  renderLocationDirectionsLink(); /* picked building's address is navigable immediately */
   if (typeof refreshInspectionRoofPickerIfNeeded === "function") refreshInspectionRoofPickerIfNeeded();
   closeBuildingPicker();
   toast("Loaded “" + b.name + "” — review the fields below before saving");
@@ -409,9 +410,65 @@ function removeFinding(i){
   findings.splice(i,1);
   if (removedId){
     photos.forEach(function(p){ if (p.finding_id === removedId) p.finding_id = null; });
+    /* Repairs paired to this finding (before/after — see the pairing block
+       below) fall back to unlinked, same rule as the photos above: the
+       repair row itself is real work performed and is never deleted with
+       the finding it used to resolve. */
+    repairs.forEach(function(r){ if (r && r.finding_id === removedId) r.finding_id = null; });
     renderPhotos();
+    renderRepairs();
   }
   renderFindings();
+}
+
+/* ================= finding ↔ repair pairing (before/after) ================= *
+   Mark: a finding's photo is the BEFORE and the paired repair's photo is the
+   AFTER of the exact same spot. The pairing is job-centric and single-sourced:
+   the REPAIR row carries finding_id (like photos and materials reference
+   rows); the finding side is always DERIVED via repairForFinding() — no
+   second stored back-reference to drift. Linking carries the finding's
+   location and a SNAPSHOT of its pin onto the repair (only where the repair
+   doesn't already have its own), so the after-photo is framed on literally
+   the same spot; the snapshot is a clone (moving one pin later never yanks
+   the other). "After" photos already have a home — the photo dropdown's
+   "Repair #N" assignment (#95). The full side-by-side before/after PHOTO
+   layout in the report is the flagged fast-follow (per Mark's split:
+   linkage + shared pin first); the report meanwhile prints the pairing as a
+   "Resolves Finding #N" reference on the Work Performed rows. Cross-ORDER
+   pairing (a leak order's finding resolved by a later Work Order's repair)
+   is a separate fast-follow — this ships same-order pairing, which is where
+   both sections coexist (Inspection/Warranty; the Leak form deliberately
+   has no Work Performed card since #46). */
+function repairForFinding(findingId){
+  if (!findingId) return null;
+  return repairs.find(function(r){ return r && r.finding_id === findingId; }) || null;
+}
+function repairIndexForFinding(findingId){
+  if (!findingId) return -1;
+  for (var i = 0; i < repairs.length; i++){
+    if (repairs[i] && repairs[i].finding_id === findingId) return i;
+  }
+  return -1;
+}
+/* "— not linked —" + one option per finding that has any text, labeled with
+   the same #N the findings list shows (array position, blanks included, so
+   the tech sees matching numbers on screen). */
+function repairFindingLinkOptionsHtml(selectedId){
+  var opts = ['<option value="">— not linked —</option>'];
+  findings.forEach(function(f, i){
+    if (!f || !f.id || !(f.condition || f.location)) return;
+    var text = (f.condition || f.location).slice(0, 40);
+    opts.push('<option value="' + esc(f.id) + '"' + (f.id === selectedId ? " selected" : "") + '>' +
+      esc("Finding #" + (i + 1) + " — " + text) + '</option>');
+  });
+  return opts.join("");
+}
+/* Carry the finding's spot onto the repair — only into gaps, never over the
+   repair's own location or an already-placed pin. Pin is a deep clone. */
+function linkRepairToFinding(r, f){
+  if (!r || !f) return;
+  if (!r.location && f.location) r.location = f.location;
+  if (!r.pin && f.pin) r.pin = JSON.parse(JSON.stringify(f.pin));
 }
 /* Persistent per-photo indicator when a photo has no location data --
    Mark's real Tri-Delta case: captureDeviceGps() already fired on every
@@ -531,8 +588,14 @@ function renderFindings(){
     var roofBadgeHtml = roofLabel ?
       ('<span class="evt-tag" style="' + (f.roofIdAmbiguous ? 'background:#FBE2E2;color:#D64545' : 'background:#EAF2FB;color:#1976D2') +
         '" onclick="openPinModal(\'' + f.id + '\')">' + (f.roofIdAmbiguous ? '⚠️ ' : '🏠 ') + esc(roofLabel) + '</span>') : '';
+    /* Before/after pairing chip — DERIVED from the repair side
+       (repairForFinding/repairIndexForFinding; no stored back-ref to
+       drift). Shows which Work Performed row resolves this finding. */
+    var pairedIdx = (typeof repairIndexForFinding === "function") ? repairIndexForFinding(f.id) : -1;
+    var pairedChipHtml = pairedIdx !== -1 ?
+      '<span class="evt-tag" style="background:#E8F5E9;color:#2E7D32">🔧 Resolved by Repair #' + (pairedIdx + 1) + '</span>' : '';
     d.innerHTML =
-      '<div class="rowhead"><b>Finding #' + (i+1) + '</b>' + roofBadgeHtml + '<span class="sp"></span>' +
+      '<div class="rowhead"><b>Finding #' + (i+1) + '</b>' + roofBadgeHtml + pairedChipHtml + '<span class="sp"></span>' +
       '<button class="btn danger" onclick="removeFinding(' + i + ')">Remove</button></div>' +
       '<div class="fld"><label>Roof Condition Observed</label>' +
       '<textarea rows="1" data-i="' + i + '" data-f="condition">' + esc(f.condition) + '</textarea></div>' +
@@ -1022,6 +1085,102 @@ function populateWarrantyGuidelines(){
       "<b style='color:#D64545'>Typically Not Warrantable</b>" + list(WARRANTY_GUIDELINES.notWarrantable) +
     "</div>";
 }
+/* ================= contact phone formatting ================= *
+   Auto-formats the work order's contact phone to a consistent US style
+   (Mark). ONE constant controls the exact style — his example was
+   "(573)489-3291"; shipping the standard "(573) 489-3291" and the space is
+   a one-character edit here if he wants it dropped:                       */
+var PHONE_DISPLAY_FORMAT = "(AAA) PPP-NNNN";
+/* Pure formatter: a clean 10-digit US number (with or without a leading 1,
+   punctuation, spaces) comes back in PHONE_DISPLAY_FORMAT — so it's
+   idempotent on already-formatted values. ANYTHING else (partial input
+   mid-typing, extensions, international) is returned untouched: never
+   mangle what we don't positively recognize. The formatted string IS what
+   gets stored (display == storage — reports/emails print o.billPhone
+   verbatim, and legacy digit-only records normalize on their next open +
+   save via fill() below). */
+function formatPhoneUS(raw){
+  var s = String(raw || "");
+  var digits = s.replace(/\D+/g, "");
+  if (digits.length === 11 && digits.charAt(0) === "1") digits = digits.slice(1);
+  if (digits.length !== 10) return s;
+  return PHONE_DISPLAY_FORMAT
+    .replace("AAA", digits.slice(0, 3))
+    .replace("PPP", digits.slice(3, 6))
+    .replace("NNNN", digits.slice(6));
+}
+function renderPhoneFormatting(){
+  var el = document.getElementById("billPhone");
+  if (!el) return;
+  var formatted = formatPhoneUS(el.value);
+  if (formatted !== el.value) el.value = formatted;
+  renderPhoneCallLink();
+}
+
+/* ================= tap-to-call ================= *
+   The displayed contact phone is a dialer handoff (Mark) — same spirit as
+   the 🧭 Directions link on Location (#124): a 📞 Call anchor under the
+   field with a tel: href, so on a phone one tap places the call. Only a
+   positively recognized US number gets a link (tel:+1AAAPPPNNNN — E.164,
+   which every dialer accepts); extensions/international/partial input get
+   no link rather than a wrong one. */
+function telHrefFor(phone){
+  var digits = String(phone || "").replace(/\D+/g, "");
+  if (digits.length === 11 && digits.charAt(0) === "1") digits = digits.slice(1);
+  if (digits.length !== 10) return null;
+  return "tel:+1" + digits;
+}
+function renderPhoneCallLink(){
+  var a = document.getElementById("billphone-call");
+  if (!a) return;
+  var href = telHrefFor(val("billPhone"));
+  if (href){
+    a.href = href;
+    a.style.display = "";
+  } else {
+    a.style.display = "none";
+    a.removeAttribute("href");
+  }
+}
+
+/* ================= address → turn-by-turn directions ================= *
+   The job's Location becomes a navigation handoff (Mark): tap 🧭 Directions
+   under the Location field and the device's maps app opens turn-by-turn to
+   the address — Apple Maps on iOS/iPadOS, Google Maps everywhere else
+   (Android resolves the google.com/maps URL to the native app; desktop gets
+   the web app). Opens in a new tab (target=_blank on the anchor) so the
+   tech NEVER navigates away from the form they're filling out.
+   Address STRING only for now: nav apps geocode a full street address more
+   reliably than our building-derived geometry (roof-outline centroids /
+   Foundation give no authoritative lat/lng today) — preferring coordinates
+   when a trustworthy source exists is a flagged follow-up, not silently
+   approximated here. All work-order types — the Location field is shared. */
+function isIOSDevice(){
+  return /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    /* iPadOS 13+ masquerades as desktop Safari — MacIntel platform with a
+       touch screen is the standard tell. */
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+}
+function directionsUrlFor(address){
+  var q = String(address || "").trim();
+  if (!q) return null;
+  return isIOSDevice()
+    ? "https://maps.apple.com/?daddr=" + encodeURIComponent(q)
+    : "https://www.google.com/maps/dir/?api=1&destination=" + encodeURIComponent(q);
+}
+function renderLocationDirectionsLink(){
+  var a = document.getElementById("location-directions");
+  if (!a) return;
+  var url = directionsUrlFor(val("location"));
+  if (url){
+    a.href = url;
+    a.style.display = "";
+  } else {
+    a.style.display = "none";
+    a.removeAttribute("href");
+  }
+}
+
 /* ================= "Leak – No Job" catch-all flag ================= *
    Shop convention: a leak call with no real Foundation job yet gets
    written against the "Leak – No Job" catch-all job; Charlotte (Foundation
@@ -1077,6 +1236,17 @@ function renderLeakNoJobBadge(){
 document.addEventListener("DOMContentLoaded", function(){
   var jn = document.getElementById("jobName");
   if (jn) jn.addEventListener("input", renderLeakNoJobBadge);
+  /* Directions link tracks the Location field live as the tech types. */
+  var loc = document.getElementById("location");
+  if (loc) loc.addEventListener("input", renderLocationDirectionsLink);
+  /* Phone auto-format: snaps to PHONE_DISPLAY_FORMAT the moment a full US
+     number is present (the 10th digit, a paste, or blur) — partial input
+     is never touched mid-typing, so the cursor never fights the tech. */
+  var bp = document.getElementById("billPhone");
+  if (bp){
+    bp.addEventListener("input", renderPhoneFormatting);
+    bp.addEventListener("blur", renderPhoneFormatting);
+  }
 });
 
 /* ================= shared roof-type list ================= *
@@ -1242,6 +1412,12 @@ function collect(){
      or legacy order until first save; readers fall back to the name slug. */
   o.buildingId = currentBuildingId || null;
   o.customerId = currentCustomerId || null;
+  /* CompanyCam document artifact (vars in js/core.js): stamped so a rebuilt
+     order still KNOWS its uploaded PDF — keeps the #54 idempotency guard
+     alive across reloads and lets status reconciliation prove a document
+     exists (Sophia's Curb Flashing false "failed"). */
+  o.ccDocumentId = currentCcDocumentId || null;
+  o.ccDocumentHash = currentCcDocumentHash || null;
   o.foundationJobNo = (typeof fdnLinkedJobNo !== "undefined" && fdnLinkedJobNo) ? fdnLinkedJobNo : null;
   o.foundationJobName = (typeof fdnLinkedJobName !== "undefined" && fdnLinkedJobName) ? fdnLinkedJobName : "";
   o.foundationCustomerNo = (typeof fdnLinkedCustomerNo !== "undefined" && fdnLinkedCustomerNo) ? fdnLinkedCustomerNo : null;
@@ -1266,6 +1442,120 @@ function collect(){
   o.changeOrderSignature = changeOrderSignature || null;
   return o;
 }
+/* ============ AI-drafted summary, Phase 1 (see DEV_NOTES.md) ============ */
+/* Pure projection of a collected work order into the compact payload the
+   summary-draft server function consumes (netlify/functions/
+   generate-summary.js) — the text a summary is made of plus each photo's
+   caption AND Storage ref (the ref is how the Phase-1 vision model will
+   actually SEE the photo: the server turns it into a short-lived SIGNED url
+   there, never here, never public). Still never photo BYTES, pins, GPS,
+   per-row ids, or signatures. The work-order ID itself DOES ride (Phase
+   1.5): dev's Firebase project has no Storage bucket, so its photos live
+   INLINE in Firestore with no storageRef to sign — the id is how the server
+   reads those bytes back out ITSELF (collectInlinePhotoImages() in
+   generate-summary.js) to show the vision model. Bytes stay server-side in
+   both directions. A photo captured but not yet cloud-saved has no
+   storageRef yet — it rides caption-only, so drafting right after a save
+   sees everything. Checklist keys become their display labels here because
+   the server has no INSPECTION_CHECKLIST_COMPONENTS; N/A rows are dropped.
+   Kept pure/DOM-free so tests can vm-extract it
+   (tests/generateSummaryDraft.test.js). */
+function buildSummaryDraftPayload(o){
+  function s(v, max){ return String(v == null ? "" : v).slice(0, max || 300); }
+  var labelByKey = {};
+  INSPECTION_CHECKLIST_COMPONENTS.forEach(function(c){ labelByKey[c.key] = c.label; });
+  return {
+    workOrderId: s(o.id, 80),
+    woType: s(o.woType, 40),
+    jobName: s(o.jobName, 200),
+    location: s(o.location, 300),
+    serviceDate: s(o.serviceDate, 40),
+    technician: s(o.technician, 120),
+    roofSystem: s(o.roofSystem, 200),
+    reportedArea: s(o.reportedArea, 300),
+    warrantable: s(o.warrantable, 1000),
+    nonWarrantable: s(o.nonWarrantable, 1000),
+    inspectionChecklist: (o.inspectionChecklist || []).filter(function(it){
+      return it && it.rating && it.rating !== "N/A";
+    }).slice(0, 20).map(function(it){
+      return { label: labelByKey[it.key] || s(it.key, 60), rating: s(it.rating, 20), notes: s(it.notes, 500) };
+    }),
+    findings: (o.findings || []).filter(function(f){
+      return f && ((f.condition || "").trim() || (f.location || "").trim());
+    }).slice(0, 50).map(function(f){
+      return { condition: s(f.condition, 500), location: s(f.location, 300), warranty: s(f.warranty, 40) };
+    }),
+    repairs: (o.repairs || []).filter(function(r){
+      return r && ((r.repair || "").trim() || (r.location || "").trim());
+    }).slice(0, 50).map(function(r){
+      return { repair: s(r.repair, 500), location: s(r.location, 300) };
+    }),
+    repairDescription: s(o.repairDescription, 2000),
+    repairItems: (o.repairItems || []).filter(function(it){
+      return it && ((it.type || "").trim() || (it.notes || "").trim());
+    }).slice(0, 50).map(function(it){
+      return { type: s(it.type, 120), qty: s(it.qty, 20), notes: s(it.notes, 500) };
+    }),
+    photos: (o.photos || []).filter(function(p){
+      return p && ((p.caption || "").trim() || p.storageRef);
+    }).slice(0, 60).map(function(p){
+      return { caption: s(p.caption, 300).trim(), storageRef: p.storageRef ? s(p.storageRef, 300) : null };
+    }),
+    photoCount: (o.photos || []).length
+  };
+}
+/* "✨ Draft Summary" click handler (index.html's Summary card) — shared by
+   all three report types that show the button (Inspection, Leak, Work
+   Order). Sends the projection above to the server (Firebase-auth-gated:
+   doc.generate) and puts the returned text into the Summary TEXTAREA only —
+   a draft the tech edits, never saved or sent by this function. On-demand
+   only (this button IS the cost control — drafting never fires on save or
+   open). Server side routes through lib/aiProvider.js — live vision model
+   where a key exists (dev), deterministic placeholder elsewhere (prod) —
+   see generate-summary.js's header. */
+async function draftReportSummary(btn){
+  var existing = val("summary");
+  if (existing && existing.trim() &&
+      !confirm("Replace the current Summary text with a generated draft?")) return;
+  if (btn) btn.disabled = true;
+  try{
+    var r = await fetch("/.netlify/functions/generate-summary", {
+      method: "POST", headers: await authHeaders(),
+      body: JSON.stringify({ action: "draft_summary", report: buildSummaryDraftPayload(collect()) })
+    });
+    var out = null; try{ out = await r.json(); }catch(e){}
+    if (!r.ok || !out || !out.ok || !out.draft){
+      toast("Summary draft failed: " + ((out && out.error) || ("server error " + r.status)));
+      return;
+    }
+    setVal("summary", out.draft);
+    /* Tell the tech WHO answered — the server reports provenance
+       ({llm, fallback, model, photosSeen}) and the three cases mean very
+       different things: a real AI draft, an AI outage the fallback covered,
+       or a site with no AI key at all (production, deliberately). Without
+       this, a fallback draft is indistinguishable from success — exactly
+       how the first live test on dev (2026-07-16) went unnoticed. */
+    if (out.llm){
+      var seen = out.photosSeen || 0;
+      toast("AI draft inserted (" + (out.model || "model") + ", " + seen + " photo" + (seen === 1 ? "" : "s") +
+        " reviewed) — review and edit it before saving or sending.");
+    } else if (out.fallback){
+      /* The provider's own (truncated) rejection rides back as out.aiError —
+         "invalid x-api-key", "model not found", credit exhaustion — so the
+         person clicking can see WHY instead of guessing (added while
+         diagnosing the 2026-07-16 dev test, where this took three rounds). */
+      toast("⚠️ AI didn't answer — a plain placeholder draft was inserted instead." +
+        (out.aiError ? " (" + out.aiError + ")" :
+          " Try again in a minute; if it keeps happening, the AI key/credits need a look."));
+    } else {
+      toast("Placeholder draft inserted (no AI on this site) — review and edit it before saving or sending.");
+    }
+  }catch(e){
+    toast("Summary draft failed: " + (e && e.message ? e.message : "network error"));
+  }finally{
+    if (btn) btn.disabled = false;
+  }
+}
 function fill(o){
   currentId = o.id;
   /* Stable identity (FIX 1): a doc that carries stored ids keeps them for
@@ -1274,6 +1564,8 @@ function fill(o){
      old slug-fallback behavior byte-for-byte. */
   currentBuildingId = o.buildingId || null;
   currentCustomerId = o.customerId || null;
+  currentCcDocumentId = o.ccDocumentId || null;
+  currentCcDocumentHash = o.ccDocumentHash || null;
   currentRoofId = o.roofId || null;
   currentRoofIds = (o.roofIds && o.roofIds.length > 1) ? o.roofIds.slice() : null;
   /* Must be set before onWoTypeChange() below (Inspection's branch reads
@@ -1287,6 +1579,10 @@ function fill(o){
      display blank and then be SAVED back blank on the next save. Rebuild
      the options around this record's own value instead. */
   populateRoofSystemSelect(o.roofSystem || "");
+  /* Legacy digit-only phone values display formatted from the first open
+     (and, since display == storage, normalize on the next save). A value
+     the formatter doesn't positively recognize passes through untouched. */
+  setVal("billPhone", formatPhoneUS(o.billPhone));
   populateWoTypeSelect();
   setVal("woType", o.woType || WORK_ORDER_TYPES[0]);
   onWoTypeChange();
@@ -1306,6 +1602,7 @@ function fill(o){
   repairs.forEach(function(r){
     if (!r.id) r.id = genId("rep");
     if (r.pin === undefined) r.pin = null;
+    if (r.finding_id === undefined) r.finding_id = null; /* before/after pairing (null = not linked) */
   });
   repairItems = (o.repairItems || []).slice(); /* Repair type only — no forced minimum row, optional */
   materials = (o.materials || []).slice(); /* Repair type only — no forced minimum row, optional */
@@ -1346,6 +1643,8 @@ function fill(o){
   if (val("woType") === "Inspection"){ ensureInspectionChecklist(); renderInspectionChecklist(); }
   if (typeof refreshInspectionRoofPickerIfNeeded === "function") refreshInspectionRoofPickerIfNeeded();
   renderLeakNoJobBadge();
+  renderLocationDirectionsLink();
+  renderPhoneCallLink();
   scheduleInlineBuildingHistoryRefresh();
 }
 /* ================= Change Order autofill =================

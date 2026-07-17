@@ -299,22 +299,227 @@ function mapJobForCache(job) {
   };
 }
 
+// The unposted tail: pending_timecards rows for the job strictly AFTER the
+// newest posted (his_timecard) date. Same columns/trim discipline as
+// buildJobHoursQuery; `after` is optional (a job with no posted labor yet
+// takes its whole pending history). Rows persist in pending after posting, so
+// the strict `dated > @after` cutoff is what prevents double-counting a row
+// that exists in both tables.
+function buildPendingTailQuery(jobNo, afterIso) {
+  const inputs = [{ name: "job_no", value: normalizeJobNo(jobNo) }];
+  let where = "LTRIM(RTRIM(job_no)) = @job_no AND record_status = 'A'";
+  if (afterIso) {
+    inputs.push({ name: "after", value: afterIso });
+    where += " AND dated > @after";
+  }
+  const text =
+    "SELECT LTRIM(RTRIM(job_no)) AS job_no," +
+    " dated," +
+    " LTRIM(RTRIM(employee_no)) AS employee_no," +
+    " hours," +
+    " LTRIM(RTRIM(phase_no)) AS phase_no," +
+    " LTRIM(RTRIM(cost_code_no)) AS cost_code_no" +
+    " FROM dbo.pending_timecards" +
+    " WHERE " + where +
+    " ORDER BY dated ASC";
+  return { text: text, inputs: inputs };
+}
+
+// Job labor = the posted record (his_timecard) PLUS the not-yet-posted tail
+// from pending_timecards, so the card is CURRENT (punches land in pending days
+// before payroll posts them — validated 2026-07-16: his stopped at 07-11 with
+// punches in pending through 07-15). Names joined from the cached employee
+// master. Response stays backward compatible (job_no/total_hours/row_count/
+// hours[]); rows gain `name` + `posted`, and the posted/unposted split rides
+// alongside so the UI can say what's still pending payroll.
 async function fetchJobHours(password, jobNo) {
   const trimmed = normalizeJobNo(jobNo);
-  const rows = await runSelect(password, buildJobHoursQuery(trimmed));
-  const hours = rows.map(mapHoursRow);
+  const postedRows = await runSelect(password, buildJobHoursQuery(trimmed));
+  const posted = postedRows.map(mapHoursRow);
+  // Cutoff = newest posted date (ISO); pending rows after it are the fresh tail.
+  let cutoff = null;
+  posted.forEach(function (r) { if (r.date && (!cutoff || r.date > cutoff)) cutoff = r.date; });
+  let unposted = [];
+  try {
+    const pendingRows = await runSelect(password, buildPendingTailQuery(trimmed, cutoff));
+    unposted = pendingRows.map(mapHoursRow);
+  } catch (e) {
+    // The posted record still answers — a pending-tail failure must not take
+    // the whole card down. Logged by the caller's generic handler if rethrown;
+    // here we degrade to posted-only.
+    unposted = [];
+  }
+  let names = {};
+  if (posted.length || unposted.length) {
+    try { names = await employeeNamesByNo(password); } catch (e) { names = {}; }
+  }
+  const decorate = function (isPosted) {
+    return function (r) {
+      r.name = names[r.employee_no] || "";
+      r.posted = isPosted;
+      return r;
+    };
+  };
+  const hours = posted.map(decorate(true)).concat(unposted.map(decorate(false)));
+  const unpostedTotal = sumHours(unposted);
+  let unpostedThrough = null;
+  unposted.forEach(function (r) { if (r.date && (!unpostedThrough || r.date > unpostedThrough)) unpostedThrough = r.date; });
   return {
     job_no: trimmed,
     total_hours: sumHours(hours),
+    posted_hours: sumHours(posted),
+    unposted_hours: unpostedTotal,
+    unposted_through: unpostedThrough ? unpostedThrough.slice(0, 10) : null,
     row_count: hours.length,
     hours: hours
   };
 }
 
-// Test-only reset of the cached pool promise, so a unit test that stubs
-// `mssql` isn't polluted by a pool from a previous test.
+// ---------------------------------------------------------------------
+// Employee master + per-day punch hours (DPR crew-hours integration)
+// ---------------------------------------------------------------------
+// Schema facts (validated live via the temporary schema probe, 2026-07-16):
+//  * dbo.employees — the employee master. 327 rows; employee_no is a 6-char
+//    mnemonic CHAR (e.g. "ABECHR" = ABErnathy CHRistian), names live in
+//    first_name / last_name, record_status = 'A' marks an active employee.
+//    The table also carries pay/tax/PII columns — NEVER selected here; the
+//    query asks for id + name + nothing else (least-privilege rule above).
+//  * dbo.pending_timecards — the RAW pre-payroll time entry ledger (the daily
+//    punches Braxton described). Same job/day/hours shape as dbo.his_timecard
+//    (job_no CHAR w/ padding, dated datetime, hours numeric, multiple rows per
+//    person per day across cost codes) PLUS raw start_time/end_time punches
+//    and approval flags. Crucially it runs DAYS AHEAD of his_timecard:
+//    validated 2026-07-16 with his_timecard MAX(dated)=07-11 (last payroll
+//    posting) while pending_timecards had rows through 07-15. `hours` is
+//    already the per-entry duration — no out-minus-in math needed; a person's
+//    day is SUM(hours) over their rows. pay_rate/amount exist on this table
+//    too and are NEVER selected.
+//  * Day-hours strategy: read pending_timecards FIRST (fresh, covers the DPR
+//    use case of "today's report"); fall back to his_timecard only when the
+//    job+date has no pending rows. Never sum the two tables together — rows
+//    persist in pending after posting, so a union would double-count.
+
+// Active employees: id + name ONLY (no pay, no PII).
+function buildEmployeesQuery() {
+  const text =
+    "SELECT LTRIM(RTRIM(employee_no)) AS employee_no," +
+    " LTRIM(RTRIM(first_name)) AS first_name," +
+    " LTRIM(RTRIM(last_name)) AS last_name" +
+    " FROM dbo.employees" +
+    " WHERE record_status = 'A'" +
+    " ORDER BY last_name, first_name";
+  return { text: text, inputs: [] };
+}
+function mapEmployeeRow(row) {
+  const first = trimField(row.first_name), last = trimField(row.last_name);
+  return {
+    employee_no: trimField(row.employee_no),
+    first_name: first,
+    last_name: last,
+    name: (first + " " + last).trim()
+  };
+}
+
+// Per-employee summed hours for ONE job + ONE day, from one timecard table.
+// `table` is chosen by fetchDayHours below — never by the caller — so only the
+// two known table names can ever appear in the SQL. job_no gets the same
+// LTRIM(RTRIM()) treatment as buildJobHoursQuery (CHAR padding gotcha), and
+// `dated` is a midnight datetime so an exact half-open day window matches it
+// regardless of any stray time-of-day component. record_status='A' skips
+// voided/inactive entries. hours only — no pay columns, ever.
+const DAY_HOURS_TABLES = ["pending_timecards", "his_timecard"];
+function buildDayHoursQuery(table, jobNo, date) {
+  if (DAY_HOURS_TABLES.indexOf(table) === -1) throw new Error("bad day-hours table");
+  const text =
+    "SELECT LTRIM(RTRIM(employee_no)) AS employee_no," +
+    " SUM(hours) AS hours" +
+    " FROM dbo." + table +
+    " WHERE LTRIM(RTRIM(job_no)) = @job_no" +
+    " AND record_status = 'A'" +
+    " AND dated >= @day AND dated < DATEADD(day, 1, @day)" +
+    " GROUP BY LTRIM(RTRIM(employee_no))" +
+    " ORDER BY LTRIM(RTRIM(employee_no))";
+  return {
+    text: text,
+    inputs: [
+      { name: "job_no", value: normalizeJobNo(jobNo) },
+      { name: "day", value: normalizeDay(date) }
+    ]
+  };
+}
+// A day parameter must be a plain YYYY-MM-DD — anything else is rejected
+// before it reaches SQL (it's parameter-bound anyway; this is semantics).
+function normalizeDay(date) {
+  const s = String(date == null ? "" : date).trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return "";
+  return s;
+}
+
+async function fetchEmployees(password) {
+  const rows = await runSelect(password, buildEmployeesQuery());
+  return rows.map(mapEmployeeRow);
+}
+
+// Employee-name lookup cached per warm Lambda (the master changes rarely and
+// day_hours needs it on every call to turn employee_no into a display name).
+let employeeCache = null; // { at: epoch-ms, byNo: { employee_no -> name } }
+const EMPLOYEE_CACHE_MS = 10 * 60 * 1000;
+async function employeeNamesByNo(password) {
+  const now = Date.now();
+  if (employeeCache && now - employeeCache.at < EMPLOYEE_CACHE_MS) return employeeCache.byNo;
+  const employees = await fetchEmployees(password);
+  const byNo = {};
+  employees.forEach(function (e) { if (e.employee_no) byNo[e.employee_no] = e.name; });
+  employeeCache = { at: now, byNo: byNo };
+  return byNo;
+}
+
+// Per-employee hours for one job + one day, names joined from the master.
+// pending_timecards first (pre-payroll — the fresh daily punches), falling
+// back to his_timecard for days that pre-date what pending still holds.
+async function fetchDayHours(password, jobNo, date) {
+  const day = normalizeDay(date);
+  const trimmedJob = normalizeJobNo(jobNo);
+  if (!day) throw new Error("day_hours: bad date");
+  let source = DAY_HOURS_TABLES[0];
+  let rows = await runSelect(password, buildDayHoursQuery(source, trimmedJob, day));
+  if (!rows.length) {
+    source = DAY_HOURS_TABLES[1];
+    rows = await runSelect(password, buildDayHoursQuery(source, trimmedJob, day));
+  }
+  const byNo = rows.length ? await employeeNamesByNo(password) : {};
+  const out = rows.map(function (r) {
+    const no = trimField(r.employee_no);
+    return { employee_no: no, name: byNo[no] || "", hours: toNumberOrNull(r.hours) };
+  });
+  return {
+    job_no: trimmedJob,
+    date: day,
+    source: source,
+    total_hours: sumHours(out),
+    rows: out
+  };
+}
+
+// WHO punched on one job + one day — the roster subset of fetchDayHours.
+// Hours are deliberately dropped at THIS layer (not the caller), so the
+// dpr.create-gated action=day_crew can never leak them through a mapping
+// mistake downstream. Same pending-first source logic.
+async function fetchDayCrew(password, jobNo, date) {
+  const dh = await fetchDayHours(password, jobNo, date);
+  return {
+    job_no: dh.job_no,
+    date: dh.date,
+    source: dh.source,
+    crew: dh.rows.map(function (r) { return { employee_no: r.employee_no, name: r.name }; })
+  };
+}
+
+// Test-only reset of the caches, so a unit test that stubs `mssql` isn't
+// polluted by a pool/employee-map from a previous test.
 function _resetPoolForTest() {
   poolPromise = null;
+  employeeCache = null;
 }
 
 module.exports = {
@@ -329,9 +534,17 @@ module.exports = {
   mapHoursRow,
   sumHours,
   topClause,
+  buildEmployeesQuery,
+  buildDayHoursQuery,
+  buildPendingTailQuery,
+  normalizeDay,
+  mapEmployeeRow,
   // DB-hitting API (used by foundation.js; DB stubbed in tests)
   fetchJobs,
   fetchJobHours,
+  fetchEmployees,
+  fetchDayHours,
+  fetchDayCrew,
   _resetPoolForTest,
   // constants exposed for tests/assertions
   FOUNDATION_SERVER,

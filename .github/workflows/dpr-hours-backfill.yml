@@ -1,0 +1,93 @@
+# Nightly DPR punch-hours backfill (8 PM + just-after-midnight Central).
+#
+# Mark: "run them once at like 8pm every night for the day's reports
+# submitted … the Time could fill in at Midnight also." A foreman often saves
+# the daily BEFORE the crew's punches have synced into Foundation
+# (pending_timecards fills in batches through the evening), so this pass
+# revisits the day's saved reports and fills each crew member's punch hours
+# in — manual entries are never overwritten, locked (signed) reports are
+# never touched. Server side: netlify/functions/foundation-sync.js,
+# action=dpr_hours_backfill (covers Central today + yesterday per run, so the
+# midnight pass closes out the day that just ended).
+#
+# SAME authenticated-caller model as sync-foundation-jobs.yml: the cron POSTs
+# with FOUNDATION_SYNC_SECRET in a header, compared with timingSafeEqual on
+# the server. Setup (both must match, >= 32 chars):
+#   1. Netlify > Environment variables > FOUNDATION_SYNC_SECRET
+#   2. GitHub  > Settings > Secrets and variables > Actions > FOUNDATION_SYNC_SECRET
+# Until both exist this fails 401 and the backfill stays off (fail-closed).
+# A signed-in foundation.read user can always run it on demand by POSTing
+# {"action":"dpr_hours_backfill"} to /.netlify/functions/foundation-sync.
+#
+# IMPORTANT: GitHub only runs `schedule` for workflows on the DEFAULT branch
+# (`main`) — this does NOT auto-run while it lives on `dev`; it starts firing
+# when it rides to `main` with a promotion. Until then use the on-demand path.
+name: DPR punch-hours backfill
+
+on:
+  schedule:
+    # GitHub cron is UTC and ignores daylight saving; these are pinned to
+    # Central SUMMER time (CDT, UTC-5). In CST/winter shift both by +1 hour
+    # (02:00 and 06:10 UTC) to stay on 8 PM / 12:10 AM Central.
+    - cron: "0 1 * * *"    # 8:00 PM Central — evening pass over today's reports
+    - cron: "10 5 * * *"   # 12:10 AM Central — midnight pass closes out the day
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Which deploy to backfill"
+        required: true
+        default: dev
+        type: choice
+        options: [dev, production]
+
+permissions:
+  contents: read
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Backfill punch hours into the day's DPRs
+        env:
+          FOUNDATION_SYNC_SECRET: ${{ secrets.FOUNDATION_SYNC_SECRET }}
+          # Scheduled runs hit dev while the feature is dev-only; production is
+          # a deliberate manual dispatch, same policy as the job sync.
+          TARGET: ${{ github.event.inputs.target || 'dev' }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${FOUNDATION_SYNC_SECRET:-}" ]; then
+            echo "::error::FOUNDATION_SYNC_SECRET is not set as a GitHub Actions secret."
+            echo "The nightly backfill is disabled until it is set here AND in Netlify (same value, >= 32 chars)."
+            exit 1
+          fi
+
+          if [ "$TARGET" = "production" ]; then
+            BASE="https://leak-work-orders.netlify.app"
+          else
+            BASE="https://dev--leak-work-orders.netlify.app"
+          fi
+          echo "Backfilling $BASE"
+
+          # Secret in a header, never the URL, never echoed. Only the HTTP
+          # status and the summary body (counts, no names/hours) are printed.
+          HTTP=$(curl -sS -o response.json -w '%{http_code}' \
+            -X POST "$BASE/.netlify/functions/foundation-sync" \
+            -H 'Content-Type: application/json' \
+            -H "x-foundation-sync-key: ${FOUNDATION_SYNC_SECRET}" \
+            -d '{"action":"dpr_hours_backfill"}')
+
+          echo "HTTP $HTTP"
+          cat response.json || true
+          echo
+
+          if [ "$HTTP" = "401" ] || [ "$HTTP" = "403" ]; then
+            echo "::error::Backfill was rejected ($HTTP). FOUNDATION_SYNC_SECRET here does not match Netlify's, or is under 32 characters."
+            exit 1
+          fi
+          if [ "$HTTP" != "200" ]; then
+            echo "::error::Backfill failed with HTTP $HTTP (see response above)."
+            exit 1
+          fi
+
+          echo "Backfill completed."

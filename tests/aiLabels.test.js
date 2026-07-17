@@ -99,8 +99,34 @@ test("vocabulary: snake_case keys, unique, labeled, includes the required starte
   // The brief's core failure modes must exist under stable keys.
   ["ponding_water", "flashing_failed", "open_seam", "blister", "fastener_backout",
    "puncture", "drain_clogged", "pitch_pan_deteriorated", "membrane_split",
-   "coping_failure", "no_defect_found", "other"].forEach(k =>
+   "coping_failure", "no_defect_found", "indeterminate", "sealant_deteriorated",
+   "other"].forEach(k =>
     assert.ok(keys.includes(k), "missing required vocabulary key: " + k));
+});
+
+test("vocabulary: no_defect_found and indeterminate are distinct keys", () => {
+  // "Looked, confirmed nothing wrong" vs "couldn't tell from this photo" are
+  // different training signals — collapsing them would teach a model that
+  // unreadable photos are clean roofs.
+  const keys = makeSandbox().AI_ISSUE_LABELS.map(e => e.key);
+  assert.ok(keys.includes("no_defect_found") && keys.includes("indeterminate"));
+});
+
+test("parity: aiProvider's ISSUE_VOCABULARY is a subset of AI_ISSUE_LABELS keys", () => {
+  // The convergence contract from the #122/#123 coordination: what the
+  // issue-ID model may answer with is exactly what a tech's confirmation
+  // stores in ai_training_labels — no mapping table anywhere. The two lists
+  // live on opposite sides of the browser/CommonJS split, so they're
+  // hand-synced (getBuildingRoofsServer() discipline); this test is the
+  // tripwire. AI_ISSUE_LABELS may be a superset (labels a tech can pick that
+  // the model isn't offered) — the reverse is the drift this catches.
+  const aiProvider = require("../netlify/functions/lib/aiProvider");
+  const labelKeys = new Set(makeSandbox().AI_ISSUE_LABELS.map(e => e.key));
+  assert.ok(Array.isArray(aiProvider.ISSUE_VOCABULARY) && aiProvider.ISSUE_VOCABULARY.length >= 10);
+  const drifted = aiProvider.ISSUE_VOCABULARY.filter(k => !labelKeys.has(k));
+  assert.deepStrictEqual(drifted, [],
+    "ISSUE_VOCABULARY keys with no matching AI_ISSUE_LABELS key (a confirmed " +
+    "model suggestion could not be stored as a training label): " + drifted.join(", "));
 });
 
 test("vocabulary: admin seam merges app_settings extraLabels, filters malformed ones", async () => {

@@ -146,6 +146,18 @@ var ccLinkedProjectName = "";
    to this id. */
 var currentBuildingId = null;
 var currentCustomerId = null;
+/* The CompanyCam DOCUMENT artifact for the work order currently open — the
+   uploaded PDF's id + content hash (uploadPdfToCompanyCam /
+   ccPersistDocumentInfo, js/history.js). Same load-order home as the
+   identities above. These used to live only on the Firestore doc and the
+   in-memory `o` of the session that uploaded — collect() rebuilt orders
+   WITHOUT them, so a reopened order forgot its own uploaded artifact: the
+   #54 idempotency guard didn't survive a reload, and status reconciliation
+   couldn't see that a document already existed (Sophia's Curb Flashing
+   false "failed", Job 17476). fill() adopts them, collect() stamps them
+   back, uploads update them. */
+var currentCcDocumentId = null;
+var currentCcDocumentHash = null;
 
 /* ================= Account / login =================
    Reachable via the header's "🔐 Account" button. Role/permission display
@@ -372,7 +384,10 @@ async function renderUserManagementModal(){
    the account was still created (a real, recoverable state, not a dead
    end). appUrl is this browser's own origin -- same environment-aware
    principle as passwordResetActionCodeSettings(), just sent to the server
-   since the reset link has to be generated server-side now. */
+   since the invite link (a 7-day custom token as of 2026-07-16 -- see the
+   invite-token comment block in netlify/functions/auth.js, and the
+   ?invite= handling at pendingInviteToken above) is generated
+   server-side. */
 async function inviteUser(){
   var email = val("invite-email").trim();
   var displayName = val("invite-name").trim();
@@ -495,6 +510,25 @@ async function saveUserRole(uid){
    "bootstrapped") on a read error too -- a transient Firestore hiccup
    should never be able to brick the entire app for everyone. */
 var authBootstrapStatus = null;
+/* Custom invite links (?invite=<token> -- see the invite-token comment
+   block in netlify/functions/auth.js for the whole design: 7-day expiry,
+   single-use, hashed at rest, replacing Firebase's ~1-hour password-reset
+   links that kept dying in crew inboxes). When a token is present and
+   nobody's signed in, the login gate renders a set-your-password form
+   instead of the sign-in form, and on success signs the new user straight
+   in with the password they just chose -- no retyping, no bouncing
+   through Firebase's hosted pages. If someone's ALREADY signed in the
+   param is simply ignored (renderLoginGate() hides the gate entirely for
+   a signed-in user) -- an admin clicking their own test invite shouldn't
+   get logged out. */
+var pendingInviteToken = null;
+try { pendingInviteToken = new URLSearchParams(window.location.search).get("invite") || null; } catch(e){ /* ancient browser: invite links just fall back to normal sign-in */ }
+function clearPendingInvite(){
+  pendingInviteToken = null;
+  /* Drop ?invite= from the address bar so a refresh (or a bookmark of the
+     landed page) doesn't re-run a burned token through the gate. */
+  try { history.replaceState(null, "", window.location.pathname); } catch(e){}
+}
 async function checkAuthBootstrapStatus(){
   if (!fdb){ authBootstrapStatus = true; renderLoginGate(); return; }
   try{
@@ -514,7 +548,14 @@ function renderLoginGate(){
   lockBodyScroll();
   var host = document.getElementById("login-gate-body");
   if (!host) return;
-  host.innerHTML = authBootstrapStatus ? loginGateSignInHtml() : loginGateBootstrapHtml();
+  if (!authBootstrapStatus){
+    host.innerHTML = loginGateBootstrapHtml();
+  } else if (pendingInviteToken){
+    host.innerHTML = loginGateAcceptInviteHtml();
+    checkPendingInvite(); // async on purpose -- greet/fail-fast fills in when the server answers
+  } else {
+    host.innerHTML = loginGateSignInHtml();
+  }
 }
 /* This screen is the one door into the app -- a failure here (wrong
    secret, weak password, a misconfigured env var) MUST be impossible to
@@ -568,6 +609,69 @@ async function gateForgotPassword(){
     await fauth.sendPasswordResetEmail(email, passwordResetActionCodeSettings());
     setLoginGateStatus("Password reset email sent (if that account exists) ✓", false);
   }catch(e){ setLoginGateStatus("Couldn't send reset email: " + e.message, true); }
+}
+/* ---- Accept-invite mode (see pendingInviteToken above) ---- */
+function loginGateAcceptInviteHtml(){
+  return '<p class="hint" style="margin:0 0 4px">Welcome to RoofOps! Choose a password to finish setting up your account.</p>' +
+    '<p id="invite-email-line" class="hint" style="display:none;font-weight:600;margin:0 0 10px"></p>' +
+    '<div class="fld"><label>New Password (at least 8 characters)</label><input type="password" id="invite-password" autocomplete="new-password"></div>' +
+    '<div class="fld"><label>Confirm Password</label><input type="password" id="invite-password2" autocomplete="new-password"></div>' +
+    '<div class="btnrow"><button class="btn primary" id="invite-accept-btn" onclick="gateAcceptInvite()">Set Password &amp; Sign In</button>' +
+    '<button class="btn" onclick="dismissInviteMode()">Back to Sign In</button></div>' +
+    '<p id="login-gate-status" style="display:none"></p>';
+}
+function dismissInviteMode(){
+  clearPendingInvite();
+  renderLoginGate();
+}
+/* Greets the recipient by the email the invite is for, and -- the part
+   that actually matters in the field -- fails FAST on a dead link: the
+   old Firebase flow let you click through to a hosted page, and only
+   told you the link was dead after the fact. Here the form disables
+   itself with the one message that says what to do next, before anyone
+   has typed a password twice. */
+async function checkPendingInvite(){
+  var token = pendingInviteToken;
+  try{
+    var r = await fetch("/.netlify/functions/auth", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "check_invite", token: token })
+    });
+    var out = await r.json().catch(function(){ return null; });
+    /* Stale response guard: the user may have tapped "Back to Sign In"
+       (or accepted) while this was in flight -- never write into a form
+       that's no longer the invite form. */
+    if (pendingInviteToken !== token) return;
+    if (!r.ok || !out || !out.ok) throw new Error((out && out.error) || ("server error " + r.status));
+    var line = document.getElementById("invite-email-line");
+    if (line){ line.textContent = "Setting up: " + out.email; line.style.display = "block"; }
+  }catch(e){
+    if (pendingInviteToken !== token) return;
+    var btn = document.getElementById("invite-accept-btn");
+    if (btn) btn.disabled = true;
+    setLoginGateStatus(e.message, true);
+  }
+}
+async function gateAcceptInvite(){
+  var p1 = val("invite-password");
+  var p2 = val("invite-password2");
+  if (p1.length < 8){ setLoginGateStatus("Password must be at least 8 characters.", true); return; }
+  if (p1 !== p2){ setLoginGateStatus("Passwords don't match.", true); return; }
+  setLoginGateStatus("Setting your password…", false);
+  try{
+    var r = await fetch("/.netlify/functions/auth", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "accept_invite", token: pendingInviteToken, password: p1 })
+    });
+    var out = await r.json().catch(function(){ return null; });
+    if (!r.ok || !out || !out.ok) throw new Error((out && out.error) || ("server error " + r.status));
+    /* Token is burned server-side the moment the password is set -- clear
+       it locally BEFORE signing in so nothing ever retries it. */
+    clearPendingInvite();
+    setLoginGateStatus("Password set ✓ — signing you in…", false);
+    await fauth.signInWithEmailAndPassword(out.email, p1);
+    /* onAuthStateChanged hides the gate from here. */
+  }catch(e){ setLoginGateStatus(e.message, true); }
 }
 /* One-time owner bootstrap -- creates the owner account, signs into it in
    THIS browser, force-refreshes the ID token (claims were just set by the
@@ -2168,6 +2272,38 @@ function populateWoTypeSelect(){
     sel.appendChild(opt);
   });
 }
+/* ---- AI "Draft Summary" capability gate ----------------------------------
+   Whether THIS deploy has an AI key lives server-side only (the key is never
+   shipped to the client), so the button's visibility is driven by a one-time
+   capability probe rather than anything the page can read directly. Tri-state:
+   null = not yet probed (button stays hidden — no flash of a dead control),
+   true = a key is configured (dev today; prod once Mark provisions one),
+   false = keyless deploy (production today — button stays hidden for good).
+   Probed lazily the first time a summary-bearing type is selected, cached for
+   the session, and re-applies the type gate (onWoTypeChange) once it resolves. */
+var __aiSummaryConfigured = null;
+var __aiSummaryProbe = null;
+function aiSummaryConfigured(){ return __aiSummaryConfigured; }
+function probeAiSummaryCapability(){
+  if (__aiSummaryProbe) return __aiSummaryProbe;
+  __aiSummaryProbe = (async function(){
+    try{
+      var r = await fetch("/.netlify/functions/generate-summary", {
+        method: "POST", headers: await authHeaders(),
+        body: JSON.stringify({ action: "capability" })
+      });
+      var out = null; try{ out = await r.json(); }catch(e){}
+      __aiSummaryConfigured = !!(r.ok && out && out.ok && out.configured);
+    }catch(e){
+      /* Network/permission hiccup: treat as unconfigured (hide the button) —
+         a missing draft button is a non-event; a broken one is not. */
+      __aiSummaryConfigured = false;
+    }
+    if (typeof onWoTypeChange === "function") onWoTypeChange();
+    return __aiSummaryConfigured;
+  })();
+  return __aiSummaryProbe;
+}
 function onWoTypeChange(){
   var isCO = val("woType") === "Change Order";
   var el = document.getElementById("wo-changeorder-card");
@@ -2185,14 +2321,19 @@ function onWoTypeChange(){
   var isRepair = val("woType") === "Repair";
   var rc = document.getElementById("wo-repair-card");
   if (rc) rc.style.display = isRepair ? "" : "none";
-  /* Material List: Work Order (Repair) only — the type that executes work
-     and burns material. Change Order keeps its own free-text #woMaterials
-     inside its card; Leak is a pure investigation; Inspection/Warranty
-     don't record material usage. DISPLAY GATING ONLY — like repairs[],
-     collect()/fill() round-trip materials[] for every type, so a record
-     that somehow has rows never loses them. */
+  /* Material List: Work Order (Repair) AND Leak / Service (Mark, from prod:
+     the Repair-only gate made the card look "missing" on the Leak form — a
+     leak call burns material too, so both repair-capable forms show it).
+     Change Order keeps its own free-text #woMaterials inside its card;
+     Inspection stays out; WARRANTY is a pending decision from Mark —
+     deliberately NOT added yet. DISPLAY GATING ONLY — like repairs[],
+     collect()/fill() round-trip materials[] for every type and all three
+     report builders print materials whenever present, so nothing about
+     save/report behavior changes here. (WORK_ORDER_TYPES[0] is checked
+     inline — the isLeakType var is only declared further down in this
+     function; don't reference it before its declaration.) */
   var mc = document.getElementById("wo-materials-card");
-  if (mc) mc.style.display = isRepair ? "" : "none";
+  if (mc) mc.style.display = (isRepair || val("woType") === WORK_ORDER_TYPES[0]) ? "" : "none";
   /* Repair is a project/scope report, not a leak diagnosis — findings
      (leak pins/conditions) don't apply to it, per Mark. Change Order is a
      scope of work, not a leak diagnosis either — same reasoning. */
@@ -2265,6 +2406,29 @@ function onWoTypeChange(){
      -- see "Inspection form overhaul" in DEV_NOTES.md. */
   var raf = document.getElementById("wo-reportedarea-fld");
   if (raf) raf.style.display = isInspection ? "none" : "";
+  /* "Draft Summary" (AI-drafted summary — see "AI-drafted report summary"
+     in DEV_NOTES.md): Mark's three summary-bearing report types —
+     Inspection, Leak, and Work Order (stored type "Repair") — all share the
+     ONE #summary field and the ONE generate-summary server function; this
+     only gates the button. Change Order (its own document, no Summary
+     section in its PDF) and Warranty stay hidden — widening later is just
+     this condition. */
+  var dsr = document.getElementById("wo-draft-summary-row");
+  /* Two gates, both must pass: (1) a summary-bearing report type, and (2) this
+     deploy actually HAS an AI key. Production ships with no key, so the button
+     stays hidden there rather than offering a draft that can only be a
+     deterministic placeholder; it flips visible automatically the moment a key
+     is provisioned (the probe re-runs this on resolve). aiSummaryConfigured()
+     is null-until-probed, so the button starts hidden and only appears once we
+     KNOW a key exists — never a flash of a dead control. */
+  var wantsSummary = (isInspection || isLeakType || isRepair);
+  /* aiSummaryConfigured()/probeAiSummaryCapability() live outside this function
+     (above), so typeof-guard them — same convention as the other neighbor
+     calls here — for isolated-function unit tests and any load order. Until the
+     probe resolves (aiReady === null) the row stays hidden. */
+  var aiReady = (typeof aiSummaryConfigured === "function") ? aiSummaryConfigured() : null;
+  if (dsr) dsr.style.display = (wantsSummary && aiReady === true) ? "" : "none";
+  if (wantsSummary && aiReady === null && typeof probeAiSummaryCapability === "function") probeAiSummaryCapability();
   var ic = document.getElementById("wo-inspection-card");
   if (ic) ic.style.display = isInspection ? "" : "none";
   if (isInspection){ ensureInspectionChecklist(); renderInspectionChecklist(); renderInspectionRoofPicker(); }
@@ -3174,5 +3338,10 @@ function showView(v){
     pendingPinFindingId = null;
     openPinModal(fid);
   }
+  /* CompanyCam PDF backfill (⟳ on a report row) — same load-then-act
+     pattern as the pin jump above; no-ops unless
+     backfillReportPdfToCompanyCam() just loaded this order. See
+     runPendingCcPdfBackfill() in js/history.js. */
+  if (v === "edit" && typeof runPendingCcPdfBackfill === "function") runPendingCcPdfBackfill();
 }
 

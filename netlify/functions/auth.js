@@ -37,10 +37,9 @@ function resp(code, obj) {
 // appUrl is supplied by the CALLER (the inviting admin's own browser
 // already knows window.location.origin -- same principle as
 // passwordResetActionCodeSettings() in js/core.js) but is validated
-// against a real allowlist here, not trusted blindly -- this becomes part
-// of the emailed link and generatePasswordResetLink's own continue-URL
-// domain check, so a bad value must be rejected outright, not silently
-// used.
+// against a real allowlist here, not trusted blindly -- it becomes the
+// base of the emailed invite link, so a bad value must be rejected
+// outright, not silently used.
 const ALLOWED_APP_URLS = [
   "https://leak-work-orders.netlify.app",
   "https://dev--leak-work-orders.netlify.app",
@@ -50,6 +49,74 @@ function validateAppUrl(raw) {
   var u = String(raw || "").replace(/\/$/, "");
   return ALLOWED_APP_URLS.indexOf(u) !== -1 ? u : null;
 }
+
+// ---- Custom long-lived invite tokens (2026-07-16) ----
+// Real field problem, fixed here: the invite email's "set your password"
+// button used to be a Firebase password-reset action link
+// (generatePasswordResetLink). Firebase expires those out-of-band codes
+// about an HOUR after they're minted, the window is not configurable
+// anywhere (not in ActionCodeSettings, not in the console, not in the
+// Admin SDK), and a roofing crew does not sit at an inbox -- most invites
+// were dead before they were ever opened, and the recipient landed on
+// Firebase's hosted "link expired" page with no way forward.
+//
+// Replaced with our own invite token: 32 random bytes, emailed as
+// ?invite=<token> on the app's own URL (js/core.js's login gate handles
+// it -- see loginGateAcceptInviteHtml/gateAcceptInvite there), stored
+// ONLY as a SHA-256 hash in invites/{uid} (a Firestore leak can never
+// mint a login; the raw token exists nowhere but the email itself), valid
+// for INVITE_TTL_DAYS, single-use (usedAt), revoked when the account is
+// disabled/deleted (revokedAt, plus resolveInvite() independently checks
+// the live user status), and invalidated wholesale by a resend -- the doc
+// is keyed by uid, ONE active invite per user, so a fresh invite
+// overwrites the old hash and the old link dies with it.
+//
+// check_invite/accept_invite below are deliberately UNauthenticated: the
+// token itself is the credential, exactly the trust model of the Firebase
+// link it replaces, just on a window sized for how crews actually work --
+// and at 256 random bits, unguessable in a way no rate limit needs to
+// prop up. The signed-in "Forgot password?" flow keeps using Firebase's
+// own short-lived reset links: one hour is fine when you're actively
+// standing at the login screen; it was only ever wrong for onboarding.
+const INVITE_TTL_DAYS = 7;
+const INVITE_TTL_MS = INVITE_TTL_DAYS * 24 * 60 * 60 * 1000;
+function hashInviteToken(token) {
+  return crypto.createHash("sha256").update(String(token)).digest("hex");
+}
+async function issueInvite(db, opts) {
+  const token = crypto.randomBytes(32).toString("hex");
+  // merge:false on purpose -- a resend must leave NOTHING of the previous
+  // invite behind (old hash, old usedAt/revokedAt state), not blend with it.
+  await db.collection("invites").doc(opts.uid).set({
+    tokenHash: hashInviteToken(token),
+    uid: opts.uid, email: opts.email, role: opts.role,
+    createdAt: Date.now(), expiresAt: Date.now() + INVITE_TTL_MS,
+    usedAt: null, revokedAt: null, createdBy: opts.createdBy
+  }, { merge: false });
+  return opts.appUrl + "/?invite=" + token;
+}
+// Resolves a raw invite token to its invite record + live user doc, or
+// null. ONE null for every failure reason (unknown token, already used,
+// revoked, expired, account disabled/deleted since) -- the accept page
+// tells the recipient the same thing regardless ("ask your admin to
+// resend"), and a probing caller learns nothing about which stage failed
+// or whether an email/account exists at all.
+async function resolveInvite(db, rawToken) {
+  const token = String(rawToken || "");
+  if (token.length < 32) return null;
+  const q = await db.collection("invites").where("tokenHash", "==", hashInviteToken(token)).limit(1).get();
+  if (q.empty) return null;
+  const invite = q.docs[0].data();
+  if (invite.usedAt || invite.revokedAt) return null;
+  if (typeof invite.expiresAt !== "number" || Date.now() > invite.expiresAt) return null;
+  const userDoc = await db.collection("users").doc(invite.uid).get();
+  if (!userDoc.exists) return null;
+  const user = userDoc.data();
+  if ((user.status || "active") !== "active") return null;
+  return { invite: invite, user: user };
+}
+// Single message for every dead-invite case -- see resolveInvite() above.
+const INVITE_DEAD_MSG = "This invite link is no longer valid. Ask your admin to tap \"Resend invite\" on your account -- a fresh link arrives in seconds.";
 
 async function sendInviteEmail(opts) {
   const key = process.env.RESEND_API_KEY;
@@ -68,18 +135,20 @@ async function sendInviteEmail(opts) {
   // stop after setting their password is straight into "how do I..." rather
   // than a blank Home screen. Added 2026-07-12 alongside the Help Center.
   const helpLink = opts.appUrl + "/?openHelp=1";
-  // Add-to-home-screen instructions are platform-specific and, critically,
-  // BROWSER-specific on iOS: "Add to Home Screen" only exists in Safari's
-  // share sheet -- it does not exist in Chrome-on-iOS at all (Apple's own
-  // restriction, not a bug in this app), so a crew member on an iPhone who
-  // opens the invite link in Chrome will never find the option and will
-  // reasonably conclude the app is broken. Called out explicitly for that
-  // reason rather than assumed obvious.
+  // Add-to-home-screen instructions are platform-specific. On iOS BOTH
+  // Safari and Chrome can do it: iOS 16.4+ (March 2023) lets third-party
+  // browsers add web apps to the Home Screen, and Chrome-on-iOS exposes it
+  // in its share/menu -- Mark uses Chrome on iOS exclusively and it works.
+  // (This copy previously insisted Safari was the only iOS browser that
+  // could do it; that was stale pre-16.4 knowledge and told Chrome-on-iOS
+  // users their working browser couldn't do the thing it can. Corrected
+  // 2026-07-16; tests/inviteEmailA2hsCopy.test.js guards the fix.)
   const text = "Hi" + (opts.displayName ? " " + opts.displayName : "") + ",\n\n" +
     opts.inviterEmail + " has added you to RoofOps (Watkins Roofing's field work order app) as a " + roleLabel + ".\n\n" +
-    "1. SET YOUR PASSWORD\n" + opts.resetLink + "\n\n" +
+    "1. SET YOUR PASSWORD (this link works for " + INVITE_TTL_DAYS + " days)\n" + opts.inviteLink + "\n" +
+    "   If it's expired, ask " + opts.inviterEmail + " to tap \"Resend invite\" on your account -- a fresh link arrives in seconds.\n\n" +
     "2. ADD ROOFOPS TO YOUR HOME SCREEN (do this once, in the field it's much faster than a browser tab)\n" +
-    "   iPhone/iPad: open " + opts.appUrl + " in SAFARI (must be Safari, not Chrome -- the option doesn't exist there) -> tap the Share button -> scroll down -> \"Add to Home Screen\" -> Add.\n" +
+    "   iPhone/iPad (Safari or Chrome): open " + opts.appUrl + " -> tap the Share button (or the ... menu in Chrome) -> \"Add to Home Screen\" -> Add.\n" +
     "   Android: open " + opts.appUrl + " in Chrome -> tap the three-dot menu -> \"Install app\" or \"Add to Home screen.\"\n" +
     "   Computer (Chrome/Edge): click the install icon in the address bar, or the three-dot menu -> \"Install RoofOps.\"\n" +
     "   This makes it open full-screen like a real app, one tap from your home screen.\n\n" +
@@ -89,10 +158,11 @@ async function sendInviteEmail(opts) {
   const html = "<p>Hi" + (opts.displayName ? " " + escapeHtml(opts.displayName) : "") + ",</p>" +
     "<p><b>" + escapeHtml(opts.inviterEmail) + "</b> has added you to <b>RoofOps</b> (Watkins Roofing's field work order app) as a <b>" + escapeHtml(roleLabel) + "</b>.</p>" +
     "<p style=\"margin:20px 0 8px\"><b>1. Set your password</b></p>" +
-    "<p><a href=\"" + opts.resetLink + "\" style=\"display:inline-block;background:#E8600A;color:#fff;padding:10px 18px;border-radius:6px;text-decoration:none;font-weight:bold\">Set Your Password and Sign In</a></p>" +
+    "<p><a href=\"" + opts.inviteLink + "\" style=\"display:inline-block;background:#E8600A;color:#fff;padding:10px 18px;border-radius:6px;text-decoration:none;font-weight:bold\">Set Your Password and Sign In</a></p>" +
+    "<p style=\"color:#666;font-size:13px;margin:6px 0 0\">This link works for " + INVITE_TTL_DAYS + " days. If it's expired, ask " + escapeHtml(opts.inviterEmail) + " to tap “Resend invite” on your account — a fresh link arrives in seconds.</p>" +
     "<p style=\"margin:22px 0 8px\"><b>2. Add RoofOps to your home screen</b> (do this once — in the field it's much faster than a browser tab)</p>" +
     "<ul style=\"margin:0 0 16px;padding-left:20px;line-height:1.6\">" +
-    "<li><b>iPhone/iPad:</b> open the app in <b>Safari</b> (must be Safari — the option doesn't exist in Chrome on iOS) → tap the Share button → scroll down → <b>Add to Home Screen</b> → Add.</li>" +
+    "<li><b>iPhone/iPad (Safari or Chrome):</b> open the app → tap the Share button (or the ⋯ menu in Chrome) → <b>Add to Home Screen</b> → Add.</li>" +
     "<li><b>Android:</b> open the app in Chrome → three-dot menu → <b>Install app</b> or <b>Add to Home screen</b>.</li>" +
     "<li><b>Computer (Chrome/Edge):</b> the install icon in the address bar, or three-dot menu → <b>Install RoofOps</b>.</li>" +
     "</ul>" +
@@ -316,10 +386,12 @@ exports.handler = async function (event) {
     // The new account's password is a throwaway, cryptographically random
     // value generated here and NEVER returned to the caller or stored
     // anywhere -- this endpoint hands back only {ok, uid, email}. The real
-    // invite delivery is generatePasswordResetLink() (Admin SDK, does NOT
-    // send anything itself) + sendInviteEmail() via Resend -- see the
-    // comment on sendInviteEmail() above for why this replaced the earlier
-    // Firebase-built-in-email approach, which silently never delivered.
+    // invite delivery is issueInvite() (our own 7-day token -- see the
+    // invite-token comment block above for why this replaced Firebase's
+    // ~1-hour password-reset links) + sendInviteEmail() via Resend -- see
+    // the comment on sendInviteEmail() above for why THAT replaced the
+    // earlier Firebase-built-in-email approach, which silently never
+    // delivered.
     // If the email send fails, the account still exists (real value,
     // recoverable) but the caller is told explicitly rather than being
     // lied to with a false "sent" -- and resend_invite below can retry
@@ -375,19 +447,25 @@ exports.handler = async function (event) {
 
       let emailSent = false, emailError = null, resendResult = null;
       try {
-        const resetLink = await getAuth().generatePasswordResetLink(email, { url: appUrl });
+        // If issueInvite succeeds but the email send below fails, the
+        // invite record exists with no email out -- harmless: resend_invite
+        // overwrites it wholesale (merge:false), same recovery path as any
+        // other failed send.
+        const inviteLink = await issueInvite(db, { uid: userRecord.uid, email: email, role: roleId, createdBy: caller.uid, appUrl: appUrl });
         resendResult = await sendInviteEmail({ email: email, displayName: displayName, roleId: roleId, roleLabel: roleLabel,
-          inviterEmail: caller.email, resetLink: resetLink, appUrl: appUrl });
+          inviterEmail: caller.email, inviteLink: inviteLink, appUrl: appUrl });
         emailSent = true;
       } catch (e) { emailError = e && e.message ? e.message : "unknown error"; }
 
       return resp(200, { ok: true, uid: userRecord.uid, email: email, emailSent: emailSent, emailError: emailError, resend: resendResult });
     }
 
-    // ---- resend_invite: rescues an account created before this fix (or
-    // any invite that failed/got lost/landed in spam) without recreating
-    // it -- generatePasswordResetLink() works on any existing account
-    // regardless of when or how it was created. Same hierarchy check as
+    // ---- resend_invite: rescues any invite that expired, failed, got
+    // lost, or landed in spam without recreating the account --
+    // issueInvite() works on any existing account regardless of when or
+    // how it was created (accounts invited under the old Firebase-link
+    // scheme included), and overwrites any previous invite record wholesale
+    // so exactly one link is ever live per user. Same hierarchy check as
     // create_user, evaluated against the TARGET's CURRENT role (an admin
     // could have been created, then demoted, then need a resend -- always
     // check live state, not what was true at creation time). ----
@@ -417,15 +495,55 @@ exports.handler = async function (event) {
       const roleDoc = await db.collection("roles").doc(target.role).get();
       const roleLabel = roleDoc.exists ? (roleDoc.data().label || target.role) : target.role;
 
-      const resetLink = await getAuth().generatePasswordResetLink(target.email, { url: appUrl });
+      const inviteLink = await issueInvite(db, { uid: targetUid, email: target.email, role: target.role, createdBy: caller.uid, appUrl: appUrl });
       const resendResult = await sendInviteEmail({ email: target.email, displayName: target.displayName, roleId: target.role, roleLabel: roleLabel,
-        inviterEmail: caller.email, resetLink: resetLink, appUrl: appUrl });
+        inviterEmail: caller.email, inviteLink: inviteLink, appUrl: appUrl });
 
       await writeAudit(db, {
         actorUid: caller.uid, actorRole: caller.owner ? "owner" : caller.role, action: "resend_invite",
         target: { collection: "users", id: targetUid }, before: null, after: { email: target.email }
       });
       return resp(200, { ok: true, resend: resendResult });
+    }
+
+    // ---- check_invite: the accept page's first call on load -- resolves
+    // a raw ?invite= token to "who is this for" so the form can greet the
+    // recipient and fail FAST with a clear message on a dead link, before
+    // they've typed anything. Unauthenticated by design (the recipient has
+    // no account password yet -- the token IS the credential; see the
+    // invite-token comment block above). Returns only what the recipient's
+    // own email already told them (their email/name), and only against a
+    // live, unused, unexpired token. ----
+    if (body.action === "check_invite") {
+      const found = await resolveInvite(db, body.token);
+      if (!found) return resp(410, { error: INVITE_DEAD_MSG });
+      return resp(200, { ok: true, email: found.user.email, displayName: found.user.displayName || "" });
+    }
+
+    // ---- accept_invite: sets the recipient's real password against a
+    // valid token, then burns the token (usedAt) -- single-use, same as
+    // the Firebase link it replaced. usedAt is marked AFTER updateUser()
+    // on purpose: if the password write fails, the invite must stay
+    // usable for a retry rather than stranding the recipient behind an
+    // admin resend. (The token stays a 256-bit secret either way -- the
+    // narrow double-submit race this ordering allows just sets the same
+    // account's password twice, by the same token holder.) ----
+    if (body.action === "accept_invite") {
+      const password = String(body.password || "");
+      if (password.length < 8) return resp(400, { error: "Password must be at least 8 characters" });
+      const found = await resolveInvite(db, body.token);
+      if (!found) return resp(410, { error: INVITE_DEAD_MSG });
+
+      await getAuth().updateUser(found.invite.uid, { password: password });
+      await db.collection("invites").doc(found.invite.uid).set({ usedAt: Date.now() }, { merge: true });
+      await db.collection("users").doc(found.invite.uid).set({ updatedAt: Date.now() }, { merge: true });
+      await writeAudit(db, {
+        actorUid: found.invite.uid, actorRole: found.user.role, action: "accept_invite",
+        target: { collection: "users", id: found.invite.uid }, before: null, after: { inviteAccepted: true }
+      });
+      // email comes back so the client can sign straight in with the
+      // password it just set -- no retyping on a roof.
+      return resp(200, { ok: true, email: found.user.email });
     }
 
     // ---- disable_user / enable_user / delete_user: Mark's explicit design
@@ -469,7 +587,16 @@ exports.handler = async function (event) {
 
       const disabling = body.action === "disable_user";
       await getAuth().updateUser(targetUid, { disabled: disabling });
-      if (disabling) await getAuth().revokeRefreshTokens(targetUid); // kills any already-open session immediately, not after natural token expiry
+      if (disabling) {
+        await getAuth().revokeRefreshTokens(targetUid); // kills any already-open session immediately, not after natural token expiry
+        // Burn any outstanding invite link too -- resolveInvite() would
+        // already reject it via the live status check below, but the
+        // invite record should SAY it's dead rather than merely be dead
+        // (revokedAt is state a future admin UI can display, and defense
+        // in depth costs one merge). Re-enabling doesn't resurrect it --
+        // that's what Resend invite is for.
+        try { await db.collection("invites").doc(targetUid).set({ revokedAt: Date.now() }, { merge: true }); } catch (e) { /* best-effort */ }
+      }
       await db.collection("users").doc(targetUid).set({
         status: disabling ? "disabled" : "active", updatedAt: Date.now()
       }, { merge: true });
@@ -505,6 +632,9 @@ exports.handler = async function (event) {
 
       try { await getAuth().deleteUser(targetUid); }
       catch (e) { if (!e || e.code !== "auth/user-not-found") throw e; } // already gone from Auth -- still archive the Firestore record below
+      // Same invite burn as disable_user above -- a deleted account's
+      // invite link must never resolve again.
+      try { await db.collection("invites").doc(targetUid).set({ revokedAt: Date.now() }, { merge: true }); } catch (e) { /* best-effort */ }
       await db.collection("users").doc(targetUid).set({
         status: "deleted", archived: true, deletedAt: Date.now(), deletedBy: caller.uid, updatedAt: Date.now()
       }, { merge: true });

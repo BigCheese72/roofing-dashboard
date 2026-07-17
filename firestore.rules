@@ -328,5 +328,17 @@ service cloud.firestore {
         && request.resource.data.createdAt is number;
       allow read, update, delete: if false;
     }
+
+    // Custom invite tokens (netlify/functions/auth.js's create_user/
+    // resend_invite/check_invite/accept_invite -- see the invite-token
+    // comment block there). Each doc holds only a SHA-256 HASH of the
+    // emailed token (never the token itself), but it also holds
+    // email/role/expiry/used state no client has any business reading --
+    // and any client write path would let an attacker un-expire, un-use,
+    // or redirect an invite, i.e. mint themselves a login. Fully closed,
+    // same tier as secrets/ above: Admin SDK only, no exceptions, ever.
+    match /invites/{uid} {
+      allow read, write: if false;
+    }
   }
 }

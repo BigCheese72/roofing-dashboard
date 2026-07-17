@@ -64,6 +64,7 @@ var AI_ISSUE_LABELS = [
   { key: "drain_clogged",         label: "Clogged / failed drain" },
   { key: "scupper_blocked",       label: "Blocked / failed scupper" },
   { key: "pitch_pan_deteriorated",label: "Deteriorated pitch pan / sealant pocket" },
+  { key: "sealant_deteriorated",  label: "Deteriorated sealant / caulk / mastic" },
   { key: "coping_failure",        label: "Coping / counterflashing failure" },
   { key: "penetration_seal_failed", label: "Failed penetration seal / boot" },
   { key: "expansion_joint_failed",label: "Expansion joint failure" },
@@ -79,8 +80,20 @@ var AI_ISSUE_LABELS = [
   { key: "wall_intrusion",        label: "Wall / masonry water intrusion (not roof)" },
   { key: "insulation_saturated",  label: "Saturated insulation / wet area" },
   { key: "no_defect_found",       label: "No defect found" },
+  { key: "indeterminate",         label: "Indeterminate / can't tell from photo" },
   { key: "other",                 label: "Other (describe)" }
 ];
+/* no_defect_found vs indeterminate is a deliberate distinction: "looked,
+   confirmed nothing wrong" and "couldn't tell from this photo" are different
+   training signals — collapsing them would teach a model that unreadable
+   photos are clean roofs.
+
+   PARITY CONTRACT: netlify/functions/lib/aiProvider.js's ISSUE_VOCABULARY
+   (what the issue-ID model may answer with) must stay a SUBSET of these
+   keys, so a model suggestion the tech confirms is always storable as a
+   training label with no mapping table. Enforced by the parity test in
+   tests/aiLabels.test.js — extend both lists together (or only this one;
+   this one may be a superset). */
 
 var AI_LABEL_SOURCES = ["leak", "inspection", "workorder"];
 var AI_LABEL_SCHEMA_VERSION = 1;

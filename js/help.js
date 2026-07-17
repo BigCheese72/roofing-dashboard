@@ -34,13 +34,13 @@ var HELP_ARTICLES = [
       "From anywhere else in the app, tap ➕ New in the header -- it takes you back to Home instead of blanking your current screen.",
       "You can change the Work Order Type any time from the dropdown at the top of Job Information, if you picked the wrong tile."
     ] },
-  { id: "gs-existing-building", title: "How do I fill in a job faster for a building I've already worked on?", screens: ["home", "edit"], roles: "all",
-    keywords: "existing building customer duplicate autofill select",
+  { id: "gs-existing-building", title: "How do I fill in a job faster instead of typing everything?", screens: ["home", "edit"], roles: "all",
+    keywords: "existing building customer duplicate autofill select job foundation picker",
     body: [
-      "At the top of Job Information, tap \"🔍 Select Existing Building.\"",
-      "Search for the building -- its Job Name, Bill To, Location, and Roof System fill in automatically.",
-      "A \"☁️ From CompanyCam\" section in the same picker also shows CompanyCam projects that aren't a RoofOps building yet -- picking one creates the building and links CompanyCam for you in one step.",
-      "This also helps avoid accidentally creating a duplicate building from a slightly different spelling of the same job name."
+      "At the top of Job Information, tap \"🔍 Select Job\" and search by job # or name.",
+      "The picker shows three groups: Jobs (from the accounting job list -- picking one fills Job Name, Location, Job No., Project Manager, and Bill To), buildings already in this app (fills Job Name, Bill To, Location, and Roof System), and \"☁️ From CompanyCam\" projects that aren't a building here yet -- picking one of those creates the building and links CompanyCam in one step.",
+      "Everything stays editable after it fills in -- review the fields before saving. A \"🔗 Linked job\" line under the buttons shows what's linked; tap \"unlink\" to disconnect.",
+      "Using the picker also avoids accidentally creating a duplicate building from a slightly different spelling of the same job name. Don't see the job yet? Just type it in by hand -- the job list refreshes automatically during the work day."
     ] },
   { id: "gs-reopen-wo", title: "How do I reopen a work order I already saved?", screens: ["home", "saved"], roles: "all",
     keywords: "reopen open saved work order find",
@@ -51,6 +51,16 @@ var HELP_ARTICLES = [
     ] },
 
   // ---- Work order types ----
+  { id: "wo-types", title: "Which work-order type do I pick?", screens: ["home", "edit"], roles: "all",
+    keywords: "types which pick choose leak change order inspection work order warranty difference",
+    body: [
+      "💧 Leak Work Order -- investigating a leak: findings, photos, pins, and a warranty determination. It's a pure investigation, with no Work Performed section.",
+      "🔧 Work Order -- executing work already sold on a proposal: a repair scope, itemized repair items, and a material list.",
+      "📝 Change Order -- extra work found on a job: cost, man-hours, PO number, materials, and a customer signature. It prints its own CHANGE ORDER PDF.",
+      "🔍 Inspection -- the 8-item checklist rated Good / Fair / Poor / Critical. Anything rated Fair or worse becomes a finding automatically.",
+      "🛡️ Warranty -- a warranty call: findings AND Work Performed on the same form, plus the Warrantable / Non-Warrantable determination boxes.",
+      "Picked the wrong one? Change the Work Order Type dropdown at the top of Job Information any time -- nothing you've typed is lost."
+    ] },
   { id: "wo-leak", title: "How do I fill out a Leak Work Order?", screens: ["edit"], roles: "all",
     keywords: "leak service report finding warranty determination investigation",
     body: [
@@ -86,6 +96,131 @@ var HELP_ARTICLES = [
       "Rate each Good / Fair / Poor / Critical / N/A. A photo on any item is camera-only (no library/CompanyCam import) since it's documenting the exact condition you're rating.",
       "Taking that photo automatically drops a pin on the roof map. Rating something Fair, Poor, or Critical automatically adds it to Findings too -- you never write it twice.",
       "If the building has more than one roof, a checklist appears near the top asking which roof(s) this inspection covers."
+    ] },
+  { id: "wo-warranty", title: "How do I fill out a Warranty work order?", screens: ["edit"], roles: "all",
+    keywords: "warranty claim determination warrantable non-warrantable",
+    body: [
+      "Pick 🛡️ Warranty from Home. You get Job Information, Roof Investigation Findings (with per-finding photos and map pins), a Work Performed section, and the Warranty Determination boxes (Warrantable / Non-Warrantable Repairs).",
+      "Because Warranty has both findings and Work Performed, you can pair each repair to the finding it resolves -- see \"How do I pair a before photo with an after photo?\"",
+      "The report and email it produces are labeled Warranty, so the office can tell it apart at a glance."
+    ] },
+  { id: "wo-leak-no-job", title: "What does the \"⚠️ Leak – No Job ticket\" banner mean?", screens: ["edit"], roles: "all",
+    keywords: "leak no job ticket banner warning foundation job number charlotte",
+    body: [
+      "It means this leak doesn't have a real accounting job number yet -- the job is still a \"Leak - No Job\" ticket.",
+      "Charlotte needs to create the job in the accounting system. Once it exists, tap \"🔍 Select Job\" and link it -- the banner clears on its own.",
+      "Until then, the outgoing report email automatically includes a LEAK – NO JOB TICKET note so the office knows to set the job up. You don't need to do anything extra."
+    ] },
+  { id: "wo-materials", title: "How do I add a Material List?", screens: ["edit"], roles: "all",
+    keywords: "material list add materials quantity unit repair area",
+    body: [
+      "On a 🔧 Work Order or 💧 Leak Work Order, scroll to the Material List card and tap \"+ Add Material.\"",
+      "Each row has Material / Description, Quantity, Unit (rolls, tubes, sq ft…), Notes, and \"For Repair Area\" -- tie the material to one specific repair, or leave it \"General / whole job.\"",
+      "Removing a repair never deletes its materials -- they just go back to General / whole job.",
+      "Change Orders don't use this card -- they have their own free-text Materials box inside the Change Order card (one item per line). The list is for the report only; nothing is ever written back to accounting."
+    ] },
+  { id: "wo-suite", title: "What is the Suite field for?", screens: ["edit"], roles: "all",
+    keywords: "suite strip mall multi tenant unit tag pin label",
+    body: [
+      "It's for strip malls and multi-tenant sites: one address, one roof, one building record -- Suite is a label, never a separate building.",
+      "Type it (e.g. \"Suite 12\") and every map pin you place on this work order gets stamped with it, so pins from different tenants on a shared roof stay tellable-apart later.",
+      "Single-tenant building? Just leave it blank."
+    ] },
+  { id: "wo-roof-type", title: "How do I add a roof type that isn't in the list (like SSM)?", screens: ["edit"], roles: "all",
+    keywords: "roof system type add new ssm epdm tpo pvc dropdown list",
+    body: [
+      "Open the Roof System dropdown and pick \"➕ Add new roof type…\" at the very bottom.",
+      "Type the new name -- it's added to the shared list for every future work order, on every device (that's how SSM got added).",
+      "If it's already on the list under a slightly different spelling, the app selects the existing one instead of creating a near-duplicate.",
+      "No connection? The type still works on your device right away and joins the shared list when you're back online."
+    ] },
+  { id: "wo-before-after", title: "How do I pair a before photo with an after photo (finding → repair)?", screens: ["edit"], roles: "all",
+    keywords: "before after pair link resolves finding repair same spot photo",
+    body: [
+      "On a Work Performed row, use the \"Resolves Finding (before → after, same spot)\" dropdown to pick the finding this repair fixes.",
+      "The finding's photo is the BEFORE and the repair's photo is the AFTER of that exact spot. Linking also copies the finding's location and map pin onto the repair, if the repair's own fields are still empty.",
+      "The finding then shows a green \"🔧 Resolved by Repair #N\" chip, and the report prints the pairing.",
+      "You'll see this on types that have both findings and Work Performed on one form (Inspection and Warranty). Removing a finding never deletes a paired repair -- it just unlinks it."
+    ] },
+  { id: "wo-repair-pin", title: "How do I pin a repair area on the roof map?", screens: ["edit"], roles: "all",
+    keywords: "repair area pin place map scope work performed marker",
+    body: [
+      "Every Work Performed / Repair row has its own \"📍 Place on Map\" button. Tap it, tap the map (or drag the marker) where the work happened, then Save Pin.",
+      "The map is the building's saved base map (roof plan or drone photo) when it has one, satellite otherwise.",
+      "Once placed, the button reads \"📍 Pinned — move.\" If the work order has a Suite, the pin is stamped with it automatically.",
+      "The app won't save a pin you never touched -- tap or drag first, so a default marker position can't sneak into the report."
+    ] },
+  { id: "wo-summary-ai", title: "What does ✨ Draft Summary do?", screens: ["edit"], roles: "all",
+    keywords: "draft summary ai generate write automatic placeholder",
+    body: [
+      "On Leak, Inspection, and Work Order types, tap \"✨ Draft Summary\" in the Summary card -- it writes a draft from the report's findings, checklist, repair scope, and photo captions into the Summary box.",
+      "It only runs when you tap it, and it never sends anything by itself -- the draft lands in the editable box for you to review and fix before saving or sending. If the box already has text, it asks before replacing.",
+      "The little message afterward tells you what happened: an AI-written draft (and how many photos it reviewed), or a plain placeholder if AI isn't available on this site or didn't answer.",
+      "Always read the draft like you'd read a new guy's writeup -- you're the author, it's just the first pass."
+    ] },
+  { id: "wo-call-directions", title: "How do the 📞 Call and 🧭 Directions links work?", screens: ["edit"], roles: "all",
+    keywords: "call phone tap dial directions navigate maps tel",
+    body: [
+      "Type a phone number into Contact Phone -- it formats itself as (XXX) XXX-XXXX and a \"📞 Call\" link appears under the field. Tap it to dial straight from the form.",
+      "Same idea under Location: once there's an address, \"🧭 Directions\" opens turn-by-turn in Apple Maps (iPhone/iPad) or Google Maps (everything else), in a new tab so you never lose the form.",
+      "Both update live as you type, and right after picking a job from \"🔍 Select Job.\""
+    ] },
+  { id: "wo-companycam-link", title: "How does CompanyCam linking work?", screens: ["edit", "history"], roles: "all",
+    keywords: "companycam link project inherit building unlink locked",
+    body: [
+      "The link lives on the BUILDING, not the individual work order -- link it once and every future leak, work order, change order, and inspection for that address inherits it automatically.",
+      "Link from the Photo Documentation card (\"🔗 Link / Import from CompanyCam\") by picking the existing CompanyCam project. The app never creates CompanyCam projects on its own -- it only links ones that already exist.",
+      "Once linked, the banner shows \"🔗 Locked to CompanyCam project,\" imported photos come in map-pinned, and every sent or downloaded PDF is saved into the project automatically.",
+      "Unlinking is admin-only, and it asks whether to unlink just this one work order or the building itself."
+    ] },
+
+  // ---- Daily Progress Report ----
+  { id: "dpr-start", title: "How do I fill out a Daily Progress Report?", screens: ["dpr"], roles: "all",
+    keywords: "daily progress report dpr start new foreman date job",
+    body: [
+      "Tap 📅 Daily Report in the header, then \"🔍 Select Job\" -- customer, address, and job number fill in automatically (Recent jobs are listed first).",
+      "Pick your name under \"Foreman — who's filling this out.\" Only Job Name and Date are required, and the date defaults to today.",
+      "There's ONE report per job per day, shared by everyone on the job. If another crew already started today's report, it opens automatically and you just add your part -- the green notice at the top shows who last updated it.",
+      "Tap \"Save Report\" when you're done. Daily reports save straight to the cloud, so they need a connection."
+    ] },
+  { id: "dpr-crew", title: "How do I record the crew and hours?", screens: ["dpr"], roles: "all",
+    keywords: "crew hours roster headcount time clock punches squares",
+    body: [
+      "In Crew & Hours, tap \"+ Add Crew Member\" and pick names -- or tap \"⏱ From Time Clock\" to pull in everyone who punched in on this job today.",
+      "Per-person hours fill in from the time clock where available (look for the ⏱ badge). Type over any of them -- your edit always wins.",
+      "Headcount and Hours Worked total themselves from the crew list, and a live line shows \"Total hours today\" as you go. A hand-typed different total sticks.",
+      "Approx. Squares Applied is optional -- fill it in when it's useful."
+    ] },
+  { id: "dpr-sections", title: "What are the Yes/No sections on the daily report?", screens: ["dpr"], roles: "all",
+    keywords: "delays quantities jsa incidents near miss equipment visitors yes no sections",
+    body: [
+      "Delays, Material Quantities, Job Safety Analysis (JSA), Incidents / Near Misses, Equipment On Site, Rented Equipment, and Site Visitors all start at \"No.\" Flip one to \"Yes\" and its fields appear.",
+      "Left on No, a section stores nothing and stays out of the PDF -- the report only ever shows what actually happened today.",
+      "JSA asks who conducted it, whether all crew were present, and the topics/hazards covered. Incidents ask the type (Injury, Near Miss, Property Damage, Other), who it was reported to, and what happened.",
+      "Delays ask the cause (Weather, Material Delivery, Equipment, Access, Site, Other Trades, Other), hours lost, and what happened."
+    ] },
+  { id: "dpr-lift-checklist", title: "When do I fill out the lift pre-use safety checklist?", screens: ["dpr"], roles: "all",
+    keywords: "lift checklist pre-use skytrak boom scissor rented equipment osha ansi tag out",
+    body: [
+      "Under Rented Equipment, add the machine (SkyTrak, boom lift, scissor lift, forklift…). If it's a lift, the \"Daily Pre-Use Safety Checklist (lift equipment)\" appears automatically.",
+      "Work through the 35 checks in order -- walk-around with the engine OFF, operator station & safety devices, function test with the engine ON, then the worksite -- each machine, each day, before first use (OSHA 1910.178 / ANSI A92).",
+      "Set the Result: \"Machine SAFE to operate,\" or \"Defects found — REMOVED from service & tagged.\" Any failed item means the machine is out of service and tagged -- no exceptions. Note the defects and who completed the checklist.",
+      "The checklist prints into the PDF with every item marked, so there's a record of the check."
+    ] },
+  { id: "dpr-section-trace", title: "How do I show which section of roof we did today?", screens: ["dpr"], roles: "all",
+    keywords: "trace today section progress map area square footage",
+    body: [
+      "In \"Roof Section Worked Today,\" tap \"✏️ Trace Today's Section\" and tap the corners of today's area on the map (at least 3) -- it figures the approximate square footage for you.",
+      "\"📊 Progress Map (all days)\" stacks every day's traced section on one map, newest brightest -- the whole job's progress at a glance.",
+      "The map uses the building's roof plan or drone photo when it has one, satellite otherwise."
+    ] },
+  { id: "dpr-photos-pdf", title: "How do daily report photos and the PDF work?", screens: ["dpr"], roles: "all",
+    keywords: "dpr photos caption pdf download history sign lock view only",
+    body: [
+      "In Photos, use \"📷 Take Photo\" (camera -- grabs GPS for a 📍 Located badge) or \"+ Add Photos\" (library). Give each one a caption -- captions print under the photos in the PDF.",
+      "\"Download PDF\" makes the Daily Progress Report PDF. Only sections you flipped to Yes print, so it stays tight.",
+      "\"History\" lists recent daily reports across all jobs -- tap Open on any of them. \"➕ New\" starts a fresh one.",
+      "\"✍️ Sign & Lock\" is coming in a separate update -- once it ships, a signed report locks read-only. And if you don't see a Save button at all, your role is view-only for daily reports -- ask an admin if that's wrong."
     ] },
 
   // ---- Photos ----
@@ -126,6 +261,24 @@ var HELP_ARTICLES = [
     ] },
 
   // ---- RoofMapper ----
+  { id: "rm-step-guide", title: "RoofMapper, start to finish (step-by-step)", screens: ["roofmapper"], roles: "all",
+    keywords: "roofmapper guide steps how to full walkthrough directions start finish",
+    body: [
+      "1. Open 🗺️ RoofMapper. Tap \"📍 Use My Location\" if you're standing at the job, or type the address and tap 🔍 Search, or pull the job with \"🔍 Select Job.\"",
+      "2. Tap the correct building's outline, then \"✏️ Generate Roof Outline.\" No outline shown? Tap \"🛰️ Satellite View\" then \"✏️ Trace Manually\" to tap the corners yourself, or \"🚶 Walk the Corners\" to record them by walking the roof edge.",
+      "3. While tracing: tap the corners in order, all the way around (at least 3). Drag any numbered point to move it, tap a + between points to insert one, double-tap (or right-click) a point to delete it, \"↩️ Undo Last Point\" for the most recent. Leave \"🧲 Snap\" on so corners lock onto roofs already traced next door. Tap \"✓ Finish Outline\" when you're back at the start.",
+      "4. Clean it up: \"🟦 Square Up\" snaps near-90° corners straight (a real diagonal is left alone). Then calibrate: tap any edge's length label on the map (like \"142 ft\") and type the tape-measured length -- the whole roof rescales to match. Trace → Square Up → Calibrate, in that order.",
+      "5. Tap \"💾 Save Outline to Building\" and link it to an existing building or create a new one. Save before you leave the screen -- an unfinished trace does not survive a page refresh.",
+      "6. From there: add permanent Roof Features (drains, RTUs), mark it up (arrows, notes, clouds, measurements), and \"👁️ Preview Export\" for the SVG/PNG/PDF. Finding and repair pins get placed from the work order, not here."
+    ] },
+  { id: "rm-trace-points", title: "How do I add, move, or delete a point while tracing?", screens: ["roofmapper"], roles: "all",
+    keywords: "trace points vertex add move delete insert drag undo corner",
+    body: [
+      "While a trace is open, every point you've placed is a numbered dot: drag it to move it, double-tap or right-click it to delete it, and tap the small + between two dots to insert a new point on that edge.",
+      "\"↩️ Undo Last Point\" removes the most recent one; \"✕ Cancel\" throws the whole trace away.",
+      "After the outline is finished and saved, \"✏️ Edit Shape\" lets you drag corners to new spots -- moving only. To add or remove a corner on a finished roof, re-trace it.",
+      "Moving a corner by hand resets Square Up and calibration, since a hand edit can change what those relied on."
+    ] },
   { id: "rm-first-trace", title: "How do I map a roof for the first time?", screens: ["roofmapper"], roles: "all",
     keywords: "roofmapper trace new roof outline generate",
     body: [
@@ -139,7 +292,8 @@ var HELP_ARTICLES = [
     body: [
       "This is not done from the RoofMapper tab itself yet -- it only starts new traces.",
       "Instead: tap 🏢 Building History → open the building → find the roof in the Roof Map card → tap \"🗺️ Open in RoofMapper.\"",
-      "That's currently the only path back into a saved roof to keep editing it. If a building has just one roof, there's no dropdown to pick from -- the \"🗺️ Open in RoofMapper\" button sits right next to the roof's name."
+      "That's currently the only path back into a saved roof to keep editing it. If a building has just one roof, there's no dropdown to pick from -- the \"🗺️ Open in RoofMapper\" button sits right next to the roof's name.",
+      "Opening a roof this way also reloads the building's saved drone ortho under it, if there is one -- which is why it's the right starting point before tracing another roof on that image."
     ] },
   { id: "rm-rename-roof", title: "How do I rename a roof?", screens: ["roofmapper", "history"], roles: "all",
     keywords: "rename roof label name change",
@@ -206,6 +360,45 @@ var HELP_ARTICLES = [
       "Rename each section if you want, then tap \"💾 Save All N Sections as Roofs.\"",
       "If you're splitting an already-saved roof, the first section keeps that roof's existing history and features -- the rest start brand-new and blank, so double check nothing needs to move over by hand afterward."
     ] },
+  { id: "rm-basemap-vs-ortho", title: "Base map vs. drone ortho -- what's the difference?", screens: ["roofmapper", "history"], roles: "all",
+    keywords: "base map ortho orthomosaic drone image satellite roof plan sketch difference",
+    body: [
+      "The BASE MAP is the permanent roof drawing that follows the job everywhere -- it's what you see behind pins in Building History, on the work-order form, and in the daily report's section trace. Out of the box it's satellite imagery.",
+      "A DRONE ORTHO is an optional upgrade to that base map: a georeferenced top-down drone image, far sharper than satellite. Because it's georeferenced (the app knows the exact GPS of its corners), pins and traced outlines sit on it as real GPS points.",
+      "That's why replacing an old ortho with a new flight doesn't lose anything -- traces and pins are stored as GPS coordinates, not as marks on the picture, so they land in the right spot on the new image automatically.",
+      "A roof plan or sketch can also be the base map -- but those aren't georeferenced, so their pins are tied to that exact image. The app will refuse to swap out a plan/sketch that already has pins or outlines tied to it."
+    ] },
+  { id: "rm-ortho-update", title: "How do I upload or update a drone ortho after a flight?", screens: ["history", "roofmapper"], roles: "admin",
+    keywords: "upload update drone ortho orthomosaic geotiff bounds north south east west base map replace",
+    body: [
+      "1. On a computer, run tools/geotiff_to_webmap.py on the flight's GeoTIFF (from DJI Terra, DroneDeploy, Pix4D…). It shrinks the huge file to a web-sized JPG and prints the exact North / South / East / West numbers you'll paste into the app. (It can also upload directly -- ask for the --upload option -- and then there's nothing left to do in the app.)",
+      "2. In the app: Building History → open the building → the \"Roof Base Map (admin)\" card. This card, not any of the photo buttons -- photos added elsewhere become report photos, not the base map.",
+      "3. Set the type to \"Drone Orthomosaic — needs an extra step first, see below,\" paste the four North/South/East/West numbers from step 1, pick the JPG, and tap \"Upload Base Map.\" (The card also shows this building's ID with a Copy button, for the script.)",
+      "4. Updating after a NEW flight is the exact same steps -- the new ortho replaces the old one in place. Traces and pins carry over automatically because they're stored as GPS, not drawn on the image.",
+      "The building needs a linked CompanyCam project (the image is stored there). \"Clear Base Map\" puts the building back on satellite."
+    ] },
+  { id: "rm-ortho-reload", title: "Why isn't my drone image showing when I trace another roof?", screens: ["roofmapper", "history"], roles: "all",
+    keywords: "ortho missing gone satellite trace another roof add roof reload drone image",
+    body: [
+      "\"➕ Trace Another Roof\" and \"+ Add Roof\" start a fresh trace on whatever's currently on the map -- they don't go fetch the building's saved drone ortho on their own.",
+      "To trace on the ortho: Building History → open the building → \"🗺️ Open in RoofMapper\" on an existing roof (that's what loads the saved drone image) → THEN tap \"➕ Trace Another Roof.\" The ortho stays under your new trace.",
+      "Cold-starting a trace from the RoofMapper tab or \"+ Add Roof\" shows plain satellite -- your trace still lands in the right place (it's all GPS), you just won't have the sharp drone picture to trace against."
+    ] },
+  { id: "rm-dont-refresh", title: "Will I lose my trace if the page refreshes?", screens: ["roofmapper"], roles: "all",
+    keywords: "refresh reload lose trace unsaved fail safe saved device",
+    body: [
+      "An UNFINISHED trace (corners tapped, outline not finished) lives only on the screen -- a refresh, a closed tab, or a dead battery loses it. Finish and save before you put the phone away.",
+      "A FINISHED outline whose save couldn't reach the server is protected: it's kept on your device, a red status bar tells you (\"your roof is saved on THIS DEVICE ✓\"), and the app retries automatically when you're back on signal.",
+      "So the habit is: trace it, ✓ Finish Outline, 💾 save it -- then relax. Everything after that point can survive bad signal."
+    ] },
+  { id: "rm-own-drone-image", title: "What does \"📷 Trace on My Own Drone Image\" do?", screens: ["roofmapper"], roles: "all",
+    keywords: "trace own drone image upload jpg png geotiff kmz kml flat canvas",
+    body: [
+      "It lets any tech trace a roof on top of their own image, right now, no admin needed. What you get depends on the file:",
+      "A GeoTIFF or KMZ/KML keeps its real GPS -- every tap during the trace is a true location, and no calibration is needed.",
+      "A plain JPG or PNG has no GPS at all, so it becomes a flat canvas: the SHAPE you trace is exact, but you must calibrate one edge (tap its length label, enter the tape measurement) to make the sizes real.",
+      "This is different from the admin \"Roof Base Map\" card in Building History -- that one sets the permanent, georeferenced base map the whole building uses for pin placement. Use this button to get an outline traced; use the base-map card to make a drone ortho the job's permanent background."
+    ] },
 
   // ---- Building History ----
   { id: "bh-near-me", title: "How do I find the closest building to where I'm standing?", screens: ["history"], roles: "all",
@@ -234,13 +427,37 @@ var HELP_ARTICLES = [
       "On the building's Timeline, use the filter row: date range, roof area, technician, warranty status, and report type.",
       "The dropdowns only ever list values that actually appear on that building's own timeline. Tap \"Clear Filters\" to reset."
     ] },
+  { id: "bh-open-wo", title: "How do I open the work order behind a timeline entry?", screens: ["history"], roles: "all",
+    keywords: "timeline open work order tap entry source badge",
+    body: [
+      "In a building's Timeline, entries created from a work order show a blue \"📂 Open work order ›\" badge -- tap anywhere on the entry and that work order opens, fully editable.",
+      "Entries without the badge (manually logged activity, or history from before linking existed) have no work order behind them -- tapping just tells you so.",
+      "Buttons inside an entry (View saved PDF, Delete) still do their own thing without opening the order."
+    ] },
+  { id: "bh-inline", title: "Why is there a Building History card on my work-order form?", screens: ["edit"], roles: "all",
+    keywords: "inline building history card form prior events read only",
+    body: [
+      "Type a Job Name on a Leak, Inspection, or Work Order and a read-only Building History card appears right on the form -- the building's roof map with its existing pins, plus its most recent prior events (up to 8).",
+      "It's there so you can see what's been done on this roof before, without leaving the form. Entries here are deliberately not tappable -- opening another order mid-edit would swap your work out from under you.",
+      "On an Inspection, tick \"Hide existing pins\" to declutter the map while you place new ones.",
+      "For the full, filterable history, tap 🏢 Building History in the header."
+    ] },
 
   // ---- Sending reports ----
   { id: "send-report", title: "How do I send or share a report?", screens: ["preview"], roles: "all",
-    keywords: "send email share download pdf report",
+    keywords: "send email share download pdf report print copy text recipients",
     body: [
-      "From Preview, use Send Email Now, Share / Email PDF, or Download PDF. All three save the work order and generate the PDF automatically first -- you don't need to save separately.",
-      "If the work order is linked to a CompanyCam project, the PDF is also uploaded there automatically."
+      "From Preview: \"Send Email Now\" emails the finished PDF directly from the app -- no mail app needed. Pick recipients from the \"Send to…\" dropdown or type any email (commas for several).",
+      "\"Share / Email PDF\" hands the PDF to your device's share sheet instead; \"Download PDF\" saves it to the device. \"Email (text only),\" \"Copy Text,\" and \"Print\" are there too.",
+      "All of these save the work order and generate the PDF automatically first -- you don't need to save separately.",
+      "Every send, download, or share is logged on the building's timeline, and the PDF is uploaded to the linked CompanyCam project automatically."
+    ] },
+  { id: "send-all-reports", title: "Where can I see every report that's been generated?", screens: ["reports"], roles: "all",
+    keywords: "all reports list history filter every report tab",
+    body: [
+      "Tap 📋 Reports -- every generated report across every building, most recent first, read-only.",
+      "Filter by search (building or customer), date range, roof area, technician, warranty status, report type, or work-order type.",
+      "Tap any report to jump straight to that building's timeline."
     ] },
   { id: "send-verify", title: "How do I tell if a report was actually emailed?", screens: ["saved", "history"], roles: "all",
     keywords: "emailed sent confirmation badge",
@@ -273,11 +490,12 @@ var HELP_ARTICLES = [
 
   // ---- Admin / owner only ----
   { id: "admin-invite", title: "How do I invite a new user?", screens: ["home"], roles: "admin",
-    keywords: "invite user add account create",
+    keywords: "invite user add account create resend token expired disable",
     body: [
       "Tap 🔐 Account in the header, then \"Manage Users.\"",
       "Enter their email, an optional display name, and pick a role, then tap \"Invite User.\"",
-      "They get an email with a link to set their own password -- nobody, including you, ever sees or types their password."
+      "They get a \"Set Your Password and Sign In\" email -- the link works for 7 days and exactly once. Nobody, including you, ever sees or types their password.",
+      "Link expired or lost? Tap \"Resend invite\" on their row -- a fresh link arrives in seconds and the old one stops working. Rows also have Disable / Re-enable, and the owner can Delete an account."
     ] },
   { id: "admin-role", title: "How do I change someone's role?", screens: ["home"], roles: "admin",
     keywords: "change role reassign promote demote",
@@ -292,16 +510,31 @@ var HELP_ARTICLES = [
       "Archive is reversible (Unarchive puts it back and hides it from the normal list in the meantime). Delete removes the building and its report/history records, but leaves the underlying work orders themselves alone."
     ] },
   { id: "admin-basemap", title: "How do I set a custom roof base map (drone photo or sketch)?", screens: ["history"], roles: "admin",
-    keywords: "base map drone orthomosaic sketch roof plan custom",
+    keywords: "base map drone orthomosaic sketch roof plan custom upload",
     body: [
-      "Open the building in Building History -- the \"Roof Base Map (admin)\" card lets you upload a roof plan, sketch, or drone orthomosaic instead of the default satellite view for pin placement.",
-      "A drone orthomosaic needs the companion script (tools/geotiff_to_webmap.py) run first to get exact corner coordinates.",
-      "This is separate from RoofMapper's own drone-image tracing (📷 Trace on My Own Drone Image) -- that's for tracing an outline, any tech can do it, and RoofMapper's live map always shows satellite/street imagery regardless of what base map is set here."
+      "Open the building in Building History -- the \"Roof Base Map (admin)\" card lets you upload a Roof Plan, Sketch, or Drone Orthomosaic to replace the default satellite view for pin placement, everywhere the building's map appears.",
+      "Roof Plan and Sketch images are ready to use as-is. A Drone Orthomosaic needs one extra step first: run tools/geotiff_to_webmap.py on the flight's GeoTIFF to get the web-sized JPG and the North/South/East/West numbers -- the full walkthrough is under RoofMapper: \"How do I upload or update a drone ortho after a flight?\"",
+      "This is separate from RoofMapper's \"📷 Trace on My Own Drone Image\" -- that's for tracing an outline and any tech can do it; this card sets the building's permanent background."
     ] },
   { id: "admin-logs", title: "How do I check the audit log or feedback backlog?", screens: ["reports"], roles: "admin",
-    keywords: "audit log feedback backlog admin review",
+    keywords: "audit log feedback backlog admin review append only before after",
     body: [
-      "Open 📋 Reports -- two admin-only cards sit at the top: Feedback Backlog (every 💬 submission, filterable by type) and Audit Log (every privileged/destructive action, who did it, and when)."
+      "Open 📋 Reports -- two admin-only cards sit at the top: 🗣️ Feedback Backlog (every 💬 submission, filterable by type; each one is also emailed to Mark) and the 🔒 Audit Log.",
+      "The Audit Log records every privileged or destructive action -- building deletes and archives, base-map changes, roof moves, role-permission changes -- with who did it, when, and before/after snapshots.",
+      "It's append-only: nothing in it can be edited or deleted, not even by the owner."
+    ] },
+  { id: "admin-roles-editor", title: "How do I change what each role can do?", screens: ["home"], roles: "admin",
+    keywords: "roles permissions grid matrix editor owner scope",
+    body: [
+      "On the 🔧 Admin tab, the \"🔑 Roles & Permissions\" card (owner only) is a grid: permissions down the side, roles across the top. Tick or untick a cell; some rows use a scope instead (Off / Own records / Project / On).",
+      "The Owner column is locked (🔒) so you can never lock yourself out. Tap \"Save Changes\" -- changes apply immediately, and every save is recorded in the Audit Log.",
+      "Changing the ADMIN role, or your own role's security-sensitive permissions, asks for an extra confirm first -- read it before tapping through."
+    ] },
+  { id: "admin-tools", title: "What are the maintenance tools on the Admin tab?", screens: ["home"], roles: "admin",
+    keywords: "admin tools photo size migrate sync foundation thumbnails backfill inspection review queue",
+    body: [
+      "The 🔧 Admin tab's orange card holds the one-tap maintenance jobs: photo size (applies to every user), ☁️ Scan & Migrate Photos, 🔄 Sync Foundation Jobs Now (refreshes the 🔍 Select Job list), 🖼️ Scan & Backfill Thumbnails, and 🏢 Backfill Photos to CompanyCam.",
+      "Inspection Reports (from the CCM Inspect email): \"🔄 Check for New Inspection Reports\" runs on demand -- it also auto-checks every 30 minutes -- and anything it can't match to a building lands in the \"📋 Review Queue\" to be matched by hand."
     ] }
 ];
 
@@ -406,8 +639,8 @@ window.helpOnSearch = helpOnSearch;
 // surfaces a few likely-relevant articles first based on currentAuthClaims.role,
 // a real signal even though the rest of the UI can't act on it yet.
 var HELP_ROLE_QUICKLINKS = {
-  field_tech: ["gs-new-wo", "ph-add-finding", "rm-reopen-roof", "bh-near-me"],
-  superintendent: ["rm-reopen-roof", "rm-multi-roof", "bh-log-activity", "wo-inspection"],
+  field_tech: ["gs-new-wo", "dpr-start", "ph-add-finding", "bh-near-me"],
+  superintendent: ["dpr-start", "dpr-lift-checklist", "rm-reopen-roof", "bh-log-activity"],
   ops_manager: ["bh-recover-unlogged", "admin-delete-archive", "send-verify"],
   project_manager: ["wo-co", "wo-co-signature", "admin-basemap"],
   estimator: ["wo-co", "wo-inspection", "rm-export"],
@@ -439,6 +672,7 @@ function renderHelpQuickLinks() {
 var HELP_SECTION_ORDER = [
   { key: "gs", label: "Getting Started" },
   { key: "wo", label: "Work Orders" },
+  { key: "dpr", label: "Daily Progress Report" },
   { key: "ph", label: "Photos" },
   { key: "rm", label: "RoofMapper" },
   { key: "bh", label: "Building History" },
@@ -573,6 +807,7 @@ var HELP_WALKTHROUGH_STEPS = [
   { title: "Welcome to RoofOps", body: "A few quick things before your first job. Tap Next — this takes about 20 seconds, and you can skip it any time." },
   { title: "Start a work order", body: "From Home, tap the tile for the type of work you're doing (Leak Work Order, Change Order, Inspection, Work Order, Warranty). ➕ New in the header always brings you back here." },
   { title: "Reopen a saved job", body: "Tap 💾 Saved in the header any time to find and reopen a work order you already started — nothing is ever locked once saved." },
+  { title: "Log your day", body: "📅 Daily Report is the daily progress report — one per job per day, shared by every crew on it. Job info fills itself from 🔍 Select Job; crew hours can pull from the time clock." },
   { title: "Map a roof", body: "The 🗺️ RoofMapper tab traces a roof outline and lets you drop pins, add features, and mark it up. To reopen a roof you already traced, go through 🏢 Building History instead." },
   { title: "Get help any time", body: "Tap the ❓ button (bottom-right, every screen) for searchable how-tos, or 💬 to send feedback straight to Mark. You won't see this walkthrough again — find it later from ❓ Help." }
 ];

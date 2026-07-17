@@ -8128,19 +8128,40 @@ work, which needs `ANTHROPIC_API_KEY`).
   Loaded from `index.html` but has **no callers yet, on purpose** — the flows that
   own the confirm/correct UI (work orders, photos, inspections, DPR) belong to
   other sessions tonight; they call in when they wire up.
-- **Controlled vocabulary** — `AI_ISSUE_LABELS` (26 starter keys: ponding_water,
+- **Controlled vocabulary** — `AI_ISSUE_LABELS` (28 starter keys: ponding_water,
   flashing_failed, open_seam, blister, fastener_backout, puncture, drain_clogged,
-  scupper_blocked, pitch_pan_deteriorated, membrane_split, coping_failure,
-  penetration_seal_failed, expansion_joint_failed, granule_loss, alligatoring,
-  ridging_wrinkling, hail_damage, wind_uplift, debris_accumulation,
+  scupper_blocked, pitch_pan_deteriorated, sealant_deteriorated, membrane_split,
+  coping_failure, penetration_seal_failed, expansion_joint_failed, granule_loss,
+  alligatoring, ridging_wrinkling, hail_damage, wind_uplift, debris_accumulation,
   vegetation_growth, skylight_failure, equipment_related, wall_intrusion,
-  insulation_saturated, no_defect_found, other). Free-text labels are rejected —
-  useless for training. `no_defect_found` is deliberate (negative examples matter);
-  `other` requires `labelOther` text so the escape hatch still yields a string
-  worth promoting into a real key later. **Admin seam**: extra labels come from
-  `app_settings/ai_label_vocab` (`{ extraLabels: [{key,label}] }`) — a data change,
-  never a code deploy; keys are permanent once data exists against them, display
-  labels rename freely.
+  insulation_saturated, no_defect_found, indeterminate, other). Free-text labels
+  are rejected — useless for training. `no_defect_found` and `indeterminate` are
+  deliberately DISTINCT (vocab-convergence follow-up, 2026-07-17): "looked,
+  confirmed nothing wrong" and "couldn't tell from this photo" are different
+  training signals — collapsing them would teach a model that unreadable photos
+  are clean roofs. `other` requires `labelOther` text so the escape hatch still
+  yields a string worth promoting into a real key later. **Admin seam**: extra
+  labels come from `app_settings/ai_label_vocab` (`{ extraLabels: [{key,label}] }`)
+  — a data change, never a code deploy; keys are permanent once data exists
+  against them, display labels rename freely.
+- **Vocabulary parity with the issue-ID model** (convergence follow-up to the
+  #122/#123 cross-coordination): `netlify/functions/lib/aiProvider.js`'s
+  `ISSUE_VOCABULARY` (what the leak-photo issue-ID model may answer with) now
+  uses the SAME canonical keys and must stay a SUBSET of `AI_ISSUE_LABELS` — a
+  model suggestion the tech confirms is always directly storable as a training
+  label, no mapping table anywhere. The original `clogged_drain_or_scupper` key
+  was split into `drain_clogged`/`scupper_blocked` (richer training signal);
+  `membrane_puncture`→`puncture`, `flashing_failure`→`flashing_failed`,
+  `blistering`→`blister`, `pitch_pan_failure`→`pitch_pan_deteriorated`,
+  `coping_or_edge_metal_failure`→`coping_failure`,
+  `penetration_seal_failure`→`penetration_seal_failed`,
+  `deteriorated_sealant`→`sealant_deteriorated`, `wind_damage`→`wind_uplift`,
+  `no_visible_issue`→`no_defect_found`. Safe to rename because NO issue-ID
+  key had shipped to any UI and no data exists against the old spellings —
+  this was exactly the "converge before either UI freezes" window. The two
+  lists live on opposite sides of the browser/CommonJS split, so they're
+  hand-synced (`getBuildingRoofsServer()` discipline) with a parity test in
+  `tests/aiLabels.test.js` as the tripwire.
 - **Signed-URL discipline** — a record stores photo REFERENCES only
   (workOrderId+photoIndex for sealed-bucket/embedded photos, CompanyCam ids for CC
   photos), never a URL, never image bytes. `aiLabelBuildDoc()` rebuilds the ref
@@ -8300,3 +8321,94 @@ check/Review-Queue. Contextual admin actions stay where they belong (per-order
 Delete in Saved, "remove pushed photo" in the gallery, asset Delete in its
 modal) — this consolidates the app-wide tools, not the in-context ones. Each
 handler still enforces its own server-side permission (defense in depth).
+
+## AI-drafted report summary (Phase 1 wired — live on DEV only; prod stays stub)
+
+Mark's current flow for a report's Summary: export the PDF, paste it into
+ChatGPT, paste the result back into the Summary box. This feature moves that
+into the app across all THREE summary-bearing report types — **Inspection,
+Leak, and Work Order (stored type "Repair")** — which already share the ONE
+`#summary` textarea (index.html's Summary card, never hidden by
+`onWoTypeChange()`), the one `summary` field on the workorders doc, and the
+one PDF Summary block (js/export.js). A **"✨ Draft Summary"** button in that
+card (shown for those three types; Change Order/Warranty excluded) sends the
+report's OWN structured data to the ONE shared function
+`netlify/functions/generate-summary.js`, which returns a draft into the
+**editable** textarea. Nothing is saved or sent by the draft step; replacing
+non-empty Summary text asks first. Drafts fire from the button ONLY — on
+demand is the cost control; drafting never runs on save/open.
+
+What travels: `buildSummaryDraftPayload()` (js/workorders.js) projects
+summary-relevant text — job info, checklist label+rating+notes (N/A dropped),
+findings, repair scope (`repairDescription` + `repairItems`), work performed,
+and each photo's **caption + Storage ref**. The ref is how the Phase-1 vision
+model will actually SEE the photo: the server turns refs into **short-lived
+V4 signed READ urls** (`collectSignedPhotoUrls()`, `SIGNED_URL_TTL_MS`) —
+signed urls only, never public, minted only when an LLM call consumes them
+(the stub never signs). Never photo BYTES, pins, GPS, per-row ids, or
+signatures (tests assert the boundary); the work-order id itself rides as of
+Phase 1.5 — it is the server's handle for reading INLINE photo bytes out of
+Firestore itself (see below). The server re-clamps everything
+(`sanitizeReport()`), including a hard `workorders/`-prefix + no-traversal
+check on refs.
+
+**Phase 1 (WIRED 2026-07-16)**: the handler routes through the shared
+provider seam (`lib/aiProvider.js`, PR #122) — `resolveProvider(process.env)`
+decides stub vs live per deploy context. **Mark provisioned
+`ANTHROPIC_API_KEY` on the DEV (Branch deploys) context only; the Production
+context deliberately has no key**, so prod keeps answering with the
+deterministic template until a promotion Mark chooses arms it (mint a
+separate `roofops-prod` key then — never reuse the dev key). On the live
+path the photos attach as image blocks via the signed urls (aiProvider caps
+8/call) and the feature-tuned system prompt rides as `opts.system`: length
+tuned by the single `SUMMARY_TARGET_WORDS` constant (Mark's verdict on his
+ChatGPT Flat Branch Pub summary: right voice, "a little long" — the exemplar
+runs ~340 words, so the target is 280), and his exact Flat Branch text
+(inspection job #17455) now sits in `STYLE_EXEMPLAR` verbatim — the prompt
+says "this voice and structure, tighter", including the plain-text
+"Recommended Repairs" section pattern. The deterministic template remains as both the
+no-key answer AND the outage fallback (`fallback: true` in the response) — a
+roof-side flow never dead-ends on an AI failure. Model choice is env config
+(`ANTHROPIC_MODEL`), not code. This is also the codebase's first concrete
+step toward the "AI auto-detection of rooftop features" ROADMAP item.
+
+**Phase 1.5 (2026-07-16): INLINE photos see the model too.** The signed-URL
+path alone left vision untestable ANYWHERE: dev (the only context with a
+key) has **no Storage bucket** (Spark plan — see "Dev Storage requires
+Blaze"), so every dev photo — app-saved or seeded by
+`tools/seed_dev_from_prod.js` — is a base64 data-URL on the Firestore photo
+doc with **no storageRef to sign**, while prod has Storage but deliberately
+no key. Now: the payload carries the **work-order id** (an id, never bytes —
+`workOrderId` in `buildSummaryDraftPayload()`), and on the live path only
+the server reads that order's photo docs ITSELF
+(`collectInlinePhotoImages()`, field-masked to `img` + `storageRef`) and
+attaches base64 image blocks (`{mediaType, data}` → aiProvider's
+`image_b64` part kind; Anthropic base64 source / OpenAI data-URL). Gates:
+id-shaped `workOrderId` or nothing (it becomes a doc path);
+`cleanInlineImage()` in aiProvider allowlists media types
+(jpeg/png/webp/gif — no svg), base64 charset only, ~5MB cap; docs that still
+carry a signable storageRef are skipped (their signed URL already covers
+them — prod's cooling-off backups never ride twice); vision budget is the
+SHARED `MAX_VISION_PHOTOS` (8) — signed urls first, inline fills the rest;
+the stub path reads no bytes at all. Exposure class unchanged:
+`doc.generate` already lets the caller export the full PDF carrying every
+photo; the bytes go only into the model call, never the response.
+
+Auth: `requirePermission(event, "doc.generate")` — the semantically matching,
+boolean-only key every seed role holds (field-first: a tech on the roof can
+draft their own summary). The function writes nothing server-side; the draft
+only enters the record via the tech's own `workorder.edit`-gated save.
+
+Tests: `tests/generateSummaryDraft.test.js` — payload projection/leak guards,
+storage-ref validation (traversal/foreign-tree refs nulled), signed-url
+helper contract (v4/read-only/short expiry, bad refs skipped not fatal),
+prompt contract (grounded, draft-only, length from the constant),
+401/403/405/400 auth surface, composer determinism, plus the wiring: stub
+path never mints a signed URL AND never reads photo bytes, live path signs +
+sends the image block and the tuned system prompt (asserted on the mocked
+wire), inline photos ride as base64 blocks in photo-index order with
+`photosSeen` counting both kinds, provider outage falls back to the template
+with `fallback: true` and still 200. `tests/aiService.test.js` adds the
+`cleanInlineImage` gate contract, both providers' base64 wire shapes, and
+the shared-budget cap. A `global.fetch` trap still fails the suite if the
+NO-KEY path ever reaches the network.

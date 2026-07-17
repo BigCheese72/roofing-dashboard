@@ -24,6 +24,18 @@ function materialRepairRefLabel(repairId){
   }
   return "";
 }
+/* "Finding #N" as the report's findings section numbers it
+   (filledFindings() order) for a repair paired to that finding
+   (before/after — see the pairing block in js/workorders.js). "" when the
+   repair isn't linked, or the linked finding no longer prints. */
+function repairResolvesLabel(findingId){
+  if (!findingId) return "";
+  var ff = filledFindings();
+  for (var i = 0; i < ff.length; i++){
+    if (ff[i].id === findingId) return "Finding #" + (i + 1);
+  }
+  return "";
+}
 function filledPhotos(){ return photos.filter(function(p){ return p.img || (p.caption||"").trim(); }); }
 
 /* Routes by work order type — Change Order gets its own distinct
@@ -100,7 +112,9 @@ function buildLeakReportText(o){
     L.push("");
     L.push("WORK PERFORMED");
     fr.forEach(function(r,i){
-      L.push((i+1) + ". " + r.repair + (r.location ? " — " + r.location : ""));
+      var resolves = repairResolvesLabel(r.finding_id);
+      L.push((i+1) + ". " + r.repair + (r.location ? " — " + r.location : "") +
+        (resolves ? " [resolves " + resolves + " — before/after]" : ""));
     });
     L.push("");
   }
@@ -1062,9 +1076,11 @@ function renderLeakReportDoc(o){
   var fr = filledRepairs();
   if (fr.length){
     h += "<h3 class='cond'>Work Performed</h3><table><thead><tr>" +
-      "<th style='width:36px'>No.</th><th>Repair Performed</th><th>Location / Detail</th></tr></thead><tbody>" +
+      "<th style='width:36px'>No.</th><th>Repair Performed</th><th>Location / Detail</th>" +
+      "<th style='width:110px'>Resolves</th></tr></thead><tbody>" +
       fr.map(function(r,i){
-        return "<tr><td>" + (i+1) + "</td><td>" + esc(r.repair) + "</td><td>" + esc(r.location) + "</td></tr>";
+        return "<tr><td>" + (i+1) + "</td><td>" + esc(r.repair) + "</td><td>" + esc(r.location) + "</td><td>" +
+          (esc(repairResolvesLabel(r.finding_id)) || "—") + "</td></tr>";
       }).join("") + "</tbody></table>";
   }
 
@@ -1644,8 +1660,8 @@ async function generateLeakReportPdf(o, roofPlanData){
     heading("Work Performed");
     doc.autoTable({
       startY: y,
-      head: [["No.", "Repair Performed", "Location / Detail"]],
-      body: fr.map(function(r, i){ return [i + 1, r.repair, r.location]; }),
+      head: [["No.", "Repair Performed", "Location / Detail", "Resolves"]],
+      body: fr.map(function(r, i){ return [i + 1, r.repair, r.location, repairResolvesLabel(r.finding_id) || "—"]; }),
       theme: "grid",
       headStyles: { fillColor: [38, 50, 56], fontSize: 8 },
       styles: { fontSize: 9, cellPadding: 4, textColor: [30, 39, 46], lineColor: [154, 165, 172], lineWidth: 0.5 },

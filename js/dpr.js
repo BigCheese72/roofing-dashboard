@@ -44,10 +44,15 @@ var dprState = {
   roofs: [],             /* getBuildingRoofs() result for the selected building */
   continuedExisting: false /* true once we've loaded a same-day report to add to */
 };
-var dprCrew = [];        /* roster rows: [{ name }]  headcount derives from this */
+var dprCrew = [];        /* roster rows: [{ name, hours, hoursSource }]  headcount + daily total derive from this.
+                            hours is a form-style string ("8", "7.5", "" = not entered);
+                            hoursSource is "foundation" when auto-filled from the time
+                            clock (see dprAutofillCrewHours) or "" for manual entry —
+                            a manual edit always wins and flips it back to "". */
 var dprQuantities = [];  /* material-quantity rows: [{ item, qty, unit }] (Phase-2 gated section) */
 var dprPhotos = [];      /* [{ caption, img, thumb, w, h, gps, storageRef, localId }] */
 var dprHeadcountAutoVal = "";  /* last headcount we auto-filled — lets a manual edit stick (same trick as CO job-no autofill) */
+var dprHoursAutoVal = "";      /* last "Hours Worked" total we auto-filled from crew hours — same manual-edit-wins trick */
 var dprBldCache = null;  /* buildings list for the inline picker (lazy) */
 var dprLoadSeq = 0;      /* guards against a slow same-day fetch clobbering a newer selection */
 /* The section a foreman traces for the day's worked area lives on dprState.section:
@@ -178,6 +183,7 @@ var dprDataListsLoaded = false;
 async function dprPopulateDataLists(force){
   dprPopulateForemen();     /* immediate/offline: roster + device history */
   dprPopulateCrewRoster();  /* immediate/offline: full crew roster */
+  dprSetDatalist("dl-dprRentedType", DPR_RENTED_TYPES); /* rented-equipment type pick-list */
   if ((dprDataListsLoaded && !force) || !fdb) return;
   try{
     if (!dprBldCache){
@@ -254,7 +260,25 @@ async function dprLoadFoundationJobs(){
     var qs = await fdb.collection("foundation_jobs").limit(1000).get();
     dprFdnJobsCache = [];
     qs.forEach(function(d){ dprFdnJobsCache.push(Object.assign({ id: d.id }, d.data())); });
+    dprFdnJobsCache.sort(dprFdnJobCompare);
   }catch(e){ dprFdnJobsCache = dprFdnJobsCache || []; }
+}
+/* NEWEST job first (Mark: the picker listed old→new; the recent jobs are the
+   ones a foreman actually wants). Primary key: job_start_date DESC — the
+   cache carries it as an ISO string, so a plain string compare orders it;
+   jobs with no start date sink to the bottom. Tie/fallback: job NUMBER
+   descending, numeric-aware ("17476" above "9999") — the same proxy the WO
+   picker's fdnLoadJobs() (js/foundation.js) already uses. */
+function dprFdnJobCompare(a, b){
+  var da = String(a.job_start_date || ""), db_ = String(b.job_start_date || "");
+  if (da !== db_){
+    if (!da) return 1;         /* undated sinks */
+    if (!db_) return -1;
+    return da < db_ ? 1 : -1;  /* ISO strings — newest first */
+  }
+  var na = Number(a.job_no), nb = Number(b.job_no);
+  if (isFinite(na) && isFinite(nb) && na !== nb) return nb - na;
+  return String(b.job_no || "").localeCompare(String(a.job_no || ""));
 }
 /* Sets Job No. from a building's Foundation link. Returns true if the building
    HAS a Foundation job (so the caller can skip the history-based fallback),
@@ -297,6 +321,9 @@ function dprPickFoundationJob(jobNo){
   if (host) host.innerHTML = "";
   dprHideJobSelect();
   dprScheduleSameDayLoad();
+  dprScheduleCrewHoursAutofill();
+  dprRefreshLaborCard();
+  dprPopulateCrewFromPunches(false);  /* empty roster fills itself from the clock */
   toast("Linked Foundation job " + (j.job_no || "") + " — fill in today's progress");
 }
 
@@ -357,6 +384,8 @@ function dprEnsureListeners(){
   });
   var dateEl = document.getElementById("dpr-date");
   if (dateEl) dateEl.addEventListener("change", dprScheduleSameDayLoad);
+  if (dateEl) dateEl.addEventListener("change", dprScheduleCrewHoursAutofill); /* punches are per-day */
+  if (dateEl) dateEl.addEventListener("change", function(){ dprPopulateCrewFromPunches(false); });
   dprListenersInstalled = true;
 }
 
@@ -476,6 +505,9 @@ function dprPickBuilding(buildingId){
      building has no Foundation link. */
   if (!dprApplyFoundationJobNo(b)) dprAutofillJobNo(buildingId);
   dprScheduleSameDayLoad();
+  dprScheduleCrewHoursAutofill();
+  dprRefreshLaborCard();
+  dprPopulateCrewFromPunches(false);  /* empty roster fills itself from the clock */
   toast("Loaded “" + b.name + "” — review the fields, then fill in today's progress");
 }
 function dprRenderRoofPicker(){
@@ -547,10 +579,10 @@ async function dprLoadForBuildingDate(){
   }catch(e){ if (notice) notice.style.display = "none"; }
 }
 
-/* ================= crew roster + headcount ================= */
+/* ================= crew roster + per-person hours + headcount ================= */
 function dprAddCrewRow(name){
   if (dprIsLocked()){ toast("This report is signed and locked."); return; }
-  dprCrew.push({ name: name || "" });
+  dprCrew.push({ name: name || "", hours: "", hoursSource: "" });
   dprRenderCrew();
   dprSyncHeadcount();
 }
@@ -559,6 +591,7 @@ function dprRemoveCrewRow(idx){
   dprCrew.splice(idx, 1);
   dprRenderCrew();
   dprSyncHeadcount();
+  dprSyncHours();
 }
 function dprRenderCrew(){
   var host = document.getElementById("dpr-crew-list");
@@ -567,19 +600,64 @@ function dprRenderCrew(){
     host.innerHTML = '<p class="hint">No crew added yet. Add each person who worked this job today.</p>';
     return;
   }
+  var locked = dprIsLocked();
   host.innerHTML = dprCrew.map(function(c, i){
+    /* The ⏱ badge marks hours auto-filled from the time clock (Foundation) —
+       it disappears the moment the foreman edits the value (manual wins). */
+    var fdnBadge = '<span class="hint" data-dprcrewsrc="' + i + '" ' +
+      'style="margin:0;align-self:center' + (c.hoursSource === "foundation" ? "" : ";display:none") + '" ' +
+      'title="Auto-filled from the time clock — edit to override">⏱</span>';
     return '<div class="btnrow" style="margin:0 0 6px;gap:6px">' +
       '<input type="text" placeholder="Crew member name" data-dprcrew="' + i + '" value="' + esc(c.name) + '" ' +
-        'list="dl-dprCrew" style="flex:1;min-width:140px">' +
+        'list="dl-dprCrew" style="flex:1;min-width:140px"' + (locked ? " readonly" : "") + '>' +
+      '<input type="number" placeholder="Hrs" min="0" step="0.25" data-dprcrewhrs="' + i + '" ' +
+        'value="' + esc(c.hours == null ? "" : String(c.hours)) + '" ' +
+        'title="Hours this person worked today" style="width:76px"' + (locked ? " readonly" : "") + '>' +
+      fdnBadge +
       '<button class="btn danger" onclick="dprRemoveCrewRow(' + i + ')">✕</button>' +
       '</div>';
-  }).join("");
+  }).join("") + '<div class="hint" id="dpr-crew-total" style="margin:2px 0 0"></div>';
   host.querySelectorAll("[data-dprcrew]").forEach(function(el){
     el.addEventListener("input", function(){ dprCrew[+el.dataset.dprcrew].name = el.value; dprSyncHeadcount(); });
+    /* Name committed (blur/datalist pick) — a punch may now match this person. */
+    el.addEventListener("change", function(){ dprScheduleCrewHoursAutofill(); });
   });
+  host.querySelectorAll("[data-dprcrewhrs]").forEach(function(el){
+    el.addEventListener("input", function(){
+      var i = +el.getAttribute("data-dprcrewhrs");
+      dprCrew[i].hours = el.value;
+      dprCrew[i].hoursSource = "";   /* typed by hand — manual always wins */
+      var badge = host.querySelector('[data-dprcrewsrc="' + i + '"]');
+      if (badge) badge.style.display = "none";
+      dprRenderCrewTotal();
+      dprSyncHours();
+    });
+  });
+  dprRenderCrewTotal();
 }
 function dprCrewCount(){
   return dprCrew.filter(function(c){ return (c.name || "").trim(); }).length;
+}
+/* Sum of the per-person hours across named crew rows, rounded to 2dp (defensive
+   against "" / garbage — same discipline as sumHours in the Foundation lib). */
+function dprCrewHoursTotal(){
+  var total = dprCrew.reduce(function(acc, c){
+    if (!(c.name || "").trim()) return acc;
+    var h = Number(c.hours);
+    return acc + (isFinite(h) && h > 0 ? h : 0);
+  }, 0);
+  return Math.round(total * 100) / 100;
+}
+/* Live total line under the crew rows — updated in place on every keystroke so
+   the foreman sees the day's total build as they enter hours. */
+function dprRenderCrewTotal(){
+  var el = document.getElementById("dpr-crew-total");
+  if (!el) return;
+  var total = dprCrewHoursTotal();
+  var n = dprCrewCount();
+  el.innerHTML = total > 0
+    ? 'Total hours today: <b>' + esc(String(total)) + '</b> across ' + esc(String(n)) + (n === 1 ? ' person' : ' people')
+    : 'Add each person’s hours — the day’s total sums here.';
 }
 function dprSyncHeadcount(){
   /* Auto-fill headcount from the roster, but never stomp a value the user
@@ -592,6 +670,280 @@ function dprSyncHeadcount(){
     var n = String(dprCrewCount());
     el.value = n;
     dprHeadcountAutoVal = n;
+  }
+}
+function dprSyncHours(){
+  /* Auto-fill the day's "Hours Worked" total from the per-person crew hours —
+     same never-stomp trick as headcount above. Only kicks in once there ARE
+     crew hours (total > 0), so a foreman who still types one total by hand
+     keeps that workflow untouched. */
+  var el = document.getElementById("dpr-hours");
+  if (!el) return;
+  var total = dprCrewHoursTotal();
+  if (total <= 0){
+    /* The summed hours are gone (rows removed / hours cleared) — clear the
+       total too, but only if it's still exactly what we auto-filled. */
+    if (el.value.trim() !== "" && el.value.trim() === dprHoursAutoVal){
+      el.value = "";
+      dprHoursAutoVal = "";
+    }
+    return;
+  }
+  var current = el.value.trim();
+  if (current === "" || current === dprHoursAutoVal){
+    var n = String(total);
+    el.value = n;
+    dprHoursAutoVal = n;
+  }
+}
+
+/* ================= Foundation time-clock auto-fill (per-person daily hours) ====
+   Employees punch in/out daily and those punches land in Foundation before
+   payroll posts them to jobs. Where a punch total exists for a crew member on
+   this job + date, their hours AUTO-FILL (marked with the ⏱ badge); a manual
+   edit always wins and is never overwritten.
+
+   SERVER SEAM: netlify/functions/foundation.js `action=day_hours&job_no&date` —
+   per-employee summed hours for one job + one date, name included, gated
+   server-side on foundation.read exactly like the WO labor card (attempt-fetch,
+   fail closed): a 401/403 stops asking for the session, any other error skips
+   that job+date pair, and manual entry is untouched either way. Until the
+   server action ships, the fetch 400s and this whole path is a silent no-op. */
+var dprDayHoursCache = {};      /* "jobNo|date" -> { byName: {nameKey -> hours} } | null (fetch failed, don't retry) */
+var dprDayHoursDenied = false;  /* server said not authorized — stop asking this session */
+var dprCrewHoursTimer = null;
+function dprScheduleCrewHoursAutofill(){
+  if (dprCrewHoursTimer) clearTimeout(dprCrewHoursTimer);
+  dprCrewHoursTimer = setTimeout(function(){ dprAutofillCrewHours(); }, 250);
+}
+/* Case/spacing-insensitive name key; folds "Last, First" to "first last" so a
+   Foundation-style name still matches the roster's "First Last". */
+function dprNameKey(s){
+  var t = String(s == null ? "" : s).trim();
+  var parts = t.indexOf(",") > -1 ? t.split(",") : null;
+  if (parts && parts.length === 2) t = parts[1].trim() + " " + parts[0].trim();
+  return t.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+async function dprFetchDayHours(jobNo, date){
+  var r = await fetch("/.netlify/functions/foundation?action=day_hours&job_no=" +
+    encodeURIComponent(jobNo) + "&date=" + encodeURIComponent(date), { headers: await authHeaders() });
+  var out = null;
+  try{ out = await r.json(); }catch(e){}
+  if (!r.ok){ var err = new Error((out && out.error) || ("server error " + r.status)); err.status = r.status; throw err; }
+  return out;
+}
+/* Folds the server's rows into {nameKey -> hours}. Two rows for the same person
+   (e.g. two cost codes that day) accumulate. Pure — unit-tested directly. */
+function dprDayHoursByName(rows){
+  var byName = {};
+  (rows || []).forEach(function(rw){
+    var k = dprNameKey(rw && rw.name);
+    if (!k) return;
+    var h = Number(rw.hours);
+    if (!isFinite(h) || h <= 0) return;
+    byName[k] = (byName[k] || 0) + h;
+  });
+  Object.keys(byName).forEach(function(k){ byName[k] = Math.round(byName[k] * 100) / 100; });
+  return byName;
+}
+/* Decides one crew row's new hours given the punch total for their name.
+   Returns the string to set, or null to leave the row alone. Manual wins:
+   only an empty value or a previous auto-fill is ever replaced. Pure. */
+function dprCrewHoursFillValue(row, punchHours){
+  if (punchHours == null) return null;
+  var hs = String(punchHours);
+  var cur = (row.hours == null ? "" : String(row.hours)).trim();
+  if (cur !== "" && row.hoursSource !== "foundation") return null; /* typed by hand — never touch */
+  if (cur === hs && row.hoursSource === "foundation") return null; /* already current */
+  return hs;
+}
+async function dprAutofillCrewHours(){
+  if (dprIsLocked() || dprDayHoursDenied) return;
+  if (typeof fetch !== "function" || typeof authHeaders !== "function") return;
+  var jobNo = String(dprState.foundationJobNo || val("dpr-jobNo") || "").trim();
+  var date = (val("dpr-date") || "").trim();
+  if (!jobNo || !date) return;
+  if (!dprCrew.some(function(c){ return (c.name || "").trim(); })) return;
+  var key = jobNo + "|" + date;
+  var entry = dprDayHoursCache[key];
+  if (entry === undefined){
+    try{
+      var data = await dprFetchDayHours(jobNo, date);
+      entry = dprDayHoursCache[key] = { byName: dprDayHoursByName(data && data.rows) };
+    }catch(e){
+      if (e && (e.status === 401 || e.status === 403)) dprDayHoursDenied = true;
+      else dprDayHoursCache[key] = null; /* transient/unknown — don't hammer this pair */
+      return;
+    }
+    /* The job/date may have moved on while the fetch was in flight — the
+       result is cached for later, but don't apply it to the wrong report. */
+    var nowJob = String(dprState.foundationJobNo || val("dpr-jobNo") || "").trim();
+    if (nowJob + "|" + (val("dpr-date") || "").trim() !== key) return;
+  }
+  if (!entry) return;
+  var changed = false;
+  dprCrew.forEach(function(c){
+    if (!(c.name || "").trim()) return;
+    var fill = dprCrewHoursFillValue(c, entry.byName[dprNameKey(c.name)]);
+    if (fill == null) return;
+    c.hours = fill;
+    c.hoursSource = "foundation";
+    changed = true;
+  });
+  if (changed) dprApplyCrewHoursToDom();
+}
+/* Pushes auto-filled hours into the already-rendered rows IN PLACE (value +
+   ⏱ badge) rather than re-rendering — a full innerHTML swap would steal focus
+   from a foreman mid-typing in another row. */
+function dprApplyCrewHoursToDom(){
+  var host = document.getElementById("dpr-crew-list");
+  if (host){
+    dprCrew.forEach(function(c, i){
+      var inp = host.querySelector('[data-dprcrewhrs="' + i + '"]');
+      if (inp && inp.value !== String(c.hours || "")) inp.value = String(c.hours || "");
+      var badge = host.querySelector('[data-dprcrewsrc="' + i + '"]');
+      if (badge) badge.style.display = (c.hoursSource === "foundation") ? "" : "none";
+    });
+  }
+  dprRenderCrewTotal();
+  dprSyncHours();
+}
+
+/* ================= crew + foreman auto-populate from the time clock =========
+   Mark: "can't the DPR auto fill the foreman and the crew foundation punches"
+   — it can. WHO punched on this job+date comes from `action=day_crew`
+   (names/ids only, NEVER hours — gated on dpr.create so foremen get it, not
+   just admins; hours stay behind foundation.read via the existing day_hours
+   path, which runs right after and fills them in for authorized users).
+
+   AUTO mode (job pick / report load / date change) only populates an EMPTY
+   roster — it never surprise-adds rows to a list the foreman is editing, and
+   never re-adds someone they deliberately removed. The "⏱ From Time Clock"
+   button is the deliberate path: it merges in whoever's missing (nameKey
+   match, so "Garcia, Jose" and "Jose Garcia" are one person) and reports
+   what it did. Same fail-closed manners as the hours auto-fill: 401/403
+   latches quiet for the session, errors leave manual entry untouched, and a
+   locked report is never touched. */
+var dprDayCrewCache = {};      /* "jobNo|date" -> [names] | null (fetch failed — don't retry) */
+var dprDayCrewDenied = false;  /* server said not authorized — stop asking this session */
+async function dprFetchDayCrew(jobNo, date){
+  var r = await fetch("/.netlify/functions/foundation?action=day_crew&job_no=" +
+    encodeURIComponent(jobNo) + "&date=" + encodeURIComponent(date), { headers: await authHeaders() });
+  var out = null;
+  try{ out = await r.json(); }catch(e){}
+  if (!r.ok){ var err = new Error((out && out.error) || ("server error " + r.status)); err.status = r.status; throw err; }
+  return out;
+}
+async function dprPopulateCrewFromPunches(manual){
+  if (dprIsLocked()){ if (manual) toast("This report is signed and locked."); return; }
+  if (dprDayCrewDenied) return;
+  if (typeof fetch !== "function" || typeof authHeaders !== "function") return;
+  var jobNo = String(dprState.foundationJobNo || val("dpr-jobNo") || "").trim();
+  var date = (val("dpr-date") || "").trim();
+  if (!jobNo || !date){
+    if (manual) toast("Pick the job (and date) first — the time clock is looked up per job per day.");
+    return;
+  }
+  /* Auto mode respects a roster in progress; the button merges deliberately. */
+  var hasNamed = dprCrew.some(function(c){ return (c.name || "").trim(); });
+  if (!manual && hasNamed) return;
+  var key = jobNo + "|" + date;
+  var names = dprDayCrewCache[key];
+  if (names === undefined){
+    /* Cache the IN-FLIGHT promise, not just the result — several triggers can
+       stack (report load + job pick + date change) and must share one fetch. */
+    names = dprDayCrewCache[key] = (async function(){
+      try{
+        var data = await dprFetchDayCrew(jobNo, date);
+        return ((data && data.crew) || [])
+          .map(function(c){ return (c && c.name ? String(c.name).trim() : ""); })
+          .filter(Boolean);
+      }catch(e){
+        if (e && (e.status === 401 || e.status === 403)) dprDayCrewDenied = true;
+        return null; /* failed — settles to a null cache entry, never retried this session */
+      }
+    })();
+  }
+  if (names && typeof names.then === "function"){
+    names = await names;
+    dprDayCrewCache[key] = names; /* settle the cache: promise -> value */
+    /* The job/date may have moved on while the fetch was in flight. */
+    var nowJob = String(dprState.foundationJobNo || val("dpr-jobNo") || "").trim();
+    if (nowJob + "|" + (val("dpr-date") || "").trim() !== key) return;
+  }
+  if (names === null){
+    if (manual) toast("Couldn't reach the time clock — add the crew by hand.");
+    return;
+  }
+  if (!names || !names.length){
+    if (manual) toast("No punches on the clock for this job/date yet.");
+    return;
+  }
+  var have = {};
+  dprCrew.forEach(function(c){ var k = dprNameKey(c.name); if (k) have[k] = 1; });
+  var added = 0;
+  names.forEach(function(n){
+    var k = dprNameKey(n);
+    if (!k || have[k]) return;
+    have[k] = 1;
+    dprCrew.push({ name: n, hours: "", hoursSource: "" });
+    added++;
+  });
+  if (added){
+    dprRenderCrew();
+    dprSyncHeadcount();
+    dprScheduleCrewHoursAutofill();   /* hours ride in next for foundation.read holders */
+  }
+  dprAutofillForeman(names);
+  if (manual) toast(added ? ("Added " + added + " from the time clock ✓") : "Crew already matches the time clock.");
+}
+/* Foreman auto-fill: if the field is empty and EXACTLY ONE of the day's
+   punchers is on the DPR_FOREMEN roster, that's the foreman — fill it (with
+   the roster's canonical spelling). Two roster foremen on one job = ambiguous,
+   fill nothing. Never stomps a typed name. */
+function dprAutofillForeman(names){
+  if ((val("dpr-foreman") || "").trim()) return;
+  var foremanByKey = {};
+  DPR_FOREMEN.forEach(function(f){ foremanByKey[dprNameKey(f)] = f; });
+  var hits = {};
+  (names || []).forEach(function(n){
+    var k = dprNameKey(n);
+    if (foremanByKey[k]) hits[k] = foremanByKey[k];
+  });
+  var keys = Object.keys(hits);
+  if (keys.length === 1) setVal("dpr-foreman", hits[keys[0]]);
+}
+
+/* ================= job-to-date labor card (admin-gated, live) =================
+   The same "🕒 Labor Hours" card the WO/leak form shows, on the daily: current
+   job-to-date hours for the linked job — the server blends the posted record
+   with the not-yet-posted punch tail, so it's up to date, not payroll-lagged.
+   Same self-gating pattern as fdnRefreshLaborCard (js/foundation.js): the card
+   renders ONLY if the hours fetch comes back authorized (foundation.read);
+   any 401/403/error hides it, so a non-admin foreman never sees it. Rendering
+   is shared via fdnRenderLaborInto — resolved at call time, so script order
+   doesn't matter. */
+var dprLaborCardJobAtFetch = null;
+async function dprRefreshLaborCard(){
+  var card = document.getElementById("dpr-foundation-labor-card");
+  var body = document.getElementById("dpr-foundation-labor-body");
+  if (!card) return;
+  var jobNo = String(dprState.foundationJobNo || val("dpr-jobNo") || "").trim();
+  if (!jobNo || typeof fdnFetchHours !== "function" || typeof fdnRenderLaborInto !== "function"){
+    card.style.display = "none";
+    return;
+  }
+  if (body) body.innerHTML = "Loading…";
+  card.style.display = "";
+  dprLaborCardJobAtFetch = jobNo;
+  try{
+    var data = await fdnFetchHours(jobNo);
+    if (dprLaborCardJobAtFetch !== jobNo) return; /* a newer job superseded this fetch */
+    fdnRenderLaborInto(body, data);
+  }catch(e){
+    /* Not authorized or no hours path — hide entirely (fail closed on display;
+       the server is the real gate). */
+    if (dprLaborCardJobAtFetch === jobNo) card.style.display = "none";
   }
 }
 
@@ -628,6 +980,204 @@ function dprRenderQuantities(){
       el.addEventListener("input", function(){ dprQuantities[+el.getAttribute("data-dprqty-" + k)][k] = el.value; });
     });
   });
+}
+
+/* ================= rented equipment (gated) + pre-use checklist scaffold =====
+   Structured record of RENTED equipment on site that day — SkyTrak/
+   telehandler, boom lift, scissor lift, etc. Distinct from the existing
+   "Equipment On Site" section, which is a free-text note of any equipment
+   USED that day (crane, kettle, welder — owned or otherwise); rentals need
+   fields (what, from whom, unit #) because they drive billing and the lift
+   safety checklist below. Same repeatable-row pattern as the quantities
+   section; same Yes/No gate so the daily stays uncluttered.
+
+   PRE-USE SAFETY CHECKLIST (scaffold): when a rented LIFT is recorded
+   (telehandler/boom/scissor/MEWP/forklift — see DPR_RENTED_LIFT_RX), a daily
+   pre-use inspection checklist appears. The ITEM LIST is deliberately empty
+   for now — a parallel research task is compiling the standard items (OSHA
+   1910.178 forklift + ANSI A92 MEWP pre-use inspections); they drop straight
+   into DPR_PREUSE_CHECKLIST as {id, label} rows and the section lights up
+   with zero further wiring. Until then the checklist stays hidden, but the
+   persistence (preUseChecklist on the doc), the lift gate, the PDF block and
+   the tests are all live. */
+var dprRented = [];   /* [{ type, company, unitId, note }] */
+var dprPreUse = null; /* { completedBy, items: [{id, label, ok}] } — saved answers */
+var DPR_RENTED_TYPES = ["SkyTrak / Telehandler", "Boom Lift", "Scissor Lift", "Aerial Lift",
+  "Forklift", "Crane", "Generator", "Air Compressor", "Welder", "Kettle", "Dumpster", "Other"];
+var DPR_RENTED_LIFT_RX = /skytrak|telehandler|boom|scissor|aerial|mewp|man\s*lift|manlift|forklift|lull|genie|jlg/i;
+/* Daily pre-use inspection for rented lift equipment — the checklist from
+   Mark's researched source list (docs/RoofingSafetyDocumentSources.md §4),
+   which combines OSHA 29 CFR 1910.178(q)(7) daily-examination items for the
+   telehandler/rough-terrain forklift (SkyTrak, Lull) with ANSI/SAIA A92 MEWP
+   pre-use items for the boom/scissor lift. Four phases, in the order a crew
+   actually inspects: walk-around engine OFF → operator station → function
+   test engine ON → worksite before lifting. Machine-specific items are
+   prefixed ("Boom:", "Telehandler:") and read as confirmed/n-a on the other
+   machine. Per the source doc: complete for EACH machine, EACH day, before
+   first use; any failed item = machine out of service (see the result field
+   in dprCollectPreUse). The rented machine's own operator manual remains the
+   controlling document.
+   IDs are stable — saved reports key answers by id; never reuse or repurpose
+   one, append new items to their group instead. */
+var DPR_PREUSE_GROUPS = [
+  { key: "walk",     label: "A. Walk-around — engine OFF" },
+  { key: "station",  label: "B. Operator station & safety devices" },
+  { key: "function", label: "C. Function test — engine ON (clear area)" },
+  { key: "site",     label: "D. Worksite — before lifting" }
+];
+var DPR_PREUSE_CHECKLIST = [
+  /* A. Walk-around — engine OFF */
+  { id: "tires",         group: "walk", label: "Tires/tracks — inflation, cuts, wear; wheel lugs tight" },
+  { id: "leaks",         group: "walk", label: "No fluid leaks under machine (oil, hydraulic, fuel, coolant)" },
+  { id: "fluids",        group: "walk", label: "Fluid levels OK (engine oil, hydraulic, coolant, fuel); battery secure/charged" },
+  { id: "hoses",         group: "walk", label: "Hoses, cylinders & fittings — no leaks, chafing, or damage" },
+  { id: "forks_platform",group: "walk", label: "Forks/carriage or platform/basket — no cracks, bends, or damaged welds" },
+  { id: "chains",        group: "walk", label: "Chains, cables & boom wear pads — intact, adjusted, lubricated" },
+  { id: "load_chart",    group: "walk", label: "Data/capacity plate & load chart present and legible" },
+  { id: "decals",        group: "walk", label: "Decals, warnings & control labels present and readable" },
+  { id: "guards",        group: "walk", label: "Guards, covers & counterweight secure — no missing hardware" },
+  { id: "anchors",       group: "walk", label: "Seatbelt/restraint/lanyard anchor points present and undamaged" },
+  { id: "extinguisher",  group: "walk", label: "Fire extinguisher present & charged (if equipped/required)" },
+  { id: "structure",     group: "walk", label: "Overall structure — no cracks, corrosion, or visible damage" },
+  /* B. Operator station & safety devices */
+  { id: "restraint",     group: "station", label: "Seat & seatbelt (telehandler) / harness anchor & gate (boom) functional" },
+  { id: "horn",          group: "station", label: "Horn works" },
+  { id: "alarms",        group: "station", label: "Backup alarm & warning lights/beacon work" },
+  { id: "gauges",        group: "station", label: "Gauges/indicators & hour meter functional" },
+  { id: "access",        group: "station", label: "Steps, grab rails & platform gate/chain secure and clean" },
+  { id: "estop",         group: "station", label: "Emergency stop button works" },
+  { id: "em_lowering",   group: "station", label: "Boom: emergency lowering / auxiliary power tested and working" },
+  { id: "stability_sys", group: "station", label: "Telehandler: load/moment indicator or stability system functional (if equipped)" },
+  /* C. Function test — engine ON */
+  { id: "starts",        group: "function", label: "Starts normally — no unusual noise, smoke, or vibration" },
+  { id: "brakes",        group: "function", label: "Service brakes hold; parking brake holds on a grade" },
+  { id: "steering",      group: "function", label: "Steering responds normally (incl. crab/4-wheel modes on telehandler)" },
+  { id: "lift_functions",group: "function", label: "Lift, lower, extend, retract — smooth through full range" },
+  { id: "outriggers",    group: "function", label: "Tilt / frame level / outriggers or stabilizers deploy and hold" },
+  { id: "boom_functions",group: "function", label: "Boom: rotate, articulate, jib & platform level all function; controls return to neutral" },
+  { id: "dual_controls", group: "function", label: "Platform controls AND ground controls both work" },
+  { id: "drift",         group: "function", label: "No hydraulic drift when holding a raised load/platform" },
+  { id: "lights",        group: "function", label: "Lights / work lights operate" },
+  /* D. Worksite — before lifting */
+  { id: "ground",        group: "site", label: "Ground firm, level & rated for the load — no drop-offs or trenches" },
+  { id: "overhead",      group: "site", label: "Overhead clearances checked — power lines (required clearance), structures" },
+  { id: "capacity",      group: "site", label: "Load within rated capacity for boom angle/extension (check load chart)" },
+  { id: "path",          group: "site", label: "Travel path clear of workers, obstructions & debris" },
+  { id: "weather",       group: "site", label: "Weather acceptable — wind within rated limit; no lightning/ice" },
+  { id: "tied_off",      group: "site", label: "Fall protection worn & tied off in boom platform per manufacturer" }
+];
+
+function dprRentedHasLift(){
+  return dprRented.some(function(r){ return DPR_RENTED_LIFT_RX.test(String(r.type || "")); });
+}
+function dprAddRentedRow(row){
+  if (dprIsLocked()){ toast("This report is signed and locked."); return; }
+  dprRented.push(row || { type: "", company: "", unitId: "", note: "" });
+  dprRenderRented();
+}
+function dprRemoveRentedRow(idx){
+  if (dprIsLocked()) return;
+  dprRented.splice(idx, 1);
+  dprRenderRented();
+}
+function dprRenderRented(){
+  var host = document.getElementById("dpr-rented-list");
+  if (host){
+    if (!dprRented.length){
+      host.innerHTML = '<p class="hint">Nothing added yet — record each rented machine on site today (lift, telehandler, etc.).</p>';
+    } else {
+      var locked = dprIsLocked();
+      var ro = locked ? " readonly" : "";
+      host.innerHTML = dprRented.map(function(r, i){
+        return '<div class="btnrow" style="margin:0 0 6px;gap:6px;flex-wrap:wrap">' +
+          '<input type="text" placeholder="Equipment (e.g. SkyTrak)" list="dl-dprRentedType" data-dprrent-type="' + i + '" value="' + esc(r.type || "") + '" style="flex:2;min-width:150px"' + ro + '>' +
+          '<input type="text" placeholder="Rental company" data-dprrent-company="' + i + '" value="' + esc(r.company || "") + '" style="flex:2;min-width:130px"' + ro + '>' +
+          '<input type="text" placeholder="Unit / ID # (optional)" data-dprrent-unitId="' + i + '" value="' + esc(r.unitId || "") + '" style="flex:1;min-width:110px"' + ro + '>' +
+          '<input type="text" placeholder="Note" data-dprrent-note="' + i + '" value="' + esc(r.note || "") + '" style="flex:2;min-width:120px"' + ro + '>' +
+          '<button class="btn danger" onclick="dprRemoveRentedRow(' + i + ')">✕</button>' +
+          '</div>';
+      }).join("");
+      ["type", "company", "unitId", "note"].forEach(function(k){
+        host.querySelectorAll("[data-dprrent-" + k + "]").forEach(function(el){
+          el.addEventListener("input", function(){
+            dprRented[+el.getAttribute("data-dprrent-" + k)][k] = el.value;
+            if (k === "type") dprRenderPreUse();   /* a lift may have appeared/gone */
+          });
+        });
+      });
+    }
+  }
+  dprRenderPreUse();
+}
+/* The checklist block shows ONLY when a rented lift is recorded AND the item
+   list has been populated (see the scaffold note above). */
+function dprRenderPreUse(){
+  var block = document.getElementById("dpr-preuse-block");
+  if (!block) return;
+  var show = dprRentedHasLift() && DPR_PREUSE_CHECKLIST.length > 0;
+  block.style.display = show ? "" : "none";
+  if (!show){ return; }
+  var locked = dprIsLocked();
+  var saved = {};
+  ((dprPreUse && dprPreUse.items) || []).forEach(function(it){ if (it && it.id) saved[it.id] = !!it.ok; });
+  var html =
+    '<h3 style="margin:14px 0 4px">Daily Pre-Use Safety Checklist (lift equipment)</h3>' +
+    '<p class="hint" style="margin:0 0 8px">Complete for each machine, each day, before first use (OSHA 1910.178 / ANSI A92). ' +
+    'Any failed item = machine out of service &amp; tagged. The machine’s own operator manual is the controlling document.</p>';
+  DPR_PREUSE_GROUPS.forEach(function(g){
+    html += '<h4 style="margin:12px 0 4px">' + esc(g.label) + '</h4>' +
+      DPR_PREUSE_CHECKLIST.filter(function(it){ return it.group === g.key; }).map(function(it){
+        return '<label style="display:flex;gap:8px;align-items:center;margin:0 0 6px">' +
+          '<input type="checkbox" data-dprpreuse="' + esc(it.id) + '"' + (saved[it.id] ? " checked" : "") + (locked ? " disabled" : "") + '>' +
+          '<span>' + esc(it.label) + '</span></label>';
+      }).join("");
+  });
+  var savedResult = (dprPreUse && dprPreUse.result) || "";
+  html +=
+    '<div class="fld" style="max-width:320px;margin-top:10px"><label>Result</label>' +
+    '<select id="dpr-preuse-result"' + (locked ? " disabled" : "") + '>' +
+      '<option value=""' + (savedResult === "" ? " selected" : "") + '>— pick after inspecting —</option>' +
+      '<option value="safe"' + (savedResult === "safe" ? " selected" : "") + '>Machine SAFE to operate</option>' +
+      '<option value="defects"' + (savedResult === "defects" ? " selected" : "") + '>Defects found — REMOVED from service &amp; tagged</option>' +
+    '</select></div>' +
+    '<div class="fld"><label>Defects / notes</label>' +
+    '<textarea id="dpr-preuse-notes" rows="2"' + (locked ? " readonly" : "") + '>' + esc((dprPreUse && dprPreUse.notes) || "") + '</textarea></div>' +
+    '<div class="fld" style="max-width:260px"><label>Checklist completed by (operator)</label>' +
+    '<input type="text" id="dpr-preuse-by" list="dl-dprCrew" value="' + esc((dprPreUse && dprPreUse.completedBy) || "") + '"' + (locked ? " readonly" : "") + '></div>';
+  block.innerHTML = html;
+  block.querySelectorAll("[data-dprpreuse]").forEach(function(el){
+    el.addEventListener("change", function(){ dprPreUse = dprCollectPreUse(); });
+  });
+  ["dpr-preuse-by", "dpr-preuse-notes", "dpr-preuse-result"].forEach(function(id){
+    var el = block.querySelector("#" + id);
+    if (el) el.addEventListener(id === "dpr-preuse-result" ? "change" : "input", function(){ dprPreUse = dprCollectPreUse(); });
+  });
+}
+/* Reads the checklist UI back into the saved shape. Pure-ish (DOM read). */
+function dprCollectPreUse(){
+  var block = document.getElementById("dpr-preuse-block");
+  if (!block || !DPR_PREUSE_CHECKLIST.length) return dprPreUse || null;
+  var byId = {};
+  block.querySelectorAll("[data-dprpreuse]").forEach(function(el){
+    byId[el.getAttribute("data-dprpreuse")] = !!el.checked;
+  });
+  var by = block.querySelector("#dpr-preuse-by");
+  var res = block.querySelector("#dpr-preuse-result");
+  var notes = block.querySelector("#dpr-preuse-notes");
+  return {
+    completedBy: by ? by.value : ((dprPreUse && dprPreUse.completedBy) || ""),
+    result: res ? res.value : ((dprPreUse && dprPreUse.result) || ""),
+    notes: notes ? notes.value : ((dprPreUse && dprPreUse.notes) || ""),
+    items: DPR_PREUSE_CHECKLIST.map(function(it){ return { id: it.id, label: it.label, ok: !!byId[it.id] }; })
+  };
+}
+/* What collect() persists: the current checklist state when the section is
+   live; a previously SAVED checklist rides through untouched when the item
+   list is empty (scaffold phase) so a re-save can't erase a filled one. */
+function dprPreUseForSave(rentedRows){
+  if (!rentedRows || !rentedRows.length) return null;
+  if (DPR_PREUSE_CHECKLIST.length && dprRentedHasLift()) return dprCollectPreUse();
+  return dprPreUse || null;
 }
 
 /* ================= photos (reuses the work-order storage/upload path) =================
@@ -726,6 +1276,16 @@ function dprRenderPhotos(){
 function dprCollect(){
   var buildingId = dprState.buildingId || dprBuildingId(val("dpr-billTo"), val("dpr-jobName"));
   var dateStr = val("dpr-date");
+  /* Rented rows once, so the checklist decision sees the same filtered set. */
+  var rentedRows = dprToggleIsYes("dpr-rented-toggle")
+    ? dprRented
+        .filter(function(r){ return [r.type, r.company, r.unitId, r.note].some(function(v){ return String(v || "").trim(); }); })
+        .map(function(r){ return {
+          type: String(r.type || "").trim(), company: String(r.company || "").trim(),
+          unitId: String(r.unitId || "").trim(), note: String(r.note || "").trim()
+        }; })
+    : null;
+  if (rentedRows && !rentedRows.length) rentedRows = null;
   var o = {
     id: dprState.id || dprDocId(buildingId, dateStr),
     buildingId: buildingId,
@@ -739,13 +1299,21 @@ function dprCollect(){
     foundationJobNo: dprState.foundationJobNo || null,          /* stamps the building's Foundation link on save (ensureCustomerAndBuilding) */
     foundationCustomerNo: dprState.foundationCustomerNo || null,
     roofSystem: val("dpr-roofSystem"),
-    crew: dprCrew.filter(function(c){ return (c.name || "").trim(); }).map(function(c){ return { name: c.name.trim() }; }),
+    crew: dprCrew.filter(function(c){ return (c.name || "").trim(); }).map(function(c){
+      return {
+        name: c.name.trim(),
+        hours: (c.hours == null ? "" : String(c.hours)).trim(),
+        hoursSource: c.hoursSource === "foundation" ? "foundation" : ""
+      };
+    }),
+    crewHoursTotal: dprCrewHoursTotal(),   /* denormalized daily total (sum of crew hours) for lists/exports */
     headcount: val("dpr-headcount"),
     hoursWorked: val("dpr-hours"),
     squares: val("dpr-squares"),
     summary: val("dpr-summary"),
     section: dprState.section || null,   /* the roof area traced for today (progress overlay) */
     signoff: dprState.signoff || null,   /* signature + lock state (see sign-off/lock hooks below) */
+    hoursAmendments: dprState.hoursAmendments || null,  /* late-hours amendment trail (nightly sync writes these; carried so the PDF prints them) */
     /* ---- Phase-2 gated sections: null = toggle on No (nothing to report) ---- */
     delays: dprToggleIsYes("dpr-delays-toggle") ? {
       cause: val("dpr-delays-cause"), hoursLost: val("dpr-delays-hours"), notes: val("dpr-delays-notes")
@@ -762,6 +1330,8 @@ function dprCollect(){
       type: val("dpr-incidents-type"), reportedTo: val("dpr-incidents-reportedto"), description: val("dpr-incidents-desc")
     } : null,
     equipment: dprToggleIsYes("dpr-equipment-toggle") ? { notes: val("dpr-equipment-notes") } : null,
+    rentedEquipment: rentedRows,                    /* structured rentals (type/company/unit/note) */
+    preUseChecklist: dprPreUseForSave(rentedRows),  /* lift pre-use inspection (scaffold — see DPR_PREUSE_CHECKLIST) */
     visitors: dprToggleIsYes("dpr-visitors-toggle") ? { notes: val("dpr-visitors-notes") } : null,
     photos: dprPhotos.slice()
     /* FUTURE gated sections follow the same shape: one dprToggleIsYes(...) line here,
@@ -794,10 +1364,25 @@ function dprFill(o){
   setVal("dpr-squares", o.squares || "");
   setVal("dpr-summary", o.summary || "");
   dprHeadcountAutoVal = String(o.headcount || "");
-  dprCrew = (o.crew || []).map(function(c){ return { name: c.name || "" }; });
+  dprCrew = (o.crew || []).map(function(c){
+    /* Old docs pre-date per-person hours ({name} only) — default them empty. */
+    return {
+      name: c.name || "",
+      hours: (c.hours == null ? "" : String(c.hours)),
+      hoursSource: c.hoursSource === "foundation" ? "foundation" : ""
+    };
+  });
+  /* Treat the loaded "Hours Worked" as auto-filled ONLY if it equals the
+     loaded crew sum (i.e. it WAS the derived total) — a deliberately
+     different hand-typed total (say, drive time on top of roof hours) must
+     survive a reopen, not get silently rewritten to the sum. */
+  var loadedCrewTotal = dprCrewHoursTotal();
+  dprHoursAutoVal = (loadedCrewTotal > 0 && String(o.hoursWorked || "") === String(loadedCrewTotal))
+    ? String(o.hoursWorked || "") : "";
   dprPhotos = (o.photos || []).map(function(p){ return Object.assign({}, p); });
   dprState.section = o.section || null;
   dprState.signoff = o.signoff || null;
+  dprState.hoursAmendments = (o.hoursAmendments && o.hoursAmendments.length) ? o.hoursAmendments : null;
   /* ---- Phase-2 gated sections (falsy / "" from Firestore's null-coercion = No) ---- */
   var dl = o.delays || null;
   dprSetGate("dpr-delays-toggle", "dpr-delays-body", !!dl);
@@ -821,6 +1406,13 @@ function dprFill(o){
   var eq = o.equipment || null;
   dprSetGate("dpr-equipment-toggle", "dpr-equipment-body", !!eq);
   setVal("dpr-equipment-notes", eq ? eq.notes : "");
+  var re = (o.rentedEquipment && o.rentedEquipment.length) ? o.rentedEquipment : null;
+  dprSetGate("dpr-rented-toggle", "dpr-rented-body", !!re);
+  dprRented = (re || []).map(function(r){ return {
+    type: r.type || "", company: r.company || "", unitId: r.unitId || "", note: r.note || ""
+  }; });
+  dprPreUse = o.preUseChecklist || null;
+  dprRenderRented();
   var vis = o.visitors || null;
   dprSetGate("dpr-visitors-toggle", "dpr-visitors-body", !!vis);
   setVal("dpr-visitors-notes", vis ? vis.notes : "");
@@ -837,6 +1429,10 @@ function dprFill(o){
   dprRenderCrew();
   dprRenderPhotos();
   dprRenderSectionStatus();
+  dprSyncHours();                  /* a loaded report's crew hours roll up too */
+  dprScheduleCrewHoursAutofill();  /* punches may exist for this job + date */
+  dprRefreshLaborCard();           /* job-to-date hours for the linked job (admin) */
+  dprPopulateCrewFromPunches(false); /* a fresh (empty-crew) day fills itself from the clock */
 }
 
 /* ================= save (client-direct Firestore write, permission-gated by rules) ================= */
@@ -942,6 +1538,7 @@ function dprNewReport(){
   dprCrew = [];
   dprPhotos = [];
   dprHeadcountAutoVal = "";
+  dprHoursAutoVal = "";
   dprJobNoAutoVal = "";
   dprState.foundationJobNo = null;
   dprState.foundationCustomerNo = null;
@@ -950,8 +1547,13 @@ function dprNewReport(){
    "dpr-incidents-type", "dpr-incidents-reportedto", "dpr-incidents-desc", "dpr-equipment-notes", "dpr-visitors-notes"].forEach(function(id){ setVal(id, ""); });
   setVal("dpr-roofSystem", "");
   setVal("dpr-date", dprTodayStr());
+  dprRefreshLaborCard(); /* job link + jobNo both cleared now -> hides the labor card */
   /* Gated sections back to No / hidden. */
   dprQuantities = [];
+  dprRented = [];
+  dprPreUse = null;
+  dprSetGate("dpr-rented-toggle", "dpr-rented-body", false);
+  dprRenderRented();
   dprSetGate("dpr-delays-toggle", "dpr-delays-body", false);
   dprSetGate("dpr-quantities-toggle", "dpr-quantities-body", false);
   dprSetGate("dpr-jsa-toggle", "dpr-jsa-body", false);
@@ -1008,6 +1610,7 @@ async function dprShowHistory(){
         '<div class="meta">' + esc(r.billTo || "") +
         (r.foreman ? ' · 👷 ' + esc(r.foreman) : "") +
         (r.headcount ? ' · ' + esc(String(r.headcount)) + ' crew' : "") +
+        (r.crewHoursTotal ? ' · ' + esc(String(r.crewHoursTotal)) + ' hrs' : "") +
         (r.squares ? ' · ' + esc(String(r.squares)) + ' sq' : "") +
         (r.photoCount ? ' · ' + esc(String(r.photoCount)) + ' 📷' : "") + '</div></div>' +
         '<button class="btn">Open</button></div>';
@@ -1454,7 +2057,7 @@ var DPR_LOCK_READONLY_FIELDS = ["dpr-foreman", "dpr-jobName", "dpr-billTo", "dpr
   "dpr-incidents-reportedto", "dpr-incidents-desc", "dpr-equipment-notes", "dpr-visitors-notes"];
 /* <select> has no readOnly — the gated toggles + their dropdowns lock via disabled. */
 var DPR_LOCK_DISABLED_SELECTS = ["dpr-delays-toggle", "dpr-quantities-toggle", "dpr-jsa-toggle",
-  "dpr-incidents-toggle", "dpr-equipment-toggle", "dpr-visitors-toggle",
+  "dpr-incidents-toggle", "dpr-equipment-toggle", "dpr-rented-toggle", "dpr-visitors-toggle",
   "dpr-delays-cause", "dpr-jsa-crewpresent", "dpr-incidents-type", "dpr-roof"];
 function dprApplySignoffLock(){
   var locked = dprIsLocked();
@@ -1469,6 +2072,7 @@ function dprApplySignoffLock(){
         " — this report can no longer be edited.";
     }
   }
+  dprRenderAmendments();
   /* Save + the sign button disappear when locked; view-only actions (History,
      Download PDF, Progress Map, New) stay. */
   var saveBtn = document.getElementById("dpr-save-btn");
@@ -1489,6 +2093,20 @@ function dprApplySignoffLock(){
   var capRow = document.getElementById("dpr-capture-row");
   if (capRow && locked) capRow.style.display = "none";
   else if (capRow && dprCanCreate()) capRow.style.display = "";
+}
+/* Visible amendment note — a signed report whose hours were corrected by the
+   nightly late-punch sync says so, and when, so the finalized record is never
+   silently changed (Mark's AMEND decision; the signature stays intact). Shown
+   whether or not the report is locked. */
+function dprRenderAmendments(){
+  var el = document.getElementById("dpr-amend-note");
+  if (!el) return;
+  var list = dprState.hoursAmendments || [];
+  if (!list.length){ el.style.display = "none"; el.textContent = ""; return; }
+  var latest = list[list.length - 1];
+  el.style.display = "";
+  el.textContent = "✎ " + (latest.note || "Hours amended — late Foundation timecard entries") +
+    (list.length > 1 ? " (" + list.length + " amendments)" : "");
 }
 /* The single entry point the parallel session calls to sign + lock a report. */
 async function dprApplySignoff(signoff){
@@ -1618,11 +2236,31 @@ async function generateDprPdf(o){
   ]);
 
   heading("Crew & Production");
+  /* With per-person hours on the roster, each crew member prints with what
+     they worked that day; without any (older reports), the flat name list. */
+  var crewRows = (o.crew || []).filter(function(c){ return c && c.name; });
+  var anyCrewHours = crewRows.some(function(c){ return String(c.hours || "").trim() !== ""; });
+  var crewCell = anyCrewHours
+    ? crewRows.map(function(c){
+        var h = String(c.hours || "").trim();
+        return c.name + (h ? " — " + h + " hrs" : "");
+      }).join("\n")
+    : crewRows.map(function(c){ return c.name; }).join(", ");
   kvTable([
-    ["Crew On Site", (o.crew || []).map(function(c){ return c.name; }).filter(Boolean).join(", ")],
-    ["Headcount", o.headcount], ["Hours Worked", o.hoursWorked], ["Approx. Squares Applied", o.squares],
+    ["Crew On Site", crewCell],
+    ["Headcount", o.headcount],
+    ["Total Crew Hours", anyCrewHours && o.crewHoursTotal ? String(o.crewHoursTotal) : ""],
+    ["Hours Worked", o.hoursWorked], ["Approx. Squares Applied", o.squares],
     ["Roof Section Traced", o.section ? (o.section.areaSqFt ? "Yes · ~" + o.section.areaSqFt + " sq ft" : "Yes") : ""]
   ]);
+  /* Late-hours amendment trail on the record itself — so a signed PDF that was
+     corrected by the nightly sync carries the note, in order. */
+  if (o.hoursAmendments && o.hoursAmendments.length){
+    kvTable(o.hoursAmendments.map(function(a){
+      var when = a && a.at ? new Date(a.at).toLocaleDateString() : "";
+      return ["Hours Amendment", (a && a.note ? a.note : "Late Foundation timecard entries") + (when ? " (" + when + ")" : "")];
+    }));
+  }
 
   /* Phase-2 gated sections — only the ones the foreman flipped to Yes print. */
   if (o.delays){
@@ -1649,6 +2287,24 @@ async function generateDprPdf(o){
   if (o.equipment && o.equipment.notes && o.equipment.notes.trim()){
     heading("Equipment On Site");
     wrapped(o.equipment.notes);
+  }
+  if (o.rentedEquipment && o.rentedEquipment.length){
+    heading("Rented Equipment");
+    kvTable(o.rentedEquipment.map(function(r){
+      return [r.type || "(item)", [r.company, r.unitId ? "Unit " + r.unitId : "", r.note].filter(Boolean).join(" · ")];
+    }));
+    var pc = o.preUseChecklist;
+    if (pc && pc.items && pc.items.length){
+      heading("Pre-Use Safety Checklist (lift equipment)");
+      kvTable(pc.items.map(function(it){ return [it.label, it.ok ? "Pass" : "NOT CHECKED"]; })
+        .concat([[
+          "Result",
+          pc.result === "safe" ? "Machine SAFE to operate"
+            : pc.result === "defects" ? "DEFECTS FOUND - removed from service & tagged" : ""
+        ]])
+        .concat(pc.notes ? [["Defects / Notes", pc.notes]] : [])
+        .concat(pc.completedBy ? [["Completed By (operator)", pc.completedBy]] : []));
+    }
   }
   if (o.visitors && o.visitors.notes && o.visitors.notes.trim()){
     heading("Site Visitors");
