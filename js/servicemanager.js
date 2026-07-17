@@ -542,14 +542,48 @@ async function smSaveNewWorkOrder(data){
   return o;
 }
 
-/* ---- AI scope-prefill (wired in Phase 2). In Phase 1 the button stays hidden
- *      (the endpoint doesn't exist yet); Phase 2 replaces this with a capability
- *      probe that reveals it only on a keyed deploy. ---- */
+/* ---- AI scope-prefill (netlify/functions/generate-scope.js). The button is
+ *      hidden until the endpoint's capability probe reports a key is configured,
+ *      so it's inert on a keyless deploy (production today). ---- */
+async function smAiScopeApi(body){
+  var headers = (typeof authHeaders === "function") ? (await authHeaders()) : { "Content-Type": "application/json" };
+  var r = await fetch("/.netlify/functions/generate-scope", { method: "POST", headers: headers, body: JSON.stringify(body) });
+  var data = null; try { data = await r.json(); } catch (e) {}
+  if (!r.ok){ var e = new Error((data && data.error) || ("HTTP " + r.status)); e.status = r.status; throw e; }
+  return data;
+}
 function smMaybeShowAiPrefill(){
   var row = smEl("sm-pc-ai-row");
-  if (row) row.style.display = "none"; // Phase 2 flips this on a keyed deploy
+  if (!row) return;
+  row.style.display = "none";
+  smAiScopeApi({ action: "capability" })
+    .then(function(d){ if (d && d.configured) row.style.display = ""; })
+    .catch(function(){ /* keyless / unauthorized / offline → button stays hidden */ });
 }
-function smAiPrefillScope(){ smToast("AI scope draft arrives in the next update."); }
+async function smAiPrefillScope(){
+  var scopeEl = smEl("sm-pc-scope");
+  // Draft from the proposal's subject plus whatever scope text is already
+  // there. Richer sources (full email body via mail_read, PDF-text extraction)
+  // are a flagged follow-up; email subjects are already descriptive.
+  var text = "";
+  if (smCurrentProposal && smCurrentProposal.subject) text += smCurrentProposal.subject;
+  var existing = scopeEl ? (scopeEl.value || "") : "";
+  if (existing) text += (text ? "\n" : "") + existing;
+  if (!text.trim()){ smToast("Add a proposal or some scope text to draft from."); return; }
+  smToast("Drafting scope…");
+  try {
+    var d = await smAiScopeApi({
+      action: "draft_scope",
+      proposalText: text,
+      context: { jobName: getVal2("sm-pc-jobName"), location: getVal2("sm-pc-location") }
+    });
+    if (!d || !d.ok) throw new Error((d && d.error) || "no draft");
+    if (scopeEl && d.draft) scopeEl.value = d.draft;
+    smToast(d.llm ? "Scope drafted by AI — review & edit" : (d.fallback ? "AI unavailable — inserted a template draft" : "Inserted a template scope draft"));
+  } catch (e) {
+    smToast("Couldn't draft the scope" + (e.status ? " (" + e.status + ")" : "") + ".");
+  }
+}
 
 /* ============================ dispatch board ============================= */
 /* Pure grouping: assigned WOs bucketed by crew, cleared/undispatched excluded,
