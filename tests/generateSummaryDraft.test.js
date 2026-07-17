@@ -267,6 +267,30 @@ test("GET -> 405, wrong action -> 400, missing report -> 400", async () => {
   assert.equal(m.statusCode, 400);
 });
 
+test("capability probe: keyless deploy reports configured:false (button hides on prod)", async () => {
+  // Default test env has no AI key (deleted at top) -> stub -> not configured.
+  const r = await fn.handler(ev({ action: "capability" }, VALID_TECH));
+  assert.equal(r.statusCode, 200);
+  const out = JSON.parse(r.body);
+  assert.deepEqual(out, { ok: true, configured: false });
+});
+
+test("capability probe: still auth-gated (no token -> 401)", async () => {
+  const r = await fn.handler(ev({ action: "capability" }));
+  assert.equal(r.statusCode, 401);
+});
+
+test("capability probe: a provisioned key reports configured:true (button shows)", async () => {
+  process.env.ANTHROPIC_API_KEY = "sk-test-fake";
+  try {
+    const r = await fn.handler(ev({ action: "capability" }, VALID_TECH));
+    assert.equal(r.statusCode, 200);
+    assert.deepEqual(JSON.parse(r.body), { ok: true, configured: true });
+  } finally {
+    delete process.env.ANTHROPIC_API_KEY;
+  }
+});
+
 test("a plain field tech CAN draft, and the draft restates the report's own data", async () => {
   const r = await fn.handler(ev({ action: "draft_summary", report: REPORT }, VALID_TECH));
   assert.equal(r.statusCode, 200);

@@ -2284,6 +2284,38 @@ function populateWoTypeSelect(){
     sel.appendChild(opt);
   });
 }
+/* ---- AI "Draft Summary" capability gate ----------------------------------
+   Whether THIS deploy has an AI key lives server-side only (the key is never
+   shipped to the client), so the button's visibility is driven by a one-time
+   capability probe rather than anything the page can read directly. Tri-state:
+   null = not yet probed (button stays hidden — no flash of a dead control),
+   true = a key is configured (dev today; prod once Mark provisions one),
+   false = keyless deploy (production today — button stays hidden for good).
+   Probed lazily the first time a summary-bearing type is selected, cached for
+   the session, and re-applies the type gate (onWoTypeChange) once it resolves. */
+var __aiSummaryConfigured = null;
+var __aiSummaryProbe = null;
+function aiSummaryConfigured(){ return __aiSummaryConfigured; }
+function probeAiSummaryCapability(){
+  if (__aiSummaryProbe) return __aiSummaryProbe;
+  __aiSummaryProbe = (async function(){
+    try{
+      var r = await fetch("/.netlify/functions/generate-summary", {
+        method: "POST", headers: await authHeaders(),
+        body: JSON.stringify({ action: "capability" })
+      });
+      var out = null; try{ out = await r.json(); }catch(e){}
+      __aiSummaryConfigured = !!(r.ok && out && out.ok && out.configured);
+    }catch(e){
+      /* Network/permission hiccup: treat as unconfigured (hide the button) —
+         a missing draft button is a non-event; a broken one is not. */
+      __aiSummaryConfigured = false;
+    }
+    if (typeof onWoTypeChange === "function") onWoTypeChange();
+    return __aiSummaryConfigured;
+  })();
+  return __aiSummaryProbe;
+}
 function onWoTypeChange(){
   var isCO = val("woType") === "Change Order";
   var el = document.getElementById("wo-changeorder-card");
@@ -2394,7 +2426,16 @@ function onWoTypeChange(){
      section in its PDF) and Warranty stay hidden — widening later is just
      this condition. */
   var dsr = document.getElementById("wo-draft-summary-row");
-  if (dsr) dsr.style.display = (isInspection || isLeakType || isRepair) ? "" : "none";
+  /* Two gates, both must pass: (1) a summary-bearing report type, and (2) this
+     deploy actually HAS an AI key. Production ships with no key, so the button
+     stays hidden there rather than offering a draft that can only be a
+     deterministic placeholder; it flips visible automatically the moment a key
+     is provisioned (the probe re-runs this on resolve). aiSummaryConfigured()
+     is null-until-probed, so the button starts hidden and only appears once we
+     KNOW a key exists — never a flash of a dead control. */
+  var wantsSummary = (isInspection || isLeakType || isRepair);
+  if (dsr) dsr.style.display = (wantsSummary && aiSummaryConfigured() === true) ? "" : "none";
+  if (wantsSummary && aiSummaryConfigured() === null) probeAiSummaryCapability();
   var ic = document.getElementById("wo-inspection-card");
   if (ic) ic.style.display = isInspection ? "" : "none";
   if (isInspection){ ensureInspectionChecklist(); renderInspectionChecklist(); renderInspectionRoofPicker(); }

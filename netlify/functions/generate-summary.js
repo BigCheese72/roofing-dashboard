@@ -334,6 +334,15 @@ exports.handler = async function (event) {
     try { body = JSON.parse(event.body || "{}"); }
     catch (e) { return resp(400, { error: "Bad request" }); }
 
+    // Lightweight capability probe: does THIS deploy have an AI key? Lets the
+    // client HIDE the "Draft Summary" button on a keyless deploy (production
+    // today) instead of showing a button that can only insert a deterministic
+    // placeholder. No report data is touched; configured-state is not
+    // sensitive, but it stays behind the same doc.generate gate as the draft.
+    if (body.action === "capability") {
+      return resp(200, { ok: true, configured: resolveProvider(process.env).name !== "stub" });
+    }
+
     if (body.action !== "draft_summary") return resp(400, { error: "Unknown action" });
     const report = sanitizeReport(body.report);
     if (!report) return resp(400, { error: "Missing report" });
