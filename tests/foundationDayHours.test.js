@@ -29,6 +29,11 @@ const Module = require("module");
 
 const FAKE_PASSWORD = "s3cr3t-foundation-pw-NEVER-LEAK";
 const OWNER = "OWNER_TOKEN";
+const FOREMAN = "FOREMAN_TOKEN";   // dpr.create yes, foundation.read NO
+
+const ROLE_DOCS = {
+  field_tech: { permissions: { "dpr.create": true, "foundation.read": false } }
+};
 
 const fakeAdmin = {
   apps: [],
@@ -38,12 +43,16 @@ const fakeAdmin = {
     return {
       verifyIdToken: async (token) => {
         if (token === OWNER) return { uid: "u_owner", email: "owner@watkins.com", owner: true, role: "owner" };
+        if (token === FOREMAN) return { uid: "u_foreman", email: "foreman@watkins.com", owner: false, role: "field_tech" };
         throw new Error("Decoding Firebase ID token failed");
       }
     };
   },
   firestore() {
-    return { collection: () => ({ doc: () => ({ get: async () => ({ exists: false }) }) }) };
+    return { collection: (name) => ({ doc: (id) => ({ get: async () => {
+      const d = name === "roles" ? ROLE_DOCS[id] : undefined;
+      return d ? { exists: true, data: () => d } : { exists: false };
+    } }) }) };
   }
 };
 
@@ -277,6 +286,42 @@ test("buildPendingTailQuery: trimmed job match, optional cutoff, SELECT-only, no
   const noAfter = fdb.buildPendingTailQuery("17053", null);
   assert.ok(!/dated > @after/.test(noAfter.text));
   assert.ok(!/pay_rate|amount/i.test(withAfter.text));
+});
+
+/* ==================== handler: day_crew (names only, dpr.create gate) ==================== */
+
+test("day_crew: a FOREMAN (dpr.create, no foundation.read) gets WHO punched — names only, never hours", async () => {
+  fresh();
+  const res = await foundation.handler(ev(FOREMAN, { action: "day_crew", job_no: "17053", date: "2026-07-16" }));
+  assert.strictEqual(res.statusCode, 200);
+  const body = JSON.parse(res.body);
+  assert.strictEqual(body.source, "pending_timecards");
+  const names = body.crew.map((c) => c.name).filter(Boolean).sort();
+  assert.deepStrictEqual(names, ["Christian Abernathy", "Kelly Walker"]);
+  body.crew.forEach((c) => assert.deepStrictEqual(Object.keys(c).sort(), ["employee_no", "name"]));
+  assert.ok(!/"hours"/.test(res.body), "day_crew must never carry hours");
+  assert.ok(!/total_hours/.test(res.body));
+});
+
+test("the SAME foreman is still 403 on the hours actions — the widening is day_crew only", async () => {
+  fresh();
+  for (const qs of [
+    { action: "day_hours", job_no: "17053", date: "2026-07-16" },
+    { action: "job_hours", job_no: "17053" },
+    { action: "employees" },
+    { action: "jobs" }
+  ]) {
+    const res = await foundation.handler(ev(FOREMAN, qs));
+    assert.strictEqual(res.statusCode, 403, (qs.action || "") + " must stay foundation.read-only");
+  }
+  assert.strictEqual(dbCalls.length, 0);
+});
+
+test("day_crew: missing job_no / bad date are 400s, DB untouched", async () => {
+  fresh();
+  assert.strictEqual((await foundation.handler(ev(OWNER, { action: "day_crew", date: "2026-07-16" }))).statusCode, 400);
+  assert.strictEqual((await foundation.handler(ev(OWNER, { action: "day_crew", job_no: "17053", date: "junk" }))).statusCode, 400);
+  assert.strictEqual(dbCalls.length, 0);
 });
 
 /* ==================== handler: employees ==================== */

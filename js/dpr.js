@@ -323,6 +323,7 @@ function dprPickFoundationJob(jobNo){
   dprScheduleSameDayLoad();
   dprScheduleCrewHoursAutofill();
   dprRefreshLaborCard();
+  dprPopulateCrewFromPunches(false);  /* empty roster fills itself from the clock */
   toast("Linked Foundation job " + (j.job_no || "") + " — fill in today's progress");
 }
 
@@ -384,6 +385,7 @@ function dprEnsureListeners(){
   var dateEl = document.getElementById("dpr-date");
   if (dateEl) dateEl.addEventListener("change", dprScheduleSameDayLoad);
   if (dateEl) dateEl.addEventListener("change", dprScheduleCrewHoursAutofill); /* punches are per-day */
+  if (dateEl) dateEl.addEventListener("change", function(){ dprPopulateCrewFromPunches(false); });
   dprListenersInstalled = true;
 }
 
@@ -505,6 +507,7 @@ function dprPickBuilding(buildingId){
   dprScheduleSameDayLoad();
   dprScheduleCrewHoursAutofill();
   dprRefreshLaborCard();
+  dprPopulateCrewFromPunches(false);  /* empty roster fills itself from the clock */
   toast("Loaded “" + b.name + "” — review the fields, then fill in today's progress");
 }
 function dprRenderRoofPicker(){
@@ -804,6 +807,111 @@ function dprApplyCrewHoursToDom(){
   }
   dprRenderCrewTotal();
   dprSyncHours();
+}
+
+/* ================= crew + foreman auto-populate from the time clock =========
+   Mark: "can't the DPR auto fill the foreman and the crew foundation punches"
+   — it can. WHO punched on this job+date comes from `action=day_crew`
+   (names/ids only, NEVER hours — gated on dpr.create so foremen get it, not
+   just admins; hours stay behind foundation.read via the existing day_hours
+   path, which runs right after and fills them in for authorized users).
+
+   AUTO mode (job pick / report load / date change) only populates an EMPTY
+   roster — it never surprise-adds rows to a list the foreman is editing, and
+   never re-adds someone they deliberately removed. The "⏱ From Time Clock"
+   button is the deliberate path: it merges in whoever's missing (nameKey
+   match, so "Garcia, Jose" and "Jose Garcia" are one person) and reports
+   what it did. Same fail-closed manners as the hours auto-fill: 401/403
+   latches quiet for the session, errors leave manual entry untouched, and a
+   locked report is never touched. */
+var dprDayCrewCache = {};      /* "jobNo|date" -> [names] | null (fetch failed — don't retry) */
+var dprDayCrewDenied = false;  /* server said not authorized — stop asking this session */
+async function dprFetchDayCrew(jobNo, date){
+  var r = await fetch("/.netlify/functions/foundation?action=day_crew&job_no=" +
+    encodeURIComponent(jobNo) + "&date=" + encodeURIComponent(date), { headers: await authHeaders() });
+  var out = null;
+  try{ out = await r.json(); }catch(e){}
+  if (!r.ok){ var err = new Error((out && out.error) || ("server error " + r.status)); err.status = r.status; throw err; }
+  return out;
+}
+async function dprPopulateCrewFromPunches(manual){
+  if (dprIsLocked()){ if (manual) toast("This report is signed and locked."); return; }
+  if (dprDayCrewDenied) return;
+  if (typeof fetch !== "function" || typeof authHeaders !== "function") return;
+  var jobNo = String(dprState.foundationJobNo || val("dpr-jobNo") || "").trim();
+  var date = (val("dpr-date") || "").trim();
+  if (!jobNo || !date){
+    if (manual) toast("Pick the job (and date) first — the time clock is looked up per job per day.");
+    return;
+  }
+  /* Auto mode respects a roster in progress; the button merges deliberately. */
+  var hasNamed = dprCrew.some(function(c){ return (c.name || "").trim(); });
+  if (!manual && hasNamed) return;
+  var key = jobNo + "|" + date;
+  var names = dprDayCrewCache[key];
+  if (names === undefined){
+    /* Cache the IN-FLIGHT promise, not just the result — several triggers can
+       stack (report load + job pick + date change) and must share one fetch. */
+    names = dprDayCrewCache[key] = (async function(){
+      try{
+        var data = await dprFetchDayCrew(jobNo, date);
+        return ((data && data.crew) || [])
+          .map(function(c){ return (c && c.name ? String(c.name).trim() : ""); })
+          .filter(Boolean);
+      }catch(e){
+        if (e && (e.status === 401 || e.status === 403)) dprDayCrewDenied = true;
+        return null; /* failed — settles to a null cache entry, never retried this session */
+      }
+    })();
+  }
+  if (names && typeof names.then === "function"){
+    names = await names;
+    dprDayCrewCache[key] = names; /* settle the cache: promise -> value */
+    /* The job/date may have moved on while the fetch was in flight. */
+    var nowJob = String(dprState.foundationJobNo || val("dpr-jobNo") || "").trim();
+    if (nowJob + "|" + (val("dpr-date") || "").trim() !== key) return;
+  }
+  if (names === null){
+    if (manual) toast("Couldn't reach the time clock — add the crew by hand.");
+    return;
+  }
+  if (!names || !names.length){
+    if (manual) toast("No punches on the clock for this job/date yet.");
+    return;
+  }
+  var have = {};
+  dprCrew.forEach(function(c){ var k = dprNameKey(c.name); if (k) have[k] = 1; });
+  var added = 0;
+  names.forEach(function(n){
+    var k = dprNameKey(n);
+    if (!k || have[k]) return;
+    have[k] = 1;
+    dprCrew.push({ name: n, hours: "", hoursSource: "" });
+    added++;
+  });
+  if (added){
+    dprRenderCrew();
+    dprSyncHeadcount();
+    dprScheduleCrewHoursAutofill();   /* hours ride in next for foundation.read holders */
+  }
+  dprAutofillForeman(names);
+  if (manual) toast(added ? ("Added " + added + " from the time clock ✓") : "Crew already matches the time clock.");
+}
+/* Foreman auto-fill: if the field is empty and EXACTLY ONE of the day's
+   punchers is on the DPR_FOREMEN roster, that's the foreman — fill it (with
+   the roster's canonical spelling). Two roster foremen on one job = ambiguous,
+   fill nothing. Never stomps a typed name. */
+function dprAutofillForeman(names){
+  if ((val("dpr-foreman") || "").trim()) return;
+  var foremanByKey = {};
+  DPR_FOREMEN.forEach(function(f){ foremanByKey[dprNameKey(f)] = f; });
+  var hits = {};
+  (names || []).forEach(function(n){
+    var k = dprNameKey(n);
+    if (foremanByKey[k]) hits[k] = foremanByKey[k];
+  });
+  var keys = Object.keys(hits);
+  if (keys.length === 1) setVal("dpr-foreman", hits[keys[0]]);
 }
 
 /* ================= job-to-date labor card (admin-gated, live) =================
@@ -1243,6 +1351,7 @@ function dprFill(o){
   dprSyncHours();                  /* a loaded report's crew hours roll up too */
   dprScheduleCrewHoursAutofill();  /* punches may exist for this job + date */
   dprRefreshLaborCard();           /* job-to-date hours for the linked job (admin) */
+  dprPopulateCrewFromPunches(false); /* a fresh (empty-crew) day fills itself from the clock */
 }
 
 /* ================= save (client-direct Firestore write, permission-gated by rules) ================= */
