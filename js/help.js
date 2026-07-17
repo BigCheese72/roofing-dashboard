@@ -93,8 +93,8 @@ var HELP_ARTICLES = [
     keywords: "inspection checklist component rating good fair poor critical",
     body: [
       "Pick 🔍 Inspection from Home. Fill in the 8-item Inspection Checklist (Membrane/Field, Flashings & Terminations, Penetrations, Drainage, Rooftop Equipment, Perimeter/Edge, Interior, Safety Hazards).",
-      "Rate each Good / Fair / Poor / Critical / N/A. A photo on any item is camera-only (no library/CompanyCam import) since it's documenting the exact condition you're rating.",
-      "Taking that photo automatically drops a pin on the roof map. Rating something Fair, Poor, or Critical automatically adds it to Findings too -- you never write it twice.",
+      "Rate each Good / Fair / Poor / Critical / N/A. Each item has \"📷 Take Photo\" (live camera) and \"+ Add Photos\" (pick from your phone's library) -- use either. (CompanyCam import stays off the checklist.)",
+      "Taking a live photo with 📷 automatically drops a pin on the roof map from where you're standing; a library photo is added un-pinned (place it manually if needed). Rating something Fair, Poor, or Critical automatically adds it to Findings too -- you never write it twice.",
       "If the building has more than one roof, a checklist appears near the top asking which roof(s) this inspection covers."
     ] },
   { id: "wo-warranty", title: "How do I fill out a Warranty work order?", screens: ["edit"], roles: "all",
