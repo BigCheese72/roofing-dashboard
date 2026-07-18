@@ -17,6 +17,13 @@ var STORE_KEY = "leak-workorders-v1";
    the underlying imagery doesn't get any sharper. Shared by the pin modal,
    asset modal, and building-history roof map — all satellite mode. */
 var SAT_MAX_NATIVE_ZOOM = 20;
+var SAT_TILE_PUBLIC = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
+var SAT_TILE_PROXY = "/.netlify/functions/arcgis-tile?z={z}&y={y}&x={x}";
+function satelliteTileUrlTemplate(){
+  var host = window.location.hostname;
+  if (window.location.protocol === "file:" || host === "localhost" || host === "127.0.0.1") return SAT_TILE_PUBLIC;
+  return SAT_TILE_PROXY;
+}
 /* Mark: his RTK ortho is ~2cm/pixel -- vastly more detail than satellite
    tiles top out at (SAT_MAX_NATIVE_ZOOM above is the real, empirically-
    verified Esri ceiling). An ortho/GeoTIFF overlay itself never raises the
