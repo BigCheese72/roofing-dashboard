@@ -122,6 +122,7 @@ var ESTIMATOR_FIELDS = {
 var estimatorCompanyCamProjects = [];
 var estimatorLineItems = null;
 var estimatorLastInput = null;
+var ESTIMATOR_STORE_KEY = "roofops_estimates_v1";
 
 function estimatorIsOwner(){
   return !!(currentAuthClaims && currentAuthClaims.owner === true);
@@ -139,6 +140,24 @@ function estimatorOnShow(){
 
 function estimatorMoney(n){
   return "$" + Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function estimatorSlug(s){
+  return String(s || "estimate").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "estimate";
+}
+
+function estimatorSavedDb(){
+  try{
+    var raw = localStorage.getItem(ESTIMATOR_STORE_KEY);
+    var parsed = raw ? JSON.parse(raw) : null;
+    return parsed && Array.isArray(parsed.estimates) ? parsed : { estimates: [] };
+  }catch(e){
+    return { estimates: [] };
+  }
+}
+
+function estimatorWriteSavedDb(db){
+  localStorage.setItem(ESTIMATOR_STORE_KEY, JSON.stringify(db || { estimates: [] }));
 }
 
 function estimatorNumber(n, digits){
@@ -197,6 +216,99 @@ function estimatorLoadWarrensburg(opts){
   if (!opts || !opts.quiet){
     if (typeof toast === "function") toast("Warrensburg estimate model loaded.");
   }
+}
+
+function estimatorCurrentSnapshot(){
+  var input = estimatorReadForm();
+  var result = estimatorCalculate(input, estimatorLineItems || undefined);
+  return {
+    id: "est_" + Date.now(),
+    savedAt: Date.now(),
+    projectName: input.projectName || "(untitled estimate)",
+    location: input.location || "",
+    contact: input.contact || "",
+    input: input,
+    lineItems: result.lineItems,
+    totals: {
+      edgeTotal: result.edgeTotal,
+      ourTotal: result.ourTotal,
+      edgePerSquare: result.pricePerSquareEdge,
+      ourPerSquare: result.pricePerSquareOur
+    }
+  };
+}
+
+function estimatorSaveCurrent(){
+  if (!estimatorIsOwner()){
+    if (typeof toast === "function") toast("Owner login required.");
+    return;
+  }
+  var snap = estimatorCurrentSnapshot();
+  var db = estimatorSavedDb();
+  db.estimates = db.estimates.filter(function(e){ return e.id !== snap.id; });
+  db.estimates.unshift(snap);
+  db.estimates = db.estimates.slice(0, 50);
+  try{
+    estimatorWriteSavedDb(db);
+    if (typeof toast === "function") toast("Estimate saved on this device.");
+    estimatorRenderSavedList();
+  }catch(e){
+    if (typeof toast === "function") toast("Could not save estimate: " + e.message);
+  }
+}
+
+function estimatorOpenSaved(){
+  if (!estimatorIsOwner()){
+    if (typeof toast === "function") toast("Owner login required.");
+    return;
+  }
+  estimatorRenderSavedList();
+  var card = document.getElementById("estimator-saved-card");
+  if (card) card.style.display = "";
+}
+
+function estimatorRenderSavedList(){
+  var host = document.getElementById("estimator-saved-list");
+  if (!host) return;
+  var db = estimatorSavedDb();
+  if (!db.estimates.length){
+    host.innerHTML = "<p class=\"hint\">No saved estimates on this device yet.</p>";
+    return;
+  }
+  host.innerHTML = db.estimates.map(function(e){
+    return "<div class=\"saved-item\"><div class=\"info\"><div class=\"name\">" + esc(e.projectName || "(untitled estimate)") +
+      "</div><div class=\"meta\">" + esc(e.location || "") + " · EDGE " + estimatorMoney(e.totals && e.totals.edgeTotal) +
+      " · Our Way " + estimatorMoney(e.totals && e.totals.ourTotal) + "</div></div>" +
+      "<button class=\"btn\" onclick=\"estimatorLoadSaved('" + esc(e.id) + "')\">Open</button></div>";
+  }).join("");
+}
+
+function estimatorLoadSaved(id){
+  if (!estimatorIsOwner()){
+    if (typeof toast === "function") toast("Owner login required.");
+    return;
+  }
+  var db = estimatorSavedDb();
+  var found = db.estimates.filter(function(e){ return e.id === id; })[0];
+  if (!found){
+    if (typeof toast === "function") toast("Saved estimate not found.");
+    return;
+  }
+  Object.keys(ESTIMATOR_FIELDS).forEach(function(key){
+    estimatorSetVal(ESTIMATOR_FIELDS[key], found.input ? found.input[key] : "");
+  });
+  estimatorLineItems = (found.lineItems || []).map(function(item){
+    return {
+      name: item.name || "",
+      qty: item.qty || "",
+      unit: item.unit || "",
+      total: Number(item.total || 0),
+      taxable: item.taxable !== false
+    };
+  });
+  estimatorRenderCompanyCamLink();
+  estimatorRecalculateLineItems();
+  if (typeof toast === "function") toast("Estimate loaded.");
 }
 
 function estimatorRenderCompanyCamLink(){
@@ -460,6 +572,87 @@ function estimatorRender(result){
         estimatorMoney(result.ourDirect) + "</td><td class=\"num\">" + estimatorMoney(result.ourMarkup) +
         "</td><td class=\"num\"><b>" + estimatorMoney(result.ourTotal) + "</b></td></tr>" +
     "</tbody></table>";
+}
+
+function estimatorProposalText(result){
+  var input = result.input;
+  var price = result.edgeTotal;
+  var lines = [];
+  lines.push("WATKINS ROOFING PROPOSAL");
+  lines.push("");
+  lines.push("Project: " + (input.projectName || ""));
+  if (input.location) lines.push("Location: " + input.location);
+  if (input.contact) lines.push("Attention: " + input.contact);
+  lines.push("");
+  lines.push("Scope of Work");
+  lines.push("Furnish labor, materials, equipment, supervision, and insurance necessary to install a " +
+    input.warrantyYears + "-year " + (input.membrane === "epdm-sa" ? "60 mil Elevate RubberGard EPDM SA" : input.membrane.toUpperCase()) +
+    " roofing system.");
+  lines.push("");
+  lines.push("Includes:");
+  lines.push("- Tear-off and disposal as carried in the estimate.");
+  if (input.slopeType === "tapered") lines.push("- Tapered insulation package and continuous " + input.overlayIn + "\" ISO overlay.");
+  else lines.push("- Continuous " + input.overlayIn + "\" ISO overlay over structurally sloped roof.");
+  lines.push("- Required insulation fasteners, plates, seam accessories, flashing materials, and sealants.");
+  lines.push("- Retrofit roof drains, perimeter blocking/wall build-up, and new perimeter sheet metal as carried.");
+  lines.push("- " + input.warrantyYears + "-year manufacturer warranty allowance.");
+  lines.push("");
+  lines.push("Clarifications:");
+  lines.push("- Proposal is based on the current estimate model and editable material list.");
+  lines.push("- Hidden or unforeseen deck, wall, or substrate conditions are excluded unless specifically listed.");
+  lines.push("- Final material quantities may be adjusted before ordering based on approved shop drawings and field verification.");
+  lines.push("");
+  lines.push("Proposal Amount:");
+  lines.push(estimatorMoney(price));
+  return lines.join("\n");
+}
+
+function estimatorCreateProposal(){
+  if (!estimatorIsOwner()){
+    if (typeof toast === "function") toast("Owner login required.");
+    return;
+  }
+  var result = estimatorRecalculateLineItems() || estimatorCalculateFromForm({ quiet: true });
+  var text = estimatorProposalText(result);
+  var card = document.getElementById("estimator-proposal-card");
+  var pre = document.getElementById("estimator-proposal-text");
+  if (pre) pre.textContent = text;
+  if (card) card.style.display = "";
+  if (typeof toast === "function") toast("Proposal draft created.");
+  return text;
+}
+
+function estimatorCopyProposal(){
+  var pre = document.getElementById("estimator-proposal-text");
+  if (!pre || !pre.textContent){
+    if (typeof toast === "function") toast("Create a proposal first.");
+    return;
+  }
+  if (navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(pre.textContent).then(function(){
+      if (typeof toast === "function") toast("Proposal copied.");
+    }).catch(function(){
+      if (typeof toast === "function") toast("Copy failed. Select the text and copy manually.");
+    });
+  }else if (typeof toast === "function"){
+    toast("Select the proposal text and copy it.");
+  }
+}
+
+function estimatorDownloadProposalText(){
+  var pre = document.getElementById("estimator-proposal-text");
+  if (!pre || !pre.textContent){
+    if (typeof toast === "function") toast("Create a proposal first.");
+    return;
+  }
+  var input = estimatorReadForm();
+  var blob = new Blob([pre.textContent], { type: "text/plain;charset=utf-8" });
+  var a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = estimatorSlug(input.projectName) + "-proposal.txt";
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); }, 0);
 }
 
 function estimatorRecalculateLineItems(){

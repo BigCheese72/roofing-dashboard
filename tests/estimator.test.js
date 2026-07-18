@@ -7,8 +7,14 @@ const vm = require("node:vm");
 
 function loadEstimator(){
   const elements = {};
+  const storage = {};
   const sandbox = {
     currentAuthClaims: { owner: true },
+    localStorage: {
+      getItem(key){ return Object.prototype.hasOwnProperty.call(storage, key) ? storage[key] : null; },
+      setItem(key, value){ storage[key] = String(value); },
+      removeItem(key){ delete storage[key]; }
+    },
     document: {
       getElementById(id){
         if (!elements[id]){
@@ -29,6 +35,7 @@ function loadEstimator(){
   vm.createContext(sandbox);
   vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "js", "estimator.js"), "utf8"), sandbox);
   sandbox.__elements = elements;
+  sandbox.__storage = storage;
   return sandbox;
 }
 
@@ -120,4 +127,33 @@ test("Warrensburg screw order is broken out by length and pail count", () => {
   assert.match(screws[0].unit, /\$644\.00\/M, need 750/);
   assert.match(screws[4].qty, /1 pail \/ 500 screws/);
   assert.match(screws[4].unit, /\$1,217\.25\/M, need 250/);
+});
+
+test("estimator saves and reloads editable estimate snapshots", () => {
+  const sb = loadEstimator();
+  sb.estimatorLoadWarrensburg({ quiet: true });
+  const result = sb.estimatorCalculate(sb.ESTIMATOR_DEFAULTS);
+  sb.estimatorLineItems = result.lineItems.slice();
+  const liftIndex = sb.estimatorLineItems.findIndex((item) => item.name === "Lift / rental equipment");
+  sb.estimatorUpdateLineItem(liftIndex, "total", "12500");
+  sb.estimatorSaveCurrent();
+
+  const db = JSON.parse(sb.__storage[sb.ESTIMATOR_STORE_KEY]);
+  assert.equal(db.estimates.length, 1);
+  assert.equal(db.estimates[0].projectName, "Warrensburg Post Office");
+
+  sb.estimatorLineItems = null;
+  sb.estimatorLoadSaved(db.estimates[0].id);
+  const loadedLift = sb.estimatorLineItems.find((item) => item.name === "Lift / rental equipment");
+  assert.equal(loadedLift.total, 12500);
+});
+
+test("proposal draft uses the EDGE proposal amount without internal alternate pricing", () => {
+  const sb = loadEstimator();
+  const result = sb.estimatorCalculate(sb.ESTIMATOR_DEFAULTS);
+  const text = sb.estimatorProposalText(result);
+  assert.match(text, /WATKINS ROOFING PROPOSAL/);
+  assert.match(text, /Proposal Amount:\n\$273,375\.59/);
+  assert.doesNotMatch(text, /Our Way/);
+  assert.doesNotMatch(text, /Internal alternate/);
 });

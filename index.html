@@ -579,6 +579,9 @@
       <div class="btnrow" style="margin:0 0 10px">
         <button class="btn primary" onclick="estimatorLoadWarrensburg()">Load Warrensburg Model</button>
         <button class="btn" onclick="estimatorCalculateFromForm()">Calculate</button>
+        <button class="btn" onclick="estimatorSaveCurrent()">Save Estimate</button>
+        <button class="btn" onclick="estimatorOpenSaved()">Open Saved</button>
+        <button class="btn" onclick="estimatorCreateProposal()">Create Proposal</button>
       </div>
       <p class="hint" style="margin:0">This is estimate-first. CompanyCam, roof drawings, and photos are optional evidence inputs;
         a work order is not required.</p>
@@ -671,6 +674,18 @@
     <div class="card">
       <h2 class="cond">Estimate Results</h2>
       <div id="estimator-results"><p class="hint">Load a model or enter values, then calculate.</p></div>
+    </div>
+    <div class="card" id="estimator-saved-card" style="display:none">
+      <h2 class="cond">Saved Estimates</h2>
+      <div id="estimator-saved-list"></div>
+    </div>
+    <div class="card" id="estimator-proposal-card" style="display:none">
+      <h2 class="cond">Proposal Draft</h2>
+      <div class="btnrow" style="margin:0 0 10px">
+        <button class="btn" onclick="estimatorCopyProposal()">Copy Proposal Text</button>
+        <button class="btn" onclick="estimatorDownloadProposalText()">Download Text</button>
+      </div>
+      <pre id="estimator-proposal-text" style="white-space:pre-wrap;font-family:inherit;background:#F8FAFB;border:1px solid var(--line);border-radius:6px;padding:12px;margin:0"></pre>
     </div>
   </div>
 
