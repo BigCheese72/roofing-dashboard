@@ -134,6 +134,13 @@ test("smNameIsDistinctive: needs two non-work words to be a containment key", ()
   assert.strictEqual(ctx.smNameIsDistinctive("prairie farms"), true);
   assert.strictEqual(ctx.smNameIsDistinctive("flat branch pub"), true);
   assert.strictEqual(ctx.smNameIsDistinctive("constructor"), false, "no inherited-key false positive");
+  // Sequence markers are not place names — these are pure work-scope titles
+  // that would otherwise qualify on their digits alone.
+  assert.strictEqual(ctx.smNameIsDistinctive("roof area 2 section 3"), false);
+  assert.strictEqual(ctx.smNameIsDistinctive("unit 5 bldg 7"), false);
+  assert.strictEqual(ctx.smNameIsDistinctive("phase 2 area a"), false);
+  // ...but a real site keeping a number in its name is still fine.
+  assert.strictEqual(ctx.smNameIsDistinctive("hy vee 1234"), true);
 });
 
 test("smFindFoundationJob: single-word job names don't auto-link from a subject", () => {
@@ -141,6 +148,80 @@ test("smFindFoundationJob: single-word job names don't auto-link from a subject"
   const jobs = [{ job_no: "5", name: "Columbia", address: "", city: "" }];
   assert.strictEqual(ctx.smFindFoundationJob("", "Columbia MO warehouse proposal", jobs), null,
     "one word can't identify a site — that's what the manual picker is for");
+});
+
+test("smFindFoundationJob: two jobs with the SAME name stay ambiguous (not cache order)", () => {
+  const ctx = loadSm();
+  // A repeat customer with a job per building/year really does produce these.
+  // A string contains itself, so the nesting rule alone would call the twin
+  // "nested" and hand back whichever job happened to sort first.
+  const twins = [
+    { job_no: "17820", name: "Prairie Farms", address: "1 A St", city: "Columbia", state: "MO" },
+    { job_no: "17456", name: "Prairie Farms", address: "9 B St", city: "Moberly", state: "MO" },
+  ];
+  const subject = "Prairie Farms – roof repair proposal";
+  assert.strictEqual(ctx.smFindFoundationJob("", subject, twins), null);
+  // ...and the answer must not depend on cache order.
+  assert.strictEqual(ctx.smFindFoundationJob("", subject, twins.slice().reverse()), null);
+  // A third, genuinely distinct name alongside them is still ambiguous.
+  assert.strictEqual(ctx.smFindFoundationJob("", subject, [...twins, { job_no: "3", name: "North Terminal" }]), null);
+});
+
+test("smFdnCacheStatus: loading / empty / error / ready are distinguishable", () => {
+  const ctx = loadSm();
+  ctx.fdnCache = null; ctx.smFdnLoadFailed = false;
+  assert.strictEqual(ctx.smFdnCacheStatus(), "loading");
+  ctx.smFdnLoadFailed = true;
+  assert.strictEqual(ctx.smFdnCacheStatus(), "error", "a failed load must not read as still loading");
+  ctx.fdnCache = []; ctx.smFdnLoadFailed = false;
+  assert.strictEqual(ctx.smFdnCacheStatus(), "empty", "fdnLoadJobs caches [] for the session — it never self-clears");
+  ctx.fdnCache = [PRAIRIE];
+  assert.strictEqual(ctx.smFdnCacheStatus(), "ready");
+});
+
+test("the proposals row distinguishes all four cache states", () => {
+  const src = fs.readFileSync(path.join(__dirname, "..", "js", "servicemanager.js"), "utf8");
+  const render = src.slice(src.indexOf("function smRenderProposals"), src.indexOf("function smPrecreateFromProposal"));
+  assert.ok(/smFdnCacheStatus\(\)/.test(render), "must consult the cache state, not a truthiness check");
+  for (const state of ["loading", "empty", "error"]) {
+    assert.ok(new RegExp(`fdnState === "${state}"`).test(render), `must handle the ${state} state`);
+  }
+});
+
+test("hand-typed and subject texts are matched separately, never concatenated", () => {
+  const ctx = loadSm();
+  const jobs = [
+    { job_no: "1", name: "North Terminal", address: "", city: "" },
+    { job_no: "2", name: "Prairie Farms", address: "", city: "" },
+  ];
+  // Concatenating a correction onto the subject yields two disjoint candidates
+  // and refuses — i.e. typing the RIGHT name would have broken matching.
+  assert.strictEqual(
+    ctx.smFindFoundationJob("", "North Terminal Prairie Farms – roof repair proposal", jobs), null);
+  // Matched on its own, the hand-typed name resolves cleanly.
+  const hit = ctx.smFindFoundationJob("", "North Terminal", jobs);
+  assert.ok(hit);
+  assert.strictEqual(hit.job_no, "1");
+  // The seam must not fabricate a match across field-end/subject-start either.
+  const seam = [{ job_no: "9", name: "Terminal Prairie", address: "", city: "" }];
+  assert.strictEqual(ctx.smFindFoundationJob("", "North Terminal", seam), null);
+
+  const src = fs.readFileSync(path.join(__dirname, "..", "js", "servicemanager.js"), "utf8");
+  const fn = src.slice(src.indexOf("function smFoundationMatchTexts"), src.indexOf("function smFoundationSearchText"));
+  assert.ok(/if \(name && !smJobNameFromProposal\) out\.push\(name\)/.test(fn),
+    "a hand-typed name must be tried first, on its own");
+  assert.ok(!/name \+ " " \+ subj/.test(src), "the concatenated haystack must be gone");
+  const match = src.slice(src.indexOf("async function smMatchFoundationFromForm"), src.indexOf("function smApplyFoundationPick"));
+  assert.ok(/for \(var ti = 0; !found\.job && ti < texts\.length; ti\+\+\)/.test(match),
+    "must try each candidate text in priority order");
+});
+
+test("a manual pick writes the job name unconditionally (even an empty one)", () => {
+  const src = fs.readFileSync(path.join(__dirname, "..", "js", "servicemanager.js"), "utf8");
+  const apply = src.slice(src.indexOf("function smApplyFoundationPick"), src.indexOf("function smClearFoundationPick"));
+  assert.ok(/if \(manual \|\| \(job\.name &&/.test(apply),
+    "manual must not be gated behind job.name — an unnamed job would leave the previous job's name in place");
+  assert.ok(/setVal2\("sm-pc-jobName", job\.name \|\| ""\)/.test(apply));
 });
 
 test("smFindFoundationJobDetailed: reports HOW it matched", () => {
@@ -223,11 +304,11 @@ test("a Foundation match replaces the proposal SUBJECT with the real job name", 
   const src = fs.readFileSync(path.join(__dirname, "..", "js", "servicemanager.js"), "utf8");
   const apply = src.slice(src.indexOf("function smApplyFoundationPick"), src.indexOf("function smClearFoundationPick"));
   assert.ok(/smJobNameFromProposal/.test(apply), "must know whether the name is a subject or hand-typed");
-  assert.ok(/setVal2\("sm-pc-jobName", job\.name\)/.test(apply), "must bind the canonical job name");
+  assert.ok(/setVal2\("sm-pc-jobName", job\.name \|\| ""\)/.test(apply), "must bind the canonical job name");
   // A manual correction must win even after an auto-match already stamped a
   // name, or "change" leaves the WO under the wrong job's name.
   assert.ok(/var manual = \(via === "manual"\)/.test(apply), "must distinguish a manual pick");
-  assert.ok(/manual \|\| smJobNameFromProposal/.test(apply), "a manual pick must override the flag");
+  assert.ok(/if \(manual \|\| \(job\.name &&/.test(apply), "a manual pick must override the flag");
 });
 
 test("smPickFoundationJob marks the pick manual (authoritative over auto-match)", () => {

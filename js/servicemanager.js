@@ -49,6 +49,7 @@ var smWoIndex = [];              // recent saved-WO index (for WO-exists flag + 
 var smCurrentProposal = null;    // proposal ref being pre-created from (or null)
 var smFoundationPick = null;     // Foundation job matched for the current pre-create
 var smJobNameFromProposal = false; // job-name field still holds the proposal subject (not hand-typed)
+var smFdnLoadFailed = false;     // a Foundation jobs load rejected this session
 var smCcPick = null;             // { id, name } CompanyCam project linked/created for this pre-create
 
 /* ---- small DOM/utility helpers (kept local so this module is self-contained
@@ -156,17 +157,21 @@ async function smLoadProposals(){
   try {
     var body = { action: "list_messages", pages: 3 };
     if (src === "sentitems") body.folderId = "sentitems"; else body.folderName = src;
-    var data = await smApi(body);
-    smProposals = data.rows || [];
-    await smRefreshWoIndex();
+    var rows = data.rows || [];   // capture ONCE — `data.rows || []` allocates a
+    smProposals = rows;           // fresh array each time, so the identity guard
+    await smRefreshWoIndex();     // below would never hold.
     smRenderProposals();
     // The Foundation jobs cache is primed in parallel (smOnShow → fdnPrimePicker)
     // and usually loses this race, so re-render once it lands — otherwise every
-    // row keeps claiming "no Foundation job matched" on a cold open.
-    if (typeof fdnLoadJobs === "function" && !(typeof fdnCache !== "undefined" && fdnCache && fdnCache.length)){
+    // row keeps claiming "no Foundation job matched" on a cold open. Re-render
+    // on FAILURE too, so the row line moves off "Checking…" either way.
+    if (typeof fdnLoadJobs === "function" && smFdnCacheStatus() === "loading"){
       fdnLoadJobs(false).then(function(){
-        if (smProposals === (data.rows || [])) smRenderProposals();
-      }).catch(function(){});
+        if (smProposals === rows) smRenderProposals();
+      }).catch(function(){
+        smFdnLoadFailed = true;
+        if (smProposals === rows) smRenderProposals();
+      });
     }
   } catch (e) {
     var msg = e.status === 404 ? "No “Proposals” folder found in the mailbox. Create one in Outlook, switch to Sent Items, or use Upload PDF." :
@@ -192,11 +197,13 @@ function smRenderProposals(){
     // jobs cache hasn't landed yet, say "checking" rather than asserting a
     // no-match we haven't actually tested (smRenderProposals re-runs when the
     // cache arrives — see smLoadProposals).
-    var fdnReady = (typeof fdnCache !== "undefined" && fdnCache && fdnCache.length);
-    var fdnJob = fdnReady ? smFindFoundationJob("", p.s || "") : null;
-    var fdnLine = !fdnReady
-      ? '<div class="hint" style="margin:0 0 8px">🏗️ Checking Foundation jobs…</div>'
-      : fdnJob
+    var fdnState = smFdnCacheStatus();
+    var fdnJob = (fdnState === "ready") ? smFindFoundationJob("", p.s || "") : null;
+    var fdnLine =
+      fdnState === "loading" ? '<div class="hint" style="margin:0 0 8px">🏗️ Checking Foundation jobs…</div>' :
+      fdnState === "empty"   ? '<div class="hint" style="margin:0 0 8px">🏗️ No Foundation jobs are cached yet — an admin can run a sync.</div>' :
+      fdnState === "error"   ? '<div class="hint" style="margin:0 0 8px">🏗️ Couldn\'t load the Foundation job list — you can still link a job by hand on the work order.</div>' :
+      fdnJob
         ? '<div class="hint" style="margin:0 0 8px;color:#178a1c">🏗️ Foundation job #' + smEsc(fdnJob.job_no) +
             " — " + smEsc(fdnJob.name || "") + "</div>"
         : '<div class="hint" style="margin:0 0 8px">🏗️ No Foundation job matched from the subject — you can link one when you create the work order.</div>';
@@ -347,7 +354,11 @@ function smJobNameNorm(j){
 function smNameIsDistinctive(nameNorm){
   if (!nameNorm) return false;
   var specific = nameNorm.split(" ").filter(function(t){
-    return t && !SM_GENERIC_NAME_WORDS[t];
+    // Bare numerals and single letters are sequence markers, not place names —
+    // without this, "Roof Area 2 Section 3" and "Unit 5 Bldg 7" qualify on
+    // their digits alone once the work-words are stripped.
+    if (!t || t.length < 2 || /^\d+$/.test(t)) return false;
+    return !SM_GENERIC_NAME_WORDS[t];
   });
   return specific.length >= 2;
 }
@@ -398,6 +409,13 @@ function smFindFoundationJobDetailed(loc, name, jobs){
     return smJobNameNorm(b).length > smJobNameNorm(a).length ? b : a;
   });
   var wn = smJobNameNorm(winner);
+  // Two DIFFERENT jobs carrying the SAME name (a repeat customer, a job per
+  // building per year) is ambiguity, not nesting — a string contains itself, so
+  // without this the winner is decided by cache order and the WO silently binds
+  // to whichever job happened to sort first. Tier 2 already refuses this; tier 3
+  // must too, and it's the only tier an emailed proposal can reach.
+  var sameName = contained.filter(function(j){ return smJobNameNorm(j) === wn; });
+  if (sameName.length > 1) return miss;
   var allNested = contained.every(function(j){
     return j === winner || smContainsTokens(wn, smJobNameNorm(j));
   });
@@ -405,6 +423,16 @@ function smFindFoundationJobDetailed(loc, name, jobs){
 }
 function smFindFoundationJob(loc, name, jobs){
   return smFindFoundationJobDetailed(loc, name, jobs).job;
+}
+
+/* Which of the four states the jobs cache is in. "loading" and "empty" look
+ * identical through a truthiness check but mean opposite things to a manager:
+ * one resolves itself, the other needs an admin to run a sync. fdnLoadJobs()
+ * also caches [] permanently for the session, so "empty" never self-clears. */
+function smFdnCacheStatus(){
+  var loaded = (typeof fdnCache !== "undefined" && fdnCache);
+  if (loaded) return fdnCache.length ? "ready" : "empty";
+  return smFdnLoadFailed ? "error" : "loading";
 }
 
 /* Ranked "did you mean" candidates for the picker and the no-match UI. Scores
@@ -441,12 +469,30 @@ function smRankFoundationJobs(text, jobs, limit){
  * the proposal subject (the field may hold a truncated/edited subject, and the
  * site name can sit in either). Deduped — on a fresh proposal the two are the
  * same string, and doubling it only creates a bogus token junction. */
-function smFoundationSearchText(){
+/* The candidate texts to match against, MOST AUTHORITATIVE FIRST — tried one at
+ * a time, never concatenated. Concatenating a hand-typed correction onto the
+ * subject made things worse two ways: "North Terminal" + a Prairie Farms
+ * subject became two disjoint candidates (→ refused, so typing the right name
+ * broke matching), and the field/subject seam could fabricate a token run that
+ * matches a third job outright. */
+function smFoundationMatchTexts(){
   var name = getVal2("sm-pc-jobName");
   var subj = (smCurrentProposal && smCurrentProposal.subject) || "";
-  if (!subj) return name;
-  if (!name || smContainsTokens(smNorm(subj), smNorm(name))) return subj;
-  return name + " " + subj;
+  var out = [];
+  // A name the manager typed themselves outranks the email subject.
+  if (name && !smJobNameFromProposal) out.push(name);
+  if (subj) out.push(subj);
+  if (name && out.indexOf(name) === -1) out.push(name);
+  return out;
+}
+/* Single best text for RANKING and for seeding the picker's search box. After a
+ * match has overwritten the job-name field, the proposal subject is the more
+ * useful basis — otherwise "change" opens pre-filtered to the very job you're
+ * trying to correct. */
+function smFoundationSearchText(){
+  var subj = (smCurrentProposal && smCurrentProposal.subject) || "";
+  if (subj) return subj;
+  return getVal2("sm-pc-jobName");
 }
 /* Guards the fire-and-forget match against a stale resolve. fdnLoadJobs() can
  * be a cold 5000-doc Firestore read; without this, closing proposal A's form
@@ -456,14 +502,19 @@ var smFdnMatchSeq = 0;
 async function smMatchFoundationFromForm(silentOnMiss){
   var el = smEl("sm-pc-foundation");
   var loc = getVal2("sm-pc-location");
-  var text = smFoundationSearchText();
+  var texts = smFoundationMatchTexts();
   var seq = ++smFdnMatchSeq;
   var forProposal = smCurrentProposal;
   if (el) el.innerHTML = "Searching Foundation…";
   try { if (typeof fdnLoadJobs === "function") await fdnLoadJobs(false); } catch (e) {}
   // The form moved on while we were away — drop this result on the floor.
   if (seq !== smFdnMatchSeq || smCurrentProposal !== forProposal) return;
-  var found = smFindFoundationJobDetailed(loc, text);
+  // Address first (it doesn't depend on any text), then each candidate text in
+  // priority order; the first confident hit wins.
+  var found = smFindFoundationJobDetailed(loc, "");
+  for (var ti = 0; !found.job && ti < texts.length; ti++){
+    found = smFindFoundationJobDetailed(loc, texts[ti]);
+  }
   if (found.job){ smApplyFoundationPick(found.job, found.via); return; }
   smFoundationPick = null;
   el = smEl("sm-pc-foundation");
@@ -495,8 +546,13 @@ function smApplyFoundationPick(job, via){
   smFoundationPick = job || null;
   if (!job){ smClearFoundationPick(); return; }
   var manual = (via === "manual");
-  if (job.name && (manual || smJobNameFromProposal || !getVal2("sm-pc-jobName"))){
-    setVal2("sm-pc-jobName", job.name);
+  // On a manual pick the name is written UNCONDITIONALLY — including to "" for
+  // a job with no name. Skipping the write there would leave the previously
+  // matched job's NAME sitting above the newly picked job's NUMBER, which is
+  // the identity split this binding exists to prevent, and the manager has
+  // every reason to believe they just corrected it.
+  if (manual || (job.name && (smJobNameFromProposal || !getVal2("sm-pc-jobName")))){
+    setVal2("sm-pc-jobName", job.name || "");
     smJobNameFromProposal = false;
   }
   if (typeof fdnComposeAddress === "function"){
@@ -540,7 +596,12 @@ function smOpenFoundationPicker(){
   if (m) m.style.display = "";
   var host = smEl("sm-fdn-list");
   if (host) host.innerHTML = "Loading jobs…";
+  // Same staleness class as smMatchFoundationFromForm: a slow first load for
+  // proposal A must not re-seed a picker the manager has since reopened for B.
+  var seq = ++smFdnMatchSeq;
+  var forProposal = smCurrentProposal;
   var render = function(){
+    if (seq !== smFdnMatchSeq || smCurrentProposal !== forProposal) return;
     // Seed from the best-ranked CANDIDATE's name, never the raw email subject:
     // the filter is an AND over tokens, so seeding "Prairie Farms – roof repair
     // proposal" would return zero rows for a job that's sitting right there.
@@ -550,6 +611,8 @@ function smOpenFoundationPicker(){
     smRenderFoundationPicker();
   };
   if (typeof fdnLoadJobs === "function") fdnLoadJobs(false).then(render).catch(function(){
+    smFdnLoadFailed = true;
+    if (seq !== smFdnMatchSeq) return;
     if (host) host.innerHTML = '<span style="color:#b23">Couldn\'t load the Foundation job list.</span>';
   });
   else render();
@@ -1020,6 +1083,8 @@ async function smAssignExisting(id){
 if (typeof module !== "undefined" && module.exports){
   module.exports = {
     smFindFoundationJob: smFindFoundationJob,
+    smFindFoundationJobDetailed: smFindFoundationJobDetailed,
+    smFdnCacheStatus: smFdnCacheStatus,
     smRankFoundationJobs: smRankFoundationJobs,
     smFilterFoundationJobs: smFilterFoundationJobs,
     smNameIsDistinctive: smNameIsDistinctive,
