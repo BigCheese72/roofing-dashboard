@@ -832,7 +832,7 @@ function estimatorCalculate(input, lineItems){
   var ourMarkup = ourDirect * input.ourMarkupRate;
   var ourTotal = ourDirect + ourMarkup;
   var netWallRise = Math.max(0, input.maxTaperIn + input.overlayIn - input.tearoffIn);
-  var pricingSquares = generated.areaSquares || 1;
+  var pricingSquares = generated.areaSquares > 0 ? generated.areaSquares : 0;
 
   return {
     input: input,
@@ -860,8 +860,8 @@ function estimatorCalculate(input, lineItems){
     ourDirect: ourDirect,
     ourMarkup: ourMarkup,
     ourTotal: ourTotal,
-    pricePerSquareEdge: edgeTotal / pricingSquares,
-    pricePerSquareOur: ourTotal / pricingSquares,
+    pricePerSquareEdge: pricingSquares ? edgeTotal / pricingSquares : 0,
+    pricePerSquareOur: pricingSquares ? ourTotal / pricingSquares : 0,
     wallBuildRequiredIn: netWallRise,
     wallNote: "Max taper " + input.maxTaperIn + "\" + " + input.overlayIn + "\" overlay - " +
       input.tearoffIn + "\" tear-off = " + (Math.round(netWallRise * 10) / 10) +
@@ -893,7 +893,10 @@ function estimatorLineItemRowsHtml(items){
 function estimatorRender(result){
   var host = document.getElementById("estimator-results");
   if (!host) return;
-  var sq = result.areaSquares;
+  var sq = result.areaSquares > 0 ? result.areaSquares : 0;
+  function costPerSquare(amount){
+    return sq ? amount / sq : 0;
+  }
   var basis = estimatorTakeoffBasisHtml(result);
   host.innerHTML =
     "<div class=\"estimator-results-grid\">" +
@@ -914,9 +917,9 @@ function estimatorRender(result){
       "<tr><td>Other costs / allowances</td><td></td><td></td><td></td><td class=\"num\">" + estimatorMoney(result.otherCosts) + "</td><td></td></tr>" +
     "</tbody></table>" +
     "<table class=\"estimator-table\"><thead><tr><th>Direct / Allowance</th><th class=\"num\">Amount</th><th class=\"num\">Cost / SQ</th></tr></thead><tbody>" +
-      estimatorRowHtml("EDGE labor - " + result.manHours + " MH @ " + estimatorMoney(result.input.edgeLaborRate) + "/hr", result.edgeLabor, result.edgeLabor / sq) +
-      estimatorRowHtml("Our labor - " + result.manHours + " MH @ " + estimatorMoney(result.input.ourLaborRate) + "/hr", result.ourLabor, result.ourLabor / sq) +
-      estimatorRowHtml("Other editable costs / allowances", result.otherCosts, result.otherCosts / sq) +
+      estimatorRowHtml("EDGE labor - " + result.manHours + " MH @ " + estimatorMoney(result.input.edgeLaborRate) + "/hr", result.edgeLabor, costPerSquare(result.edgeLabor)) +
+      estimatorRowHtml("Our labor - " + result.manHours + " MH @ " + estimatorMoney(result.input.ourLaborRate) + "/hr", result.ourLabor, costPerSquare(result.ourLabor)) +
+      estimatorRowHtml("Other editable costs / allowances", result.otherCosts, costPerSquare(result.otherCosts)) +
     "</tbody></table>" +
     "<table class=\"estimator-table\"><thead><tr><th>Pricing Method</th><th class=\"num\">Subtotal</th><th class=\"num\">Add-on</th><th class=\"num\">Total</th></tr></thead><tbody>" +
       "<tr><td>EDGE: material tax + " + esc(String(Math.round(result.input.edgeProfitRate * 10000) / 100)) + "% profit + " +

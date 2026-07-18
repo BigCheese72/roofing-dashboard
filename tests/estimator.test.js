@@ -73,6 +73,16 @@ test("estimator opens with a blank starter instead of the Warrensburg sample", (
   assert.match(sb.__elements["estimator-results"].innerHTML, /Load a RoofMapper map/);
 });
 
+test("blank estimator calculate keeps per-square values finite", () => {
+  const sb = loadEstimator();
+  sb.estimatorOnShow();
+  const result = sb.estimatorCalculateFromForm({ quiet: true });
+  assert.equal(result.areaSquares, 0);
+  assert.equal(result.pricePerSquareEdge, 0);
+  assert.equal(result.pricePerSquareOur, 0);
+  assert.doesNotMatch(sb.__elements["estimator-results"].innerHTML, /∞|Infinity|NaN/);
+});
+
 test("estimator imports a saved RoofMapper outline into estimate fields", () => {
   const sb = loadEstimator();
   const outline = {
