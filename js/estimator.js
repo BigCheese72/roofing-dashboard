@@ -59,7 +59,13 @@ var ESTIMATOR_DEFAULTS = {
   rpfRollPrice: 275,
   insulationPlateCount: 2500,
   insulationPlatePricePerM: 264,
-  screwPackageCost: 3123.63,
+  screwRows: [
+    { length: "6\"", needed: 750, pails: 2, ordered: 1000, pricePerM: 644.00 },
+    { length: "7\"", needed: 650, pails: 2, ordered: 1000, pricePerM: 837.25 },
+    { length: "8\"", needed: 500, pails: 1, ordered: 500, pricePerM: 934.00 },
+    { length: "9\"", needed: 400, pails: 1, ordered: 500, pricePerM: 1133.50 },
+    { length: "10\"", needed: 250, pails: 1, ordered: 500, pricePerM: 1217.25 }
+  ],
   seamPlateCost: 338.15,
   tJointCovers: 2,
   tJointCoverPrice: 125,
@@ -292,7 +298,11 @@ function estimatorGeneratedLineItems(input){
   add("QuickPrime Plus", input.quickPrimePails + " pails", estimatorMoney(input.quickPrimePrice) + "/pail", input.quickPrimePails * input.quickPrimePrice);
   add("RPF/RUSS strip", input.rpfRolls + " rolls", estimatorMoney(input.rpfRollPrice) + "/100 LF roll", input.rpfRolls * input.rpfRollPrice);
   add("3\" insulation plates", input.insulationPlateCount + " plates", estimatorMoney(input.insulationPlatePricePerM) + "/M", (input.insulationPlateCount / 1000) * input.insulationPlatePricePerM);
-  add("Insulation screws 6-10 inch", "packaged", "full pail mix", input.screwPackageCost);
+  (input.screwRows || []).forEach(function(row){
+    add(row.length + " insulation screws", row.pails + " pail" + (row.pails === 1 ? "" : "s") +
+      " / " + row.ordered + " screws", estimatorMoney(row.pricePerM) + "/M, need " + row.needed,
+      (row.ordered / 1000) * row.pricePerM);
+  });
   add("2\" seam plates for RPF", "1000", "carton", input.seamPlateCost);
   add("T-joint covers", input.tJointCovers + " cartons", estimatorMoney(input.tJointCoverPrice) + "/carton", input.tJointCovers * input.tJointCoverPrice);
   add("Water Block", input.waterBlockTubes + " tubes", estimatorMoney(input.waterBlockPrice) + "/tube", input.waterBlockTubes * input.waterBlockPrice);

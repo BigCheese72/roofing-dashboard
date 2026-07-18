@@ -104,3 +104,20 @@ test("generated estimate line items expose the prices used", () => {
   assert.match(byName["New perimeter sheet metal"].unit, /\$20\.00\/LF/);
   assert.match(byName["20-year warranty fee"].unit, /\$0\.17\/SF/);
 });
+
+test("Warrensburg screw order is broken out by length and pail count", () => {
+  const sb = loadEstimator();
+  const result = sb.estimatorCalculate(sb.ESTIMATOR_DEFAULTS);
+  const screws = result.lineItems.filter((item) => item.name.includes("insulation screws"));
+  assert.deepEqual(screws.map((item) => item.name), [
+    '6" insulation screws',
+    '7" insulation screws',
+    '8" insulation screws',
+    '9" insulation screws',
+    '10" insulation screws'
+  ]);
+  assert.match(screws[0].qty, /2 pails \/ 1000 screws/);
+  assert.match(screws[0].unit, /\$644\.00\/M, need 750/);
+  assert.match(screws[4].qty, /1 pail \/ 500 screws/);
+  assert.match(screws[4].unit, /\$1,217\.25\/M, need 250/);
+});
