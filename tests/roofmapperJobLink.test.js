@@ -173,6 +173,26 @@ test("RoofMapper selected footprint prefers matched app building name when linke
   assert.match(ctx.elements["rm-footprint-info"].innerHTML, /<b>West Middle School<\/b>/);
 });
 
+test("RoofMapper selected footprint still shows linked job subtitle when OSM has a name", () => {
+  const ctx = makeFootprintCtx({
+    linkedJobNo: "17053",
+    linkedJobName: "CPS West Middle RTU replacement",
+    linkedJobAddress: "1200 Main St, Springfield, IL",
+    footprints: [{
+      id: "way/99",
+      osmType: "way",
+      tags: { name: "OSM School Name", building: "school" },
+      areaSqFt: 12345
+    }]
+  });
+
+  ctx.rmSelectFootprint("way/99");
+
+  const html = ctx.elements["rm-footprint-info"].innerHTML;
+  assert.match(html, /<b>CPS West Middle RTU replacement<\/b>/);
+  assert.match(html, /Linked Foundation job: #17053 - 1200 Main St, Springfield, IL/);
+});
+
 test("RoofMapper create-building save stamps linked Foundation anchor", async () => {
   let payload = null;
   const ctx = makeSaveCtx("async function rmCreateBuildingAndSave", "/* ---- Phase 2", {

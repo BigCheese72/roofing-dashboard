@@ -2778,7 +2778,7 @@ function rmSelectFootprint(id){
   var tags = fp.tags || {};
   var addrParts = [tags["addr:housenumber"], tags["addr:street"]].filter(Boolean).join(" ");
   var infoHtml = "<b>" + esc(rmSelectedFootprintTitle(tags, fp)) + "</b>";
-  if ((rmState.linkedJobNo || rmState.linkedJobName) && !(tags.name && tags.name === rmSelectedFootprintTitle(tags, fp))){
+  if (rmState.linkedJobNo || rmState.linkedJobName){
     var linkedBits = [];
     if (rmState.linkedJobNo) linkedBits.push("#" + rmState.linkedJobNo);
     if (rmState.linkedJobAddress) linkedBits.push(rmState.linkedJobAddress);
