@@ -22,6 +22,7 @@ var ESTIMATOR_DEFAULTS = {
   overlaySq: 100,
   overlayCostSq: 140,
   perimeterLf: 575,
+  curbPerimeterLf: 0,
   stoneCopingIn: 5,
   maxTaperIn: 4.5,
   tearoffIn: 2,
@@ -31,6 +32,7 @@ var ESTIMATOR_DEFAULTS = {
   disposalCost: 6000,
   retrofitDrainCount: 8,
   retrofitDrainCost: 1000,
+  scupperCount: 1,
   crewSize: 5,
   hoursPerDay: 10,
   workingDays: 20,
@@ -61,6 +63,8 @@ var ESTIMATOR_DEFAULTS = {
   rpfRollPrice: 275,
   insulationPlateCount: 2500,
   insulationPlatePricePerM: 264,
+  seamPlateCount: 1000,
+  rpfFastenerPricePerM: 644,
   screwRows: [
     { length: "6\"", needed: 750, pails: 2, ordered: 1000, pricePerM: 644.00 },
     { length: "7\"", needed: 650, pails: 2, ordered: 1000, pricePerM: 837.25 },
@@ -96,10 +100,12 @@ var ESTIMATOR_STARTER_DEFAULTS = Object.assign({}, ESTIMATOR_DEFAULTS, {
   taperCost: 0,
   overlaySq: 0,
   perimeterLf: 0,
+  curbPerimeterLf: 0,
   blockingCost: 0,
   equipmentCost: 0,
   disposalCost: 0,
   retrofitDrainCount: 0,
+  scupperCount: 0,
   hotelNights: 0,
   extraSaRollsForWalls: 0,
   spliceTapeRolls: 0,
@@ -108,6 +114,7 @@ var ESTIMATOR_STARTER_DEFAULTS = Object.assign({}, ESTIMATOR_DEFAULTS, {
   quickPrimePails: 0,
   rpfRolls: 0,
   insulationPlateCount: 0,
+  seamPlateCount: 0,
   screwRows: [],
   tJointCovers: 0,
   waterBlockTubes: 0,
@@ -136,6 +143,7 @@ var ESTIMATOR_FIELDS = {
   overlaySq: "est-overlay-sq",
   overlayCostSq: "est-overlay-cost-sq",
   perimeterLf: "est-perimeter-lf",
+  curbPerimeterLf: "est-curb-perimeter-lf",
   stoneCopingIn: "est-stone-coping-in",
   maxTaperIn: "est-max-taper-in",
   tearoffIn: "est-tearoff-in",
@@ -144,6 +152,8 @@ var ESTIMATOR_FIELDS = {
   equipmentCost: "est-equipment-cost",
   disposalCost: "est-disposal-cost",
   retrofitDrainCount: "est-retrofit-drain-count",
+  pipeBoots: "est-pipe-boots",
+  scupperCount: "est-scupper-count",
   crewSize: "est-crew-size",
   hoursPerDay: "est-hours-day",
   workingDays: "est-working-days",
@@ -672,15 +682,26 @@ function estimatorApplyEpdmSaRules(){
     return;
   }
   var perimeter = Number(input.perimeterLf || 0);
+  var curbPerimeter = Number(input.curbPerimeterLf || 0);
+  var drainCount = Number(input.retrofitDrainCount || 0);
+  var pipeCount = Number(input.pipeBoots || 0);
+  var scupperCount = Number(input.scupperCount || 0);
   var fieldRolls = Math.ceil((area * (1 + input.membraneWasteRate)) / (input.membraneRollSq * 100));
   var wallRolls = perimeter ? Math.ceil((perimeter * 3) / 1000) : 0;
-  var spliceTapeRolls = Math.ceil(fieldRolls * 1.5);
-  var battenCoverRolls = Math.max(1, Math.ceil(fieldRolls * 0.5));
-  var quickSeamFlashingRolls = perimeter ? Math.max(2, Math.ceil(perimeter / 125)) : 2;
+  var membraneRolls = fieldRolls + wallRolls;
+  var longFieldSeamsLf = Math.max(0, fieldRolls - 1) * 100;
+  var wallAndCurbSpliceLf = perimeter + curbPerimeter;
+  var detailSpliceLf = (drainCount * 12) + (pipeCount * 8) + (scupperCount * 12);
+  var spliceTapeRolls = Math.ceil((longFieldSeamsLf + wallAndCurbSpliceLf + detailSpliceLf) / 100);
+  var endLapLf = Math.max(0, fieldRolls - 1) * 10;
+  var exposedAdhesiveLf = (fieldRolls * 12) + (curbPerimeter * 0.5) + (scupperCount * 10);
+  var battenCoverRolls = Math.max(1, Math.ceil(fieldRolls * 0.5), Math.ceil((endLapLf + exposedAdhesiveLf) / 100));
+  var quickSeamFlashingRolls = Math.max(2, Math.ceil((curbPerimeter + (pipeCount * 6) + (scupperCount * 10) + (drainCount * 8)) / 100));
   var quickPrimePails = Math.max(1, Math.ceil(area / 1250));
-  var rpfRolls = perimeter ? Math.ceil((perimeter * 1.1) / 100) : 0;
+  var rpfLf = (perimeter + curbPerimeter) * 1.1;
+  var rpfRolls = rpfLf ? Math.ceil(rpfLf / 100) : 0;
   var plateCount = estimatorRoundUpTo(Math.ceil(area / 32) * 8 * 1.05, 500);
-  var drainCount = Number(input.retrofitDrainCount || 0);
+  var seamPlateCount = rpfLf ? estimatorRoundUpTo(Math.ceil(rpfLf), 1000) : 0;
   var netRise = Math.max(0, Number(input.maxTaperIn || 0) + Number(input.overlayIn || 0) - Number(input.tearoffIn || 0));
   var layerCount = netRise ? Math.max(1, Math.ceil(netRise / 1.5)) : 0;
   var blockingCost = input.blockingCost || (perimeter && layerCount ? perimeter * 1.1 * layerCount * 4 : 0);
@@ -694,13 +715,14 @@ function estimatorApplyEpdmSaRules(){
     quickPrimePails: quickPrimePails,
     rpfRolls: rpfRolls,
     insulationPlateCount: plateCount,
+    seamPlateCount: seamPlateCount,
     screwRows: estimatorScrewRowsForAssembly(input),
     tJointCovers: Math.max(1, Math.ceil(fieldRolls / 6)),
-    waterBlockTubes: (drainCount * 2) + (perimeter ? Math.ceil(perimeter / 72) : 0),
-    lapSealantTubes: Math.ceil(((spliceTapeRolls + battenCoverRolls + quickSeamFlashingRolls) * 100) / 60),
+    waterBlockTubes: (drainCount * 2) + (scupperCount * 2) + (perimeter ? Math.ceil(perimeter / 72) : 0) + (curbPerimeter ? Math.ceil(curbPerimeter / 100) : 0),
+    lapSealantTubes: Math.ceil((longFieldSeamsLf + endLapLf + wallAndCurbSpliceLf + detailSpliceLf) / 35),
     cleanerGallons: Math.ceil(area / 1000),
-    pipeBoots: Number(input.pipeBoots || 0),
-    scupperFlashing: Number(input.scupperFlashing || 0),
+    pipeBoots: pipeCount,
+    scupperFlashing: input.scupperFlashing || (scupperCount * 200),
     miscDetailMaterials: input.miscDetailMaterials || 1500,
     blockingCost: blockingCost
   });
@@ -733,18 +755,19 @@ function estimatorGeneratedLineItems(input){
   add("60 mil EPDM SA membrane", membraneRolls + " rolls", estimatorMoney(input.membraneSqPrice) + "/SQ, 10 SQ/roll", membraneRolls * input.membraneRollSq * input.membraneSqPrice);
   add("Tapered insulation package", input.slopeType === "tapered" ? "quote" : "structural slope", input.slopeType === "tapered" ? "supplier quote" : "not carried", input.slopeType === "tapered" ? input.taperCost : 0);
   add(input.overlayIn + "\" ISO overlay", input.overlaySq + " SQ", estimatorMoney(input.overlayCostSq) + "/SQ", input.overlaySq * input.overlayCostSq);
-  add("3\" QuickSeam splice tape", input.spliceTapeRolls + " rolls", estimatorMoney(input.spliceTapeRollPrice) + "/roll", input.spliceTapeRolls * input.spliceTapeRollPrice);
-  add("6\" QuickSeam batten cover", input.battenCoverRolls + " rolls", estimatorMoney(input.battenCoverRollPrice) + "/roll", input.battenCoverRolls * input.battenCoverRollPrice);
-  add("5\" QuickSeam flashing", input.quickSeamFlashingRolls + " rolls", estimatorMoney(input.quickSeamFlashingRollPrice) + "/roll", input.quickSeamFlashingRolls * input.quickSeamFlashingRollPrice);
-  add("QuickPrime Plus", input.quickPrimePails + " pails", estimatorMoney(input.quickPrimePrice) + "/pail", input.quickPrimePails * input.quickPrimePrice);
-  add("RPF/RUSS strip", input.rpfRolls + " rolls", estimatorMoney(input.rpfRollPrice) + "/100 LF roll", input.rpfRolls * input.rpfRollPrice);
-  add("3\" insulation plates", input.insulationPlateCount + " plates", estimatorMoney(input.insulationPlatePricePerM) + "/M", (input.insulationPlateCount / 1000) * input.insulationPlatePricePerM);
+  add("3\" QuickSeam splice tape", input.spliceTapeRolls + " rolls / " + (input.spliceTapeRolls * 100) + " LF", estimatorMoney(input.spliceTapeRollPrice) + "/100 LF roll", input.spliceTapeRolls * input.spliceTapeRollPrice);
+  add("6\" QuickSeam batten cover", input.battenCoverRolls + " rolls / " + (input.battenCoverRolls * 100) + " LF", estimatorMoney(input.battenCoverRollPrice) + "/100 LF roll", input.battenCoverRolls * input.battenCoverRollPrice);
+  add("5\" QuickSeam flashing", input.quickSeamFlashingRolls + " rolls / " + (input.quickSeamFlashingRolls * 100) + " LF", estimatorMoney(input.quickSeamFlashingRollPrice) + "/100 LF roll", input.quickSeamFlashingRolls * input.quickSeamFlashingRollPrice);
+  add("QuickPrime Plus", input.quickPrimePails + " pails / " + (input.quickPrimePails * 3) + " gal", estimatorMoney(input.quickPrimePrice) + "/3-gal pail", input.quickPrimePails * input.quickPrimePrice);
+  add("RPF/RUSS strip", input.rpfRolls + " rolls / " + (input.rpfRolls * 100) + " LF", estimatorMoney(input.rpfRollPrice) + "/100 LF roll", input.rpfRolls * input.rpfRollPrice);
+  add("3\" insulation plates", input.insulationPlateCount + " plates / " + Math.ceil((input.insulationPlateCount || 0) / 500) + " pails", estimatorMoney(input.insulationPlatePricePerM) + "/M", (input.insulationPlateCount / 1000) * input.insulationPlatePricePerM);
   (input.screwRows || []).forEach(function(row){
     add(row.length + " insulation screws", row.pails + " pail" + (row.pails === 1 ? "" : "s") +
       " / " + row.ordered + " screws", estimatorMoney(row.pricePerM) + "/M, need " + row.needed,
       (row.ordered / 1000) * row.pricePerM);
   });
-  add("2\" seam plates for RPF", input.rpfRolls ? "1000" : "0", input.rpfRolls ? "carton" : "not carried", input.rpfRolls ? input.seamPlateCost : 0);
+  add("2\" seam plates for RPF", input.seamPlateCount + " plates / " + Math.ceil((input.seamPlateCount || 0) / 1000) + " cartons", input.seamPlateCount ? "1 plate per LF, rounded to cartons" : "not carried", input.seamPlateCount ? (Math.ceil(input.seamPlateCount / 1000) * input.seamPlateCost) : 0);
+  add("RPF / curb securement fasteners", input.seamPlateCount + " screws", estimatorMoney(input.rpfFastenerPricePerM) + "/M, length by field thickness", (input.seamPlateCount / 1000) * input.rpfFastenerPricePerM);
   add("T-joint covers", input.tJointCovers + " cartons", estimatorMoney(input.tJointCoverPrice) + "/carton", input.tJointCovers * input.tJointCoverPrice);
   add("Water Block", input.waterBlockTubes + " tubes", estimatorMoney(input.waterBlockPrice) + "/tube", input.waterBlockTubes * input.waterBlockPrice);
   add("Lap/all-purpose sealant", input.lapSealantTubes + " tubes", estimatorMoney(input.lapSealantPrice) + "/tube", input.lapSealantTubes * input.lapSealantPrice);

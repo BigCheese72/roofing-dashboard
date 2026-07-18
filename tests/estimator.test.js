@@ -120,6 +120,7 @@ test("EPDM SA builder seeds repeatable material quantities from intake", () => {
   assert.equal(result.input.battenCoverRolls, 6);
   assert.equal(result.input.rpfRolls, 7);
   assert.equal(result.input.insulationPlateCount, 3000);
+  assert.equal(result.input.seamPlateCount, 1000);
   assert.equal(result.input.blockingCost, 10120);
   assert.deepEqual(result.input.screwRows.map((row) => [row.length, row.needed, row.pails, row.ordered]), [
     ['6"', 730, 2, 1000],
@@ -129,6 +130,9 @@ test("EPDM SA builder seeds repeatable material quantities from intake", () => {
     ['10"', 243, 1, 500]
   ]);
   assert.ok(result.lineItems.some((item) => item.name === '10" insulation screws' && /1 pail/.test(item.qty)));
+  assert.ok(result.lineItems.some((item) => item.name === "RPF / curb securement fasteners" && item.total > 0));
+  assert.ok(result.lineItems.some((item) => item.name === "Water Block" && /24 tubes/.test(item.qty)));
+  assert.ok(result.lineItems.some((item) => item.name === "Lap/all-purpose sealant" && /51 tubes/.test(item.qty)));
 });
 
 test("estimator links a real CompanyCam project id and name", () => {
@@ -173,7 +177,8 @@ test("generated estimate line items expose the prices used", () => {
   const result = sb.estimatorCalculate(sb.ESTIMATOR_DEFAULTS);
   const byName = Object.fromEntries(result.lineItems.map((item) => [item.name, item]));
   assert.match(byName["60 mil EPDM SA membrane"].unit, /\$185\.00\/SQ/);
-  assert.match(byName["6\" QuickSeam batten cover"].unit, /\$450\.00\/roll/);
+  assert.match(byName["6\" QuickSeam batten cover"].qty, /600 LF/);
+  assert.match(byName["6\" QuickSeam batten cover"].unit, /\$450\.00\/100 LF roll/);
   assert.match(byName["New perimeter sheet metal"].unit, /\$20\.00\/LF/);
   assert.match(byName["20-year warranty fee"].unit, /\$0\.17\/SF/);
 });
@@ -235,7 +240,7 @@ test("saving Our Way creates a job file and proposal from that pricing path", ()
   sb.estimatorLoadSaved(saved.id);
   const text = sb.estimatorCreateProposal();
   assert.match(text, /WATKINS ROOFING PROPOSAL/);
-  assert.match(text, /Proposal Amount:\n\$304,042\.94/);
+  assert.match(text, /Proposal Amount:\n\$304,981\.71/);
   assert.doesNotMatch(text, /Our Way/);
   assert.doesNotMatch(text, /EDGE/);
 });
@@ -252,7 +257,7 @@ test("proposal draft uses the EDGE proposal amount without internal alternate pr
   const result = sb.estimatorCalculate(sb.ESTIMATOR_DEFAULTS);
   const text = sb.estimatorProposalText(result);
   assert.match(text, /WATKINS ROOFING PROPOSAL/);
-  assert.match(text, /Proposal Amount:\n\$273,375\.59/);
+  assert.match(text, /Proposal Amount:\n\$274,126\.35/);
   assert.doesNotMatch(text, /Our Way/);
   assert.doesNotMatch(text, /Internal alternate/);
 });
