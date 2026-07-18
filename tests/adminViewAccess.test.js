@@ -12,7 +12,7 @@ const block = src.slice(src.indexOf("var currentViewName"));
 
 function makeCtx(isAdmin, claims){
   const elements = {};
-  const views = ["home","edit","preview","saved","history","reports","ownerqa","roofmapper","dpr","servicemanager","admin"];
+  const views = ["home","edit","preview","saved","history","reports","estimator","roofmapper","dpr","servicemanager","admin"];
   views.forEach((name) => {
     elements["view-" + name] = { style: { display: "none" } };
     elements["tab-" + name] = {
@@ -33,7 +33,7 @@ function makeCtx(isAdmin, claims){
     renderReportsList: function(){},
     loadFeedbackBacklog: function(){},
     loadAuditLogBacklog: function(){},
-    ownerEstimateQaOnShow: function(){},
+    estimatorOnShow: function(){},
     rmOnShow: function(){},
     dprOnShow: function(){},
     canServiceManage: function(){ return false; },
@@ -63,20 +63,20 @@ test("admin direct showView('admin') displays the admin view", () => {
   assert.equal(ctx.__elements["tab-admin"].active, true);
 });
 
-test("non-owner direct showView('ownerqa') is redirected to edit", () => {
+test("non-owner direct showView('estimator') is redirected to edit", () => {
   const ctx = makeCtx(true, { owner: false, role: "admin" });
-  ctx.showView("ownerqa");
+  ctx.showView("estimator");
   assert.equal(ctx.currentViewName, "edit");
-  assert.equal(ctx.__elements["view-ownerqa"].style.display, "none");
+  assert.equal(ctx.__elements["view-estimator"].style.display, "none");
   assert.equal(ctx.__elements["view-edit"].style.display, "");
-  assert.equal(ctx.__elements["tab-ownerqa"].active, false);
+  assert.equal(ctx.__elements["tab-estimator"].active, false);
   assert.equal(ctx.__elements["tab-edit"].active, true);
 });
 
-test("owner direct showView('ownerqa') displays Owner Estimate QA", () => {
+test("owner direct showView('estimator') displays Estimator", () => {
   const ctx = makeCtx(true, { owner: true, role: "owner" });
-  ctx.showView("ownerqa");
-  assert.equal(ctx.currentViewName, "ownerqa");
-  assert.equal(ctx.__elements["view-ownerqa"].style.display, "");
-  assert.equal(ctx.__elements["tab-ownerqa"].active, true);
+  ctx.showView("estimator");
+  assert.equal(ctx.currentViewName, "estimator");
+  assert.equal(ctx.__elements["view-estimator"].style.display, "");
+  assert.equal(ctx.__elements["tab-estimator"].active, true);
 });
