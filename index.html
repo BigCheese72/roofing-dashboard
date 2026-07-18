@@ -57,6 +57,7 @@
   <button class="tab cond" id="tab-saved" onclick="showView('saved')" title="Saved work orders">💾<span class="tab-label"> Saved</span> (<span id="saved-count">0</span>)</button>
   <button class="tab cond" id="tab-history" onclick="showView('history')" title="Building History">🏢<span class="tab-label"> Building History</span></button>
   <button class="tab cond" id="tab-reports" onclick="showView('reports')" title="Reports">📋<span class="tab-label"> Reports</span></button>
+  <button class="tab cond" id="tab-ownerqa" onclick="showView('ownerqa')" style="display:none" title="Owner Estimate QA">QA<span class="tab-label"> Owner QA</span></button>
   <button class="tab cond" id="tab-roofmapper" onclick="showView('roofmapper')" title="RoofMapper">🗺️<span class="tab-label"> RoofMapper</span></button>
   <button class="tab cond" id="tab-dpr" onclick="showView('dpr')" title="Daily Progress Report">📅<span class="tab-label"> Daily Report</span></button>
   <!-- Service Manager tab (dispatch + proposals). Hidden by default; shown by
@@ -564,6 +565,39 @@
       </div>
     </div>
     <div id="reports-list"></div>
+  </div>
+
+  <!-- ================= OWNER ESTIMATE QA VIEW (owner-only) =================
+       Private estimating review scratchpad. This is intentionally owner-only,
+       not admin-only: it can mention bid risk, missing-cost checks, and
+       CompanyCam/photo evidence that should not be exposed to field users or
+       customers. Nothing here changes a saved work order or estimate by itself. -->
+  <div id="view-ownerqa" style="display:none">
+    <div class="card ownerqa-hero">
+      <h2 class="cond">Owner Estimate QA</h2>
+      <p class="hint">Private pre-bid review for the app owner. It checks the active work order, linked CompanyCam
+        project, imported photos, captions, findings, and estimating notes for items that are easy to miss.</p>
+      <div class="btnrow" style="margin:0 0 10px">
+        <button class="btn primary" onclick="ownerEstimateQaScanActive()">Review Active Job</button>
+        <button class="btn" onclick="ownerEstimateQaSyncCompanyCam()">Pull CompanyCam Photo Count</button>
+      </div>
+      <p class="hint" style="margin:0">Advisory only. This screen flags review items; it never changes price,
+        material orders, work orders, or proposals automatically.</p>
+    </div>
+    <div class="ownerqa-layout">
+      <div class="card">
+        <h2 class="cond">Review Summary</h2>
+        <div id="ownerqa-summary"><p class="hint">Open or fill out a job, then tap Review Active Job.</p></div>
+      </div>
+      <div class="card">
+        <h2 class="cond">Estimate Risk Checklist</h2>
+        <div id="ownerqa-checklist"><p class="hint">No review has been run yet.</p></div>
+      </div>
+    </div>
+    <div class="card">
+      <h2 class="cond">Photo Evidence Groups</h2>
+      <div id="ownerqa-evidence"><p class="hint">Photo captions and findings will be grouped here after review.</p></div>
+    </div>
   </div>
 
   <!-- ================= ROOFMAPPER VIEW (Phase 1) ================= -->
@@ -1834,6 +1868,7 @@
      live in collect()/fill()). See js/servicemanager.js header. -->
 <script src="js/servicemanager.js"></script>
 <script src="js/roles-admin.js"></script>
+<script src="js/owner-estimate-qa.js"></script>
 <!-- AI training-label write path (see js/ailabels.js). Pure data plumbing,
      no UI of its own and deliberately no callers yet — loaded so the flows
      that confirm/correct an issue label (work orders, photos, inspections)
