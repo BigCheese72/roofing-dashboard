@@ -7,7 +7,7 @@ you update here. If it isn't on the board, it didn't happen.
 Maintained by: **Project Lead agent**. Live cross-session coordination escalates to Dispatch,
 which relays to Mark.
 
-Last reconciled: **2026-07-18** *(Warranty: registered, posted H-5 — no lane file, section spans two domains across six files)*
+Last reconciled: **2026-07-18** *(Change Orders: registered lane, posted H-6 — CO code location report, no lane file, no edits taken. Prior same-day: Warranty registered + H-5)*
 
 ---
 
@@ -40,6 +40,7 @@ Cross-cutting PRs additionally need **Lead review** before merge.
 | Agent | Owned lane | In-flight work | Branch / PR | Status |
 |---|---|---|---|---|
 | **Service Manager** | `js/servicemanager.js` | Link proposals to their Foundation job (auto-match + manual picker) | `feat/sm-foundation-match-and-picker` — local only, no PR yet | 🟡 In progress — **holds `index.html`** |
+| **Change Orders** | *(none — CO logic is spread across 5 shared files; see H-6)* | Registering + locating the section. **No edits taken**, holding per Lead directive | `agent/change-orders` — board update only | 🟡 Registered — awaiting a lane assignment from the Lead |
 | **Inspections** | inspection module (checklist / findings / inspection PDF) | None claimed | — | ⚪ Idle. **Note:** no `js/inspections.js` exists; the checklist engine currently lives inside `js/photos.js` — coordinate with Work Orders & Photos before touching it |
 | **DPR** | `js/dpr.js` | None claimed | — | ⚪ Idle |
 | **Work Orders & Photos** | `js/workorders.js`, `js/photos.js` (owns the shared photo lightbox) | Never lose edits on back-out (flush + un-synced warning). Mark's other two field-use items are done — photo-zoom lightbox (#167) and captions-don't-block-Save (#169) are **live on prod** | `fix/wo-backout-autosave` — **PR #171** | 🟢 Open, awaiting cross-review. Will rebase onto #170 per H-1. **Holds `js/workorders.js`; `js/photos.js` released** |
@@ -183,6 +184,54 @@ want both.
 **Blocked on:** Lead lane assignment. Holding all edits to `js/workorders.js` and `js/photos.js`
 per my standing instruction; also holding `js/history.js`, `js/core.js`, `js/export.js`, and
 `index.html` since all four are shared or owned. Until assigned I am editing **only this board**.
+**H-6 — Change Orders has no lane file; the section lives in 5 shared files**
+*(raised by Change Orders, 2026-07-18)*
+Registering the lane and reporting location as instructed. **I have taken no edits** — no
+claim on the lock table, nothing but this board row. Change Order code today:
+
+| Where | What | Lock status |
+|---|---|---|
+| `js/core.js` ~2342–2503 | `onWoTypeChange()` — the CO **show/hide contract** (9 `isCO` branches: CO card, materials card, legacy `#woMaterials` gate, findings/repairs-performed/global-photos/warranty-determination hidden, Draft Summary hidden). Plus `WORK_ORDER_TYPES`/icons at 2248/2255. **This is the real centre of gravity of my section.** | *free* |
+| `js/workorders.js` | CO signature (`changeOrderSignature` :353, render/open/clear :757–786), CO autofill block :1735–1829 (`changeOrderJobNo`, `maybeApplyChangeOrderJobNo`, `runChangeOrderAutofill`, `scheduleChangeOrderAutofill`), collect/fill round-trip :1496/:1717/:1722, autofill call sites :161/:200 | **held by Work Orders & Photos (#171)** |
+| `js/export.js` | all three CO report builders — `buildChangeOrderText()` :60, `renderChangeOrderDoc()` :280, `generateChangeOrderPdf()` :1487 — plus filename prefix :1279 and the CC folder map :1293 | *free, **but not in the lock table at all*** |
+| `index.html` :331–390 | `#wo-changeorder-card`: cost/man-hours/PO/date, legacy materials, description, `#co-photos-host`, CO-only CompanyCam row `#cc-link-info-co`, `#co-signature-status` | **held by Service Manager** |
+| `js/photos.js` | `renderChangeOrderPhotos()` | *free (released 2026-07-18)* |
+| `netlify/functions/changeorders.js`, `lib/permissions.js` | server side | not on the board |
+
+**Three things for the Lead:**
+
+1. **`js/export.js` has no lock row.** DPR, Leak, Work Order and CO report builders all live
+   in it and it is not in the shared-files table, so two lanes can collide there with no
+   signal. Suggest adding it as a tracked shared file. Not doing it myself — the lock table
+   is yours.
+2. **Where my lane should be.** If `workorders.js` is split per-section, the CO slice is
+   genuinely small and cleanly bounded (signature + autofill + collect/fill keys). But note
+   the CO *behaviour* lives in `core.js`'s `onWoTypeChange()`, not in `workorders.js` — a
+   `js/changeorders.js` that doesn't also take those `isCO` branches would leave the section
+   still split. Flagging so the split is planned with that in mind; happy either way.
+3. **Gap status — two of my three assigned gaps look already closed; please confirm before
+   I plan work.**
+   - *Material List on CO* — **done**. PR #156 merged to `dev` 2026-07-17 (`df0db78`),
+     `tests/changeOrderMaterials.test.js` green, all three builders print `materials[]`.
+   - *CompanyCam link + push on CO* — **done**. `#cc-link-info-co` is wired to the same
+     `ccLinkedProjectId`, and `export.js` :1480–1482 records that the signed-PDF push was
+     widened *past* CO-only. `tests/changeOrderCompanyCamLink.test.js` covers it.
+   - *Base map / pin on CO* — **genuinely open, and structural.** Pins only ever hang off a
+     `findings[]` row (`f.pin`) or a `repairs[]` repair-area row (`setRepairAreaPin()`,
+     `js/workorders.js` :890–975). `onWoTypeChange()` hides **both** cards for CO, so a
+     Change Order has no surface that can carry a pin — this is not a missing button, it is
+     a missing data home. `js/export.js` :31 states the intent explicitly ("a Change Order
+     has no Work Performed / repair-area"), so closing this gap is a **product decision, not
+     a bug fix**: it needs Mark's call on whether a CO gets its own pinnable scope rows or
+     borrows the parent job's. Escalating rather than designing around it.
+
+**Concurring with H-5 (Warranty):** we landed on the same finding independently and within
+the same hour — Warranty also has no lane file and also names `js/export.js` as untracked
+shared ground. Two sections reaching that conclusion separately is the signal: **the missing
+lock row on `js/export.js` is a board gap, not a per-section quirk.** Treat item 1 above and
+the equivalent item in H-5 as one request.
+
+**Blocked on:** Lead assigning a lane. Until then I edit nothing but this board.
 
 ### Resolved
 
