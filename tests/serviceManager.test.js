@@ -216,12 +216,21 @@ test("hand-typed and subject texts are matched separately, never concatenated", 
     "must try each candidate text in priority order");
 });
 
-test("a manual pick writes the job name unconditionally (even an empty one)", () => {
-  const src = fs.readFileSync(path.join(__dirname, "..", "js", "servicemanager.js"), "utf8");
-  const apply = src.slice(src.indexOf("function smApplyFoundationPick"), src.indexOf("function smClearFoundationPick"));
-  assert.ok(/if \(manual \|\| \(job\.name &&/.test(apply),
-    "manual must not be gated behind job.name — an unnamed job would leave the previous job's name in place");
-  assert.ok(/setVal2\("sm-pc-jobName", job\.name \|\| ""\)/.test(apply));
+test("smPickFoundationJob is the manual path (auto-match never claims to be)", async () => {
+  const jobs = [
+    { job_no: "1", name: "Prairie Farms", customer_no: "ACME", address: "1 Dairy Ln", city: "Columbia", state: "MO" },
+    { job_no: "2", name: "North Terminal", customer_no: "NT", address: "9 Depot Rd", city: "Moberly", state: "MO" },
+  ];
+  const ctx = loadSmLive({ jobs });
+  ctx.smCurrentProposal = { subject: "Prairie Farms proposal" };
+  await ctx.smMatchFoundationFromForm(true);
+  assert.strictEqual(ctx.smFoundationPick.job_no, "1");
+  // An explicit pick overrides everything the auto-match decided.
+  ctx.smPickFoundationJob("2");
+  assert.strictEqual(ctx.smFoundationPick.job_no, "2");
+  assert.strictEqual(ctx.document._els["sm-pc-jobName"].value, "North Terminal");
+  assert.strictEqual(ctx.document._els["sm-pc-location"].value, "9 Depot Rd, Moberly, MO");
+  assert.strictEqual(ctx.document._els["sm-pc-billTo"].value, "NT");
 });
 
 test("smFindFoundationJobDetailed: reports HOW it matched", () => {
@@ -268,7 +277,7 @@ test("smFilterFoundationJobs: matches on name, job #, customer and city", () => 
   assert.strictEqual(ctx.smFilterFoundationJobs("", all, 2).length, 2);
 });
 
-test("the picker seeds from a ranked candidate, never the raw email subject", () => {
+test("the picker seeds from a ranked candidate, never the raw email subject", async () => {
   const ctx = loadSm();
   const all = [...JOBS, PRAIRIE];
   const subject = "Prairie Farms – roof repair proposal";
@@ -281,12 +290,24 @@ test("the picker seeds from a ranked candidate, never the raw email subject", ()
   assert.strictEqual(best.job_no, "17456");
   assert.strictEqual(ctx.smFilterFoundationJobs(best.name, all, 50)[0].job_no, "17456");
 
-  const src = fs.readFileSync(path.join(__dirname, "..", "js", "servicemanager.js"), "utf8");
-  const open = src.slice(src.indexOf("function smOpenFoundationPicker"), src.indexOf("function smCloseFoundationPicker"));
-  assert.ok(/smRankFoundationJobs\(smFoundationSearchText\(\), null, 1\)/.test(open),
-    "picker must seed from the ranked candidate");
-  const render = src.slice(src.indexOf("function smRenderFoundationPicker"), src.indexOf("function smPickFoundationJob"));
-  assert.ok(/smRankFoundationJobs\(q, null, 25\)/.test(render), "an empty strict filter must fall back to ranked near-misses");
+  // End-to-end: opening the picker on that proposal must land a usable query
+  // and a non-empty list, not the zero rows the raw subject would produce.
+  const ctx2 = loadSmLive({ jobs: all });
+  ctx2.smCurrentProposal = { subject };
+  ctx2.smOpenFoundationPicker();
+  await new Promise((r) => setTimeout(r, 0));
+  assert.strictEqual(ctx2.document._els["sm-fdn-search"].value, "Prairie Farms");
+  assert.ok(/17456/.test(ctx2.document._els["sm-fdn-list"].innerHTML), "the right job must be on screen");
+});
+
+test("the picker's strict filter never dead-ends on a no-hit query", async () => {
+  const ctx = loadSmLive({ jobs: [...JOBS, PRAIRIE] });
+  ctx.smOpenFoundationPicker();
+  await new Promise((r) => setTimeout(r, 0));
+  ctx.document._els["sm-fdn-search"].value = "zzz no such job zzz";
+  ctx.smRenderFoundationPicker();
+  const html = ctx.document._els["sm-fdn-list"].innerHTML;
+  assert.ok(/smPickFoundationJob/.test(html), "there must always be something to tap: " + html.slice(0, 200));
 });
 
 // ---------------------------------------------------------------------------
@@ -300,15 +321,46 @@ test("smOpenPrecreate auto-runs the Foundation cross-reference (not button-only)
     "opening the pre-create form must cross-reference Foundation itself");
 });
 
-test("a Foundation match replaces the proposal SUBJECT with the real job name", () => {
-  const src = fs.readFileSync(path.join(__dirname, "..", "js", "servicemanager.js"), "utf8");
-  const apply = src.slice(src.indexOf("function smApplyFoundationPick"), src.indexOf("function smClearFoundationPick"));
-  assert.ok(/smJobNameFromProposal/.test(apply), "must know whether the name is a subject or hand-typed");
-  assert.ok(/setVal2\("sm-pc-jobName", job\.name \|\| ""\)/.test(apply), "must bind the canonical job name");
-  // A manual correction must win even after an auto-match already stamped a
-  // name, or "change" leaves the WO under the wrong job's name.
-  assert.ok(/var manual = \(via === "manual"\)/.test(apply), "must distinguish a manual pick");
-  assert.ok(/if \(manual \|\| \(job\.name &&/.test(apply), "a manual pick must override the flag");
+test("a Foundation match replaces the proposal SUBJECT with the real job name", async () => {
+  const jobs = [{ job_no: "17456", name: "Prairie Farms", customer_no: "ACME", address: "1100 N Providence Rd", city: "Columbia", state: "MO" }];
+  const ctx = loadSmLive({ jobs });
+  ctx.smCurrentProposal = { subject: "Prairie Farms – roof repair proposal" };
+  ctx.document._els["sm-pc-jobName"].value = "Prairie Farms – roof repair proposal";
+  ctx.smJobNameFromProposal = true;
+  await ctx.smMatchFoundationFromForm(true);
+  assert.strictEqual(ctx.document._els["sm-pc-jobName"].value, "Prairie Farms",
+    "the email subject must give way to the canonical job name");
+  assert.strictEqual(ctx.smJobNameFromProposal, false, "and stop being treated as a subject");
+});
+
+test("a name the manager typed themselves survives an auto-match", async () => {
+  const jobs = [{ job_no: "17456", name: "Prairie Farms", customer_no: "ACME", address: "1100 N Providence Rd", city: "Columbia", state: "MO" }];
+  const ctx = loadSmLive({ jobs });
+  ctx.smCurrentProposal = { subject: "Prairie Farms – roof repair proposal" };
+  ctx.document._els["sm-pc-jobName"].value = "Mark's own wording";
+  ctx.smJobNameFromProposal = false;          // hand-typed, not seeded
+  await ctx.smMatchFoundationFromForm(true);
+  assert.strictEqual(ctx.smFoundationPick.job_no, "17456", "still links…");
+  assert.strictEqual(ctx.document._els["sm-pc-jobName"].value, "Mark's own wording", "…without rewriting the name");
+});
+
+test("a manual re-point to an UNNAMED job clears the previous job's name", async () => {
+  const jobs = [
+    { job_no: "17456", name: "Prairie Farms", customer_no: "ACME", address: "1100 N Providence Rd", city: "Columbia", state: "MO" },
+    { job_no: "77777", name: "", customer_no: "C7", address: "5 Elm St", city: "Fulton", state: "MO" },
+  ];
+  const ctx = loadSmLive({ jobs });
+  ctx.smCurrentProposal = { subject: "Prairie Farms – roof repair proposal" };
+  ctx.document._els["sm-pc-jobName"].value = "Prairie Farms – roof repair proposal";
+  ctx.smJobNameFromProposal = true;
+  await ctx.smMatchFoundationFromForm(true);
+  assert.strictEqual(ctx.document._els["sm-pc-jobName"].value, "Prairie Farms");
+  ctx.smPickFoundationJob("77777");
+  assert.strictEqual(ctx.document._els["sm-pc-jobName"].value, "",
+    "job 77777's number must not sit under job 17456's name");
+  // ...and the unnamed job's own address/customer are adopted.
+  assert.strictEqual(ctx.document._els["sm-pc-location"].value, "5 Elm St, Fulton, MO");
+  assert.strictEqual(ctx.document._els["sm-pc-billTo"].value, "C7");
 });
 
 test("smPickFoundationJob marks the pick manual (authoritative over auto-match)", () => {
@@ -503,6 +555,87 @@ test("a manual pick re-points address and billTo, not just the name", async () =
     "the previous job's address must not survive a manual re-point");
   assert.strictEqual(ctx.document._els["sm-pc-billTo"].value, "",
     "nor its customer");
+});
+
+test("a FIRST link never destroys the manager's own typing", async () => {
+  // The "did you mean" buttons appear precisely when auto-match found nothing,
+  // so there is no previous job to re-point from — the fields hold hand-typed
+  // values that exist nowhere else. A blank field on the picked job must not
+  // wipe them out (the mirror of the re-point case above).
+  const jobs = [{ job_no: "88888", name: "Moberly Depot", customer_no: "", address: "", city: "", state: "", zip: "" }];
+  const ctx = loadSmLive({ jobs });
+  ctx.document._els["sm-pc-jobName"].value = "Depot Renovation";
+  ctx.document._els["sm-pc-location"].value = "412 Depot Dr, Moberly, MO 65270";
+  ctx.document._els["sm-pc-billTo"].value = "WALMART";
+  await ctx.smMatchFoundationFromForm();
+  assert.strictEqual(ctx.smFoundationPick, null, "precondition: nothing auto-matched");
+
+  ctx.smPickFoundationJob("88888");          // tap a did-you-mean button
+  assert.strictEqual(ctx.smFoundationPick.job_no, "88888");
+  assert.strictEqual(ctx.document._els["sm-pc-location"].value, "412 Depot Dr, Moberly, MO 65270",
+    "a first link must not clear a hand-typed address — buildingId is resolved from it");
+  assert.strictEqual(ctx.document._els["sm-pc-billTo"].value, "WALMART",
+    "nor a hand-typed customer");
+  // The canonical job name is still adopted — that's the job-centric binding.
+  assert.strictEqual(ctx.document._els["sm-pc-jobName"].value, "Moberly Depot");
+});
+
+test("an auto-match never clobbers a location the manager typed", async () => {
+  const jobs = [{ job_no: "17456", name: "Prairie Farms", customer_no: "ACME", address: "1100 N Providence Rd", city: "Columbia", state: "MO", zip: "65203" }];
+  const ctx = loadSmLive({ jobs });
+  ctx.smCurrentProposal = { subject: "Prairie Farms – roof repair proposal" };
+  ctx.document._els["sm-pc-location"].value = "999 Manager Typed Rd";
+  ctx.document._els["sm-pc-billTo"].value = "TYPEDCUST";
+  await ctx.smMatchFoundationFromForm(true);
+  assert.strictEqual(ctx.smFoundationPick.job_no, "17456");
+  assert.strictEqual(ctx.document._els["sm-pc-location"].value, "999 Manager Typed Rd");
+  assert.strictEqual(ctx.document._els["sm-pc-billTo"].value, "TYPEDCUST");
+});
+
+test("✕ unlink actually drops the binding (nothing persists a stale pick)", async () => {
+  const jobs = [{ job_no: "17456", name: "Prairie Farms", customer_no: "ACME", address: "1100 N Providence Rd", city: "Columbia", state: "MO" }];
+  const ctx = loadSmLive({ jobs });
+  ctx.smCurrentProposal = { subject: "Prairie Farms – roof repair proposal" };
+  await ctx.smMatchFoundationFromForm(true);
+  assert.strictEqual(ctx.smFoundationPick.job_no, "17456");
+  ctx.smClearFoundationPick();
+  assert.strictEqual(ctx.smFoundationPick, null,
+    "smSubmitPrecreate persists smFoundationPick — a non-null pick here ships the job the manager just unlinked");
+  assert.ok(/Link a Foundation job/.test(ctx.document._els["sm-pc-foundation"].innerHTML));
+});
+
+test("reopening the picker re-seeds (last query doesn't stick)", async () => {
+  const jobs = [
+    { job_no: "1", name: "Prairie Farms", address: "1 Dairy Ln", city: "Columbia", state: "MO" },
+    { job_no: "2", name: "North Terminal", address: "9 Depot Rd", city: "Moberly", state: "MO" },
+  ];
+  const ctx = loadSmLive({ jobs });
+  ctx.smCurrentProposal = { subject: "Prairie Farms proposal" };
+  ctx.smOpenFoundationPicker();
+  await new Promise((r) => setTimeout(r, 0));
+  ctx.document._els["sm-fdn-search"].value = "north";   // manager searches away
+  ctx.smRenderFoundationPicker();
+  ctx.smCloseFoundationPicker();
+
+  ctx.smOpenFoundationPicker();                          // reopen
+  await new Promise((r) => setTimeout(r, 0));
+  assert.notStrictEqual(ctx.document._els["sm-fdn-search"].value, "north",
+    "a stale query must not survive a close/reopen");
+  assert.strictEqual(ctx.document._els["sm-fdn-search"].value, "Prairie Farms");
+});
+
+test("'change' seeds away from the job you're correcting", async () => {
+  const jobs = [
+    { job_no: "1", name: "Prairie Farms", address: "1 Dairy Ln", city: "Columbia", state: "MO" },
+    { job_no: "2", name: "Prairie Farms Dairy", address: "9 Depot Rd", city: "Moberly", state: "MO" },
+  ];
+  const ctx = loadSmLive({ jobs });
+  ctx.smCurrentProposal = { subject: "Prairie Farms proposal" };
+  ctx.smApplyFoundationPick(jobs[0], "subject");         // currently linked to #1
+  ctx.smOpenFoundationPicker();
+  await new Promise((r) => setTimeout(r, 0));
+  assert.notStrictEqual(ctx.document._els["sm-fdn-search"].value, "Prairie Farms",
+    "seeding the current pick's name pre-filters to the very job being corrected");
 });
 
 // ---------------------------------------------------------------------------

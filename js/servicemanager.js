@@ -559,29 +559,52 @@ async function smMatchFoundationFromForm(silentOnMiss){
  * the name of a different job — exactly the identity split this binding
  * exists to prevent. */
 function smApplyFoundationPick(job, via){
+  // The job (if any) whose values are currently sitting in the fields. Captured
+  // BEFORE the overwrite, because it's the only thing that distinguishes the
+  // two very different manual cases below.
+  var prev = smFoundationPick;
   smFoundationPick = job || null;
   if (!job){ smClearFoundationPick(); return; }
   var manual = (via === "manual");
-  // On a manual pick the name is written UNCONDITIONALLY — including to "" for
-  // a job with no name. Skipping the write there would leave the previously
-  // matched job's NAME sitting above the newly picked job's NUMBER, which is
-  // the identity split this binding exists to prevent, and the manager has
-  // every reason to believe they just corrected it.
-  if (manual || (job.name && (smJobNameFromProposal || !getVal2("sm-pc-jobName")))){
-    setVal2("sm-pc-jobName", job.name || "");
+  var prevAddr = (prev && typeof fdnComposeAddress === "function") ? (fdnComposeAddress(prev) || "") : "";
+
+  /* Adopting a field from the picked job. Two manual cases look identical at
+   * the call site but must behave differently:
+   *
+   *   RE-POINT  — a job was already linked and the manager is correcting it.
+   *               The old job's values must not survive; if the new job has
+   *               none, the field is cleared.
+   *   FIRST LINK — auto-match found nothing (this is when the "did you mean"
+   *               buttons appear), so the fields hold the MANAGER'S OWN typing
+   *               and there is no other copy of it. A blank field on the picked
+   *               job must not wipe that out.
+   *
+   * So: a value the job actually has always wins on a manual pick; a blank one
+   * only clears what the PREVIOUS pick put there. */
+  function smAdoptField(id, value, prevValue){
+    var cur = getVal2(id);
+    if (value){
+      if (manual || !cur) setVal2(id, value);
+      return;
+    }
+    if (manual && cur && prevValue && cur === prevValue) setVal2(id, "");
+  }
+
+  // The name additionally yields to a proposal-seeded subject (that's not the
+  // manager's typing — it's an email subject standing in for a job name).
+  if (job.name && (manual || smJobNameFromProposal || !getVal2("sm-pc-jobName"))){
+    setVal2("sm-pc-jobName", job.name);
+    smJobNameFromProposal = false;
+  } else if (!job.name && manual && prev && getVal2("sm-pc-jobName") === (prev.name || "")){
+    setVal2("sm-pc-jobName", "");
     smJobNameFromProposal = false;
   }
-  // A manual correction re-points the SITE, so address and customer follow it
-  // the same way the name does — including to empty. Keeping the previous job's
-  // address here would be worse than a stale name: smSubmitPrecreate persists
-  // `location` onto the WO and ensureCustomerAndBuilding() resolves the
-  // BUILDING from it, so the WO would carry job B's number while anchored to
-  // job A's building and billed to job A's customer.
+  // location drives ensureCustomerAndBuilding() → buildingId, so both a stale
+  // value (wrong building) and a wrongly-cleared one (no building) matter.
   if (typeof fdnComposeAddress === "function"){
-    var addr = fdnComposeAddress(job) || "";
-    if (manual || (addr && !getVal2("sm-pc-location"))) setVal2("sm-pc-location", addr);
+    smAdoptField("sm-pc-location", fdnComposeAddress(job) || "", prevAddr);
   }
-  if (manual || (job.customer_no && !getVal2("sm-pc-billTo"))) setVal2("sm-pc-billTo", job.customer_no || "");
+  smAdoptField("sm-pc-billTo", job.customer_no || "", (prev && prev.customer_no) || "");
   var how = via === "address" ? "matched on address"
           : via === "name" ? "matched on job name"
           : via === "subject" ? "matched from the proposal subject"
@@ -628,7 +651,13 @@ function smOpenFoundationPicker(){
     // Seed from the best-ranked CANDIDATE's name, never the raw email subject:
     // the filter is an AND over tokens, so seeding "Prairie Farms – roof repair
     // proposal" would return zero rows for a job that's sitting right there.
-    var best = smRankFoundationJobs(smFoundationSearchText(), null, 1)[0];
+    // Exclude the job we're already linked to: "change" means the manager wants
+    // a DIFFERENT one, so seeding its name pre-filters the list to the very
+    // thing they're correcting away from.
+    var ranked = smRankFoundationJobs(smFoundationSearchText(), null, 4).filter(function(j){
+      return !smFoundationPick || String(j.job_no) !== String(smFoundationPick.job_no);
+    });
+    var best = ranked[0];
     var seed = best ? (best.name || "") : (smJobNameFromProposal ? "" : getVal2("sm-pc-jobName"));
     // Never overwrite what the manager has already typed: on a cold jobs read
     // they can be mid-search when this lands, and replacing their text with a
