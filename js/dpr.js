@@ -363,6 +363,8 @@ function dprOnShow(){
   dprEnsureListeners();
   dprRenderCrew();
   dprRenderQuantities();
+  dprRenderRented();
+  dprRenderSectionChips();
   dprRenderPhotos();
   dprRenderSectionStatus();
   dprApplySignoffLock();
@@ -1421,6 +1423,65 @@ function dprToggleIsYes(id){ return val(id) === "Yes"; }
 function dprSetGate(toggleId, bodyId, yes){
   setVal(toggleId, yes ? "Yes" : "No");
   dprGate(toggleId, bodyId, "Yes");
+  /* Chip-driven layout: an OFF section's whole CARD collapses (the chip row
+     is the way back in), and the chips re-render to show the new state. The
+     per-card <select> stays (hidden) as the source of truth, so this is the
+     ONE place gate state changes and everything stays in sync. */
+  var sec = dprSectionByToggle(toggleId);
+  if (sec){
+    var card = document.getElementById(sec.card);
+    if (card) card.style.display = yes ? "" : "none";
+    dprRenderSectionChips();
+  }
+}
+
+/* ================= compact section chips (Mark: buttons, not tall cards) ====
+   One "More to report?" row of chips replaces the eight always-visible Yes/No
+   cards. A chip turns its section on (card + body appear right below) or back
+   off (card collapses; its data drops from collect(), exactly like the old
+   select set to No). All existing collect()/fill() logic reads the same hidden
+   toggles as before — the chips are pure UI over dprSetGate(). */
+var DPR_SECTIONS = [
+  { key: "delays",     label: "Delays",       card: "dpr-card-delays",     toggle: "dpr-delays-toggle",     body: "dpr-delays-body" },
+  { key: "quantities", label: "Quantities",   card: "dpr-card-quantities", toggle: "dpr-quantities-toggle", body: "dpr-quantities-body" },
+  { key: "jsa",        label: "JSA",          card: "dpr-card-jsa",        toggle: "dpr-jsa-toggle",        body: "dpr-jsa-body" },
+  { key: "incidents",  label: "Incidents",    card: "dpr-card-incidents",  toggle: "dpr-incidents-toggle",  body: "dpr-incidents-body" },
+  { key: "equipment",  label: "Equipment",    card: "dpr-card-equipment",  toggle: "dpr-equipment-toggle",  body: "dpr-equipment-body" },
+  { key: "rented",     label: "Rented Equip", card: "dpr-card-rented",     toggle: "dpr-rented-toggle",     body: "dpr-rented-body" },
+  { key: "toolbox",    label: "Toolbox Talk", card: "dpr-card-toolbox",    toggle: "dpr-toolbox-toggle",    body: "dpr-toolbox-body" },
+  { key: "visitors",   label: "Visitors",     card: "dpr-card-visitors",   toggle: "dpr-visitors-toggle",   body: "dpr-visitors-body" }
+];
+function dprSectionByToggle(toggleId){
+  for (var i = 0; i < DPR_SECTIONS.length; i++){
+    if (DPR_SECTIONS[i].toggle === toggleId) return DPR_SECTIONS[i];
+  }
+  return null;
+}
+function dprRenderSectionChips(){
+  var host = document.getElementById("dpr-section-chips");
+  if (!host) return;
+  var locked = dprIsLocked();
+  host.innerHTML = DPR_SECTIONS.map(function(sec){
+    var on = val(sec.toggle) === "Yes";
+    return '<button class="btn' + (on ? ' primary' : '') + '" data-dprsec="' + esc(sec.key) + '"' +
+      (locked ? ' disabled' : '') +
+      ' onclick="dprToggleSection(\'' + esc(sec.key) + '\')">' +
+      (on ? '✓ ' : '+ ') + esc(sec.label) + '</button>';
+  }).join("");
+}
+function dprToggleSection(key){
+  if (dprIsLocked()){ toast("This report is signed and locked."); return; }
+  var sec = null;
+  for (var i = 0; i < DPR_SECTIONS.length; i++){ if (DPR_SECTIONS[i].key === key) sec = DPR_SECTIONS[i]; }
+  if (!sec) return;
+  var turningOn = val(sec.toggle) !== "Yes";
+  dprSetGate(sec.toggle, sec.body, turningOn);
+  if (turningOn){
+    /* Land the foreman on the section they just opened. */
+    var card = document.getElementById(sec.card);
+    if (card){ try{ card.scrollIntoView({ behavior: "smooth", block: "start" }); }catch(e){} }
+  }
+  dprRenderSectionChips(); /* chips disable while locked */
 }
 function dprFill(o){
   o = o || {};
@@ -2177,6 +2238,7 @@ function dprApplySignoffLock(){
   if (capRow && locked) capRow.style.display = "none";
   else if (capRow && dprCanCreate()) capRow.style.display = "";
   dprRenderToolboxSignins(); /* re-render so the sign-in checkboxes lock too */
+  dprRenderSectionChips();   /* chips disable while locked */
 }
 /* Visible amendment note — a signed report whose hours were corrected by the
    nightly late-punch sync says so, and when, so the finalized record is never
