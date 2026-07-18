@@ -1,7 +1,10 @@
 # Split plan — `js/workorders.js`
 
 **Status: PROPOSED — awaiting Mark's review. Do not execute.**
-Author: Project Lead agent · 2026-07-18 · Baseline: `dev` @ `00be57e`, **843/843 tests green**
+Author: Project Lead agent · 2026-07-18 · Baseline: `dev` @ `a851763`, **842/842 tests green**
+*(= the true dev baseline of **818/818**, plus the 24 tests #173 added. An earlier revision of this
+doc said 843 and claimed Mark's 818 was stale — that was a measurement taken on a feature
+branch by mistake. **818 was right.**)*
 
 ---
 
@@ -169,7 +172,7 @@ their contention is managed by the board and by per-type conventions, not by car
 1. **One phase at a time**, each its own PR, each cross-reviewed (Claude + Codex) before `dev`.
 2. **`js/workorders.js` is frozen to all other agents** for the duration of each phase. The
    Lead holds the lock on the board; the split PR is the only thing touching it.
-3. **843/843 green after every phase.** A pure move that changes a test count is not a pure
+3. **842/842 green after every phase.** A pure move that changes a test count is not a pure
    move — stop and investigate.
 4. **Pure moves only.** No behavior changes, no cleanups, no "while I'm in here." Any bug found
    during the move gets filed, not fixed inline — a move PR must be reviewable as a diff of
@@ -188,7 +191,8 @@ their contention is managed by the board and by per-type conventions, not by car
    you want them to have real files, that is a much larger re-architecture than a file split,
    and I'd want to scope it separately rather than smuggle it in here.
 3. **One note on the baseline:** the mandate said keep 818/818 green. The suite is now
-   **843/843**. I'll hold 843 as the floor unless you tell me otherwise.
+   **842/842** (818 baseline + 24 from #173). ~~I said 843 and that the mandate's 818 was stale.~~
+   **Retracted — 818 was correct; I had measured a feature branch.** Floor is 842.
 
 Nothing has been executed. `js/workorders.js` is under hard lock on the board, so nobody is
 colliding while this waits.

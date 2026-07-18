@@ -1,5 +1,28 @@
 # RoofOps Agent Coordination Board
 
+> # ⏸️ FULL HOLD — 2026-07-18: CODEX IS BUILDING THE ESTIMATOR
+>
+> **Mark's directive. Nobody starts anything new until Codex finishes the estimator tool.**
+>
+> - **Codex owns the estimator lane** — likely a new `js/estimator.js` plus a tab wired into
+>   `js/core.js` and `index.html`.
+> - **EVERYONE STAYS OFF `js/core.js` AND `index.html`.** That is where the estimator wires in
+>   and it is the whole reason for this hold.
+> - **The `js/workorders.js` split is HELD.** Not cancelled — held. It touches `core.js` and
+>   `index.html`, exactly Codex's wiring surface.
+> - **No merges to `dev`.** #170, #171, #172 stay as branches/PRs so Codex can branch off a
+>   stable `dev` without forced rebases. Nothing is lost.
+> - **Section agents remain held/advisory.** Report and map; do not edit.
+> - Work already mid-edit could finish and commit so nothing was lost. Nothing new after that.
+>
+> **Status: standing by** for the post-Codex review (dev vs prod, the four PRs, the split
+> decision).
+>
+> ⚠️ **One merge beat the hold:** **#173 landed at `a851763`** minutes before the directive
+> arrived. It is **tests-only** — one new file, +407/−0, no source, no `core.js`, no
+> `index.html` — so it cannot force a rebase on Codex. Flagged to Mark; left in place because
+> reverting is itself a change to `dev`. Revert on request.
+
 > # 🛑 MODEL CHANGE — 2026-07-18: SINGLE SERIALIZED BUILDER
 >
 > **Mark's decision: parallel agents collide, so the team goes fully serial.**
@@ -189,7 +212,7 @@ Mark — do not execute.** Headline for the team, because it changes what you sh
 
 **Rules while the split is pending:** `js/workorders.js` stays under hard lock; PRs #170 and
 #171 land *before* any split work begins; every phase is a pure move, its own PR,
-cross-reviewed, **843/843 green**.
+cross-reviewed, **suite green** (dev baseline **818/818**; **842/842** since #173).
 
 **H-1 — `js/workorders.js` contention: PR #170 vs PR #171** *(raised by Lead, 2026-07-18)*
 Both open PRs modify `js/workorders.js`. #171 (Work Orders & Photos) adds ~192 lines of
@@ -824,7 +847,7 @@ explicitly Saved produced **no unload warning at all**, precisely the riskiest c
 | **`dev` ahead of `main` by** | 1 commit — `eeb53e6`, login-gate scroll-lock fix (back-port of prod hotfix `27bacb9`, adapted to dev's ref-counted `lockBodyScroll`). |
 | **Queued for next nightly promotion** | `eeb53e6` (scroll-lock fix). Anything that merges to `dev` before the next promotion joins this list. |
 | **Promotion gate** | Mark's explicit sign-off. Mechanism: snapshot commit (tree = `dev` + prod branding). |
-| **Test baseline** | **843/843 green** on `dev` @ `00be57e` (verified 2026-07-18). *Note: the split mandate cited 818 — the suite has grown since. **843 is the floor.*** |
+| **Test baseline** | **842/842 green** on `dev` @ `a851763` — that is **818/818** (the true dev baseline) plus the 24 tests #173 added. *Correction: the Lead previously recorded 843 and told Mark his 818 was stale. **That was wrong.** The 843 came from running the suite on the Service Manager feature branch, which adds 25 tests of its own. Mark's 818 was correct.* |
 
 **In the pipe, not yet on `dev`:** PR #170 (RoofMapper), PR #171 (Work Orders & Photos),
 PR #172 (DPR modal scroll lock — independent, touches no shared file, so it can land in any
