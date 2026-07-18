@@ -589,6 +589,14 @@ function dprRenderLinkStatus(){
   if (dprState.companyCamProjectId){
     badges.push('<span class="evt-tag" style="background:#E8F5E9;color:#2E7D32">📷 CompanyCam' +
       (dprState.companyCamProjectName ? ": " + esc(dprState.companyCamProjectName) : "") + '</span>');
+    /* One tap from the day's report to that job's CompanyCam project. Same
+       helper and same label as the work-order form -- see ccProjectDeepLink()
+       in js/companycam.js for why there is no https fallback. typeof-guarded
+       because js/companycam.js loads before this file but the DPR is also
+       exercised in tests without it. */
+    if (typeof ccOpenProjectButtonHtml === "function"){
+      badges.push(ccOpenProjectButtonHtml(dprState.companyCamProjectId));
+    }
   }
   var locked = dprIsLocked();
   host.style.display = "";
