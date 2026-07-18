@@ -641,7 +641,7 @@ test("RoofMapper saves KML outline while refusing unsafe image-frame map replace
 test("building maps reject synthetic Null Island geometry without rejecting valid zero latitude", () => {
   const context = { Number };
   loadFunctionBlock(
-    "js/workorders.js",
+    "js/buildinghistory.js",
     "function buildingMapIsFiniteNumber",
     "function renderBuildingMap",
     context
@@ -674,13 +674,13 @@ test("building maps reject synthetic Null Island geometry without rejecting vali
 test("building maps render selected synthetic image outlines in custom image space", () => {
   const context = { Number };
   loadFunctionBlock(
-    "js/workorders.js",
+    "js/buildinghistory.js",
     "function inlineHistoryPinsForMap",
     "async function refreshInlineBuildingHistory",
     context
   );
   loadFunctionBlock(
-    "js/workorders.js",
+    "js/buildinghistory.js",
     "function buildingMapIsFiniteNumber",
     "function renderBuildingMap",
     context
@@ -722,7 +722,7 @@ test("building maps render selected synthetic image outlines in custom image spa
 test("building maps disclose image-frame records from a different base image", () => {
   const context = { Number };
   loadFunctionBlock(
-    "js/workorders.js",
+    "js/buildinghistory.js",
     "function buildingMapIsFiniteNumber",
     "function renderBuildingMap",
     context

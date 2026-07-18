@@ -5,7 +5,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 
 const historySource = fs.readFileSync(path.join(__dirname, "..", "js", "history.js"), "utf8");
-const workordersSource = fs.readFileSync(path.join(__dirname, "..", "js", "workorders.js"), "utf8");
+const buildingHistorySource = fs.readFileSync(path.join(__dirname, "..", "js", "buildinghistory.js"), "utf8");
 
 function between(source, start, end){
   const a = source.indexOf(start);
@@ -87,7 +87,7 @@ test("readOnly (the inline history card on the edit form) stays non-clickable by
   assert.ok(html.indexOf("openTimelineSourceWorkOrder") === -1, "tapping mid-edit must not swap the open order");
   assert.ok(html.indexOf("cursor:pointer") === -1);
   /* the inline card really does pass readOnly */
-  assert.match(workordersSource, /timelineEventHtml\(e, ctx\.buildingId, \{ readOnly: true \}\)/);
+  assert.match(buildingHistorySource, /timelineEventHtml\(e, ctx\.buildingId, \{ readOnly: true \}\)/);
 });
 
 test("inner controls are never hijacked: Delete(admin) and the PDF link stopPropagation", () => {
