@@ -145,8 +145,26 @@
   .photo-finding-row label{font-size:12px;color:var(--muted);white-space:nowrap;margin:0}
   .photo-finding-row select{flex:1;max-width:320px;padding:6px 8px;font-size:13px}
   @media (max-width:480px){ .photo-finding-row{padding-left:0} }
-  .photo-lightbox-img{max-width:94vw;max-height:90vh;object-fit:contain;position:absolute;
-    top:50%;left:50%;transform:translate(-50%,-50%);border-radius:4px}
+  /* Zoomable/pannable lightbox. The container flex-centers the image; zoom
+     and pan ride on the image's own transform (see the lightbox controller
+     in js/photos.js). touch-action:none lets that controller own pinch/drag
+     instead of the browser scrolling the page underneath. */
+  #photo-lightbox{align-items:center;justify-content:center;overscroll-behavior:contain}
+  .photo-lightbox-img{max-width:94vw;max-height:90vh;object-fit:contain;border-radius:4px;
+    transform-origin:center center;touch-action:none;user-select:none;-webkit-user-select:none;
+    -webkit-user-drag:none;will-change:transform;cursor:zoom-in}
+  .photo-lightbox-img.zoomable-anim{transition:transform .16s ease-out}
+  .photo-lightbox-img.pannable{cursor:grab}
+  .photo-lightbox-img.panning{cursor:grabbing;transition:none}
+  .photo-lightbox-zoombar{position:absolute;bottom:16px;left:50%;transform:translateX(-50%);
+    display:flex;gap:6px;align-items:center;background:rgba(0,0,0,.55);border-radius:24px;
+    padding:6px 10px;z-index:1}
+  .photo-lightbox-zoombar .btn{padding:4px 12px;font-size:17px;line-height:1;min-width:40px}
+  .photo-lightbox-zoombar .zoom-pct{color:#fff;font-size:13px;min-width:46px;text-align:center;
+    font-variant-numeric:tabular-nums}
+  .photo-lightbox-hint{position:absolute;bottom:20px;right:16px;color:rgba(255,255,255,.55);
+    font-size:12px;z-index:1;pointer-events:none;max-width:40vw;text-align:right}
+  @media (max-width:640px){ .photo-lightbox-hint{display:none} }
   .finding-photos{margin:8px 0 12px}
   .finding-photo-strip{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
   .finding-photo-item{width:104px;flex:none}
