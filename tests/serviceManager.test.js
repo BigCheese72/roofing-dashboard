@@ -62,6 +62,213 @@ test("smFindFoundationJob: no address and no name match returns null", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Tier 3: the job name INSIDE an email subject. This is the Prairie Farms
+// regression (Mark, 2026-07-18) — an emailed proposal carries no address, and
+// its subject never EQUALS the Foundation job name, so the old address-then-
+// exact-name matcher could never link one.
+// ---------------------------------------------------------------------------
+const PRAIRIE = {
+  job_no: "17456", job_number: "17456", name: "Prairie Farms", customer_no: "ACME",
+  address: "1100 N Providence Rd", city: "Columbia", state: "MO", zip: "65203",
+};
+
+test("smFindFoundationJob: matches the job name inside a proposal subject (Prairie Farms)", () => {
+  const ctx = loadSm();
+  const hit = ctx.smFindFoundationJob("", "Prairie Farms – roof repair proposal", [...JOBS, PRAIRIE]);
+  assert.ok(hit, "the subject names the site — it must link");
+  assert.strictEqual(hit.job_no, "17456");
+});
+
+test("smFindFoundationJob: customer name is NOT a match key (ACME must not link by itself)", () => {
+  const ctx = loadSm();
+  // The customer_no is ACME; a subject naming only the customer identifies no
+  // single site and must not be guessed at.
+  assert.strictEqual(ctx.smFindFoundationJob("", "ACME proposal", [...JOBS, PRAIRIE]), null);
+});
+
+test("smFindFoundationJob: subject containment prefers the most specific job name", () => {
+  const ctx = loadSm();
+  // "Flat Branch Pub Annex" is longer/more specific than "Flat Branch Pub".
+  const hit = ctx.smFindFoundationJob("", "Proposal for Flat Branch Pub Annex reroof", JOBS);
+  assert.ok(hit);
+  assert.strictEqual(hit.job_no, "17003");
+  // ...and the shorter name still wins when the subject stops there.
+  const hit2 = ctx.smFindFoundationJob("", "Proposal for Flat Branch Pub reroof", JOBS);
+  assert.ok(hit2);
+  assert.strictEqual(hit2.job_no, "17001");
+});
+
+test("smFindFoundationJob: two DISJOINT sites in one subject stay ambiguous", () => {
+  const ctx = loadSm();
+  // Names of DIFFERENT lengths — longest-wins must not silently pick one.
+  const twins = [
+    { job_no: "1", name: "Prairie Farms", address: "1 A St", city: "X", state: "MO" },
+    { job_no: "2", name: "North Terminal", address: "2 B St", city: "X", state: "MO" },
+  ];
+  assert.strictEqual(
+    ctx.smFindFoundationJob("", "Prairie Farms and North Terminal reroof proposal", twins), null,
+    "two different sites named in one subject is real ambiguity — refuse to guess");
+});
+
+test("smFindFoundationJob: a generic job name never outranks the real site", () => {
+  const ctx = loadSm();
+  // "Roof Replacement" normalizes LONGER than "Prairie Farms"; if it were an
+  // eligible containment key, longest-wins would link the wrong job.
+  const jobs = [
+    { job_no: "9", name: "Roof Replacement", address: "", city: "" },
+    { job_no: "17456", name: "Prairie Farms", customer_no: "ACME", address: "", city: "" },
+  ];
+  const hit = ctx.smFindFoundationJob("", "Prairie Farms roof replacement proposal", jobs);
+  assert.ok(hit, "expected a match");
+  assert.strictEqual(hit.job_no, "17456", "must be the site, not the work-type job");
+});
+
+test("smNameIsDistinctive: needs two non-work words to be a containment key", () => {
+  const ctx = loadSm();
+  assert.strictEqual(ctx.smNameIsDistinctive("roof repair"), false, "all work-words");
+  assert.strictEqual(ctx.smNameIsDistinctive("roof replacement"), false, "one specific word only");
+  assert.strictEqual(ctx.smNameIsDistinctive("service call"), false);
+  assert.strictEqual(ctx.smNameIsDistinctive("tear off"), false);
+  assert.strictEqual(ctx.smNameIsDistinctive("columbia"), false, "a single word is not a site");
+  assert.strictEqual(ctx.smNameIsDistinctive("123456"), false, "a bare number is not a site");
+  assert.strictEqual(ctx.smNameIsDistinctive("prairie farms"), true);
+  assert.strictEqual(ctx.smNameIsDistinctive("flat branch pub"), true);
+  assert.strictEqual(ctx.smNameIsDistinctive("constructor"), false, "no inherited-key false positive");
+});
+
+test("smFindFoundationJob: single-word job names don't auto-link from a subject", () => {
+  const ctx = loadSm();
+  const jobs = [{ job_no: "5", name: "Columbia", address: "", city: "" }];
+  assert.strictEqual(ctx.smFindFoundationJob("", "Columbia MO warehouse proposal", jobs), null,
+    "one word can't identify a site — that's what the manual picker is for");
+});
+
+test("smFindFoundationJobDetailed: reports HOW it matched", () => {
+  const ctx = loadSm();
+  const all = [...JOBS, PRAIRIE];
+  assert.strictEqual(ctx.smFindFoundationJobDetailed("123 S 9th St, Columbia, MO 65201", "", [JOBS[0], JOBS[1]]).via, "address");
+  assert.strictEqual(ctx.smFindFoundationJobDetailed("", "Broadway Diner", JOBS).via, "name");
+  assert.strictEqual(ctx.smFindFoundationJobDetailed("", "Prairie Farms – roof repair proposal", all).via, "subject");
+  assert.strictEqual(ctx.smFindFoundationJobDetailed("", "nothing here", all).via, null);
+});
+
+test("smContainsTokens: whole-token containment only (no partial-word hits)", () => {
+  const ctx = loadSm();
+  assert.strictEqual(ctx.smContainsTokens("proposal prairie farms reroof", "prairie farms"), true);
+  assert.strictEqual(ctx.smContainsTokens("prairie farmstead barn", "prairie farm"), false);
+  assert.strictEqual(ctx.smContainsTokens("", "prairie farms"), false);
+});
+
+// ---------------------------------------------------------------------------
+// Ranked "did you mean" candidates + the manual picker's search filter.
+// ---------------------------------------------------------------------------
+test("smRankFoundationJobs: whole-name containment outranks loose token overlap", () => {
+  const ctx = loadSm();
+  const ranked = ctx.smRankFoundationJobs("Prairie Farms roof proposal", [...JOBS, PRAIRIE], 3);
+  assert.ok(ranked.length >= 1);
+  assert.strictEqual(ranked[0].job_no, "17456");
+});
+
+test("smRankFoundationJobs: generic-only overlap scores nothing", () => {
+  const ctx = loadSm();
+  const generic = [{ job_no: "9", name: "Roof Repair", address: "", city: "" }];
+  assert.strictEqual(ctx.smRankFoundationJobs("roof repair proposal", generic, 3).length, 0);
+});
+
+test("smFilterFoundationJobs: matches on name, job #, customer and city", () => {
+  const ctx = loadSm();
+  const all = [...JOBS, PRAIRIE];
+  assert.strictEqual(ctx.smFilterFoundationJobs("prairie", all, 50)[0].job_no, "17456");
+  assert.strictEqual(ctx.smFilterFoundationJobs("17456", all, 50)[0].job_no, "17456");
+  assert.strictEqual(ctx.smFilterFoundationJobs("acme", all, 50)[0].job_no, "17456");
+  // every token must hit (AND, not OR)
+  assert.strictEqual(ctx.smFilterFoundationJobs("prairie nowhere", all, 50).length, 0);
+  // empty query returns the head of the list rather than nothing
+  assert.strictEqual(ctx.smFilterFoundationJobs("", all, 2).length, 2);
+});
+
+test("the picker seeds from a ranked candidate, never the raw email subject", () => {
+  const ctx = loadSm();
+  const all = [...JOBS, PRAIRIE];
+  const subject = "Prairie Farms – roof repair proposal";
+  // Seeding the AND-filter with the raw subject finds NOTHING — the exact
+  // dead-end the picker exists to avoid.
+  assert.strictEqual(ctx.smFilterFoundationJobs(subject, all, 50).length, 0);
+  // Ranking the subject yields the right job, whose NAME does filter correctly.
+  const best = ctx.smRankFoundationJobs(subject, all, 1)[0];
+  assert.ok(best);
+  assert.strictEqual(best.job_no, "17456");
+  assert.strictEqual(ctx.smFilterFoundationJobs(best.name, all, 50)[0].job_no, "17456");
+
+  const src = fs.readFileSync(path.join(__dirname, "..", "js", "servicemanager.js"), "utf8");
+  const open = src.slice(src.indexOf("function smOpenFoundationPicker"), src.indexOf("function smCloseFoundationPicker"));
+  assert.ok(/smRankFoundationJobs\(smFoundationSearchText\(\), null, 1\)/.test(open),
+    "picker must seed from the ranked candidate");
+  const render = src.slice(src.indexOf("function smRenderFoundationPicker"), src.indexOf("function smPickFoundationJob"));
+  assert.ok(/smRankFoundationJobs\(q, null, 25\)/.test(render), "an empty strict filter must fall back to ranked near-misses");
+});
+
+// ---------------------------------------------------------------------------
+// Static guards: the cross-reference must actually FIRE, and a matched job must
+// bind job-centrically (real job name replaces the proposal subject).
+// ---------------------------------------------------------------------------
+test("smOpenPrecreate auto-runs the Foundation cross-reference (not button-only)", () => {
+  const src = fs.readFileSync(path.join(__dirname, "..", "js", "servicemanager.js"), "utf8");
+  const open = src.slice(src.indexOf("function smOpenPrecreate"), src.indexOf("function smClosePrecreate"));
+  assert.ok(/smMatchFoundationFromForm\(/.test(open),
+    "opening the pre-create form must cross-reference Foundation itself");
+});
+
+test("a Foundation match replaces the proposal SUBJECT with the real job name", () => {
+  const src = fs.readFileSync(path.join(__dirname, "..", "js", "servicemanager.js"), "utf8");
+  const apply = src.slice(src.indexOf("function smApplyFoundationPick"), src.indexOf("function smClearFoundationPick"));
+  assert.ok(/smJobNameFromProposal/.test(apply), "must know whether the name is a subject or hand-typed");
+  assert.ok(/setVal2\("sm-pc-jobName", job\.name\)/.test(apply), "must bind the canonical job name");
+  // A manual correction must win even after an auto-match already stamped a
+  // name, or "change" leaves the WO under the wrong job's name.
+  assert.ok(/var manual = \(via === "manual"\)/.test(apply), "must distinguish a manual pick");
+  assert.ok(/manual \|\| smJobNameFromProposal/.test(apply), "a manual pick must override the flag");
+});
+
+test("smPickFoundationJob marks the pick manual (authoritative over auto-match)", () => {
+  const src = fs.readFileSync(path.join(__dirname, "..", "js", "servicemanager.js"), "utf8");
+  const pick = src.slice(src.indexOf("function smPickFoundationJob"));
+  assert.ok(/smApplyFoundationPick\(j, "manual"\)/.test(pick));
+});
+
+test("the fire-and-forget cross-reference drops a stale result", () => {
+  const src = fs.readFileSync(path.join(__dirname, "..", "js", "servicemanager.js"), "utf8");
+  const fn = src.slice(src.indexOf("async function smMatchFoundationFromForm"), src.indexOf("function smApplyFoundationPick"));
+  assert.ok(/var seq = \+\+smFdnMatchSeq/.test(fn), "must take a generation token before awaiting");
+  assert.ok(/seq !== smFdnMatchSeq \|\| smCurrentProposal !== forProposal/.test(fn),
+    "must bail if the form moved on — otherwise proposal A's match binds onto proposal B");
+});
+
+test("the proposals list says 'checking' until the jobs cache lands (no false no-match)", () => {
+  const src = fs.readFileSync(path.join(__dirname, "..", "js", "servicemanager.js"), "utf8");
+  assert.ok(/Checking Foundation jobs/.test(src), "must not assert a no-match before the cache loads");
+  const load = src.slice(src.indexOf("async function smLoadProposals"), src.indexOf("function smRenderProposals"));
+  assert.ok(/smRenderProposals\(\)/.test(load) && /fdnLoadJobs\(false\)\.then/.test(load),
+    "must re-render once the cache arrives");
+});
+
+test("onclick job-number args are escaped &-first (no double-decode break)", () => {
+  const src = fs.readFileSync(path.join(__dirname, "..", "js", "servicemanager.js"), "utf8");
+  assert.ok(!/JSON\.stringify\(String\(j\.job_no\)\)\.replace/.test(src),
+    "the naive quote-only replace double-decodes on a job_no containing &quot;");
+  assert.strictEqual((src.match(/smEsc\(JSON\.stringify\(String\(j\.job_no\)\)\)/g) || []).length, 2);
+});
+
+test("the manual Foundation picker is wired into index.html", () => {
+  const html = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
+  assert.ok(/id="sm-fdn-modal"/.test(html), "picker modal must exist");
+  assert.ok(/id="sm-fdn-search"/.test(html) && /smRenderFoundationPicker\(\)/.test(html), "search box must re-filter");
+  assert.ok(/smOpenFoundationPicker\(\)/.test(html), "a manual link affordance must be reachable");
+  assert.ok(/id="sm-pc-jobName"[^>]*oninput="smJobNameEdited\(\)"/.test(html),
+    "hand-editing the job name must clear the from-proposal flag");
+});
+
+// ---------------------------------------------------------------------------
 // "WO already exists for this proposal" flag (best-effort, conservative)
 // ---------------------------------------------------------------------------
 const WO_INDEX = [
