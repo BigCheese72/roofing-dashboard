@@ -1,11 +1,29 @@
 # RoofOps Agent Coordination Board
 
-**This board is the async source of truth for the agent team.** Agents cannot message each
-other directly. Everything below is how we stay deconflicted: you read it, you claim here,
-you update here. If it isn't on the board, it didn't happen.
+> # 🛑 MODEL CHANGE — 2026-07-18: SINGLE SERIALIZED BUILDER
+>
+> **Mark's decision: parallel agents collide, so the team goes fully serial.**
+> There is now **exactly ONE writer** — the Lead — on one worktree. Nothing can collide by
+> construction.
+>
+> **All section agents are ON HOLD as of now. Your role is advisory / mapping only.**
+> You may still **report** where code lives, correct the audit, and answer questions on the
+> board. You may **not edit any file**. Do not open PRs. Do not claim locks — the lock table
+> below is retained as a *map of shared surfaces*, not an active claim system.
+>
+> **How work flows now:** Dispatch feeds Mark's changes to the Lead in order → the Lead starts
+> at the affected section, applies the edit, then walks each section it ripples into **one at a
+> time** → full suite green → commit → next change. **Never two edits in flight.**
+>
+> Your registration reports (H-5 … H-8, DPR-1…3) were the most valuable thing produced under
+> the parallel model and they directly reshaped the split plan. Keep reporting. Just don't
+> write.
 
-Maintained by: **Project Lead agent**. Live cross-session coordination escalates to Dispatch,
-which relays to Mark.
+**This board remains the source of truth for the project picture.** Under the serial model it
+is the Lead's working record and the held agents' read surface.
+
+Maintained by: **Project Lead agent** (sole writer). Escalation goes to Dispatch, which relays
+to Mark.
 
 Last reconciled: **2026-07-18 by the Lead** — roster expanded to 10. All nine registrations
 preserved: DPR (PR #172, DPR-1/2/3), Building History (H-8), Admin (H-7), Change Orders (H-6),
@@ -115,6 +133,24 @@ One agent at a time. Claim by adding your name + change; release on merge or aba
 > `firestore.rules` is not high-contention but it *is* high-blast-radius: a wrong rule is a
 > data-exposure bug that no test in `tests/` currently catches. Admin agent asks to be tagged
 > on any PR that touches it.
+
+---
+
+## LEAD-2 — the four in-flight PRs at the moment of the model change
+
+The hold caught **four open PRs** mid-flight. They are finished work from agents who can no
+longer touch them, so the Lead adopts them. **Recommendation: land all four before starting the
+split**, in this order — none of them conflict, and #173 actively de-risks the split.
+
+| PR | What | Ruling |
+|---|---|---|
+| **#173** | Inspections: characterization tests for the checklist rules — **tests-only, +407/-0** | **Land first.** This is a safety net for exactly the code Phase 2 moves. Extracting the checklist engine *without* these tests means a pure move with nothing pinning current behaviour. Landing it first is the single highest-value thing available. |
+| **#170** | RoofMapper: restore Foundation link from selected buildings (+8 in `workorders.js`) | Land second — small, surgical, closes tracked bug #76. |
+| **#171** | Work Orders: never lose edits on back-out (+192 in `workorders.js`) | Land third, rebased onto #170 (per H-1). |
+| **#172** | DPR: idempotent modal scroll lock | Land any time — touches only `js/dpr.js`, conflicts with nothing. |
+
+Starting the split with these unmerged would force a painful rebase of the split against 200+
+lines of `workorders.js` change. Merging them first costs little and removes that entirely.
 
 ---
 
