@@ -58,6 +58,10 @@ Warranty (H-5), Work Orders (H-2 concurrence, H-3, H-4, closed H-0).
   builder (exact slab `1894-2919`, cross-boundary call graph, zero parse-time execution, and
   the two tests that break on a pure move). Advisory only — **board entry is my only edit**;
   no lock, no branch, no PR. Adopting Inspections' append-only format here.
+- **Foundation Query, 2026-07-18** — posted **FQ-1**: proposed CC↔Foundation linking
+  convention + nightly photo janitor workstream, from a direct conversation with Mark.
+  Proposal only, respects the FULL HOLD — **board entry is my only edit**; no lock, no
+  branch, no PR.
 
 > ⚠️ **`js/workorders.js` IS UNDER A HARD LOCK.** Six agents' work touches it. Until the split
 > lands, **exactly one agent edits it at a time** — claim it in the lock table below or do not
@@ -824,6 +828,49 @@ around `renderBaseMapAdminCard()` (`roofmapper.js:10`) reaches into the slab, bu
 confirm before the move rather than take my word for it.
 
 **Standing by. No claim, no lock, no branch** — advisory only under the serial model.
+
+**FQ-1 — PROPOSED WORKSTREAM: CC↔Foundation linking convention + nightly photo janitor**
+*(raised by Foundation Query agent from a direct conversation with Mark, 2026-07-18. Proposal
+only — respects the FULL HOLD; nothing starts until the hold lifts and Mark green-lights.)*
+
+Mark is circling how to name/link CompanyCam projects so photos, base maps and Foundation jobs
+stay connected. Two decisions came out of the conversation, grounded in a live measurement of
+all **3,326 Foundation jobs**:
+
+**Fact base (measured 2026-07-18, single-pass — re-verify before build):** `job_no` is 100%
+populated and 100% unique (3,326/3,326). Job names are 100% populated but **not** unique
+(e.g. "Kraft Kirksville - Patching" = jobs 14421 *and* 16638). Address/city blank on 98%
+(3,258), `job_location` and `job_start_date` blank on **all** rows, customer blank on 12%,
+PM blank on 35%. ⇒ **Anchor on `job_no`, never on name/address matching.** (Confirms the
+existing base-map-anchor and CC-consolidation conclusions.)
+
+**Decision 1 — naming/linking convention, two shapes:**
+- **Project jobs** (one job = one site engagement, e.g. 17193 Frontier): CC project is 1:1
+  with the job, named with the job number FIRST — `17193 – Frontier MS Roof, Wentzville SD`.
+- **Service sites** (site outlives every job — Kraft plant 40+ jobs, MU Health buildings):
+  CC project = the **building** (`Kraft Heinz – Kirksville Plant`), and the WO record carries
+  the explicit `job_no ↔ CC project id` pair. The WO is the join table; resolution stays
+  read-time (matches the base-map anchor model). Nothing ever depends on parsing a name.
+- Convention must be **enforced by the app at creation** (picker auto-names, stamps job_no) —
+  field-first: roofers never type a convention.
+
+**Decision 2 — nightly photo janitor (the self-healing half):** every night, sweep the day's
+photos and re-file misfiled ones. Deterministic signals, no AI needed for v1:
+1. **Photo GPS** (CC stamps it) → which *building* (~solves site-level filing);
+2. **photographer + timestamp × Foundation timecards** (`pending_timecards` — the connector
+   validated live 2026-07-17) → which *job at that building* (disambiguates multi-job sites
+   like Kraft);
+3. **open WOs/DPRs at that site that day** as the tiebreaker.
+Guardrails: high-confidence moves only (GPS+timecard agree) with a reversible move log;
+ambiguous photos go to a **morning review queue**, never silently moved; **sheet-metal
+projects excluded** (standing rule). Infrastructure = same nightly-cron pattern as
+contacts-sync.
+
+**Lanes touched:** CompanyCam consolidation (dup-merge should rename survivors to the
+convention — the 2026-07-18 xref is the map), photo-sync workstream, Service Manager
+(CC-create path is where creation-time enforcement lands), RoofMapper/base-map (read-time
+resolution unchanged). **Blocked on:** FULL HOLD lift, then Mark's go. Detail lives in the
+Foundation Query session transcript; ask Dispatch to route questions there.
 
 ### Resolved
 
