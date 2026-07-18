@@ -1875,10 +1875,22 @@ function hasContent(){
 /* "+ New" (header) and "+ New Work Order" (Building History's empty
    state) both land here — now a launcher, not an immediate blank
    Leak/Service form, so the user picks a type first (see
-   startNewWorkOrder() below). The unsaved-work guard still applies
-   before leaving the current form, same as before. */
+   startNewWorkOrder() below).
+
+   The guard used to be `hasContent() && confirm("...will be lost")`. Both
+   halves went stale once continuous autosave landed: hasContent() is a
+   has-ANY-content check rather than a dirty check, so it fired on clean
+   saved orders, and nothing "will be lost" — the outgoing order is
+   autosaved under its own id and sits in the Saved list. The one risk
+   worth interrupting a roofer for is work that never reached the cloud.
+
+   The guard also moved OFF this function and onto startNewWorkOrder() /
+   loadOrder(), the two calls that actually destroy in-memory state by
+   calling fill(). newOrder() only navigates to the launcher — the current
+   form is still intact behind it, and prompting here as well as at the
+   tile meant two dialogs to get through to a blank form. showView()'s
+   wrapper flushes the autosave on the way out. */
 function newOrder(){
-  if (hasContent() && !confirm("Start a new work order? Anything not saved on the current one will be lost.\n\nHit Cancel and press Save first if you want to keep it.")) return;
   showView("home");
 }
 function renderHomeTiles(){
@@ -1902,6 +1914,10 @@ function renderHomeTiles(){
   host.innerHTML = tiles.join("");
 }
 function startNewWorkOrder(type){
+  /* fill() below reassigns currentId and every array — this is one of the
+     two real points where the current form stops being reachable. Guard
+     here rather than in newOrder(); see confirmLeaveUnclouded(). */
+  if (!confirmLeaveUnclouded("Start a new " + (WORK_ORDER_TYPE_LABELS[type] || type) + " anyway?")) return;
   fill({ id: "wo_" + Date.now(), serviceDate: todayStr(), woType: type });
   showView("edit");
   scheduleInlineBuildingHistoryRefresh();
@@ -2934,3 +2950,176 @@ function renderBuildingMap(pins, customBld, bldAddress, orthoOverlay, assets, bu
     }, 50);
   })();
 }
+
+/* ================= never lose edits on back-out =================
+   Mark, field use 2026-07-17: he was in an edited, un-emailed report and
+   backed out of it unsure whether the edits had survived.
+
+   What was actually true before this block, and why the fix is shaped the
+   way it is (the trace is worth keeping -- the obvious fix here is the
+   wrong one):
+
+   Backing out of the edit view NEVER lost anything. There is no Back or
+   Cancel button at all; the exits are the nav tabs, the header logo and
+   the home tiles, and every one of them goes through showView(), which is
+   a pure CSS show/hide (js/core.js). It never tears the form down, never
+   clears findings/repairs/materials/photos, never nulls currentId. Tab
+   away, tab back, the form is exactly as it was. On top of that,
+   core.js's debounced local autosave had already written the order to
+   localStorage 4s after typing stopped.
+
+   So the honest gap was NOT "edits vanish" -- it was that the tech had no
+   way to know the work was device-local only, plus three narrow holes:
+
+     1. That autosave is deliberately localOnly, so it never enters the
+        sync queue. core.js's beforeunload warning gates on that queue --
+        which means a work order that was never explicitly Saved produced
+        NO warning on refresh/close, the exact case where a warning is
+        most warranted.
+     2. The last <4s of typing (the pending debounce) was flushed by
+        nothing -- not unload, not phone-lock, not a view swap.
+     3. newOrder()'s guard used hasContent(), a has-ANY-content check
+        rather than a dirty check, so it fired on clean saved orders and
+        told the user their work "will be lost" when autosave had in fact
+        already kept it.
+
+   Deliberately NOT done: a confirm() on tab switches. Nothing is lost
+   there, and a field-first app must not nag a roofer every time they
+   glance at Building History (Mark: keep the roof flows dead-simple). We
+   flush instead of prompting, and prompt only where work genuinely goes
+   away or genuinely never left the device.
+
+   Lives here rather than in core.js on purpose: workorders.js loads after
+   core.js, so it can layer this on with listeners and thin wrappers and
+   zero edits to a shared file. */
+
+/* Set on any edit; cleared when an explicit (cloud) Save succeeds. In
+   memory only -- the durable half of the question is answered by
+   _cloudBaseSavedAt on the stored record (stamped in cloudSaveOrder). */
+var woEditDirty = false;
+
+/* True when this order has content that has never made it off the device.
+   Both halves matter: _cloudBaseSavedAt is 0/absent until a cloud save has
+   actually landed, and the sync queue holds orders whose explicit Save is
+   still waiting on a network. */
+function woEditHasUncloudedWork(){
+  try{
+    if (!currentId || !hasContent()) return false;
+    var q = (typeof loadSyncQueue === "function") ? loadSyncQueue() : {};
+    if (q && q[currentId]) return true;
+    var rec = loadDb().orders[currentId];
+    if (!rec || !rec._cloudBaseSavedAt) return true;   /* never reached the cloud */
+    return woEditDirty;                                /* reached it, but has newer edits */
+  }catch(e){ return false; }
+}
+
+/* Close the debounce window on demand. core.js's timer handle is a plain
+   top-level var (global), so we can cancel the pending run and persist
+   immediately rather than racing it. Local-only by design -- same contract
+   as the autosave it is short-circuiting; this must never fire a network
+   request from an unload handler, where it would be killed mid-flight
+   anyway. */
+function flushWorkOrderAutosave(){
+  try{
+    if (typeof localAutosaveTimer !== "undefined" && localAutosaveTimer){
+      clearTimeout(localAutosaveTimer);
+      localAutosaveTimer = null;
+    }
+    var view = document.getElementById("view-edit");
+    if (!view || view.style.display === "none") return;
+    if (!currentId || !hasContent()) return;
+    saveOrder({ quiet: true, localOnly: true });
+  }catch(e){ console.warn("autosave flush failed", e); }
+}
+
+/* Mark dirty on the same delegated listener pattern core.js uses, so every
+   current and future field in the view is covered without per-field wiring. */
+document.addEventListener("DOMContentLoaded", function(){
+  var editView = document.getElementById("view-edit");
+  if (!editView) return;
+  editView.addEventListener("input", function(){ woEditDirty = true; });
+  editView.addEventListener("change", function(){ woEditDirty = true; });
+});
+
+/* An explicit Save that reaches the cloud is what makes the form clean
+   again. Wrapping rather than editing core.js: index.html's inline
+   onclick="saveOrder()" resolves off window at call time, so the wrapper
+   is what every Save button gets. localOnly saves (the autosave) must NOT
+   clear the flag -- they are exactly the case we are tracking. */
+(function(){
+  if (typeof saveOrder !== "function") return;
+  var coreSaveOrder = saveOrder;
+  window.saveOrder = function(opts){
+    var result = coreSaveOrder.apply(this, arguments);
+    if (!opts || !opts.localOnly){
+      Promise.resolve(result).then(function(ok){ if (ok) woEditDirty = false; }, function(){});
+    }
+    return result;
+  };
+})();
+
+/* Leaving the edit view for any other view: flush, don't prompt (see the
+   header note). Also covers the logo and the home tiles, which reach
+   showView() directly. */
+(function(){
+  if (typeof showView !== "function") return;
+  var coreShowView = showView;
+  window.showView = function(v){
+    try{
+      var view = document.getElementById("view-edit");
+      if (v !== "edit" && view && view.style.display !== "none") flushWorkOrderAutosave();
+    }catch(e){}
+    return coreShowView.apply(this, arguments);
+  };
+})();
+
+/* Phone locking, app-switching, tab close, refresh -- the field cases the
+   4s debounce used to lose. pagehide is the one that actually fires
+   reliably on mobile Safari/Chrome when the phone locks; visibilitychange
+   covers app-switching without a teardown. */
+window.addEventListener("pagehide", flushWorkOrderAutosave);
+document.addEventListener("visibilitychange", function(){
+  if (document.visibilityState === "hidden") flushWorkOrderAutosave();
+});
+
+/* The hole core.js's beforeunload couldn't see: work that never reached
+   the cloud is never in the sync queue, so that handler stayed silent on
+   precisely the riskiest order. Flush first so the local copy is current
+   even if the user leaves anyway -- then warn. Browsers show their own
+   generic text; setting returnValue is only what triggers the prompt. */
+window.addEventListener("beforeunload", function(e){
+  flushWorkOrderAutosave();
+  if (woEditHasUncloudedWork()){
+    e.preventDefault();
+    e.returnValue = "";
+  }
+});
+
+/* The two transitions that genuinely destroy in-memory state: both call
+   fill(), which reassigns currentId and every array. Autosave means the
+   outgoing order survives under its own id (it is in the Saved list), so
+   the prompt is only warranted -- and only honest -- when the work never
+   reached the cloud. */
+function confirmLeaveUnclouded(actionText){
+  flushWorkOrderAutosave();
+  if (!woEditHasUncloudedWork()) return true;
+  return confirm(
+    "This work order is saved on this device but hasn't reached the cloud yet — " +
+    "it won't show up on another phone or tablet.\n\n" +
+    actionText + "\n\n" +
+    "Hit Cancel and press Save first if you want it synced."
+  );
+}
+
+/* The other fill() caller that discards the current form: opening a
+   different saved order. Guarded the same way and for the same reason as
+   startNewWorkOrder(). Re-opening the order already on screen is a no-op
+   worth letting through silently. */
+(function(){
+  if (typeof loadOrder !== "function") return;
+  var coreLoadOrder = loadOrder;
+  window.loadOrder = function(id){
+    if (id !== currentId && !confirmLeaveUnclouded("Open the other work order anyway?")) return;
+    return coreLoadOrder.apply(this, arguments);
+  };
+})();
