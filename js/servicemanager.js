@@ -157,6 +157,7 @@ async function smLoadProposals(){
   try {
     var body = { action: "list_messages", pages: 3 };
     if (src === "sentitems") body.folderId = "sentitems"; else body.folderName = src;
+    var data = await smApi(body);
     var rows = data.rows || [];   // capture ONCE — `data.rows || []` allocates a
     smProposals = rows;           // fresh array each time, so the identity guard
     await smRefreshWoIndex();     // below would never hold.
@@ -498,15 +499,30 @@ function smFoundationSearchText(){
  * be a cold 5000-doc Firestore read; without this, closing proposal A's form
  * and opening B's lets A's in-flight match paint job A onto B and ship a WO
  * cross-referenced to the wrong accounting job. */
+/* Two counters, not one: the picker and the auto-match run concurrently, and a
+ * shared counter let either cancel the other's render — leaving an open picker
+ * stuck on "Loading jobs…". */
 var smFdnMatchSeq = 0;
+var smFdnPickerSeq = 0;
 async function smMatchFoundationFromForm(silentOnMiss){
   var el = smEl("sm-pc-foundation");
   var loc = getVal2("sm-pc-location");
   var texts = smFoundationMatchTexts();
   var seq = ++smFdnMatchSeq;
   var forProposal = smCurrentProposal;
+  // Nothing to go on at all (blank New Work Order, nothing typed) — say so
+  // rather than reporting a "no match" we never actually looked for.
+  if (!loc && !texts.length){
+    if (el) el.innerHTML = "Add a job name or an address first, or " +
+      '<button class="btn" type="button" onclick="smOpenFoundationPicker()">🔗 link a Foundation job</button>.';
+    return;
+  }
   if (el) el.innerHTML = "Searching Foundation…";
-  try { if (typeof fdnLoadJobs === "function") await fdnLoadJobs(false); } catch (e) {}
+  // A failure here must be recorded, not just swallowed: if the auto-match is
+  // the first loader to fail, the proposal rows would otherwise sit on
+  // "Checking Foundation jobs…" forever (the REQUIRED-4 symptom by another path).
+  try { if (typeof fdnLoadJobs === "function") await fdnLoadJobs(false); }
+  catch (e) { smFdnLoadFailed = true; }
   // The form moved on while we were away — drop this result on the floor.
   if (seq !== smFdnMatchSeq || smCurrentProposal !== forProposal) return;
   // Address first (it doesn't depend on any text), then each candidate text in
@@ -521,7 +537,7 @@ async function smMatchFoundationFromForm(silentOnMiss){
   if (!el) return;
   // No confident match — offer the near misses as one-tap links plus a full
   // search, so "it didn't link" is never a dead end.
-  var near = smRankFoundationJobs(text, null, 3);
+  var near = smRankFoundationJobs(smFoundationSearchText(), null, 3);
   el.innerHTML = "⚠️ No confident Foundation match" + (silentOnMiss ? " from the proposal" : " by address or name") +
     " — it stays unlinked." +
     (near.length ? ('<div style="margin:6px 0 0">Did you mean: ' + near.map(function(j){
@@ -598,10 +614,10 @@ function smOpenFoundationPicker(){
   if (host) host.innerHTML = "Loading jobs…";
   // Same staleness class as smMatchFoundationFromForm: a slow first load for
   // proposal A must not re-seed a picker the manager has since reopened for B.
-  var seq = ++smFdnMatchSeq;
+  var seq = ++smFdnPickerSeq;
   var forProposal = smCurrentProposal;
   var render = function(){
-    if (seq !== smFdnMatchSeq || smCurrentProposal !== forProposal) return;
+    if (seq !== smFdnPickerSeq || smCurrentProposal !== forProposal) return;
     // Seed from the best-ranked CANDIDATE's name, never the raw email subject:
     // the filter is an AND over tokens, so seeding "Prairie Farms – roof repair
     // proposal" would return zero rows for a job that's sitting right there.
@@ -612,7 +628,7 @@ function smOpenFoundationPicker(){
   };
   if (typeof fdnLoadJobs === "function") fdnLoadJobs(false).then(render).catch(function(){
     smFdnLoadFailed = true;
-    if (seq !== smFdnMatchSeq) return;
+    if (seq !== smFdnPickerSeq) return;
     if (host) host.innerHTML = '<span style="color:#b23">Couldn\'t load the Foundation job list.</span>';
   });
   else render();

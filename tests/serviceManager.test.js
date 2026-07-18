@@ -350,6 +350,103 @@ test("the manual Foundation picker is wired into index.html", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Behavioural tests that RUN the two DOM-driven entry points. The pure-helper
+// tests above all passed while smLoadProposals() and the no-match branch of
+// smMatchFoundationFromForm() each threw a ReferenceError on an undefined
+// variable — nothing exercised them end to end. These do.
+// ---------------------------------------------------------------------------
+function fakeDom(ids) {
+  const els = {};
+  (ids || []).forEach((id) => { els[id] = { value: "", innerHTML: "", style: {}, dataset: {} }; });
+  return {
+    getElementById: (id) => els[id] || null,
+    _els: els,
+  };
+}
+/* Loads the module with a DOM and stubbed collaborators so the async entry
+ * points can actually be invoked. Unhandled rejections are captured, not
+ * swallowed, so a throw inside a fire-and-forget path fails the test. */
+function loadSmLive(opts) {
+  opts = opts || {};
+  const ctx = { console, setTimeout, clearTimeout, Promise, JSON, Date, encodeURIComponent };
+  ctx.window = ctx;
+  ctx.document = fakeDom([
+    "sm-proposals-list", "sm-proposal-source", "sm-pc-foundation", "sm-pc-jobName",
+    "sm-pc-location", "sm-pc-billTo", "sm-fdn-modal", "sm-fdn-search", "sm-fdn-list",
+  ]);
+  vm.createContext(ctx);
+  const strip = (s) => s.replace(/^\s*["']use strict["'];?\s*/, "");
+  for (const rel of ["js/foundation.js", "js/servicemanager.js"]) {
+    vm.runInContext(strip(fs.readFileSync(path.join(__dirname, "..", rel), "utf8")), ctx);
+  }
+  ctx.fdnCache = opts.jobs || [];
+  ctx.fdnLoadJobs = async () => ctx.fdnCache;
+  ctx.smApi = async () => ({ rows: opts.rows || [] });
+  ctx.cloudFetchIndex = async () => [];
+  ctx.toast = () => {};
+  return ctx;
+}
+
+test("smLoadProposals actually loads and renders (no undefined-variable crash)", async () => {
+  const ctx = loadSmLive({
+    rows: [{ id: "m1", s: "Prairie Farms – roof repair proposal", n: "Nathan", e: "n@x.com", d: null, a: true }],
+    jobs: [{ job_no: "17456", job_number: "17456", name: "Prairie Farms", customer_no: "ACME", address: "1 Dairy Ln", city: "Columbia", state: "MO" }],
+  });
+  await ctx.smLoadProposals();
+  assert.strictEqual(ctx.smProposals.length, 1, "the proposal row must reach module state");
+  const html = ctx.document._els["sm-proposals-list"].innerHTML;
+  assert.ok(!/Couldn.{0,6}t load proposals/.test(html), "must not fall into the generic error copy: " + html);
+  assert.ok(/Prairie Farms/.test(html), "the proposal must render");
+  assert.ok(/17456/.test(html), "the Foundation cross-reference must show on the row");
+});
+
+test("the no-match branch renders the fallback instead of throwing", async () => {
+  const rejections = [];
+  const onRej = (e) => rejections.push(e);
+  process.on("unhandledRejection", onRej);
+  try {
+    const ctx = loadSmLive({ jobs: [{ job_no: "17456", name: "Prairie Farms", address: "1 Dairy Ln", city: "Columbia", state: "MO" }] });
+    ctx.smCurrentProposal = { subject: "Totally unrelated widget order" };
+    ctx.document._els["sm-pc-jobName"].value = "Totally unrelated widget order";
+    await ctx.smMatchFoundationFromForm(true);
+    const panel = ctx.document._els["sm-pc-foundation"].innerHTML;
+    assert.ok(!/Searching Foundation/.test(panel), "must not be stuck on the searching state: " + panel);
+    assert.ok(/No confident Foundation match/.test(panel), "must explain the miss");
+    assert.ok(/smOpenFoundationPicker/.test(panel), "must offer the manual picker — never a dead end");
+    await new Promise((r) => setTimeout(r, 0));
+    assert.deepStrictEqual(rejections.map(String), [], "no unhandled rejection");
+  } finally {
+    process.off("unhandledRejection", onRej);
+  }
+});
+
+test("cross-referencing an empty form asks for input rather than reporting a miss", async () => {
+  const ctx = loadSmLive({ jobs: [{ job_no: "1", name: "Prairie Farms" }] });
+  await ctx.smMatchFoundationFromForm();
+  const panel = ctx.document._els["sm-pc-foundation"].innerHTML;
+  assert.ok(/Add a job name or an address first/.test(panel), panel);
+  assert.ok(!/No confident Foundation match/.test(panel), "we never actually looked — don't claim a miss");
+});
+
+test("a failed jobs load is recorded so rows leave the 'checking' state", async () => {
+  const ctx = loadSmLive({ jobs: [] });
+  ctx.fdnCache = null;
+  ctx.fdnLoadJobs = async () => { throw new Error("Not connected"); };
+  ctx.smCurrentProposal = { subject: "Prairie Farms proposal" };
+  assert.strictEqual(ctx.smFdnCacheStatus(), "loading");
+  await ctx.smMatchFoundationFromForm(true);
+  assert.strictEqual(ctx.smFdnCacheStatus(), "error",
+    "a swallowed load failure would strand the proposal rows on 'Checking Foundation jobs…'");
+});
+
+test("the picker and the auto-match use separate staleness counters", () => {
+  const src = fs.readFileSync(path.join(__dirname, "..", "js", "servicemanager.js"), "utf8");
+  const picker = src.slice(src.indexOf("function smOpenFoundationPicker"), src.indexOf("function smCloseFoundationPicker"));
+  assert.ok(/smFdnPickerSeq/.test(picker) && !/smFdnMatchSeq/.test(picker),
+    "a shared counter lets the auto-match strand an open picker on 'Loading jobs…'");
+});
+
+// ---------------------------------------------------------------------------
 // "WO already exists for this proposal" flag (best-effort, conservative)
 // ---------------------------------------------------------------------------
 const WO_INDEX = [
