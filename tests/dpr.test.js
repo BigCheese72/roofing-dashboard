@@ -126,6 +126,62 @@ test("collect() -> fill() -> collect() preserves the core report fields", () => 
   assert.strictEqual(out.id, s.dprDocId(s.dprBuildingId("Acme Roofing", "North Warehouse"), "2026-07-15"));
 });
 
+test("the CompanyCam project link round-trips through collect() and fill()", () => {
+  const s = makeSandbox();
+  const original = {
+    id: null, buildingId: null, date: "2026-07-15",
+    jobName: "Frontier Plant", billTo: "Frontier",
+    companyCamProjectId: "cc_proj_123", companyCamProjectName: "Frontier Plant Reroof"
+  };
+  s.dprFill(original);
+  const out = s.dprCollect();
+  assert.strictEqual(out.companyCamProjectId, "cc_proj_123");
+  assert.strictEqual(out.companyCamProjectName, "Frontier Plant Reroof");
+  // and back again through a fresh sandbox — the link sticks on reload
+  const s2 = makeSandbox();
+  s2.dprFill(out);
+  assert.strictEqual(s2.dprState.companyCamProjectId, "cc_proj_123");
+  assert.strictEqual(s2.dprCollect().companyCamProjectName, "Frontier Plant Reroof");
+});
+
+test("an older DPR with no CompanyCam link collects null (unchanged)", () => {
+  const s = makeSandbox();
+  s.dprFill({ jobName: "North Warehouse", billTo: "Acme", date: "2026-07-15" });
+  const out = s.dprCollect();
+  assert.strictEqual(out.companyCamProjectId, null);
+  assert.strictEqual(out.companyCamProjectName, "");
+});
+
+test("dprHasJobLink is true with a building, a Foundation job, or a typed job name", () => {
+  const s = makeSandbox();
+  assert.strictEqual(s.dprHasJobLink(), false);            // fresh: nothing linked or typed
+  s.setVal("dpr-jobName", "Frontier Plant");
+  assert.strictEqual(s.dprHasJobLink(), true);             // a typed job files under a building
+  s.setVal("dpr-jobName", "");
+  s.dprState.buildingId = "bld_x";
+  assert.strictEqual(s.dprHasJobLink(), true);             // an explicit building link
+  s.dprState.buildingId = null;
+  s.dprState.foundationJobNo = "17476";
+  assert.strictEqual(s.dprHasJobLink(), true);             // a Foundation-only pick
+});
+
+test("dprUnlinkJob clears the link (building/Foundation/CompanyCam) but keeps typed text", () => {
+  const s = makeSandbox();
+  s.dprFill({
+    jobName: "Frontier Plant", billTo: "Frontier", date: "2026-07-15",
+    buildingId: "bld_frontier", foundationJobNo: "17476",
+    companyCamProjectId: "cc_proj_123", companyCamProjectName: "Frontier Plant Reroof"
+  });
+  s.dprUnlinkJob();
+  assert.strictEqual(s.dprState.buildingId, null);
+  assert.strictEqual(s.dprState.foundationJobNo, null);
+  assert.strictEqual(s.dprState.companyCamProjectId, null);
+  assert.strictEqual(s.dprState.companyCamProjectName, "");
+  // the crew's typed job text is untouched — Unlink removes the link, not the data
+  assert.strictEqual(s.val("dpr-jobName"), "Frontier Plant");
+  assert.strictEqual(s.val("dpr-billTo"), "Frontier");
+});
+
 test("collect() only counts named crew toward the roster", () => {
   const s = makeSandbox();
   s.setVal("dpr-jobName", "North Warehouse");
