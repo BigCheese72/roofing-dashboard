@@ -895,6 +895,11 @@
       <div class="card">
         <h2 class="cond">Daily Progress Report</h2>
         <p class="hint" id="dpr-continue-notice" style="display:none;color:#2E7D32"></p>
+        <!-- Persistent, visible job link (Mark: "it should SHOW it's linked to
+             Frontier and stay linked"). Rendered by dprRenderLinkStatus() on
+             pick and on reload — the job it's filed under + its Foundation /
+             CompanyCam links. Hidden until there's a job. -->
+        <div id="dpr-link-status" style="display:none;margin:0 0 12px"></div>
         <div class="btnrow" style="margin:0 0 12px">
           <button class="btn" onclick="dprShowJobSelect()">🔍 Select Job</button>
           <span class="hint" style="margin:0">Pick the job — its customer, address and job number fill in automatically. Or just type a new one below.</span>
@@ -1133,6 +1138,10 @@
         <div class="btnrow" style="margin:0">
           <button class="btn primary" onclick="document.getElementById('dprCamInput').click()">📷 Take Photo</button>
           <button class="btn" onclick="document.getElementById('dprLibInput').click()">+ Add Photos</button>
+          <!-- Pull this job's CompanyCam photos straight into the report (they
+               print in the PDF). Opens the linked project directly, or lets the
+               foreman pick one. See dprOpenCompanyCam() in js/dpr.js. -->
+          <button class="btn" onclick="dprOpenCompanyCam()">☁️ From CompanyCam</button>
         </div>
         <input type="file" id="dprCamInput" accept="image/*" capture="environment" style="display:none"
           onchange="dprAddPhotosFromCamera(this.files); this.value='';">

@@ -317,6 +317,10 @@ function dprPickFoundationJob(jobNo){
   dprJobNoAutoVal = String(j.job_no || "");
   dprState.foundationJobNo = String(j.job_no || "");
   dprState.foundationCustomerNo = (j.customer_no != null ? String(j.customer_no) : null);
+  /* A straight-from-Foundation pick has no RoofOps building yet, so no
+     CompanyCam project to inherit — clear any carried over from a prior pick. */
+  dprState.companyCamProjectId = null;
+  dprState.companyCamProjectName = "";
   setVal("dpr-bld-search", "");
   var host = document.getElementById("dpr-bld-results");
   if (host) host.innerHTML = "";
@@ -326,6 +330,7 @@ function dprPickFoundationJob(jobNo){
   dprRefreshLaborCard();
   dprPopulateCrewFromPunches(false);  /* empty roster fills itself from the clock */
   dprRefreshWeather();
+  dprRenderLinkStatus();
   toast("Linked Foundation job " + (j.job_no || "") + " — fill in today's progress");
 }
 
@@ -368,6 +373,7 @@ function dprOnShow(){
   dprRenderSectionChips();
   dprRenderPhotos();
   dprRenderSectionStatus();
+  dprRenderLinkStatus();
   dprApplySignoffLock();
   dprHideHistory();
 }
@@ -384,7 +390,10 @@ function dprEnsureListeners(){
   if (dprListenersInstalled) return;
   ["dpr-jobName", "dpr-billTo"].forEach(function(id){
     var el = document.getElementById(id);
-    if (el) el.addEventListener("blur", dprScheduleSameDayLoad);
+    if (el){
+      el.addEventListener("blur", dprScheduleSameDayLoad);
+      el.addEventListener("blur", dprRenderLinkStatus); /* a typed job shows the "filed under" chip too */
+    }
   });
   var dateEl = document.getElementById("dpr-date");
   if (dateEl) dateEl.addEventListener("change", dprScheduleSameDayLoad);
@@ -505,10 +514,17 @@ function dprPickBuilding(buildingId){
   dprState.buildingId = buildingId;
   dprState.roofs = getBuildingRoofs(b);
   dprRenderRoofPicker();
+  /* Carry the building's CompanyCam project onto the DPR (job-centric linkage —
+     the same project the work orders / building history use). Lets the foreman
+     reach that job's CompanyCam photos straight from this report; stamped on the
+     doc in dprCollect() so the link travels with the report. */
+  dprState.companyCamProjectId = b.companyCamProjectId || null;
+  dprState.companyCamProjectName = b.companyCamProjectName || "";
   /* Prefer the building's Foundation job number (the accounting system of
      record) for Job No.; fall back to the parent-job derivation only if the
      building has no Foundation link. */
   if (!dprApplyFoundationJobNo(b)) dprAutofillJobNo(buildingId);
+  dprRenderLinkStatus();
   dprScheduleSameDayLoad();
   dprScheduleCrewHoursAutofill();
   dprRefreshLaborCard();
@@ -533,6 +549,60 @@ function dprSelectedRoofId(){
   if (sel && sel.value) return sel.value;
   var roofs = dprState.roofs || [];
   return roofs[0] ? roofs[0].id : "roof_default";
+}
+
+/* ================= visible, persistent job link =================
+   Mark: "I selected Frontier — it should SHOW on the DPR that it's linked to
+   Frontier, and stay linked." The link was only ever a disappearing toast; the
+   data persisted but nothing on screen confirmed it. This renders a durable
+   chip on the Job Info card — the job it's filed under, the job number, and the
+   Foundation / CompanyCam links that ride along — re-rendered on pick AND on
+   reload (dprFill), so the linkage is always visible and clearly sticks. */
+function dprHasJobLink(){
+  return !!(dprState.buildingId || dprState.foundationJobNo || (val("dpr-jobName") || "").trim());
+}
+function dprRenderLinkStatus(){
+  var host = document.getElementById("dpr-link-status");
+  if (!host) return;
+  if (!dprHasJobLink()){ host.style.display = "none"; host.innerHTML = ""; return; }
+  var jobName = (val("dpr-jobName") || "").trim();
+  var billTo = (val("dpr-billTo") || "").trim();
+  var jobNo = (val("dpr-jobNo") || "").trim();
+  var label = jobName || billTo || "this job";
+  var badges = [];
+  if (jobNo) badges.push('<span class="hint" style="margin:0">Job #' + esc(jobNo) + '</span>');
+  if (dprState.foundationJobNo) badges.push('<span class="evt-tag" style="background:#EAF4FF;color:#0d3c61">☁️ Foundation</span>');
+  if (dprState.companyCamProjectId){
+    badges.push('<span class="evt-tag" style="background:#E8F5E9;color:#2E7D32">📷 CompanyCam' +
+      (dprState.companyCamProjectName ? ": " + esc(dprState.companyCamProjectName) : "") + '</span>');
+  }
+  var locked = dprIsLocked();
+  host.style.display = "";
+  host.innerHTML =
+    '<div style="display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:8px 12px;background:#F1F8E9;border:1px solid #7CB342;border-radius:6px">' +
+      '<span style="font-weight:600;color:#33691E">🔗 Linked to ' + esc(label) + (billTo && billTo !== label ? ' <span class="hint" style="font-weight:400;color:#33691E">· ' + esc(billTo) + '</span>' : '') + '</span>' +
+      badges.join("") +
+      '<span style="flex:1"></span>' +
+      (locked ? '' :
+        '<button class="btn" onclick="dprShowJobSelect()" title="Pick a different job">Change</button>' +
+        '<button class="btn" onclick="dprUnlinkJob()" title="Clear this job link">Unlink</button>') +
+    '</div>';
+}
+/* Drop the job link (and its Foundation/CompanyCam ride-alongs) so the foreman
+   can re-pick or type a fresh one. Leaves the typed text fields alone — Unlink
+   removes the LINK, not the data the crew already entered. */
+function dprUnlinkJob(){
+  if (dprIsLocked()){ toast("This report is signed and locked."); return; }
+  dprState.buildingId = null;
+  dprState.foundationJobNo = null;
+  dprState.foundationCustomerNo = null;
+  dprState.companyCamProjectId = null;
+  dprState.companyCamProjectName = "";
+  dprState.roofs = [];
+  dprRenderRoofPicker();
+  dprRenderLinkStatus();
+  dprRefreshLaborCard();
+  toast("Job unlinked — pick or type a job to re-link.");
 }
 
 /* ================= one-per-day continuation =================
@@ -1485,6 +1555,183 @@ function dprRenderPhotos(){
   });
 }
 
+/* ================= CompanyCam import (into the DPR) =================
+   Mark: "I don't have a link to CompanyCam anything on the DPR." Job-centric
+   linkage — the DPR reaches the SAME CompanyCam project the work orders /
+   building history use, and pulls that job's photos straight into today's
+   report so they print in the PDF.
+
+   Self-contained on purpose, mirroring how the roof-section trace replicates
+   RoofMapper rather than calling into it: the work-order ccImport() is welded
+   to the WO globals (photos[], findings, project lock + WO save), so re-pointing
+   it at the DPR would destabilise the WO flow. This reuses only the pure shared
+   plumbing — ccApi() (the server proxy) and ccCompress() (image resize) — and
+   writes into dprPhotos in the exact shape dprIngestPhotos() produces, so the
+   save/render path is unchanged. If the linked building already has a project we
+   open it directly; otherwise the foreman picks one and it's remembered on the
+   report (dprState.companyCamProjectId) so the link shows and sticks. */
+var dprCcProjId = null, dprCcPage = 1, dprCcPhotos = [], dprCcSelected = {};
+function dprEnsureCcModal(){
+  var existing = document.getElementById("dpr-cc-modal");
+  if (existing) return existing;
+  var modal = document.createElement("div");
+  modal.id = "dpr-cc-modal";
+  modal.style.cssText = "display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:10000";
+  modal.innerHTML =
+    '<div style="position:absolute;inset:16px;background:#fff;border-radius:8px;display:flex;flex-direction:column;overflow:hidden">' +
+      '<div style="display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid #ddd">' +
+        '<b id="dpr-cc-title" style="font-size:16px;flex:1">Import from CompanyCam</b>' +
+        '<button class="btn" onclick="dprCcClose()">✕ Close</button>' +
+      '</div>' +
+      '<div id="dpr-cc-body" style="flex:1;overflow:auto;padding:12px 14px"></div>' +
+    '</div>';
+  document.body.appendChild(modal);
+  return modal;
+}
+function dprOpenCompanyCam(){
+  if (!dprCanCreate()){ toast("Your role can view reports but can't edit them."); return; }
+  if (dprIsLocked()){ toast("This report is signed and locked."); return; }
+  if (typeof ccApi !== "function"){ toast("CompanyCam isn't available right now."); return; }
+  dprCcSelected = {};
+  dprEnsureCcModal().style.display = "";
+  lockBodyScroll();
+  /* Linked building already carries a project — go straight to its photos. */
+  if (dprState.companyCamProjectId){
+    dprCcOpenProject(dprState.companyCamProjectId, dprState.companyCamProjectName || "");
+  } else {
+    dprCcShowProjects((val("dpr-jobName") || val("dpr-location") || "").trim());
+  }
+}
+function dprCcClose(){
+  var modal = document.getElementById("dpr-cc-modal");
+  if (modal) modal.style.display = "none";
+  unlockBodyScroll();
+  dprCcSelected = {};
+}
+function dprCcShowProjects(q){
+  var title = document.getElementById("dpr-cc-title");
+  if (title) title.textContent = "Import from CompanyCam";
+  var b = document.getElementById("dpr-cc-body");
+  if (!b) return;
+  b.innerHTML =
+    '<div style="display:flex;gap:8px;margin-bottom:10px">' +
+      '<input type="text" id="dpr-cc-search" placeholder="Search projects (job name, address…)" style="flex:1" value="' + esc(q || "") + '">' +
+      '<button class="btn primary" onclick="dprCcDoSearch()">Search</button>' +
+    '</div>' +
+    '<div id="dpr-cc-list" class="hint">Loading recent projects…</div>';
+  var inp = document.getElementById("dpr-cc-search");
+  if (inp) inp.addEventListener("keydown", function(e){ if (e.key === "Enter") dprCcDoSearch(); });
+  dprCcLoadProjects(q);
+}
+function dprCcDoSearch(){
+  var el = document.getElementById("dpr-cc-search");
+  dprCcLoadProjects(el ? el.value : "");
+}
+var dprCcProjectsCache = [];
+async function dprCcLoadProjects(q){
+  var list = document.getElementById("dpr-cc-list");
+  if (!list) return;
+  list.className = "hint"; list.textContent = "Loading…";
+  try{
+    var out = await ccApi({ action: "projects", q: q || "" });
+    var ps = out.projects || [];
+    dprCcProjectsCache = ps;
+    if (!ps.length){ list.textContent = "No projects found" + (q ? ' for "' + q + '"' : "") + "."; return; }
+    list.className = "";
+    /* Index-based lookup (not name interpolated into onclick) — the same
+       apostrophe-in-name escaping trap ccLoadProjects() documents. */
+    list.innerHTML = ps.map(function(p, i){
+      return '<button class="cc-proj" onclick="dprCcOpenProjectAt(' + i + ')">' +
+        '<b>' + esc(p.name) + '</b>' +
+        (p.address ? '<div class="addr">' + esc(p.address) + '</div>' : '') +
+        '</button>';
+    }).join("");
+  }catch(e){ list.textContent = "Couldn't load projects: " + e.message; }
+}
+function dprCcOpenProjectAt(i){
+  var p = dprCcProjectsCache[i];
+  if (p) dprCcOpenProject(p.id, p.name);
+}
+async function dprCcOpenProject(id, name){
+  dprCcProjId = id; dprCcPage = 1; dprCcPhotos = []; dprCcSelected = {};
+  /* Remember the picked project on the report so the link chip shows it and it
+     saves with the DPR (job-centric — this is the CompanyCam link Mark wanted). */
+  dprState.companyCamProjectId = id;
+  dprState.companyCamProjectName = name || dprState.companyCamProjectName || "";
+  dprRenderLinkStatus();
+  var title = document.getElementById("dpr-cc-title");
+  if (title) title.textContent = name || "Project photos";
+  var b = document.getElementById("dpr-cc-body");
+  if (!b) return;
+  b.innerHTML =
+    '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">' +
+      '<button class="btn" onclick="dprCcShowProjects(\'\')">← Projects</button>' +
+      '<span class="hint" style="margin:0" id="dpr-cc-count">Tap photos to select</span>' +
+      '<span style="flex:1"></span>' +
+      '<button class="btn primary" onclick="dprCcImport()">Import Selected</button>' +
+    '</div>' +
+    '<div class="cc-grid" id="dpr-cc-grid"></div>' +
+    '<div style="margin-top:10px"><button class="btn" id="dpr-cc-more" onclick="dprCcLoadPhotos()">Load more</button></div>';
+  dprCcLoadPhotos();
+}
+async function dprCcLoadPhotos(){
+  var grid = document.getElementById("dpr-cc-grid");
+  var more = document.getElementById("dpr-cc-more");
+  if (!grid || !more) return;
+  more.disabled = true; more.textContent = "Loading…";
+  try{
+    var out = await ccApi({ action: "photos", project_id: dprCcProjId, page: dprCcPage });
+    var ph = out.photos || [];
+    ph.forEach(function(p){
+      var i = dprCcPhotos.length;
+      dprCcPhotos.push(p);
+      var d = document.createElement("div");
+      d.className = "cc-ph"; d.id = "dprccph-" + i;
+      d.innerHTML = '<img src="' + esc(p.thumb) + '" loading="lazy">';
+      d.onclick = function(){
+        if (dprCcSelected[i]){ delete dprCcSelected[i]; d.classList.remove("sel"); }
+        else { dprCcSelected[i] = true; d.classList.add("sel"); }
+        var n = Object.keys(dprCcSelected).length;
+        var cnt = document.getElementById("dpr-cc-count");
+        if (cnt) cnt.textContent = n ? (n + " selected") : "Tap photos to select";
+      };
+      grid.appendChild(d);
+    });
+    dprCcPage++;
+    more.disabled = false;
+    more.textContent = ph.length < 30 ? "No more photos" : "Load more";
+    if (ph.length < 30) more.disabled = true;
+    if (!dprCcPhotos.length) grid.innerHTML = '<p class="hint">No photos in this project yet.</p>';
+  }catch(e){
+    more.disabled = false; more.textContent = "Load more";
+    toast("Couldn't load photos: " + e.message);
+  }
+}
+async function dprCcImport(){
+  var keys = Object.keys(dprCcSelected);
+  if (!keys.length){ toast("Tap the photos you want first."); return; }
+  var ok = 0, fail = 0;
+  for (var k = 0; k < keys.length; k++){
+    var p = dprCcPhotos[+keys[k]];
+    if (!p) continue;
+    toast("Importing photo " + (k + 1) + " of " + keys.length + "…");
+    try{
+      var out = await ccApi({ action: "image", url: p.full });
+      var compressed = await ccCompress(out.dataUrl);   /* {caption,img,thumb,w,h,...} */
+      /* Shape it exactly like a DPR camera/library capture (dprIngestPhotos). */
+      compressed.localId = makeLocalPhotoId();
+      compressed.ccPhotoId = p.id;
+      compressed.gps = p.gps || null;   /* CompanyCam's own GPS if present — seeds pin placement, same as a camera capture */
+      dprPhotos.push(compressed);
+      ok++;
+    }catch(e){ fail++; }
+  }
+  dprRenderPhotos();
+  dprCcClose();
+  toast(ok + " photo" + (ok === 1 ? "" : "s") + " imported from CompanyCam" +
+    (fail ? " (" + fail + " failed)" : "") + " — remember to Save the report.");
+}
+
 /* ================= collect / fill =================
    Uses val()/setVal() so the logic is exercisable in the same VM-sandbox test
    harness the other modules use (tests/changeOrderAutofill.test.js style). */
@@ -1513,6 +1760,8 @@ function dprCollect(){
     jobNo: val("dpr-jobNo"),          /* from Foundation (building link / job pick) or typed */
     foundationJobNo: dprState.foundationJobNo || null,          /* stamps the building's Foundation link on save (ensureCustomerAndBuilding) */
     foundationCustomerNo: dprState.foundationCustomerNo || null,
+    companyCamProjectId: dprState.companyCamProjectId || null,   /* CompanyCam project this job is linked to (job-centric — from the building, or picked in the DPR CC import) */
+    companyCamProjectName: dprState.companyCamProjectName || "",
     roofSystem: val("dpr-roofSystem"),
     crew: dprCrew.filter(function(c){ return (c.name || "").trim(); }).map(function(c){
       return {
@@ -1633,6 +1882,8 @@ function dprFill(o){
   dprJobNoAutoVal = String(o.jobNo || "");
   dprState.foundationJobNo = o.foundationJobNo || null;
   dprState.foundationCustomerNo = o.foundationCustomerNo || null;
+  dprState.companyCamProjectId = o.companyCamProjectId || null;
+  dprState.companyCamProjectName = o.companyCamProjectName || "";
   setVal("dpr-roofSystem", o.roofSystem || "");
   setVal("dpr-date", o.date || dprTodayStr());
   setVal("dpr-headcount", o.headcount || "");
@@ -1707,6 +1958,7 @@ function dprFill(o){
   dprRenderCrew();
   dprRenderPhotos();
   dprRenderSectionStatus();
+  dprRenderLinkStatus();           /* the job link is visible + sticks on reload */
   dprSyncHours();                  /* a loaded report's crew hours roll up too */
   dprScheduleCrewHoursAutofill();  /* punches may exist for this job + date */
   dprRefreshLaborCard();           /* job-to-date hours for the linked job (admin) */
@@ -1822,6 +2074,8 @@ function dprNewReport(){
   dprJobNoAutoVal = "";
   dprState.foundationJobNo = null;
   dprState.foundationCustomerNo = null;
+  dprState.companyCamProjectId = null;
+  dprState.companyCamProjectName = "";
   dprRenderWeather(); /* dprState.weather is fresh-null — hides the line */
   ["dpr-foreman", "dpr-jobName", "dpr-billTo", "dpr-location", "dpr-jobNo", "dpr-headcount", "dpr-hours", "dpr-squares", "dpr-summary", "dpr-bld-search",
    "dpr-delays-cause", "dpr-delays-hours", "dpr-delays-notes", "dpr-jsa-by", "dpr-jsa-crewpresent", "dpr-jsa-topics",
@@ -1854,6 +2108,7 @@ function dprNewReport(){
   dprRenderCrew();
   dprRenderPhotos();
   dprRenderSectionStatus();
+  dprRenderLinkStatus();
   dprApplySignoffLock();
   var results = document.getElementById("dpr-bld-results");
   if (results) results.innerHTML = "";
@@ -1995,6 +2250,15 @@ function dprEnsureSectionModal(){
         '<button class="btn" onclick="dprSectionCancel()">✕ Close</button>' +
       '</div>' +
       '<p class="hint" id="dpr-section-hint" style="margin:8px 14px 0"></p>' +
+      /* Address escape hatch (Mark: "there\'s no way of getting to your job — I
+         can\'t put in an address"). Satellite mode only (a flat roof plan has no
+         address); pre-filled from the job\'s Location and used to fly the map to
+         the roof when auto-locate can\'t. Enter or Go both jump. */
+      '<div id="dpr-section-addr-row" class="btnrow" style="display:none;margin:8px 14px 0;gap:6px">' +
+        '<input type="text" id="dpr-section-addr" placeholder="Type the job address to jump to the roof…" style="flex:1;min-width:160px" ' +
+          'onkeydown="if(event.key===\'Enter\'){event.preventDefault();dprSectionGoToAddress();}">' +
+        '<button class="btn primary" id="dpr-section-addr-go" onclick="dprSectionGoToAddress()">Go</button>' +
+      '</div>' +
       '<div id="dpr-section-map" style="flex:1;margin:8px 14px;min-height:220px;background:#ECEFF1;border-radius:6px"></div>' +
       '<div class="btnrow" id="dpr-section-tracebtns" style="margin:0 14px 12px">' +
         '<button class="btn" onclick="dprSectionUndo()">↩ Undo point</button>' +
@@ -2017,14 +2281,31 @@ async function dprOpenSectionTrace(){
   lockBodyScroll();
   var roof = dprSelectedRoofObj();
   var hint = document.getElementById("dpr-section-hint");
+  var addrRow = document.getElementById("dpr-section-addr-row");
+  if (addrRow) addrRow.style.display = "none";
   hint.textContent = "Loading map…";
   try{
     var ctx = await dprSetupSectionMap("dpr-section-map", roof, { readOnly: false });
     dprTrace = { active: true, points: [], map: ctx.map, mode: ctx.mode, frameUrl: ctx.frameUrl,
       w: ctx.w, h: ctx.h, markers: [], poly: null };
-    hint.textContent = ctx.mode === "image"
-      ? "Tap the corners of the area worked today on the roof plan, all the way around."
-      : "Tap the corners of the area worked today. Need at least 3 points.";
+    /* Satellite mode gets the address escape hatch; a flat roof plan has no
+       address, so hide it there. Pre-fill from the job's Location. */
+    if (ctx.mode !== "image" && addrRow){
+      addrRow.style.display = "";
+      var addrInput = document.getElementById("dpr-section-addr");
+      if (addrInput && !addrInput.value) addrInput.value = (val("dpr-location") || val("dpr-jobName") || "").trim();
+    }
+    if (ctx.mode === "image"){
+      hint.textContent = "Tap the corners of the area worked today on the roof plan, all the way around.";
+    } else if (ctx.located){
+      hint.textContent = "Tap the corners of the area worked today. Need at least 3 points.";
+    } else {
+      /* Couldn't auto-locate the job — point the foreman straight at the address
+         box instead of leaving them stranded on a whole-country map. */
+      hint.textContent = "Couldn't locate this job automatically — type the address above and tap Go to jump to the roof, then tap the corners of the area worked today.";
+      var ai = document.getElementById("dpr-section-addr");
+      if (ai) try{ ai.focus(); }catch(e){}
+    }
     /* Seed from an existing section so re-opening edits rather than restarts. */
     if (dprState.section && dprState.section.mode === ctx.mode &&
         (ctx.mode !== "image" || dprState.section.imageFrameUrl === ctx.frameUrl)){
@@ -2047,9 +2328,39 @@ async function dprOpenSectionTrace(){
     hint.textContent = "Couldn't load the map: " + e.message;
   }
 }
+/* Address escape hatch: geocode whatever the foreman typed and fly the trace
+   map to the roof. Caches the hit back onto the building (like dprResolveJobCenter
+   does) so next time it auto-locates. Never touches already-placed trace points. */
+async function dprSectionGoToAddress(){
+  if (!dprTrace || !dprTrace.map || dprTrace.mode === "image") return;
+  var input = document.getElementById("dpr-section-addr");
+  var goBtn = document.getElementById("dpr-section-addr-go");
+  var hint = document.getElementById("dpr-section-hint");
+  var addr = input ? (input.value || "").trim() : "";
+  if (!addr){ if (input) try{ input.focus(); }catch(e){} return; }
+  if (goBtn){ goBtn.disabled = true; goBtn.textContent = "…"; }
+  try{
+    var geo = await geocodeAddress(addr);
+    if (geo && typeof geo.lat === "number"){
+      dprTrace.map.setView([geo.lat, geo.lng], 20);
+      if (hint) hint.textContent = "Tap the corners of the area worked today. Need at least 3 points.";
+      /* Cache it so the job auto-locates next time (same store the resolver reads). */
+      var bId = dprState.buildingId || dprBuildingId(val("dpr-billTo"), val("dpr-jobName"));
+      if (bId){ try{ if (typeof bnmCacheGeocode === "function") bnmCacheGeocode(bId, geo); }catch(e){} }
+    } else {
+      if (hint) hint.textContent = "Couldn't find that address — check it, or pinch-zoom the map to the roof and trace.";
+      toast("Couldn't find that address.");
+    }
+  }catch(e){
+    toast("Address lookup failed: " + e.message);
+  }
+  if (goBtn){ goBtn.disabled = false; goBtn.textContent = "Go"; }
+}
 
 /* Sets up a Leaflet map on the given div for the roof's base map (or satellite).
-   Resolves { map, mode:"geo"|"image", frameUrl, w, h }. Shared by trace + progress. */
+   Resolves { map, mode:"geo"|"image", frameUrl, w, h, located }. `located` is
+   false only when satellite mode couldn't place the map on the job (no coord,
+   no device GPS) — the caller then offers the address box. Shared by trace + progress. */
 async function dprSetupSectionMap(divId, roof, opts){
   opts = opts || {};
   var div = document.getElementById(divId);
@@ -2063,7 +2374,7 @@ async function dprSetupSectionMap(divId, roof, opts){
     var bounds = [[0, 0], [dims.h, dims.w]];
     L.imageOverlay(base.url, bounds).addTo(map);
     map.fitBounds(bounds);
-    return { map: map, mode: "image", frameUrl: base.url, w: dims.w, h: dims.h };
+    return { map: map, mode: "image", frameUrl: base.url, w: dims.w, h: dims.h, located: true };
   }
   var map2 = L.map(divId, { zoomControl: true, attributionControl: false });
   L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
@@ -2072,20 +2383,26 @@ async function dprSetupSectionMap(divId, roof, opts){
     var llb = boundsToLatLngBounds(base.bounds);
     L.imageOverlay(base.url, llb).addTo(map2);
     map2.fitBounds(llb);
-    return { map: map2, mode: "geo", frameUrl: null, w: null, h: null };
+    return { map: map2, mode: "geo", frameUrl: null, w: null, h: null, located: true };
   }
   /* Satellite: zoom straight to the job — best-available GPS/coordinate for
      the site (photo GPS → building's cached/geometry coord → geocoded address
      on file → this device's GPS), else a wide view to pan from. */
+  var located = true;
   var resolved = await dprResolveJobCenter(roof);
   if (resolved){ map2.setView([resolved.lat, resolved.lng], resolved.zoom || 20); }
   else {
     var dev = null;
     try{ dev = await captureDeviceGps(); }catch(e){}
     if (dev && dev.ok){ map2.setView([dev.lat, dev.lng], 20); }
-    else { map2.setView([39.8, -98.6], 4); toast("Couldn't locate the job — pan/zoom to the roof, then trace."); }
+    else {
+      /* No coord and no device GPS — leave the map wide and let the caller
+         steer the foreman to the address box (no toast; the hint says it). */
+      map2.setView([39.8, -98.6], 4);
+      located = false;
+    }
   }
-  return { map: map2, mode: "geo", frameUrl: null, w: null, h: null };
+  return { map: map2, mode: "geo", frameUrl: null, w: null, h: null, located: located };
 }
 /* Best-known coordinate for the current job, most-precise first. "gps location
    or the address in the file" (Mark): today's on-site photo GPS, then the
