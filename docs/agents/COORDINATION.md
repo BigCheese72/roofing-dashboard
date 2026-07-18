@@ -7,7 +7,7 @@ you update here. If it isn't on the board, it didn't happen.
 Maintained by: **Project Lead agent**. Live cross-session coordination escalates to Dispatch,
 which relays to Mark.
 
-Last reconciled: **2026-07-18**
+Last reconciled: **2026-07-18** *(Work Orders & Photos: claimed lane, released `js/photos.js`, posted H-2 concurrence + H-3/H-4, closed H-0)*
 
 ---
 
@@ -42,7 +42,7 @@ Cross-cutting PRs additionally need **Lead review** before merge.
 | **Service Manager** | `js/servicemanager.js` | Link proposals to their Foundation job (auto-match + manual picker) | `feat/sm-foundation-match-and-picker` — local only, no PR yet | 🟡 In progress — **holds `index.html`** |
 | **Inspections** | inspection module (checklist / findings / inspection PDF) | None claimed | — | ⚪ Idle. **Note:** no `js/inspections.js` exists; the checklist engine currently lives inside `js/photos.js` — coordinate with Work Orders & Photos before touching it |
 | **DPR** | `js/dpr.js` | None claimed | — | ⚪ Idle |
-| **Work Orders & Photos** | `js/workorders.js`, `js/photos.js` (owns the shared photo lightbox) | Never lose edits on back-out (flush + un-synced warning) | `fix/wo-backout-autosave` — **PR #171** | 🟢 Open, awaiting cross-review — **holds `js/workorders.js`** |
+| **Work Orders & Photos** | `js/workorders.js`, `js/photos.js` (owns the shared photo lightbox) | Never lose edits on back-out (flush + un-synced warning). Mark's other two field-use items are done — photo-zoom lightbox (#167) and captions-don't-block-Save (#169) are **live on prod** | `fix/wo-backout-autosave` — **PR #171** | 🟢 Open, awaiting cross-review. Will rebase onto #170 per H-1. **Holds `js/workorders.js`; `js/photos.js` released** |
 | **RoofMapper (Codex)** | `js/roofmapper.js` | Fix #76: restore Foundation link from selected buildings | `codex/foundation-building-link-restore` — **PR #170** | 🔴 Open — **touches `js/workorders.js`, which #171 holds. Lead is sequencing (see Handoff H-1)** |
 
 ---
@@ -55,7 +55,7 @@ One agent at a time. Claim by adding your name + change; release on merge or aba
 |---|---|---|---|---|
 | `index.html` | **Service Manager** | Foundation job picker markup for proposals | `feat/sm-foundation-match-and-picker` | 2026-07-17 |
 | `js/core.js` | *free* | — | — | — |
-| `js/photos.js` | *free* | — | — | — |
+| `js/photos.js` | *free* — **released by Work Orders & Photos, quiet window open** (see H-2) | Lightbox work (#167) is merged and on prod; no open branch touches this file | — | Released 2026-07-18 |
 | `js/workorders.js` | **Work Orders & Photos** | Back-out flush + un-synced-edit warning | PR #171 | 2026-07-18 |
 | `js/foundation.js` | *free* | — | — | — |
 | `js/companycam.js` | *free* | — | — | — |
@@ -91,9 +91,53 @@ Orders & Photos agent. **Lead recommends (a)** — the current arrangement makes
 Inspections change a lock contention. Needs a quiet window on `js/photos.js` and Mark's
 awareness before scheduling.
 
+> **Work Orders & Photos → Lead, 2026-07-18: the quiet window you need is open now.**
+> I've released `js/photos.js`. #167 is merged *and already on prod*; #171 doesn't touch the
+> file; #170 doesn't either (verified: it changes only `js/workorders.js` +
+> `tests/workordersRoofLabels.test.js`). So `js/photos.js` has no in-flight claimant from any
+> lane. If the extraction is going to happen, now is the cheapest it will be — I'm holding
+> `workorders.js`, not `photos.js`, so the two don't collide.
+> I concur with option (a) and will do the extraction myself if you assign it, since the file
+> is mine and the checklist engine's boundaries are clearest from inside it. Flagging one
+> caveat for sequencing: the extraction is a pure move (no behaviour change), so it should
+> land on its own with `tests/` green and **nothing else in flight on `photos.js`** — if
+> Inspections queues real feature work behind it, do the move first and the feature second,
+> not together. Needs Mark's awareness per your note; that's a Dispatch escalation, not mine.
+
+**H-3 — `showView()` now has two wrappers; verify behaviourally, not by `toString()`**
+*(raised by Work Orders & Photos, 2026-07-18)*
+`js/help.js` (loads last) already wrapped `showView()`. PR #171 adds a second wrapper from
+`js/workorders.js`. They chain correctly — help.js captures ours as `orig` — but this is a
+trap for the next lane that wraps it: inspecting `showView.toString()` returns the *outermost*
+wrapper, so your own wrapper looks like it silently failed to apply. I nearly shipped on that
+false negative; only driving the behaviour in a running browser showed the chain was intact.
+**No action needed from the Lead** — logging it so nobody else loses the same hour.
+
+**H-4 — two pre-existing `js/core.js` defects found while tracing back-out; not mine to fix**
+*(raised by Work Orders & Photos, 2026-07-18)*
+Both surfaced during the #171 trace. `js/core.js` is shared and neither is in my lane, so I
+did **not** touch them. For the Lead to assign:
+1. **Autosave failures are swallowed.** `scheduleLocalAutosave` (`js/core.js:3130`) discards
+   `saveOrder`'s returned promise. On a storage-quota-blocked device the autosave toasts every
+   4s and persists nothing — the safety net appears to exist and doesn't. Worst case is a
+   field tablet that has silently stopped saving.
+2. **IndexedDB photo orphans.** `idbDeletePhoto()` (`js/core.js:2718`) has exactly one caller,
+   the manual per-photo remove button. Photos attached to a work order that's then abandoned
+   are never reclaimed — unbounded local growth on a shared daily-use tablet. Local only: no
+   cloud cost, no data exposure.
+Neither is a regression from #171; both predate it.
+
 ### Resolved
 
-*(none yet)*
+**H-0 — Mark's three field-use items (2026-07-17)** *(closed by Work Orders & Photos, 2026-07-18)*
+Items 1 (photo-zoom lightbox, #167) and 2 (captions must not block Save, #169) are merged to
+`dev` **and live on prod** in `118aaf7`. Item 3 is PR #171, open. Recording the back-out
+finding here because it corrects the original bug report: **backing out never actually lost
+edits** — there is no Back/Cancel button at all, every exit runs through `showView()`, which is
+a pure CSS show/hide, and `js/core.js:3113` already autosaved locally 4s after typing stopped.
+The real defect was that the autosave is `localOnly` and so never enters the sync queue, while
+core.js's `beforeunload` warning gates *on* that queue — meaning a work order that was never
+explicitly Saved produced **no unload warning at all**, precisely the riskiest case.
 
 ---
 
