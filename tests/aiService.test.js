@@ -32,6 +32,7 @@ const Module = require("module");
 
 const VALID_TECH = "VALID_TECH_TOKEN";     // role "tech"   -> doc.generate: true
 const VALID_VIEWER = "VALID_VIEWER_TOKEN"; // role "viewer" -> doc.generate: false
+const VALID_OWNER = "VALID_OWNER_TOKEN";   // owner-only estimator tools
 
 const ROLES = {
   tech: { permissions: { "doc.generate": true, "workorder.create": true } },
@@ -47,6 +48,7 @@ const fakeAdmin = {
       verifyIdToken: async (token) => {
         if (token === VALID_TECH) return { uid: "crew_tech_1", email: "tech@watkins.com", owner: false, role: "tech" };
         if (token === VALID_VIEWER) return { uid: "viewer_1", email: "viewer@watkins.com", owner: false, role: "viewer" };
+        if (token === VALID_OWNER) return { uid: "owner_1", email: "mark@watkins.com", owner: true, role: "owner" };
         throw new Error("Decoding Firebase ID token failed");
       }
     };
@@ -212,6 +214,32 @@ test("issue_id stub with no matching keywords -> indeterminate/unconfirmed/low",
     [body.result.issue, body.result.likelyCause, body.result.confidence],
     ["indeterminate", "unconfirmed", "low"]
   );
+});
+
+test("estimate_epdm_sa is owner-only and returns the Warrensburg playbook stub", async () => {
+  const denied = await aiService.handler(ev("POST", {
+    action: "estimate_epdm_sa",
+    estimate: { fieldNotes: "20-year EPDM SA with 2.6 overlay and taper" }
+  }, VALID_TECH));
+  assert.equal(denied.statusCode, 403);
+
+  const res = await aiService.handler(ev("POST", {
+    action: "estimate_epdm_sa",
+    estimate: { fieldNotes: "20-year EPDM SA with 2.6 overlay and taper" }
+  }, VALID_OWNER));
+  assert.equal(res.statusCode, 200);
+  const body = JSON.parse(res.body);
+  assert.equal(body.ok, true);
+  assert.equal(body.draft, true);
+  assert.equal(body.action, "estimate_epdm_sa");
+  assert.equal(body.source, "estimate_stub_v1");
+  assert.equal(body.provider, "stub");
+  assert.equal(body.llm, false);
+  assert.equal(body.result.fields.membrane, "epdm-sa");
+  assert.equal(body.result.fields.slopeType, "tapered");
+  assert.equal(body.result.fields.overlayIn, 2.6);
+  assert.equal(body.result.fields.warrantyYears, 20);
+  assert.ok(body.result.rulesApplied.some((line) => /Warrensburg/.test(line)));
 });
 
 test("summary stub (lib seam): clearly marked, deterministic, photosUsed 0", async () => {

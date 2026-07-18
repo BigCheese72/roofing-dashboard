@@ -1628,10 +1628,16 @@ function updateAdminUI(){
      revoked while the Admin page is open, bounce back to Edit. */
   var adminTab = document.getElementById("tab-admin");
   if (adminTab) adminTab.style.display = isAdmin ? "" : "none";
+  var estimatorTab = document.getElementById("tab-estimator");
+  var claimsOwner = !!(currentAuthClaims && currentAuthClaims.owner === true);
+  if (estimatorTab) estimatorTab.style.display = claimsOwner ? "" : "none";
   var sel = document.getElementById("adminPhotoSize");
   if (isAdmin && sel) sel.value = globalPhotoSizePref;
   if (isAdmin && typeof updateWarrantyReviewBadge === "function") updateWarrantyReviewBadge();
   if (!isAdmin && typeof currentViewName !== "undefined" && currentViewName === "admin"){
+    showView("edit");
+  }
+  if (!claimsOwner && typeof currentViewName !== "undefined" && currentViewName === "estimator"){
     showView("edit");
   }
   /* Saved view access control (Mark) -- per saved work order, Delete is
@@ -1670,7 +1676,6 @@ function updateAdminUI(){
      require settings.security regardless of what any client shows. */
   var rolesCard = document.getElementById("roles-admin-card");
   if (rolesCard){
-    var claimsOwner = !!(currentAuthClaims && currentAuthClaims.owner === true);
     rolesCard.style.display = claimsOwner ? "" : "none";
   }
 }
@@ -1896,7 +1901,7 @@ var FEEDBACK_TYPES = [
 ];
 var FEEDBACK_VIEW_LABELS = {
   home: "Home", edit: "Work Order Form", preview: "Report Preview", saved: "Saved Work Orders",
-  history: "Building History", reports: "Reports", roofmapper: "RoofMapper"
+  history: "Building History", reports: "Reports", estimator: "Estimator", roofmapper: "RoofMapper"
 };
 var feedbackState = { type: null, screenshot: null };
 function openFeedbackModal(){
@@ -3319,6 +3324,9 @@ function showView(v){
   if (v === "admin" && !isAdmin){
     v = "edit";
   }
+  if (v === "estimator" && !(currentAuthClaims && currentAuthClaims.owner === true)){
+    v = "edit";
+  }
   if (v === "servicemanager" && !canServiceManage()){
     v = "edit";
   }
@@ -3326,7 +3334,7 @@ function showView(v){
   /* "home" has no header tab (reached via "+ New", the empty-state button
      in Building History, or tapping the logo) — every other view still
      keeps its tab exactly as before. */
-  ["home","edit","preview","saved","history","reports","roofmapper","dpr","servicemanager","admin"].forEach(function(name){
+  ["home","edit","preview","saved","history","reports","estimator","roofmapper","dpr","servicemanager","admin"].forEach(function(name){
     var viewEl = document.getElementById("view-" + name);
     if (viewEl) viewEl.style.display = (name === v ? "" : "none");
     var tabEl = document.getElementById("tab-" + name);
@@ -3337,6 +3345,7 @@ function showView(v){
   if (v === "saved") renderSaved();
   if (v === "history") renderHistoryList();
   if (v === "reports"){ renderReportsList(); if (isAdmin){ loadFeedbackBacklog(); loadAuditLogBacklog(); } }
+  if (v === "estimator" && typeof estimatorOnShow === "function") estimatorOnShow();
   if (v === "roofmapper") rmOnShow();
   if (v === "dpr" && typeof dprOnShow === "function") dprOnShow();
   if (v === "servicemanager" && typeof smOnShow === "function") smOnShow();
