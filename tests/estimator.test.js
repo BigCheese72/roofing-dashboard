@@ -102,6 +102,35 @@ test("estimator imports a saved RoofMapper outline into estimate fields", () => 
   assert.equal(sb.estimatorLineItems.find((item) => item.name === '3" QuickSeam splice tape').total, 0);
 });
 
+test("EPDM SA builder seeds repeatable material quantities from intake", () => {
+  const sb = loadEstimator();
+  sb.estimatorOnShow();
+  sb.estimatorSetVal("est-project-name", "Warrensburg Post Office");
+  sb.estimatorSetVal("est-area-sf", 9725.6);
+  sb.estimatorSetVal("est-perimeter-lf", 575);
+  sb.estimatorSetVal("est-taper-cost", 17300);
+  sb.estimatorSetVal("est-overlay-in", 2.6);
+  sb.estimatorSetVal("est-max-taper-in", 4.5);
+  sb.estimatorSetVal("est-tearoff-in", 2);
+  sb.estimatorSetVal("est-retrofit-drain-count", 8);
+
+  const result = sb.estimatorApplyEpdmSaRules();
+  assert.equal(result.membraneRolls, 13);
+  assert.equal(result.input.spliceTapeRolls, 17);
+  assert.equal(result.input.battenCoverRolls, 6);
+  assert.equal(result.input.rpfRolls, 7);
+  assert.equal(result.input.insulationPlateCount, 3000);
+  assert.equal(result.input.blockingCost, 10120);
+  assert.deepEqual(result.input.screwRows.map((row) => [row.length, row.needed, row.pails, row.ordered]), [
+    ['6"', 730, 2, 1000],
+    ['7"', 608, 2, 1000],
+    ['8"', 486, 1, 500],
+    ['9"', 365, 1, 500],
+    ['10"', 243, 1, 500]
+  ]);
+  assert.ok(result.lineItems.some((item) => item.name === '10" insulation screws' && /1 pail/.test(item.qty)));
+});
+
 test("estimator links a real CompanyCam project id and name", () => {
   const sb = loadEstimator();
   sb.estimatorCompanyCamProjects = [

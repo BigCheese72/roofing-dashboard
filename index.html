@@ -578,6 +578,7 @@
         metal, warranty, labor, travel, dumpsters, rental equipment, taxes, fees, and bond.</p>
       <div class="btnrow" style="margin:0 0 10px">
         <button class="btn primary" onclick="estimatorOpenRoofMapperMaps()">Load RoofMapper Map</button>
+        <button class="btn" onclick="estimatorApplyEpdmSaRules()">Build EPDM SA Estimate</button>
         <button class="btn" onclick="estimatorCalculateFromForm()">Calculate</button>
         <button class="btn" onclick="estimatorSaveCurrent('edge')">Save EDGE</button>
         <button class="btn" onclick="estimatorSaveCurrent('our')">Save Our Way</button>
@@ -586,6 +587,19 @@
       </div>
       <p class="hint" style="margin:0">This is estimate-first. CompanyCam, roof drawings, and photos are optional evidence inputs;
         a work order is not required.</p>
+    </div>
+
+    <div class="card">
+      <h2 class="cond">Estimate Intake</h2>
+      <p class="hint">Use this like the estimating conversation: load a RoofMapper map, fill in the roof system,
+        taper/structural slope, wall height, drains, labor, travel, equipment, and notes, then build the EPDM SA material list.</p>
+      <div class="estimator-intake-steps">
+        <div><b>1. Map</b><span>RoofMapper area and perimeter</span></div>
+        <div><b>2. System</b><span>Membrane, warranty, taper or structural slope</span></div>
+        <div><b>3. Details</b><span>Drains, walls, metal, accessories, lift, disposal</span></div>
+        <div><b>4. Labor</b><span>Crew days, travel, tax, profit, bond, markup</span></div>
+        <div><b>5. Review</b><span>Edit material list, save EDGE or Our Way, create proposal</span></div>
+      </div>
     </div>
 
     <div class="card" id="estimator-roofmapper-card" style="display:none">
@@ -664,6 +678,7 @@
           <div class="fld"><label>New Metal $/LF</label><input type="text" id="est-metal-lf-cost"></div>
           <div class="fld"><label>Lift / Rental Equipment</label><input type="text" id="est-equipment-cost"></div>
           <div class="fld"><label>Disposal / Dumpsters</label><input type="text" id="est-disposal-cost"></div>
+          <div class="fld"><label>Retrofit Drain Count</label><input type="text" id="est-retrofit-drain-count"></div>
         </div>
       </div>
 

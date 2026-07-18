@@ -143,6 +143,7 @@ var ESTIMATOR_FIELDS = {
   metalLfCost: "est-metal-lf-cost",
   equipmentCost: "est-equipment-cost",
   disposalCost: "est-disposal-cost",
+  retrofitDrainCount: "est-retrofit-drain-count",
   crewSize: "est-crew-size",
   hoursPerDay: "est-hours-day",
   workingDays: "est-working-days",
@@ -623,6 +624,98 @@ function estimatorUnlinkCompanyCam(){
   estimatorRenderCompanyCamLink();
 }
 
+function estimatorRoundUpTo(n, step){
+  step = step || 1;
+  return Math.ceil(Number(n || 0) / step) * step;
+}
+
+function estimatorScrewRowsForAssembly(input){
+  var area = Number(input.areaSf || 0);
+  if (!area) return [];
+  var boards = Math.ceil(area / 32);
+  var installed = boards * 8;
+  var overlay = Number(input.overlayIn || 0);
+  var taper = input.slopeType === "tapered" ? Number(input.maxTaperIn || 0) : 0;
+  var minLength = Math.max(6, Math.ceil(overlay + 2));
+  var maxLength = Math.max(minLength, Math.ceil(overlay + taper + 2));
+  maxLength = Math.min(10, maxLength);
+  var priceByLength = { 6: 644.00, 7: 837.25, 8: 934.00, 9: 1133.50, 10: 1217.25 };
+  var lengths = [];
+  for (var l = minLength; l <= maxLength; l++) lengths.push(l);
+  if (!lengths.length) lengths = [6];
+  var weights = lengths.length === 1 ? [1] : [0.30, 0.25, 0.20, 0.15, 0.10].slice(0, lengths.length);
+  var weightTotal = weights.reduce(function(sum, w){ return sum + w; }, 0) || 1;
+  var used = 0;
+  return lengths.map(function(length, i){
+    var needed = i === lengths.length - 1 ? installed - used : Math.round(installed * (weights[i] / weightTotal));
+    used += needed;
+    var pails = Math.max(1, Math.ceil(needed / 500));
+    return {
+      length: length + "\"",
+      needed: needed,
+      pails: pails,
+      ordered: pails * 500,
+      pricePerM: priceByLength[length] || priceByLength[10]
+    };
+  });
+}
+
+function estimatorApplyEpdmSaRules(){
+  if (!estimatorIsOwner()){
+    if (typeof toast === "function") toast("Owner login required.");
+    return;
+  }
+  var input = estimatorReadForm();
+  var area = Number(input.areaSf || 0);
+  if (!area){
+    if (typeof toast === "function") toast("Load a RoofMapper map or enter roof area first.");
+    return;
+  }
+  var perimeter = Number(input.perimeterLf || 0);
+  var fieldRolls = Math.ceil((area * (1 + input.membraneWasteRate)) / (input.membraneRollSq * 100));
+  var wallRolls = perimeter ? Math.ceil((perimeter * 3) / 1000) : 0;
+  var spliceTapeRolls = Math.ceil(fieldRolls * 1.5);
+  var battenCoverRolls = Math.max(1, Math.ceil(fieldRolls * 0.5));
+  var quickSeamFlashingRolls = perimeter ? Math.max(2, Math.ceil(perimeter / 125)) : 2;
+  var quickPrimePails = Math.max(1, Math.ceil(area / 1250));
+  var rpfRolls = perimeter ? Math.ceil((perimeter * 1.1) / 100) : 0;
+  var plateCount = estimatorRoundUpTo(Math.ceil(area / 32) * 8 * 1.05, 500);
+  var drainCount = Number(input.retrofitDrainCount || 0);
+  var netRise = Math.max(0, Number(input.maxTaperIn || 0) + Number(input.overlayIn || 0) - Number(input.tearoffIn || 0));
+  var layerCount = netRise ? Math.max(1, Math.ceil(netRise / 1.5)) : 0;
+  var blockingCost = input.blockingCost || (perimeter && layerCount ? perimeter * 1.1 * layerCount * 4 : 0);
+  var next = Object.assign({}, estimatorInputSeed || ESTIMATOR_STARTER_DEFAULTS, input, {
+    membrane: "epdm-sa",
+    overlaySq: input.overlayIn ? Math.ceil(area / 100) : 0,
+    extraSaRollsForWalls: wallRolls,
+    spliceTapeRolls: spliceTapeRolls,
+    battenCoverRolls: battenCoverRolls,
+    quickSeamFlashingRolls: quickSeamFlashingRolls,
+    quickPrimePails: quickPrimePails,
+    rpfRolls: rpfRolls,
+    insulationPlateCount: plateCount,
+    screwRows: estimatorScrewRowsForAssembly(input),
+    tJointCovers: Math.max(1, Math.ceil(fieldRolls / 6)),
+    waterBlockTubes: (drainCount * 2) + (perimeter ? Math.ceil(perimeter / 72) : 0),
+    lapSealantTubes: Math.ceil(((spliceTapeRolls + battenCoverRolls + quickSeamFlashingRolls) * 100) / 60),
+    cleanerGallons: Math.ceil(area / 1000),
+    pipeBoots: Number(input.pipeBoots || 0),
+    scupperFlashing: Number(input.scupperFlashing || 0),
+    miscDetailMaterials: input.miscDetailMaterials || 1500,
+    blockingCost: blockingCost
+  });
+  estimatorInputSeed = next;
+  estimatorSetVal("est-membrane", next.membrane);
+  estimatorSetVal("est-overlay-sq", next.overlaySq);
+  estimatorSetVal("est-blocking-cost", next.blockingCost);
+  estimatorLineItems = estimatorGeneratedLineItems(next).items;
+  estimatorActiveSavedEstimate = null;
+  var result = estimatorCalculate(next, estimatorLineItems);
+  estimatorRender(result);
+  if (typeof toast === "function") toast("EPDM SA estimate built from intake.");
+  return result;
+}
+
 function estimatorGeneratedLineItems(input){
   var areaSquares = input.areaSf / 100;
   var fieldRolls = Math.ceil((input.areaSf * (1 + input.membraneWasteRate)) / (input.membraneRollSq * 100));
@@ -651,7 +744,7 @@ function estimatorGeneratedLineItems(input){
       " / " + row.ordered + " screws", estimatorMoney(row.pricePerM) + "/M, need " + row.needed,
       (row.ordered / 1000) * row.pricePerM);
   });
-  add("2\" seam plates for RPF", "1000", "carton", input.seamPlateCost);
+  add("2\" seam plates for RPF", input.rpfRolls ? "1000" : "0", input.rpfRolls ? "carton" : "not carried", input.rpfRolls ? input.seamPlateCost : 0);
   add("T-joint covers", input.tJointCovers + " cartons", estimatorMoney(input.tJointCoverPrice) + "/carton", input.tJointCovers * input.tJointCoverPrice);
   add("Water Block", input.waterBlockTubes + " tubes", estimatorMoney(input.waterBlockPrice) + "/tube", input.waterBlockTubes * input.waterBlockPrice);
   add("Lap/all-purpose sealant", input.lapSealantTubes + " tubes", estimatorMoney(input.lapSealantPrice) + "/tube", input.lapSealantTubes * input.lapSealantPrice);
