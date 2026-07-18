@@ -537,15 +537,28 @@ async function checkAuthBootstrapStatus(){
   }catch(e){ authBootstrapStatus = true; }
   renderLoginGate();
 }
+/* Idempotent login-gate scroll lock (prod hotfix 27bacb9): the gate holds AT
+   MOST one lock, released the instant it hides. Without this, the signed-in
+   hide path (onAuthStateChanged -> renderLoginGate() with currentAuthUser set)
+   early-returned without unlocking, so body{overflow:hidden} stayed on after a
+   fresh login and froze the WO/leak form. Pairs with the ref-counted
+   lockBodyScroll/unlockBodyScroll below. */
+var loginGateScrollLocked = false;
+function setLoginGateScrollLock(on){
+  if (on === loginGateScrollLocked) return;
+  loginGateScrollLocked = on;
+  if (on) lockBodyScroll(); else unlockBodyScroll();
+}
 function renderLoginGate(){
   var gate = document.getElementById("login-gate");
   if (!gate) return;
   if (!fauth || authBootstrapStatus === null || currentAuthUser){
     gate.style.display = "none";
+    setLoginGateScrollLock(false);
     return;
   }
   gate.style.display = "";
-  lockBodyScroll();
+  setLoginGateScrollLock(true);
   var host = document.getElementById("login-gate-body");
   if (!host) return;
   if (!authBootstrapStatus){
