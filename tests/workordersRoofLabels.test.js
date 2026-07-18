@@ -31,6 +31,7 @@ function makeSandbox(fields){
     inspectionChecklist: [],
     photos: [],
     bpCache: [],
+    fdnCache: [],
     ccLinkedProjectId: null,
     ccLinkedProjectName: "",
     fdnLinkedJobNo: null,
@@ -105,9 +106,10 @@ function makeSandbox(fields){
   };
   vm.createContext(sandbox);
   vm.runInContext(
-    between("function bpSelectBuilding", "/* ---- Move/reassign") +
+    between("function bpFoundationJobNameForBuilding", "/* ---- Move/reassign") +
     between("var lastLookupRoofInfo = null;", "/* ================= dynamic rows ================= */") +
     between("function rmRoofLabelFromCache", "function renderFindings") +
+    between("var LEAK_NO_JOB_RE =", "/* Live re-evaluation") +
     between("var FIELD_IDS =", "function todayStr"),
     sandbox
   );
@@ -209,6 +211,41 @@ test("bpSelectBuilding inherits a building's Foundation anchor on a new work ord
   assert.strictEqual(out.foundationJobName, "North Warehouse Reroof");
   assert.strictEqual(out.foundationCustomerNo, "C-42");
   assert.strictEqual(out.foundationAddress, "100 Main St, Springfield IL");
+});
+
+test("bpSelectBuilding resolves Foundation job name from cache for production-shaped building docs", () => {
+  const sandbox = makeSandbox({ billTo: "", jobName: "" });
+  sandbox.fdnCache = [{
+    job_no: "17053",
+    name: "North Warehouse Reroof",
+    customer_no: "C-42"
+  }];
+  sandbox.bpCache = [{
+    id: "bld_foundation",
+    name: "North Warehouse",
+    customerName: "Acme",
+    location: "100 Main St",
+    foundationJobNo: "17053",
+    foundationCustomerNo: "C-42",
+    foundationAddress: "100 Main St, Springfield IL"
+  }];
+
+  sandbox.bpSelectBuilding("bld_foundation");
+
+  assert.deepStrictEqual(sandbox.__fdnLinks, [{
+    jobNo: "17053",
+    jobName: "North Warehouse Reroof",
+    customerNo: "C-42",
+    address: "100 Main St, Springfield IL"
+  }]);
+  const out = sandbox.collect();
+  assert.strictEqual(out.foundationJobNo, "17053");
+  assert.strictEqual(out.foundationJobName, "North Warehouse Reroof");
+  assert.strictEqual(sandbox.isLeakNoJobOrder({
+    jobName: "Leak - No Job",
+    foundationJobNo: out.foundationJobNo,
+    foundationJobName: out.foundationJobName
+  }), false);
 });
 
 test("bpSelectBuilding does not clobber a Foundation job already selected this session", () => {

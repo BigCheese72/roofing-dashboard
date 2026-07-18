@@ -160,6 +160,15 @@ async function bpSelectCompanyCamProject(i){
   }catch(e){ console.warn("Couldn't create/link building from CompanyCam project", e); }
   scheduleChangeOrderAutofill(); /* Change Order only -- see runChangeOrderAutofill() */
 }
+function bpFoundationJobNameForBuilding(b){
+  if (!b || !b.foundationJobNo) return "";
+  var jobNo = String(b.foundationJobNo);
+  var cached = (typeof fdnCache !== "undefined" && fdnCache) ? fdnCache : [];
+  var j = cached.find(function(x){
+    return String((x && (x.job_no || x.job_number)) || "") === jobNo;
+  });
+  return (j && j.name) || b.foundationJobName || b.name || jobNo;
+}
 function bpSelectBuilding(buildingId){
   var b = (bpCache || []).find(function(x){ return x.id === buildingId; });
   if (!b) return;
@@ -192,7 +201,7 @@ function bpSelectBuilding(buildingId){
      overwrite a job the tech already selected in this session. */
   if (b.foundationJobNo && typeof fdnSetLinkedJob === "function" &&
       (typeof fdnLinkedJobNo === "undefined" || !fdnLinkedJobNo)){
-    fdnSetLinkedJob(b.foundationJobNo, b.foundationJobName || "",
+    fdnSetLinkedJob(b.foundationJobNo, bpFoundationJobNameForBuilding(b),
       b.foundationCustomerNo || null, b.foundationAddress || "");
   }
   currentRoofId = null;
