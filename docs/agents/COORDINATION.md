@@ -7,7 +7,7 @@ you update here. If it isn't on the board, it didn't happen.
 Maintained by: **Project Lead agent**. Live cross-session coordination escalates to Dispatch,
 which relays to Mark.
 
-Last reconciled: **2026-07-18** *(Building History: registered lane `js/history.js`, added its lock-table row, posted H-8 + owner concurrence on Warranty's H-5 extraction. Prior same-day: Warranty H-5, Change Orders H-6, Admin H-7)*
+Last reconciled: **2026-07-18** *(DPR: claimed lane, opened PR #172, posted DPR-1/DPR-2/DPR-3 — adopted per-agent handoff IDs per Admin's H-7 suggestion, awaiting Lead ratification. Prior same-day, all preserved: Building History H-8, Admin H-7, Change Orders H-6, Warranty H-5)*
 
 ---
 
@@ -42,7 +42,7 @@ Cross-cutting PRs additionally need **Lead review** before merge.
 | **Service Manager** | `js/servicemanager.js` | Link proposals to their Foundation job (auto-match + manual picker) | `feat/sm-foundation-match-and-picker` — local only, no PR yet | 🟡 In progress — **holds `index.html`** |
 | **Change Orders** | *(none — CO logic is spread across 5 shared files; see H-6)* | Registering + locating the section. **No edits taken**, holding per Lead directive | `agent/change-orders` — board update only | 🟡 Registered — awaiting a lane assignment from the Lead |
 | **Inspections** | inspection module (checklist / findings / inspection PDF) | None claimed | — | ⚪ Idle. **Note:** no `js/inspections.js` exists; the checklist engine currently lives inside `js/photos.js` — coordinate with Work Orders & Photos before touching it |
-| **DPR** | `js/dpr.js` | None claimed | — | ⚪ Idle |
+| **DPR** | `js/dpr.js`, `tests/dpr*.test.js` | Idempotent modal scroll lock — a double-tap on Trace / Progress Map / CompanyCam could freeze the DPR form. Mark's three DPR field-use items are **done and live on prod** (see DPR-2) | `fix/dpr-modal-scroll-lock` — **PR #172** | 🟢 Open, awaiting cross-review. **Claims no shared file** |
 | **Work Orders & Photos** | `js/workorders.js`, `js/photos.js` (owns the shared photo lightbox) | Never lose edits on back-out (flush + un-synced warning). Mark's other two field-use items are done — photo-zoom lightbox (#167) and captions-don't-block-Save (#169) are **live on prod** | `fix/wo-backout-autosave` — **PR #171** | 🟢 Open, awaiting cross-review. Will rebase onto #170 per H-1. **Holds `js/workorders.js`; `js/photos.js` released** |
 | **RoofMapper (Codex)** | `js/roofmapper.js` | Fix #76: restore Foundation link from selected buildings | `codex/foundation-building-link-restore` — **PR #170** | 🔴 Open — **touches `js/workorders.js`, which #171 holds. Lead is sequencing (see Handoff H-1)** |
 | **Building History** | `js/history.js` (2098 lines) — per-building timeline, timeline→work-order click-through, base-map/ortho entry point, activity + report event writers | None claimed — registering + reporting location per first task | `agent/building-history` (worktree, board edit only) | ⚪ Idle. **Holds nothing.** Section spans three lanes — see H-8 |
@@ -58,7 +58,7 @@ One agent at a time. Claim by adding your name + change; release on merge or aba
 | Shared file | Held by | For what | Branch / PR | Since |
 |---|---|---|---|---|
 | `index.html` | **Service Manager** | Foundation job picker markup for proposals | `feat/sm-foundation-match-and-picker` | 2026-07-17 |
-| `js/core.js` | *free* | — | — | — |
+| `js/core.js` | *free* — **read-only dependency from DPR, no claim** (see DPR-1) | PR #172's test extracts core's ref-counted `lockBodyScroll` rather than restating it | — | — |
 | `js/photos.js` | *free* — **released by Work Orders & Photos, quiet window open** (see H-2) | Lightbox work (#167) is merged and on prod; no open branch touches this file | — | Released 2026-07-18 |
 | `js/workorders.js` | **Work Orders & Photos** | Back-out flush + un-synced-edit warning | PR #171 | 2026-07-18 |
 | `js/foundation.js` | *free* | — | — | — |
@@ -404,6 +404,75 @@ Mine in `tests/`: `timelineOpenWorkOrder`, `inlineHistoryBaseMap`, `photosBuildi
   behind the Warranty extraction if that's assigned, not compete with either.
 - For base-map/ortho work, confirm I route through Codex rather than editing `js/roofmapper.js`.
 
+**DPR-1 — PR #172's test deliberately couples to `js/core.js`'s scroll-lock semantics**
+*(raised by DPR, 2026-07-18)*
+`tests/dprModalScrollLock.test.js` regex-extracts the `scrollLockCount` / `lockBodyScroll` /
+`unlockBodyScroll` block out of `js/core.js` and runs the DPR guards against the **real**
+implementation, rather than restating it in the test. That is intentional — if core's lock
+ever goes back to a plain boolean, or the ref-count changes shape, the DPR tests fail loudly
+instead of passing against a stale copy.
+**The trade-off, so nobody is surprised:** whoever next edits that block in `js/core.js` may
+see DPR tests fail. That is the early warning working, not a broken DPR. The extractor asserts
+a clear message (`could not find the ref-counted scroll lock in js/core.js`) if the shape
+moves. **No action needed from the Lead** — I claim no lock on `core.js`; logging the coupling
+so it is a known design choice rather than a surprise.
+
+**DPR-2 — Mark's three DPR field-use items (2026-07-17): all three done and live on prod**
+*(raised by DPR, 2026-07-18)*
+Verified in code, not by commit title. Built as PR #168 (`0fa25c1` + `965f88d`), merged to
+`dev` at `921011f`, promoted to prod in `118aaf7`. 120/120 DPR tests green.
+1. **Job link not persisting/showing** — `dprRenderLinkStatus()` (`js/dpr.js:578`) renders a
+   durable chip on the Job Info card (job name + Job # + Foundation / CompanyCam badges,
+   Change / Unlink). Round-trips: saved `:1777`, restored `:1899`, re-rendered from 8 sites
+   including `dprFill` on reload. Root cause: the link *was* persisting in data — the only UI
+   confirmation was a disappearing toast, so it read as broken.
+2. **No CompanyCam on the DPR** — the building's `companyCamProjectId`/`Name` now carry onto
+   the DPR doc, plus a "☁️ From CompanyCam" photo import. Self-contained: reuses only
+   `ccApi`/`ccCompress`, does **not** touch `js/companycam.js` or `js/foundation.js`.
+3. **Foreman type-ahead vanishing** — `dprForeman` is the one field whose field-history key
+   collides with its own datalist id (`dl-dprForeman`); the generic blur handler rebuilt it
+   from device history only, and an erase-blur returned early without rebuilding, so it never
+   came back. Fixed with a dedicated `dprRememberForeman()`. Audited the other crew/employee
+   fields as Mark asked: `jobName`/`billTo`/`location` map to different `dl-*` ids (no
+   collision) and crew-name fields never call remember — foreman was the only one.
+
+> **Timing, for Dispatch to relay to Mark:** these landed on `dev` at 20:20 on 07-17 but only
+> reached prod at 04:46 on 07-18. **His field use last night hit the un-fixed build.** If any
+> of the three still misbehaves, it needs a *completed* Netlify build plus a hard refresh
+> before that means anything — a stale deploy would look exactly like an unfixed bug. If it
+> still fails after that, it is new information and I will re-open: the code is correct in
+> isolation, so a live failure would point at deploy or data, not logic.
+
+**DPR-3 — the handoff numbering scheme collides under concurrency; I've switched to a prefix**
+*(raised by DPR, 2026-07-18 — process note, not a code issue)*
+Getting this one board update pushed took **four** rebases in ~20 minutes. Each time another
+agent had pushed and claimed the next H-number while mine was in flight: I wrote H-5/H-6 →
+Warranty took H-5 → I renumbered to H-6/H-7 → Change Orders took H-6 → I renumbered to
+H-7/H-8 → Admin took H-7. Nothing was lost; every rebase was resolved by hand and the
+Warranty, Change Orders and Admin rows, handoffs and Last-reconciled notes are all intact
+above. But the pattern is structural, not bad luck: **"next free integer" is a shared mutable
+counter that every agent reads before any of them writes.** The failure mode is worse than the
+churn — two handoffs silently sharing a number, and cross-references (`see H-7`) silently
+pointing at the wrong item. That already happened twice on this board today.
+
+**Admin reached the same conclusion independently in H-7** (suggesting `ADM-1` / `WAR-1`), so
+rather than propose it a second time and renumber a fifth, **I've just adopted it**: my three
+handoffs are `DPR-1`, `DPR-2`, `DPR-3`. Zero coordination needed, collision impossible by
+construction. Existing `H-*` items can stay as they are — this only affects new ones.
+
+**It paid off on the very next push.** A fifth agent (Building History) landed H-8 while this
+was still in flight. That rebase touched only the `Last reconciled` line — my three handoffs
+merged clean, because they were no longer competing for an integer. Same concurrency, no
+renumber. That's the whole argument, demonstrated rather than asserted.
+**Lead: please ratify or override.** If you'd rather assign IDs centrally, say so and I'll
+convert mine back; the important thing is that it's one rule, not per-agent improvisation.
+
+Two smaller asks while this is fresh:
+- Add to *Housekeeping*: **`git fetch` and rebase immediately before pushing a board commit.**
+- The board itself is now the hottest file in the repo and **is not in the lock table.** It
+  shouldn't be locked (that would serialise the very thing meant to be cheap), but a line
+  saying "expect to rebase; never force-push this file" would set the right expectation.
+
 ### Resolved
 
 **H-0 — Mark's three field-use items (2026-07-17)** *(closed by Work Orders & Photos, 2026-07-18)*
@@ -428,7 +497,8 @@ explicitly Saved produced **no unload warning at all**, precisely the riskiest c
 | **Promotion gate** | Mark's explicit sign-off. Mechanism: snapshot commit (tree = `dev` + prod branding). |
 
 **In the pipe, not yet on `dev`:** PR #170 (RoofMapper), PR #171 (Work Orders & Photos),
-Service Manager Foundation-match branch (no PR yet).
+PR #172 (DPR modal scroll lock — independent, touches no shared file, so it can land in any
+order relative to #170/#171), Service Manager Foundation-match branch (no PR yet).
 
 ---
 
