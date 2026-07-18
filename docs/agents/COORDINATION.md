@@ -843,15 +843,37 @@ explicitly Saved produced **no unload warning at all**, precisely the riskiest c
 
 | | State |
 |---|---|
-| **Production (`main`)** | `118aaf7` — promoted 2026-07-18. DPR (crew/hours, toolbox talk, weather, section chips, foreman datalist), Service Manager workspace + AI scope-draft, photo lightbox zoom, RoofMapper job-link + Foundation anchor, tap-to-call, Help Center, contacts-sync inbox rules / morning-brief / create-draft. |
-| **`dev` ahead of `main` by** | 1 commit — `eeb53e6`, login-gate scroll-lock fix (back-port of prod hotfix `27bacb9`, adapted to dev's ref-counted `lockBodyScroll`). |
-| **Queued for next nightly promotion** | `eeb53e6` (scroll-lock fix). Anything that merges to `dev` before the next promotion joins this list. |
+| **Production (`main`)** | `d55a8d1` — targeted hotfix 2026-07-18: PDF photo downscale so emailed reports clear the ~6MB wall. **Rollback point: `118aaf7`.** Verified live: `large` 1600px photos 202KB→75KB, `small` passes through byte-identical, both fail-safes return the original. Mark can flip `photoSizePref` back to **large**. |
+| **`dev`** | `c74ed03` — **897/897 green**, 23 commits ahead of `main`. |
+| **Landed on `dev` this session** | #173 (Inspections characterization tests) · #170 (RoofMapper Foundation link) · #171 (WO back-out, rebased onto #170 per H-1) · #172 (DPR modal scroll lock) · #176 (ArcGIS tile proxy) · **Phase 1 split** `js/buildinghistory.js` · **Phase 2 split** `js/inspections.js` · CompanyCam deep-link buttons |
+| **Awaiting Mark's prod sign-off** | Everything above except the hotfix. Notably the **estimator** — do not promote until EST-2 (PII) is settled. |
 | **Promotion gate** | Mark's explicit sign-off. Mechanism: snapshot commit (tree = `dev` + prod branding). |
-| **Test baseline** | **842/842 green** on `dev` @ `a851763` — that is **818/818** (the true dev baseline) plus the 24 tests #173 added. *Correction: the Lead previously recorded 843 and told Mark his 818 was stale. **That was wrong.** The 843 came from running the suite on the Service Manager feature branch, which adds 25 tests of its own. Mark's 818 was correct.* |
+| **Test baseline** | **897/897 green** on `dev` @ `c74ed03`. Chain: 818 (true dev baseline) → 842 (#173) → 861 (estimator) → 890 (#170/#171/#172/#176) → 897 (CompanyCam deep-link tests). Both split phases held the count **exactly** — that is what made them provably pure moves. *Earlier correction stands: the Lead once recorded 843 and said Mark's 818 was stale; that was measured on a feature branch and was wrong.* |
 
-**In the pipe, not yet on `dev`:** PR #170 (RoofMapper), PR #171 (Work Orders & Photos),
-PR #172 (DPR modal scroll lock — independent, touches no shared file, so it can land in any
-order relative to #170/#171), Service Manager Foundation-match branch (no PR yet).
+**Open questions for Mark — flagged, not blocking; work continued past them.**
+
+**CC-1 — CompanyCam deep link has no web fallback.** The buttons use `ccam://projects/<id>`,
+CompanyCam's own documented mobile scheme. No `https://app.companycam.com/...` fallback was
+added because that URL is **not in CompanyCam's docs**, and a link that 404s on a roof is worse
+than no link. Consequence: on a **desktop** browser with no CompanyCam app, the button does
+nothing visible. If Mark confirms the real web project URL it is a two-line change in
+`ccProjectDeepLink()` and nowhere else.
+
+**INS-2 — two functions stayed in `js/photos.js`.** `maybeAutoPinInspectionItem()` reads as
+Inspections code but is a photo-pipeline function sharing GPS/roof-assignment helpers with
+`maybeAutoPinFinding()`; `findingById()` is used throughout `photos.js`. Moving either would
+have been more than a pure move may do.
+
+**EST-1/2/3 — estimator cross-review.** (1) `issue_id` now lets an owner bypass the
+`doc.generate` permission check — a real privilege change made in passing. (2) Customer
+`contact`/`location` are serialized into LLM prompts, against the #147 "no refs/ids in prompts"
+convention. (3) Estimates are `localStorage`-only — no cross-device sync, and they compete with
+the photo byte budget. **(2) should be settled before any prod promotion.**
+
+**ARC-1 — `/.netlify/functions/arcgis-tile` is unauthenticated.** Tile coords are strictly
+validated and the key never reaches the client, so this is not a key leak — it is a quota-abuse
+surface. Adding `verifyCaller` would close it.
+
 
 ---
 
