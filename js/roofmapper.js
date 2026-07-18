@@ -2321,13 +2321,15 @@ function rmSetStatus(msg, kind, extraHtml){
    Hospital case). Same tile source already used elsewhere in the app
    (asset/pin placement) -- no new/paid service. */
 var RM_TILE_OSM = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
-var RM_TILE_SAT = satelliteTileUrlTemplate();
+function rmSatelliteTileUrlTemplate(){
+  return satelliteTileUrlTemplate();
+}
 /* ---- Export base imagery (satellite/ortho beneath the line art) ----
    Mark's fourth export complaint: "no base image (ortho/satellite) under
    the outlines... needs a toggle to include one beneath the line-art."
    Fetches + stitches just the tiles covering the drawing's own bounding
    box from the SAME free Esri World_Imagery tiles the live map already
-   uses (RM_TILE_SAT) -- no new/paid service. Standard slippy-map tile
+   uses (rmSatelliteTileUrlTemplate()) -- no new/paid service. Standard slippy-map tile
    math (see e.g. OSM's "Slippy map tilenames" wiki page). Confirmed this
    tile server allows canvas use cross-origin (drawImage + toDataURL, no
    tainted-canvas SecurityError) with img.crossOrigin="anonymous" before
@@ -2377,7 +2379,7 @@ async function rmFetchBasemapImage(bounds){
         var px = (tx - x0) * 256, py = (ty - y0) * 256;
         img.onload = function(){ ctx.drawImage(img, px, py); resolve(); };
         img.onerror = function(){ resolve(); }; /* missing tile -- leave that patch blank rather than fail the whole basemap */
-        img.src = RM_TILE_SAT.replace("{z}", z).replace("{x}", tx).replace("{y}", ty);
+        img.src = rmSatelliteTileUrlTemplate().replace("{z}", z).replace("{x}", tx).replace("{y}", ty);
       }));
     }
   }
@@ -2405,7 +2407,7 @@ function rmSetBaseLayer(type){
   var map = rmEnsureMap();
   if (rmState.baseLayer) map.removeLayer(rmState.baseLayer);
   if (type === "satellite"){
-    rmState.baseLayer = L.tileLayer(RM_TILE_SAT, {
+    rmState.baseLayer = L.tileLayer(rmSatelliteTileUrlTemplate(), {
       maxZoom: 22, maxNativeZoom: SAT_MAX_NATIVE_ZOOM, attribution: "Tiles &copy; Esri"
     }).addTo(map);
   } else {
@@ -7977,7 +7979,7 @@ async function rmOpenRepairAreaPinSatellite(row, orthoOverlay, skippedBaseMap){
   rmSetRepairAreaPinHint(hint);
   setTimeout(function(){
     rmRepairAreaPinMap = L.map("rm-repair-pin-map").setView([center.lat, center.lng], zoom);
-    L.tileLayer(RM_TILE_SAT, {
+    L.tileLayer(rmSatelliteTileUrlTemplate(), {
       maxZoom: 22, maxNativeZoom: SAT_MAX_NATIVE_ZOOM, attribution: "Tiles &copy; Esri"
     }).addTo(rmRepairAreaPinMap);
     if (orthoOverlay && orthoOverlay.bounds){
