@@ -48,6 +48,7 @@ var smProposals = [];            // last-loaded proposal rows from contacts-sync
 var smWoIndex = [];              // recent saved-WO index (for WO-exists flag + assign list)
 var smCurrentProposal = null;    // proposal ref being pre-created from (or null)
 var smFoundationPick = null;     // Foundation job matched for the current pre-create
+var smCcPick = null;             // { id, name } CompanyCam project linked/created for this pre-create
 
 /* ---- small DOM/utility helpers (kept local so this module is self-contained
  *      and vm-testable without the rest of the app) ---- */
@@ -315,6 +316,108 @@ function smClearFoundationPick(){
   if (el) el.innerHTML = "Not linked. Cross-reference to bind the real job number.";
 }
 
+/* ==================== CompanyCam link / create (rule exception) ===========
+ * RoofOps' standing hard rule is "never auto-create CompanyCam projects —
+ * link/push to existing ones only." Mark deliberately authorized a ONE-CLICK
+ * create for THIS flow (2026-07-17), offered ONLY when the WO is
+ * Foundation-linked AND no existing project matches the address. Not silent:
+ * the manager clicks Check, sees the match/no-match, and only then may create.
+ * The create itself is permission-gated (companycam.link) + audit-logged
+ * server-side (netlify/functions/companycam.js create_project). */
+async function smCcGet(params){
+  if (typeof ccApi === "function") return ccApi(params);
+  var qs = Object.keys(params).map(function(k){ return encodeURIComponent(k) + "=" + encodeURIComponent(params[k]); }).join("&");
+  var headers = (typeof authHeaders === "function") ? (await authHeaders()) : {};
+  var r = await fetch("/.netlify/functions/companycam?" + qs, { headers: headers });
+  if (!r.ok){ var e = new Error("HTTP " + r.status); e.status = r.status; throw e; }
+  return r.json();
+}
+async function smCcPost(body){
+  if (typeof ccApiPost === "function") return ccApiPost(body);
+  var headers = (typeof authHeaders === "function") ? (await authHeaders()) : { "Content-Type": "application/json" };
+  var r = await fetch("/.netlify/functions/companycam", { method: "POST", headers: headers, body: JSON.stringify(body) });
+  var data = null; try { data = await r.json(); } catch (e) {}
+  if (!r.ok){ var er = new Error((data && data.error) || ("HTTP " + r.status)); er.status = r.status; throw er; }
+  return data;
+}
+/* Confident CompanyCam match: address-key equality (same fdn algorithm),
+ * unique only; name-equality fallback. Refuses ambiguity — same doctrine as the
+ * Foundation match. */
+function smMatchCompanyCamProject(projects, loc, name){
+  if (!projects || !projects.length) return null;
+  if (typeof fdnAddressMatchKey === "function"){
+    var key = fdnAddressMatchKey(loc);
+    if (key){
+      var am = projects.filter(function(p){ return fdnAddressMatchKey(p.address || "") === key; });
+      if (am.length === 1) return am[0];
+      if (am.length > 1) return null;
+    }
+  }
+  var nm = smNorm(name);
+  if (!nm) return null;
+  var nmatch = projects.filter(function(p){ return smNorm(p.name) === nm; });
+  return nmatch.length === 1 ? nmatch[0] : null;
+}
+/* Best-effort CompanyCam address object from the form's location line. */
+function smCcAddressParts(loc){
+  var parts = String(loc || "").split(",").map(function(s){ return s.trim(); }).filter(Boolean);
+  var a = {};
+  if (parts[0]) a.street_address_1 = parts[0];
+  if (parts[1]) a.city = parts[1];
+  if (parts[2]){ var sp = parts[2].split(/\s+/); if (sp[0]) a.state = sp[0]; if (sp[1]) a.postal_code = sp[1]; }
+  return a;
+}
+async function smCheckCompanyCam(){
+  var el = smEl("sm-pc-companycam");
+  var loc = getVal2("sm-pc-location") || "", name = getVal2("sm-pc-jobName") || "";
+  var q = (loc || name).slice(0, 100);
+  if (!q){ if (el) el.innerHTML = "Add an address or job name first."; return; }
+  if (el) el.innerHTML = "Searching CompanyCam…";
+  try {
+    var data = await smCcGet({ action: "projects", q: q });
+    var projects = (data && data.projects) || [];
+    var match = smMatchCompanyCamProject(projects, loc, name);
+    if (match){
+      smCcPick = { id: String(match.id), name: match.name || "" };
+      if (el) el.innerHTML = "✅ Found <b>" + smEsc(match.name || match.id) + "</b>" +
+        (match.address ? (' <span class="hint">— ' + smEsc(match.address) + "</span>") : "") +
+        " — it will be linked to this work order.";
+      return;
+    }
+    smCcPick = null;
+    if (smFoundationPick){
+      if (el) el.innerHTML = "⚠️ No matching CompanyCam project. " +
+        '<button class="btn" type="button" style="margin-left:6px" onclick="smCreateCompanyCamProject()">➕ Create project for this address</button>' +
+        '<div class="hint" style="margin:6px 0 0">Deliberate action — RoofOps normally never creates CompanyCam projects. This one is permission-gated + audit-logged.</div>';
+    } else {
+      if (el) el.innerHTML = "⚠️ No matching CompanyCam project. Cross-reference a Foundation job first to enable creating one (deliberate, for this flow only).";
+    }
+  } catch (e) {
+    if (el) el.innerHTML = '<span style="color:#b23">Couldn\'t search CompanyCam' + (e.status ? " (" + e.status + ")" : "") + ".</span>";
+  }
+}
+async function smCreateCompanyCamProject(){
+  var el = smEl("sm-pc-companycam");
+  if (!smFoundationPick){ if (el) el.innerHTML = "Cross-reference a Foundation job first (deliberate create is only for Foundation-linked sites)."; return; }
+  var name = (getVal2("sm-pc-jobName") || (smFoundationPick && smFoundationPick.name) || "").trim();
+  if (!name){ if (el) el.innerHTML = "Add a job/building name first."; return; }
+  if (el) el.innerHTML = "Creating CompanyCam project…";
+  try {
+    var data = await smCcPost({
+      action: "create_project",
+      name: name,
+      address: smCcAddressParts(getVal2("sm-pc-location")),
+      foundationJobNo: smFoundationPick ? smFoundationPick.job_no : null
+    });
+    if (!data || !data.ok || !data.projectId) throw new Error((data && data.error) || "no project id returned");
+    smCcPick = { id: String(data.projectId), name: data.projectName || name };
+    if (el) el.innerHTML = "✅ Created <b>" + smEsc(smCcPick.name) + "</b> and linked it to this work order.";
+    smToast("CompanyCam project created ✓");
+  } catch (e) {
+    if (el) el.innerHTML = '<span style="color:#b23">Couldn\'t create the project' + (e.status ? " (" + e.status + ")" : "") + ": " + smEsc(e.message || "") + "</span>";
+  }
+}
+
 /* ========================= pre-create a work order ======================= */
 function smOpenPrecreate(seed){
   seed = seed || {};
@@ -343,6 +446,9 @@ function smOpenPrecreate(seed){
     } else { banner.style.display = "none"; banner.innerHTML = ""; }
   }
   smClearFoundationPick();
+  smCcPick = null;
+  var ccEl = smEl("sm-pc-companycam");
+  if (ccEl) ccEl.innerHTML = "Check for an existing CompanyCam project to link. Creating one is a deliberate action, offered only when Foundation-linked with no match.";
   smMaybeShowAiPrefill();
   var modal = smEl("sm-precreate-modal");
   if (modal) modal.style.display = "";
@@ -361,7 +467,9 @@ async function smSubmitPrecreate(){
     scope: (getVal2("sm-pc-scope") || "").trim(),
     crew: crew,
     proposal: smCurrentProposal,
-    foundation: smFoundationPick
+    foundation: smFoundationPick,
+    companyCamProjectId: smCcPick ? smCcPick.id : null,
+    companyCamProjectName: smCcPick ? smCcPick.name : ""
   };
   if (!data.jobName && !data.location){ smToast("Add at least a job name or an address."); return; }
   smToast("Creating work order…");
@@ -398,7 +506,7 @@ async function smSaveNewWorkOrder(data){
     woCost: "", woManHours: "", woMaterials: "", woDescription: "", woPONumber: "", woDateCompleted: "",
     repairDescription: data.scope || "", mfgServiceNo: "",
     findings: [], repairs: [], repairItems: [], materials: [], inspectionChecklist: [], photos: [],
-    companyCamProjectId: null, companyCamProjectName: "",
+    companyCamProjectId: data.companyCamProjectId || null, companyCamProjectName: data.companyCamProjectName || "",
     buildingId: null, customerId: null, ccDocumentId: null, ccDocumentHash: null,
     foundationJobNo: f ? f.job_no : null,
     foundationJobName: f ? (f.name || "") : "",
