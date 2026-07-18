@@ -167,7 +167,9 @@ function timelineEventHtml(e, buildingId, opts){
        had any (the vast majority). */
     ((e.photos || []).length ? '<div class="evt-row" style="display:flex;gap:6px;flex-wrap:wrap">' +
       e.photos.map(function(p){
-        return '<img src="' + esc(p.img) + '" style="width:64px;height:64px;object-fit:cover;border:1px solid var(--line);border-radius:4px">';
+        /* stopPropagation so tapping a photo opens the zoom viewer instead of
+           bubbling to the card's openTimelineSourceWorkOrder() (see #133). */
+        return '<img src="' + esc(p.img) + '" onclick="event.stopPropagation();openImageLightbox(this.src)" title="Tap to enlarge" style="width:64px;height:64px;object-fit:cover;border:1px solid var(--line);border-radius:4px;cursor:pointer">';
       }).join('') + '</div>' : '') +
     (e.pdfRef && e.pdfRef.url ? '<div class="evt-row"><a href="' + esc(e.pdfRef.url) + '" target="_blank" rel="noopener" onclick="event.stopPropagation()">View saved PDF</a></div>' : '') +
     '</div>';
@@ -1856,8 +1858,8 @@ function renderActivityPhotosStatus(){
   if (!activityPhotos.length){ host.innerHTML = ""; return; }
   host.innerHTML = '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
     activityPhotos.map(function(p, i){
-      return '<div style="position:relative"><img src="' + p.img + '" style="width:84px;height:84px;object-fit:cover;' +
-        'border:1px solid var(--line);border-radius:4px;display:block">' +
+      return '<div style="position:relative"><img src="' + p.img + '" onclick="openImageLightbox(this.src)" title="Tap to enlarge" style="width:84px;height:84px;object-fit:cover;' +
+        'border:1px solid var(--line);border-radius:4px;display:block;cursor:pointer">' +
         '<button class="btn danger" style="position:absolute;top:2px;right:2px;padding:1px 6px;font-size:11px" ' +
         'onclick="removeActivityPhoto(' + i + ')">✕</button></div>';
     }).join('') + '</div>';

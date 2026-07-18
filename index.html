@@ -1703,8 +1703,15 @@
 </div>
 
 <div id="photo-lightbox" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:10000" onclick="if(event.target===this)closePhotoLightbox()">
-  <button class="btn" style="position:absolute;top:14px;right:14px" onclick="closePhotoLightbox()">✕ Close</button>
+  <button class="btn" style="position:absolute;top:14px;right:14px;z-index:1" onclick="closePhotoLightbox()">✕ Close</button>
   <img id="photo-lightbox-img" class="photo-lightbox-img" src="">
+  <div class="photo-lightbox-zoombar" onclick="event.stopPropagation()">
+    <button class="btn" onclick="zoomLightboxBy(1/1.4)" title="Zoom out" aria-label="Zoom out">−</button>
+    <span class="zoom-pct" id="photo-lightbox-pct">100%</span>
+    <button class="btn" onclick="zoomLightboxBy(1.4)" title="Zoom in" aria-label="Zoom in">＋</button>
+    <button class="btn" onclick="resetLightboxZoom(true)" title="Reset zoom" aria-label="Reset zoom">Reset</button>
+  </div>
+  <div class="photo-lightbox-hint">Scroll or ± to zoom · drag to pan · double-click to toggle</div>
 </div>
 
 <!-- ================= Send Feedback (reachable from every screen) =================

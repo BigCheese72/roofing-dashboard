@@ -1606,21 +1606,179 @@ async function openPhotoLightbox(i){
   if (!p) return;
   if (p.thumb || p.imgFallback || p.img) openImageLightbox(p.thumb || p.imgFallback || p.img);
   var full = await resolvePhotoImg(p);
-  if (full) openImageLightbox(full);
+  if (full){
+    /* Swap the thumb for the full-res image WITHOUT reopening or resetting:
+       the viewer may already be open and the user may already have zoomed
+       in. If it was closed during the await, leave it closed. */
+    if (lightboxContainerEl() && lightboxContainerEl().style.display !== "none") openImageLightbox(full, { keepZoom: true });
+    else openImageLightbox(full);
+  }
   else if (!p.thumb && !p.imgFallback && !p.img) toast("Couldn't load this photo — check your internet connection.");
 }
+
+/* ================= Zoomable / pannable lightbox =================
+   ONE viewer, reused by every photo in the app. Every caller funnels
+   through openImageLightbox() -- openPhotoLightbox() (Photo Documentation,
+   per-finding galleries, change-order gallery), the building-history
+   timeline, and feedback screenshots -- so upgrading this single element
+   makes zoom/pan work uniformly everywhere a photo is clickable, on every
+   work-order type, in both the fill and saved/edit views, desktop and
+   mobile. Mark: "I should be able to zoom any photo I click on."
+
+   Desktop: scroll wheel or the ± buttons to zoom, drag to pan, double-click
+   to toggle 1x<->2.5x. Mobile: pinch to zoom, drag to pan, double-tap. */
+var lightboxZoom = { scale: 1, x: 0, y: 0, min: 1, max: 6 };
+var lightboxPointers = new Map();   /* active pointerId -> {x,y} for pan/pinch */
+var lightboxPinch = null;           /* {dist, scale} captured when a 2nd finger lands */
+var lightboxWired = false;
+
+function lightboxImgEl(){ return document.getElementById("photo-lightbox-img"); }
+function lightboxContainerEl(){ return document.getElementById("photo-lightbox"); }
+
+/* Pure zoom math, DOM-free so it's unit-testable (see tests/photoLightboxZoom.test.js).
+   Scales toward nextScale while keeping the pixel under screen point (cx,cy)
+   fixed. (ox,oy) is the transform-origin in screen space -- the viewer's
+   center, since the image uses transform-origin:center. */
+function lightboxZoomToward(cur, nextScale, cx, cy, ox, oy){
+  var next = Math.max(cur.min, Math.min(cur.max, nextScale));
+  var k = next / cur.scale;
+  var x = (cx - ox) * (1 - k) + cur.x * k;
+  var y = (cy - oy) * (1 - k) + cur.y * k;
+  if (next <= cur.min + 0.001){ x = 0; y = 0; }   /* snap back to centered at 1x */
+  return { scale: next, x: x, y: y, min: cur.min, max: cur.max };
+}
+/* Keep the (scaled) image from being panned entirely off the viewport: its
+   own edges can't cross the viewport center. Pure so it can be unit-tested. */
+function lightboxClampPan(state, cw, ch, iw, ih){
+  var maxX = Math.max(0, (iw - cw) / 2), maxY = Math.max(0, (ih - ch) / 2);
+  return { scale: state.scale, min: state.min, max: state.max,
+    x: Math.max(-maxX, Math.min(maxX, state.x)),
+    y: Math.max(-maxY, Math.min(maxY, state.y)) };
+}
+
+function applyLightboxTransform(animate){
+  var img = lightboxImgEl();
+  if (!img) return;
+  img.classList.toggle("zoomable-anim", !!animate);
+  img.style.transform = "translate(" + lightboxZoom.x + "px," + lightboxZoom.y + "px) scale(" + lightboxZoom.scale + ")";
+  img.classList.toggle("pannable", lightboxZoom.scale > 1.001);
+  var pct = document.getElementById("photo-lightbox-pct");
+  if (pct) pct.textContent = Math.round(lightboxZoom.scale * 100) + "%";
+}
+function clampLightboxPanFromDom(){
+  var img = lightboxImgEl(), cont = lightboxContainerEl();
+  if (!img || !cont) return;
+  lightboxZoom = lightboxClampPan(lightboxZoom, cont.clientWidth, cont.clientHeight,
+    img.offsetWidth * lightboxZoom.scale, img.offsetHeight * lightboxZoom.scale);
+}
+function resetLightboxZoom(animate){
+  lightboxZoom.scale = 1; lightboxZoom.x = 0; lightboxZoom.y = 0;
+  applyLightboxTransform(animate);
+}
+/* Zoom about a screen point, then re-clamp against the viewport. */
+function zoomLightboxAt(nextScale, cx, cy, animate){
+  var cont = lightboxContainerEl();
+  if (!cont) return;
+  var r = cont.getBoundingClientRect();
+  lightboxZoom = lightboxZoomToward(lightboxZoom, nextScale, cx, cy, r.left + r.width / 2, r.top + r.height / 2);
+  clampLightboxPanFromDom();
+  applyLightboxTransform(animate);
+}
+/* Button zoom: about the viewer's center. */
+function zoomLightboxBy(factor){
+  var cont = lightboxContainerEl();
+  if (!cont) return;
+  var r = cont.getBoundingClientRect();
+  zoomLightboxAt(lightboxZoom.scale * factor, r.left + r.width / 2, r.top + r.height / 2, true);
+}
+
+function wireLightbox(){
+  if (lightboxWired) return;
+  var img = lightboxImgEl();
+  if (!img) return;
+  lightboxWired = true;
+
+  img.addEventListener("wheel", function(e){
+    e.preventDefault();
+    zoomLightboxAt(lightboxZoom.scale * (e.deltaY < 0 ? 1.15 : 1 / 1.15), e.clientX, e.clientY, false);
+  }, { passive: false });
+
+  img.addEventListener("dblclick", function(e){
+    e.preventDefault();
+    if (lightboxZoom.scale > 1.001) resetLightboxZoom(true);
+    else zoomLightboxAt(2.5, e.clientX, e.clientY, true);
+  });
+
+  /* Pointer Events unify mouse drag + touch drag + pinch. */
+  img.addEventListener("pointerdown", function(e){
+    if (img.setPointerCapture) try { img.setPointerCapture(e.pointerId); } catch (err) {}
+    lightboxPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (lightboxPointers.size === 2){
+      var p = Array.from(lightboxPointers.values());
+      lightboxPinch = { dist: Math.hypot(p[0].x - p[1].x, p[0].y - p[1].y), scale: lightboxZoom.scale };
+    }
+    if (lightboxZoom.scale > 1.001 || lightboxPointers.size === 2) img.classList.add("panning");
+  });
+
+  img.addEventListener("pointermove", function(e){
+    var prev = lightboxPointers.get(e.pointerId);
+    if (!prev) return;
+    var dx = e.clientX - prev.x, dy = e.clientY - prev.y;
+    lightboxPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+    if (lightboxPointers.size === 2 && lightboxPinch){
+      var p = Array.from(lightboxPointers.values());
+      var dist = Math.hypot(p[0].x - p[1].x, p[0].y - p[1].y);
+      if (lightboxPinch.dist > 0)
+        zoomLightboxAt(lightboxPinch.scale * (dist / lightboxPinch.dist),
+          (p[0].x + p[1].x) / 2, (p[0].y + p[1].y) / 2, false);
+      return;
+    }
+    if (lightboxZoom.scale > 1.001){
+      lightboxZoom.x += dx; lightboxZoom.y += dy;
+      clampLightboxPanFromDom();
+      applyLightboxTransform(false);
+    }
+  });
+
+  function endPointer(e){
+    lightboxPointers.delete(e.pointerId);
+    if (lightboxPointers.size < 2) lightboxPinch = null;
+    if (lightboxPointers.size === 0) img.classList.remove("panning");
+  }
+  img.addEventListener("pointerup", endPointer);
+  img.addEventListener("pointercancel", endPointer);
+  img.addEventListener("dragstart", function(e){ e.preventDefault(); });   /* kill the native drag ghost */
+
+  document.addEventListener("keydown", function(e){
+    var cont = lightboxContainerEl();
+    if (e.key === "Escape" && cont && cont.style.display !== "none") closePhotoLightbox();
+  });
+}
+
 /* Pulled out of openPhotoLightbox() so anything with a bare image data-URL
    (not necessarily an index into the global photos[] array -- e.g. a
-   feedback screenshot in the admin backlog) can reuse the same lightbox
-   UI. See "Send Feedback" in DEV_NOTES.md. */
-function openImageLightbox(src){
-  document.getElementById("photo-lightbox-img").src = src;
-  document.getElementById("photo-lightbox").style.display = "";
+   feedback screenshot in the admin backlog, or a building-history timeline
+   photo) can reuse the same zoomable lightbox. Pass {keepZoom:true} to just
+   swap the src while the viewer stays open at its current zoom (see the
+   thumb->full swap in openPhotoLightbox). See "Send Feedback" in
+   DEV_NOTES.md. */
+function openImageLightbox(src, opts){
+  var img = lightboxImgEl(), cont = lightboxContainerEl();
+  if (!img || !cont) return;
+  wireLightbox();
+  img.src = src;
+  if (!(opts && opts.keepZoom)) resetLightboxZoom(false);
+  cont.style.display = "flex";
   lockBodyScroll();
 }
 function closePhotoLightbox(){
-  document.getElementById("photo-lightbox").style.display = "none";
-  document.getElementById("photo-lightbox-img").src = "";
+  var img = lightboxImgEl(), cont = lightboxContainerEl();
+  if (cont) cont.style.display = "none";
+  if (img) img.src = "";
+  lightboxPointers.clear();
+  lightboxPinch = null;
+  resetLightboxZoom(false);
   unlockBodyScroll();
 }
 
