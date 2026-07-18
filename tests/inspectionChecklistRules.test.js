@@ -16,11 +16,24 @@ const vm = require("node:vm");
    Written ahead of the H-2 extraction of the checklist engine out of
    js/photos.js and into js/inspections.js. That move is a pure relocation with
    no behaviour change, so this suite is its safety net: it should stay green
-   across the move. Only ENGINE_SRC below needs to change when it lands --
-   the slice markers are string-based and travel with the code. */
-const ENGINE_SRC = path.join(__dirname, "..", "js", "photos.js");
+   across the move -- and it did.
+
+   The extraction landed 2026-07-18 and split this suite's sources in two,
+   slightly differently than the note above predicted:
+     * The checklist engine moved to js/inspections.js.
+     * findingById() did NOT -- it sits above the checklist block and is used
+       all over js/photos.js, so it stayed. syncInspectionFinding() still
+       depends on it, hence ENGINE_BLOCK is stitched from both files.
+     * maybeAutoPinInspectionItem() did NOT -- it is a photo-pipeline function
+       sharing GPS/roof helpers with maybeAutoPinFinding(), so moving it would
+       have cut that pipeline in half. AUTOPIN_BLOCK still reads js/photos.js.
+   The slice markers were string-based and travelled with the code exactly as
+   intended; only the file each one is read from changed. */
+const ENGINE_SRC = path.join(__dirname, "..", "js", "inspections.js");
+const PHOTOS_SRC = path.join(__dirname, "..", "js", "photos.js");
 
 const engineSource = fs.readFileSync(ENGINE_SRC, "utf8");
+const photosSource = fs.readFileSync(PHOTOS_SRC, "utf8");
 const workordersSource = fs.readFileSync(path.join(__dirname, "..", "js", "workorders.js"), "utf8");
 
 function between(source, start, end){
@@ -38,9 +51,10 @@ const COMPONENTS_SRC = between(workordersSource,
   "var INSPECTION_CHECKLIST_COMPONENTS", "var inspectionChecklist");
 /* findingById() sits immediately above the checklist block and syncInspectionFinding
    depends on it, so the slice starts there. */
-const ENGINE_BLOCK = between(engineSource,
-  "function findingById", "function renderInspectionChecklist");
-const AUTOPIN_BLOCK = between(engineSource,
+const ENGINE_BLOCK =
+  between(photosSource, "function findingById", "/* Read-only lookup of the prospective building") +
+  between(engineSource, "function inspectionChecklistItemById", "function renderInspectionChecklist");
+const AUTOPIN_BLOCK = between(photosSource,
   "async function maybeAutoPinInspectionItem", "/* Change Order equivalent");
 
 function makeSandbox(opts){
