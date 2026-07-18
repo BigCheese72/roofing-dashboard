@@ -2391,7 +2391,7 @@ async function dprSetupSectionMap(divId, roof, opts){
     return { map: map, mode: "image", frameUrl: base.url, w: dims.w, h: dims.h, located: true };
   }
   var map2 = L.map(divId, { zoomControl: true, attributionControl: false });
-  L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+  L.tileLayer(satelliteTileUrlTemplate(),
     { maxZoom: 22, maxNativeZoom: SAT_MAX_NATIVE_ZOOM, attribution: "Tiles © Esri" }).addTo(map2);
   if (base.kind === "ortho"){
     var llb = boundsToLatLngBounds(base.bounds);

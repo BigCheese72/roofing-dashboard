@@ -548,7 +548,7 @@ async function openPinModalSatellite(f, findingId, orthoOverlay, opts){
 
   setTimeout(function(){
     pinMap = L.map("pin-map").setView([center.lat, center.lng], zoom);
-    L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
+    L.tileLayer(satelliteTileUrlTemplate(), {
       maxZoom: 22, maxNativeZoom: SAT_MAX_NATIVE_ZOOM, attribution: "Tiles &copy; Esri"
     }).addTo(pinMap);
     if (orthoOverlay){
@@ -796,7 +796,7 @@ async function openAssetModalSatellite(bld, assets, existing, orthoOverlay, outl
   document.getElementById("asset-hint").textContent = "Tap the map to place this feature, or drag it into position.";
   setTimeout(function(){
     assetMap = L.map("asset-map").setView([center.lat, center.lng], zoom);
-    L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
+    L.tileLayer(satelliteTileUrlTemplate(), {
       maxZoom: 22, maxNativeZoom: SAT_MAX_NATIVE_ZOOM, attribution: "Tiles &copy; Esri"
     }).addTo(assetMap);
     if (orthoOverlay) L.imageOverlay(orthoOverlay.url, boundsToLatLngBounds(orthoOverlay.bounds)).addTo(assetMap);

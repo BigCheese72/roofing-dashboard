@@ -2880,7 +2880,7 @@ function renderBuildingMap(pins, customBld, bldAddress, orthoOverlay, assets, bu
       if (buildingMapRenderSeqByElementId[mapElementId] !== renderSeq) return;
       var map = center ? L.map(mapElementId).setView([center.lat, center.lng], zoom) : L.map(mapElementId);
       setBuildingMapHandle(mapElementId, map);
-      L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
+      L.tileLayer(satelliteTileUrlTemplate(), {
         maxZoom: 22, maxNativeZoom: SAT_MAX_NATIVE_ZOOM, attribution: "Tiles &copy; Esri"
       }).addTo(map);
       if (orthoOverlay) L.imageOverlay(orthoOverlay.url, boundsToLatLngBounds(orthoOverlay.bounds)).addTo(map);

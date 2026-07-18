@@ -2321,7 +2321,7 @@ function rmSetStatus(msg, kind, extraHtml){
    Hospital case). Same tile source already used elsewhere in the app
    (asset/pin placement) -- no new/paid service. */
 var RM_TILE_OSM = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
-var RM_TILE_SAT = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
+var RM_TILE_SAT = satelliteTileUrlTemplate();
 /* ---- Export base imagery (satellite/ortho beneath the line art) ----
    Mark's fourth export complaint: "no base image (ortho/satellite) under
    the outlines... needs a toggle to include one beneath the line-art."
