@@ -94,3 +94,13 @@ test("editable estimate line items change, delete, and add costs", () => {
   changed = sb.estimatorCalculate(sb.ESTIMATOR_DEFAULTS, sb.estimatorLineItems);
   assert.ok(changed.otherItems.some((item) => item.name === "Extra lift delivery" && item.total === 2500));
 });
+
+test("generated estimate line items expose the prices used", () => {
+  const sb = loadEstimator();
+  const result = sb.estimatorCalculate(sb.ESTIMATOR_DEFAULTS);
+  const byName = Object.fromEntries(result.lineItems.map((item) => [item.name, item]));
+  assert.match(byName["60 mil EPDM SA membrane"].unit, /\$185\.00\/SQ/);
+  assert.match(byName["6\" QuickSeam batten cover"].unit, /\$450\.00\/roll/);
+  assert.match(byName["New perimeter sheet metal"].unit, /\$20\.00\/LF/);
+  assert.match(byName["20-year warranty fee"].unit, /\$0\.17\/SF/);
+});

@@ -283,30 +283,30 @@ function estimatorGeneratedLineItems(input){
       taxable: taxable !== false
     });
   }
-  add("60 mil EPDM SA membrane", membraneRolls + " rolls", "10 SQ", membraneRolls * input.membraneRollSq * input.membraneSqPrice);
-  add("Tapered insulation package", input.slopeType === "tapered" ? "quote" : "structural slope", "", input.slopeType === "tapered" ? input.taperCost : 0);
+  add("60 mil EPDM SA membrane", membraneRolls + " rolls", estimatorMoney(input.membraneSqPrice) + "/SQ, 10 SQ/roll", membraneRolls * input.membraneRollSq * input.membraneSqPrice);
+  add("Tapered insulation package", input.slopeType === "tapered" ? "quote" : "structural slope", input.slopeType === "tapered" ? "supplier quote" : "not carried", input.slopeType === "tapered" ? input.taperCost : 0);
   add(input.overlayIn + "\" ISO overlay", input.overlaySq + " SQ", estimatorMoney(input.overlayCostSq) + "/SQ", input.overlaySq * input.overlayCostSq);
-  add("3\" QuickSeam splice tape", input.spliceTapeRolls + " rolls", "", input.spliceTapeRolls * input.spliceTapeRollPrice);
-  add("6\" QuickSeam batten cover", input.battenCoverRolls + " rolls", "", input.battenCoverRolls * input.battenCoverRollPrice);
-  add("5\" QuickSeam flashing", input.quickSeamFlashingRolls + " rolls", "", input.quickSeamFlashingRolls * input.quickSeamFlashingRollPrice);
-  add("QuickPrime Plus", input.quickPrimePails + " pails", "", input.quickPrimePails * input.quickPrimePrice);
-  add("RPF/RUSS strip", input.rpfRolls + " rolls", "100 LF", input.rpfRolls * input.rpfRollPrice);
-  add("3\" insulation plates", input.insulationPlateCount + " plates", "", (input.insulationPlateCount / 1000) * input.insulationPlatePricePerM);
-  add("Insulation screws 6-10 inch", "packaged", "", input.screwPackageCost);
-  add("2\" seam plates for RPF", "1000", "", input.seamPlateCost);
-  add("T-joint covers", input.tJointCovers + " cartons", "", input.tJointCovers * input.tJointCoverPrice);
-  add("Water Block", input.waterBlockTubes + " tubes", "", input.waterBlockTubes * input.waterBlockPrice);
-  add("Lap/all-purpose sealant", input.lapSealantTubes + " tubes", "", input.lapSealantTubes * input.lapSealantPrice);
-  add("Membrane cleaner", input.cleanerGallons + " gal", "", input.cleanerGallons * input.cleanerPricePerGal);
-  add("Pipe boots", input.pipeBoots, "", input.pipeBoots * input.pipeBootPrice);
-  add("Scupper flashing material", "allowance", "", input.scupperFlashing);
-  add("Miscellaneous detail materials", "allowance", "", input.miscDetailMaterials);
-  add("Wall / blocking rebuild allowance", "allowance", "", input.blockingCost, false);
+  add("3\" QuickSeam splice tape", input.spliceTapeRolls + " rolls", estimatorMoney(input.spliceTapeRollPrice) + "/roll", input.spliceTapeRolls * input.spliceTapeRollPrice);
+  add("6\" QuickSeam batten cover", input.battenCoverRolls + " rolls", estimatorMoney(input.battenCoverRollPrice) + "/roll", input.battenCoverRolls * input.battenCoverRollPrice);
+  add("5\" QuickSeam flashing", input.quickSeamFlashingRolls + " rolls", estimatorMoney(input.quickSeamFlashingRollPrice) + "/roll", input.quickSeamFlashingRolls * input.quickSeamFlashingRollPrice);
+  add("QuickPrime Plus", input.quickPrimePails + " pails", estimatorMoney(input.quickPrimePrice) + "/pail", input.quickPrimePails * input.quickPrimePrice);
+  add("RPF/RUSS strip", input.rpfRolls + " rolls", estimatorMoney(input.rpfRollPrice) + "/100 LF roll", input.rpfRolls * input.rpfRollPrice);
+  add("3\" insulation plates", input.insulationPlateCount + " plates", estimatorMoney(input.insulationPlatePricePerM) + "/M", (input.insulationPlateCount / 1000) * input.insulationPlatePricePerM);
+  add("Insulation screws 6-10 inch", "packaged", "full pail mix", input.screwPackageCost);
+  add("2\" seam plates for RPF", "1000", "carton", input.seamPlateCost);
+  add("T-joint covers", input.tJointCovers + " cartons", estimatorMoney(input.tJointCoverPrice) + "/carton", input.tJointCovers * input.tJointCoverPrice);
+  add("Water Block", input.waterBlockTubes + " tubes", estimatorMoney(input.waterBlockPrice) + "/tube", input.waterBlockTubes * input.waterBlockPrice);
+  add("Lap/all-purpose sealant", input.lapSealantTubes + " tubes", estimatorMoney(input.lapSealantPrice) + "/tube", input.lapSealantTubes * input.lapSealantPrice);
+  add("Membrane cleaner", input.cleanerGallons + " gal", estimatorMoney(input.cleanerPricePerGal) + "/gal", input.cleanerGallons * input.cleanerPricePerGal);
+  add("Pipe boots", input.pipeBoots, estimatorMoney(input.pipeBootPrice) + "/EA", input.pipeBoots * input.pipeBootPrice);
+  add("Scupper flashing material", "allowance", "allowance", input.scupperFlashing);
+  add("Miscellaneous detail materials", "allowance", "allowance", input.miscDetailMaterials);
+  add("Wall / blocking rebuild allowance", "allowance", "installed allowance", input.blockingCost, false);
   add("New perimeter sheet metal", input.perimeterLf + " LF", estimatorMoney(input.metalLfCost) + "/LF", input.perimeterLf * input.metalLfCost, false);
   add("Retrofit drains", input.retrofitDrainCount + " drains", estimatorMoney(input.retrofitDrainCost) + "/EA", input.retrofitDrainCount * input.retrofitDrainCost, false);
-  add("Disposal / dumpsters", "allowance", "", input.disposalCost, false);
-  add("Lift / rental equipment", "allowance", "", input.equipmentCost, false);
-  add("Travel - per diem and hotels", "allowance", "", (input.crewSize * input.perDiem * input.workingDays) +
+  add("Disposal / dumpsters", "allowance", "allowance", input.disposalCost, false);
+  add("Lift / rental equipment", "allowance", "rental allowance", input.equipmentCost, false);
+  add("Travel - per diem and hotels", "allowance", estimatorMoney(input.perDiem) + "/man/day + hotels", (input.crewSize * input.perDiem * input.workingDays) +
     (input.hotelRooms * input.hotelNightCost * input.hotelNights), false);
   add(input.warrantyYears + "-year warranty fee", input.areaSf + " SF", estimatorMoney(input.warrantyRateSf) + "/SF", input.areaSf * input.warrantyRateSf, false);
   return { items: items, fieldRolls: fieldRolls, membraneRolls: membraneRolls, areaSquares: areaSquares };
@@ -430,7 +430,7 @@ function estimatorRender(result){
       "<button class=\"btn\" type=\"button\" onclick=\"estimatorAddLineItem(true)\">Add Material</button>" +
       "<button class=\"btn\" type=\"button\" onclick=\"estimatorAddLineItem(false)\">Add Equipment / Cost</button>" +
     "</div>" +
-    "<table class=\"estimator-table estimator-edit-table\"><thead><tr><th>Item</th><th>Qty</th><th>Basis</th><th>Type</th><th>Amount</th><th></th></tr></thead><tbody>" +
+    "<table class=\"estimator-table estimator-edit-table\"><thead><tr><th>Item</th><th>Qty</th><th>Unit Price / Basis</th><th>Type</th><th>Amount</th><th></th></tr></thead><tbody>" +
       estimatorLineItemRowsHtml(result.lineItems) +
       "<tr><td><b>Material subtotal</b></td><td></td><td></td><td></td><td class=\"num\"><b>" + estimatorMoney(result.taxableMaterials) + "</b></td><td></td></tr>" +
       "<tr><td>Material tax</td><td></td><td>" + esc(String(Math.round(result.input.materialTaxRate * 10000) / 100)) + "%</td><td></td><td class=\"num\">" + estimatorMoney(result.materialTax) + "</td><td></td></tr>" +
