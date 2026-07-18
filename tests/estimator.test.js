@@ -65,6 +65,43 @@ test("estimator refuses owner-only actions for non-owner users", () => {
   assert.equal(result, undefined);
 });
 
+test("estimator opens with a blank starter instead of the Warrensburg sample", () => {
+  const sb = loadEstimator();
+  sb.estimatorOnShow();
+  assert.equal(sb.__elements["est-project-name"].value, "");
+  assert.equal(sb.__elements["est-area-sf"].value, "0");
+  assert.match(sb.__elements["estimator-results"].innerHTML, /Load a RoofMapper map/);
+});
+
+test("estimator imports a saved RoofMapper outline into estimate fields", () => {
+  const sb = loadEstimator();
+  const outline = {
+    id: "rmo_local_1",
+    tags: { name: "Prairie Farms" },
+    areaSqFt: 12345.6,
+    perimeterFt: 487.2,
+    createdAt: 1770000000000
+  };
+  sb.localStorage.setItem(sb.ESTIMATOR_ROOFMAPPER_LOCAL_KEY, JSON.stringify([outline]));
+
+  sb.estimatorOnShow();
+  sb.estimatorOpenRoofMapperMaps();
+  assert.match(sb.__elements["estimator-roofmapper-list"].innerHTML, /Prairie Farms/);
+
+  sb.estimatorApplyRoofMapperMap(0);
+  assert.equal(sb.__elements["est-project-name"].value, "Prairie Farms");
+  assert.equal(sb.__elements["est-roofmap-id"].value, "rmo_local_1");
+  assert.equal(sb.__elements["est-area-sf"].value, "12346");
+  assert.equal(sb.__elements["est-overlay-sq"].value, "124");
+  assert.equal(sb.__elements["est-perimeter-lf"].value, "487");
+
+  const input = sb.estimatorReadForm();
+  assert.equal(input.roofMapId, "rmo_local_1");
+  assert.equal(input.spliceTapeRolls, 0);
+  assert.deepEqual(input.screwRows, []);
+  assert.equal(sb.estimatorLineItems.find((item) => item.name === '3" QuickSeam splice tape').total, 0);
+});
+
 test("estimator links a real CompanyCam project id and name", () => {
   const sb = loadEstimator();
   sb.estimatorCompanyCamProjects = [

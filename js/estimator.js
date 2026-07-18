@@ -8,6 +8,8 @@ var ESTIMATOR_DEFAULTS = {
   projectName: "Warrensburg Post Office",
   location: "Warrensburg, MO",
   contact: "Dan Staat",
+  roofMapId: "",
+  roofMapName: "",
   companyCamProjectId: "",
   companyCamProjectName: "",
   fieldNotes: "60 mil Elevate RubberGard EPDM SA. Tapered package plus continuous 2.6 inch ISO overlay. Rebuild perimeter above highest roof point after 4-5 inch stone coping removal. Include 20-year warranty, retrofit drains, lift/rental equipment, disposal, travel, metal, and both EDGE / Our Way pricing.",
@@ -81,10 +83,47 @@ var ESTIMATOR_DEFAULTS = {
   miscDetailMaterials: 1500
 };
 
+var ESTIMATOR_STARTER_DEFAULTS = Object.assign({}, ESTIMATOR_DEFAULTS, {
+  projectName: "",
+  location: "",
+  contact: "",
+  roofMapId: "",
+  roofMapName: "",
+  companyCamProjectId: "",
+  companyCamProjectName: "",
+  fieldNotes: "",
+  areaSf: 0,
+  taperCost: 0,
+  overlaySq: 0,
+  perimeterLf: 0,
+  blockingCost: 0,
+  equipmentCost: 0,
+  disposalCost: 0,
+  retrofitDrainCount: 0,
+  hotelNights: 0,
+  extraSaRollsForWalls: 0,
+  spliceTapeRolls: 0,
+  battenCoverRolls: 0,
+  quickSeamFlashingRolls: 0,
+  quickPrimePails: 0,
+  rpfRolls: 0,
+  insulationPlateCount: 0,
+  screwRows: [],
+  tJointCovers: 0,
+  waterBlockTubes: 0,
+  lapSealantTubes: 0,
+  cleanerGallons: 0,
+  pipeBoots: 0,
+  scupperFlashing: 0,
+  miscDetailMaterials: 0
+});
+
 var ESTIMATOR_FIELDS = {
   projectName: "est-project-name",
   location: "est-location",
   contact: "est-contact",
+  roofMapId: "est-roofmap-id",
+  roofMapName: "est-roofmap-name",
   companyCamProjectId: "est-companycam-id",
   companyCamProjectName: "est-companycam-name",
   fieldNotes: "est-field-notes",
@@ -120,10 +159,13 @@ var ESTIMATOR_FIELDS = {
 };
 
 var estimatorCompanyCamProjects = [];
+var estimatorRoofMapperMaps = [];
 var estimatorLineItems = null;
 var estimatorLastInput = null;
 var estimatorActiveSavedEstimate = null;
+var estimatorInputSeed = ESTIMATOR_STARTER_DEFAULTS;
 var ESTIMATOR_STORE_KEY = "roofops_estimates_v1";
+var ESTIMATOR_ROOFMAPPER_LOCAL_KEY = "roofmapper-local-outlines-v1";
 
 function estimatorIsOwner(){
   return !!(currentAuthClaims && currentAuthClaims.owner === true);
@@ -136,7 +178,7 @@ function estimatorOnShow(){
     return;
   }
   var nameEl = document.getElementById("est-project-name");
-  if (nameEl && !nameEl.value) estimatorLoadWarrensburg({ quiet: true });
+  if (nameEl && !nameEl.value) estimatorLoadStarter({ quiet: true });
 }
 
 function estimatorMoney(n){
@@ -185,8 +227,14 @@ function estimatorSetVal(id, value){
   }
 }
 
+function estimatorSetFormFromModel(model){
+  Object.keys(ESTIMATOR_FIELDS).forEach(function(key){
+    estimatorSetVal(ESTIMATOR_FIELDS[key], model[key]);
+  });
+}
+
 function estimatorReadForm(){
-  var out = Object.assign({}, ESTIMATOR_DEFAULTS);
+  var out = Object.assign({}, estimatorInputSeed || ESTIMATOR_STARTER_DEFAULTS);
   Object.keys(ESTIMATOR_FIELDS).forEach(function(key){
     var id = ESTIMATOR_FIELDS[key];
     var el = document.getElementById(id);
@@ -203,15 +251,33 @@ function estimatorReadForm(){
   return out;
 }
 
+function estimatorLoadStarter(opts){
+  if (!estimatorIsOwner()){
+    if (typeof toast === "function") toast("Owner login required.");
+    return;
+  }
+  estimatorInputSeed = ESTIMATOR_STARTER_DEFAULTS;
+  estimatorSetFormFromModel(ESTIMATOR_STARTER_DEFAULTS);
+  estimatorRenderCompanyCamLink();
+  estimatorRenderRoofMapLink();
+  estimatorLineItems = null;
+  estimatorActiveSavedEstimate = null;
+  var results = document.getElementById("estimator-results");
+  if (results) results.innerHTML = "<p class=\"hint\">Load a RoofMapper map or enter values, then calculate.</p>";
+  if (!opts || !opts.quiet){
+    if (typeof toast === "function") toast("Blank estimate started.");
+  }
+}
+
 function estimatorLoadWarrensburg(opts){
   if (!estimatorIsOwner()){
     if (typeof toast === "function") toast("Owner login required.");
     return;
   }
-  Object.keys(ESTIMATOR_FIELDS).forEach(function(key){
-    estimatorSetVal(ESTIMATOR_FIELDS[key], ESTIMATOR_DEFAULTS[key]);
-  });
+  estimatorInputSeed = ESTIMATOR_DEFAULTS;
+  estimatorSetFormFromModel(ESTIMATOR_DEFAULTS);
   estimatorRenderCompanyCamLink();
+  estimatorRenderRoofMapLink();
   estimatorLineItems = null;
   estimatorActiveSavedEstimate = null;
   estimatorCalculateFromForm({ quiet: true });
@@ -282,6 +348,8 @@ function estimatorCurrentSnapshot(method){
       projectName: input.projectName || "(untitled estimate)",
       location: input.location || "",
       contact: input.contact || "",
+      roofMapId: input.roofMapId || "",
+      roofMapName: input.roofMapName || "",
       companyCamProjectId: input.companyCamProjectId || "",
       companyCamProjectName: input.companyCamProjectName || "",
       fieldNotes: input.fieldNotes || "",
@@ -360,6 +428,7 @@ function estimatorLoadSaved(id){
     if (typeof toast === "function") toast("Saved estimate not found.");
     return;
   }
+  estimatorInputSeed = Object.assign({}, ESTIMATOR_STARTER_DEFAULTS, found.input || {});
   Object.keys(ESTIMATOR_FIELDS).forEach(function(key){
     estimatorSetVal(ESTIMATOR_FIELDS[key], found.input ? found.input[key] : "");
   });
@@ -391,6 +460,104 @@ function estimatorRenderCompanyCamLink(){
   }
   host.innerHTML = "Linked to CompanyCam project: <b>" + esc(projectName || projectId) + "</b> " +
     "<button class=\"btn danger\" type=\"button\" onclick=\"estimatorUnlinkCompanyCam()\">Unlink</button>";
+}
+
+function estimatorRenderRoofMapLink(){
+  var host = document.getElementById("est-roofmap-link");
+  if (!host) return;
+  var idEl = document.getElementById("est-roofmap-id");
+  var nameEl = document.getElementById("est-roofmap-name");
+  var id = idEl ? String(idEl.value || "").trim() : "";
+  var name = nameEl ? String(nameEl.value || "").trim() : "";
+  host.innerHTML = id ? ("Loaded RoofMapper map: <b>" + esc(name || id) + "</b>") : "No RoofMapper map loaded.";
+}
+
+function estimatorRoofMapperTitle(outline){
+  if (typeof rmOutlineTitle === "function") return rmOutlineTitle(outline);
+  var tags = outline && outline.tags ? outline.tags : {};
+  var addr = [tags["addr:housenumber"], tags["addr:street"]].filter(Boolean).join(" ");
+  return tags.name || addr || "RoofMapper Map";
+}
+
+function estimatorLoadRoofMapperLocalOutlines(){
+  if (typeof rmLoadLocalOutlines === "function") return rmLoadLocalOutlines();
+  try{ return JSON.parse(localStorage.getItem(ESTIMATOR_ROOFMAPPER_LOCAL_KEY) || "[]"); }catch(e){ return []; }
+}
+
+function estimatorCollectRoofMapperMaps(){
+  var maps = [];
+  if (typeof rmState !== "undefined" && rmState && rmState.outline && rmState.outline.areaSqFt){
+    maps.push({ source: "current", outline: rmState.outline });
+  }
+  estimatorLoadRoofMapperLocalOutlines().forEach(function(outline){
+    if (outline && outline.areaSqFt) maps.push({ source: "saved", outline: outline });
+  });
+  return maps;
+}
+
+function estimatorOpenRoofMapperMaps(){
+  if (!estimatorIsOwner()){
+    if (typeof toast === "function") toast("Owner login required.");
+    return;
+  }
+  estimatorRoofMapperMaps = estimatorCollectRoofMapperMaps();
+  var card = document.getElementById("estimator-roofmapper-card");
+  var host = document.getElementById("estimator-roofmapper-list");
+  if (card) card.style.display = "";
+  if (!host) return;
+  if (!estimatorRoofMapperMaps.length){
+    host.innerHTML = "<p class=\"hint\">No RoofMapper maps found on this device yet. Open RoofMapper, trace or load a roof outline, then save it on this device.</p>";
+    return;
+  }
+  host.innerHTML = estimatorRoofMapperMaps.map(function(entry, i){
+    var outline = entry.outline || {};
+    var title = estimatorRoofMapperTitle(outline);
+    var area = Math.round(Number(outline.areaSqFt || 0)).toLocaleString();
+    var perimeter = Math.round(Number(outline.perimeterFt || 0)).toLocaleString();
+    var source = entry.source === "current" ? "currently open" : "saved on this device";
+    return "<div class=\"saved-item\"><div class=\"info\"><div class=\"name\">" + esc(title) +
+      "</div><div class=\"meta\">" + esc(source) + " - " + area + " SF - " + perimeter + " LF perimeter</div></div>" +
+      "<button class=\"btn\" type=\"button\" onclick=\"estimatorApplyRoofMapperMap(" + i + ")\">Use Map</button></div>";
+  }).join("");
+}
+
+function estimatorApplyRoofMapperMap(index){
+  if (!estimatorIsOwner()){
+    if (typeof toast === "function") toast("Owner login required.");
+    return;
+  }
+  var entry = estimatorRoofMapperMaps[index];
+  var outline = entry && entry.outline;
+  if (!outline){
+    if (typeof toast === "function") toast("RoofMapper map not found.");
+    return;
+  }
+  var title = estimatorRoofMapperTitle(outline);
+  var area = Math.round(Number(outline.areaSqFt || 0));
+  var perimeter = Math.round(Number(outline.perimeterFt || 0));
+  if (!area){
+    if (typeof toast === "function") toast("That RoofMapper map does not have a measured area.");
+    return;
+  }
+  if (!String(document.getElementById("est-project-name").value || "").trim()) estimatorSetVal("est-project-name", title);
+  estimatorSetVal("est-roofmap-id", outline.id || ("roofmap_" + Date.now()));
+  estimatorSetVal("est-roofmap-name", title);
+  estimatorSetVal("est-area-sf", area);
+  estimatorSetVal("est-overlay-sq", Math.ceil(area / 100));
+  if (perimeter) estimatorSetVal("est-perimeter-lf", perimeter);
+  var notesEl = document.getElementById("est-field-notes");
+  var note = "RoofMapper map loaded: " + title + " - " + area.toLocaleString() + " SF" +
+    (perimeter ? ", " + perimeter.toLocaleString() + " LF perimeter" : "") + ".";
+  if (notesEl && String(notesEl.value || "").indexOf("RoofMapper map loaded:") === -1){
+    notesEl.value = (String(notesEl.value || "").trim() ? String(notesEl.value || "").trim() + "\n" : "") + note;
+  }
+  estimatorRenderRoofMapLink();
+  var card = document.getElementById("estimator-roofmapper-card");
+  if (card) card.style.display = "none";
+  estimatorLineItems = null;
+  estimatorActiveSavedEstimate = null;
+  estimatorCalculateFromForm({ quiet: true });
+  if (typeof toast === "function") toast("RoofMapper map loaded into estimate.");
 }
 
 function estimatorProjectButtonHtml(project, index){
@@ -549,6 +716,7 @@ function estimatorCalculate(input, lineItems){
   var ourMarkup = ourDirect * input.ourMarkupRate;
   var ourTotal = ourDirect + ourMarkup;
   var netWallRise = Math.max(0, input.maxTaperIn + input.overlayIn - input.tearoffIn);
+  var pricingSquares = generated.areaSquares || 1;
 
   return {
     input: input,
@@ -576,8 +744,8 @@ function estimatorCalculate(input, lineItems){
     ourDirect: ourDirect,
     ourMarkup: ourMarkup,
     ourTotal: ourTotal,
-    pricePerSquareEdge: edgeTotal / generated.areaSquares,
-    pricePerSquareOur: ourTotal / generated.areaSquares,
+    pricePerSquareEdge: edgeTotal / pricingSquares,
+    pricePerSquareOur: ourTotal / pricingSquares,
     wallBuildRequiredIn: netWallRise,
     wallNote: "Max taper " + input.maxTaperIn + "\" + " + input.overlayIn + "\" overlay - " +
       input.tearoffIn + "\" tear-off = " + (Math.round(netWallRise * 10) / 10) +

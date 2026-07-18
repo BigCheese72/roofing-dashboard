@@ -577,7 +577,7 @@
       <p class="hint">Private estimate workspace for roof drawings, photos, field measurements, cores, wall heights,
         metal, warranty, labor, travel, dumpsters, rental equipment, taxes, fees, and bond.</p>
       <div class="btnrow" style="margin:0 0 10px">
-        <button class="btn primary" onclick="estimatorLoadWarrensburg()">Load Warrensburg Model</button>
+        <button class="btn primary" onclick="estimatorOpenRoofMapperMaps()">Load RoofMapper Map</button>
         <button class="btn" onclick="estimatorCalculateFromForm()">Calculate</button>
         <button class="btn" onclick="estimatorSaveCurrent('edge')">Save EDGE</button>
         <button class="btn" onclick="estimatorSaveCurrent('our')">Save Our Way</button>
@@ -586,6 +586,13 @@
       </div>
       <p class="hint" style="margin:0">This is estimate-first. CompanyCam, roof drawings, and photos are optional evidence inputs;
         a work order is not required.</p>
+    </div>
+
+    <div class="card" id="estimator-roofmapper-card" style="display:none">
+      <h2 class="cond">RoofMapper Maps</h2>
+      <p class="hint">Pick a RoofMapper outline saved on this device. The estimator will pull in roof area and perimeter,
+        then you can add membrane, insulation, taper, wall height, metal, labor, and job costs.</p>
+      <div id="estimator-roofmapper-list"></div>
     </div>
 
     <div class="estimator-layout">
@@ -605,6 +612,14 @@
             <input type="hidden" id="est-companycam-name">
             <div id="est-companycam-link" class="hint">No CompanyCam project linked.</div>
             <div id="est-companycam-results"></div>
+          </div>
+          <div class="fld"><label>RoofMapper Map</label>
+            <div class="btnrow" style="margin:0 0 6px">
+              <button class="btn" type="button" onclick="estimatorOpenRoofMapperMaps()">Choose RoofMapper Map</button>
+            </div>
+            <input type="hidden" id="est-roofmap-id">
+            <input type="hidden" id="est-roofmap-name">
+            <div id="est-roofmap-link" class="hint">No RoofMapper map loaded.</div>
           </div>
         </div>
         <div class="fld"><label>Roof drawings / photo notes / field information</label>
@@ -674,10 +689,10 @@
 
     <div class="card">
       <h2 class="cond">Estimate Results</h2>
-      <div id="estimator-results"><p class="hint">Load a model or enter values, then calculate.</p></div>
+      <div id="estimator-results"><p class="hint">Load a RoofMapper map or enter values, then calculate.</p></div>
     </div>
     <div class="card" id="estimator-saved-card" style="display:none">
-      <h2 class="cond">Saved Estimates</h2>
+      <h2 class="cond">Estimate Job Files</h2>
       <div id="estimator-saved-list"></div>
     </div>
     <div class="card" id="estimator-proposal-card" style="display:none">
