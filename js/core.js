@@ -2984,40 +2984,20 @@ async function syncPinCorrectionsToHistory(o){
     if (any) await batch.commit();
   }catch(e){ console.warn("pin correction sync failed", e); }
 }
-/* Photo-capture rework follow-up (Mark): on a work order type that has
-   findings (Leak/Service, Inspection, Warranty — see hasFindings in
-   onWoTypeChange()), every photo must have both a caption and an
-   assigned finding before the explicit Save can succeed — "General / no
-   specific finding" is no longer an acceptable end state for those
-   types. Repair and Change Order have no findings at all, so this never
-   applies to them. Deliberately checked only here (the explicit Save
-   button, opts.quiet unset) and NOT on the internal quiet auto-saves
-   ccImport() and autoSaveBeforeReport() already make — a freshly
-   imported photo hasn't had a chance to be captioned yet, and blocking
-   Send/Share/Download entirely over this felt too disruptive for field
-   use. See "Caption + finding enforcement" in DEV_NOTES.md. */
-function findingsPhotoIssues(o){
-  var hasFindings = o.woType !== "Repair" && o.woType !== "Change Order";
-  if (!hasFindings) return [];
-  var issues = [];
-  (o.photos || []).forEach(function(p, i){
-    var missing = [];
-    if (!(p.caption || "").trim()) missing.push("a caption");
-    if (!p.finding_id) missing.push("a finding");
-    if (missing.length) issues.push("Photo " + (i + 1) + " needs " + missing.join(" and "));
-  });
-  return issues;
-}
 function saveOrder(opts){
   opts = opts || {};
   var o = collect();
-  if (!opts.quiet){
-    var photoIssues = findingsPhotoIssues(o);
-    if (photoIssues.length){
-      toast("Fix before saving: " + photoIssues.join("; "));
-      return Promise.resolve(false);
-    }
-  }
+  /* No pre-save gate on photo fields. Captions and finding assignment are
+     OPTIONAL — a report/work order must ALWAYS be savable, captions or not
+     (Mark: he got stuck, unable to save an edited leak report because its
+     photos had no captions). This used to block the explicit Save whenever a
+     findings-type report (Leak/Service, Inspection, Warranty) had any
+     un-captioned OR un-assigned photo. That was doubly wrong: it blocked the
+     SAFE action (Save) while the quiet auto-saves behind Email/Share/Download
+     let an identical report go OUT the door — you could send it but not save
+     it. Any caption/finding quality nudge belongs on the send/export path or
+     as a non-blocking hint, never blocking Save. See "Caption + finding
+     enforcement" in DEV_NOTES.md. */
   currentId = o.id;
   var db = loadDb();
   /* Carry the clobber-guard base forward across collect() (which rebuilds the
