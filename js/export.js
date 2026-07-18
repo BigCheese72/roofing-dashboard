@@ -1271,6 +1271,71 @@ function ensureDims(p){
     im.src = p.img;
   });
 }
+/* ---- PDF photo downscale: decouples EMAIL size from CAPTURE fidelity ----
+   Photos are stored at whatever the global capture preset produces
+   (SIZE_PRESETS in js/photos.js). That preset became a training-data
+   decision on 2026-07-18 -- `large` (1600px/q0.80) is what a vision model
+   wants -- but it is the WRONG size to email, and until now the two were
+   the same bytes: the loops below embedded p.img directly.
+
+   Why that breaks: netlify/functions/send-workorder.js:35 hard-rejects a
+   PDF over ~6MB, and at `large` each photo lands ~700KB-1.1MB, capping a
+   sendable report at ~5-7 photos. A 12-photo leak report could not be sent.
+
+   Why 900px, not smaller: the grid below renders every photo into a box of
+   cw (~258pt) x 300pt max. At 200 DPI that box can only show ~717x833px, so
+   900px still over-serves the layout. It is set to EXACTLY the `small`
+   capture preset's max dimension on purpose -- a photo captured at `small`
+   (900px) is then <= this cap and passes through UNTOUCHED, so the common
+   prod case pays no re-encode cost and no double-compression quality loss.
+   Only `medium` (1200px) and `large` (1600px) get downscaled. Verified with
+   real JPEG encoding (jimp) on a 1600x1200 photo-like image: `large` goes
+   1551KB -> 198KB (a 3-photo report budget becomes 30), `medium` 428KB ->
+   198KB, `small` stays 146KB (passthrough). All three clear the ~6MB wall
+   with room for 30+ photos.
+
+   Do NOT try to solve this with jsPDF's compress:true instead (see the
+   comment at its construction): that flag is for the roof plan's mostly-
+   white PNG. Deflate gains ~0-2% on already-entropy-coded JPEG data.
+
+   Fail-safe: every failure path resolves to the ORIGINAL dataUrl, so a
+   broken downscale can never cost a photo its place in a report. */
+var PDF_PHOTO_MAX_DIM = 900;
+var PDF_PHOTO_QUALITY = 0.72;
+function pdfPhotoDataUrl(dataUrl){
+  return new Promise(function(res){
+    if (!dataUrl) return res(dataUrl);
+    var im = new Image();
+    im.onload = function(){
+      try{
+        var w = im.naturalWidth, h = im.naturalHeight;
+        if (!w || !h) return res(dataUrl);
+        /* Already small enough -- re-encoding would only lose quality. */
+        if (w <= PDF_PHOTO_MAX_DIM && h <= PDF_PHOTO_MAX_DIM) return res(dataUrl);
+        if (w >= h){ h = Math.round(h * PDF_PHOTO_MAX_DIM / w); w = PDF_PHOTO_MAX_DIM; }
+        else { w = Math.round(w * PDF_PHOTO_MAX_DIM / h); h = PDF_PHOTO_MAX_DIM; }
+        var c = document.createElement("canvas");
+        c.width = w; c.height = h;
+        c.getContext("2d").drawImage(im, 0, 0, w, h);
+        res(c.toDataURL("image/jpeg", PDF_PHOTO_QUALITY));
+      }catch(e){ res(dataUrl); }
+    };
+    im.onerror = function(){ res(dataUrl); };
+    im.src = dataUrl;
+  });
+}
+/* Returns a Map of photo object -> PDF-sized dataUrl for ONE export.
+   Deliberately a side Map rather than a field on the photo (e.g. p._pdfImg):
+   a downscaled copy must never reach saveDb()/cloudSaveOrder(), which would
+   push a SECOND set of base64 bytes into localStorage (5-10MB quota) and
+   Firestore. Aspect ratio is preserved, so p.w/p.h from ensureDims() stay
+   correct and the grid layout below is unchanged. */
+function buildPdfPhotoMap(photos){
+  var map = new Map();
+  return Promise.all(photos.map(function(p){
+    return pdfPhotoDataUrl(p.img).then(function(u){ map.set(p, u); });
+  })).then(function(){ return map; });
+}
 function pdfFileName(){
   var o = collect();
   /* Stored "Repair" now DISPLAYS as "Work Order" everywhere, so its PDF
@@ -1741,9 +1806,11 @@ async function generateLeakReportPdf(o, roofPlanData){
   }
 
   var fp = filledPhotos().filter(function(p){ return p.img; });
+  var pdfImgs = new Map();
   if (fp.length){
     await Promise.all(fp.map(ensureDims));
     fp = fp.filter(function(p){ return p.w && p.h; });
+    pdfImgs = await buildPdfPhotoMap(fp);
   }
   if (fp.length){
     heading("Photo Documentation");
@@ -1762,7 +1829,7 @@ async function generateLeakReportPdf(o, roofPlanData){
       if (y + rowH > H - M){ doc.addPage(); y = M; }
       cells.forEach(function(c, j){
         var x = M + j * (cw + gap);
-        try { doc.addImage(c.p.img, "JPEG", x, y, c.iw, c.ih); } catch(e){}
+        try { doc.addImage(pdfImgs.get(c.p) || c.p.img, "JPEG", x, y, c.iw, c.ih); } catch(e){}
         doc.setFont("helvetica", "italic");
         doc.setFontSize(8);
         doc.setTextColor(60, 70, 77);
@@ -1926,9 +1993,11 @@ async function generateChangeOrderPdf(o){
   y += totalRowH + 20;
 
   var fp = filledPhotos().filter(function(p){ return p.img; });
+  var pdfImgs = new Map();
   if (fp.length){
     await Promise.all(fp.map(ensureDims));
     fp = fp.filter(function(p){ return p.w && p.h; });
+    pdfImgs = await buildPdfPhotoMap(fp);
   }
   if (fp.length){
     heading("Photos");
@@ -1947,7 +2016,7 @@ async function generateChangeOrderPdf(o){
       if (y + rowH > H - M){ doc.addPage(); y = M; }
       cells.forEach(function(c, j){
         var x = M + j * (cw + gap);
-        try { doc.addImage(c.p.img, "JPEG", x, y, c.iw, c.ih); } catch(e){}
+        try { doc.addImage(pdfImgs.get(c.p) || c.p.img, "JPEG", x, y, c.iw, c.ih); } catch(e){}
         doc.setFont("helvetica", "italic");
         doc.setFontSize(8);
         doc.setTextColor(60, 70, 77);
