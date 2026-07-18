@@ -143,6 +143,20 @@ function dprPopulateForemen(){
   }catch(e){}
   dprSetDatalist("dl-dprForeman", names);
 }
+/* Foreman-field blur handler. The generic rememberFieldValue("dprForeman", …)
+   ends by calling populateFieldDatalist("dprForeman"), which rebuilds the
+   element with id dl-<key> = dl-dprForeman — the SAME datalist the roster lives
+   in — from device history ONLY, wiping the 9-name roster. And an erase-blur
+   (empty value) returns early WITHOUT rebuilding, so the roster never came back
+   (Mark: "the autofill list disappeared… even after I erased the field"). The
+   foreman field is the one input whose history key collides with its own rich
+   datalist id, so it needs its own handler: remember the name, then immediately
+   restore the full roster+history list. Restoring unconditionally covers the
+   erase case too, and re-arms the shared "Conducted By" (JSA) list as well. */
+function dprRememberForeman(value){
+  rememberFieldValue("dprForeman", value);
+  dprPopulateForemen();
+}
 /* Immediate (offline-safe) seed of the Crew pick-list: full roster + foremen +
    whatever's been typed on this device. dprPopulateDataLists() re-renders it
    later with prior-DPR crew names merged in. */

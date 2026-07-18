@@ -913,7 +913,7 @@
         <div class="fld" style="max-width:320px">
           <label>Foreman <span class="hint" style="font-weight:400">— who's filling this out</span></label>
           <input type="text" id="dpr-foreman" list="dl-dprForeman" placeholder="Start typing a name…"
-            onblur="rememberFieldValue('dprForeman', this.value)">
+            onblur="dprRememberForeman(this.value)">
         </div>
         <div class="grid">
           <div class="fld"><label>Job Name</label><input type="text" id="dpr-jobName" list="dl-dprJobName" onblur="rememberFieldValue('jobName', this.value)"></div>
