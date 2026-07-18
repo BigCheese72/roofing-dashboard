@@ -66,8 +66,8 @@ var ESTIMATOR_DEFAULTS = {
   seamPlateCount: 1000,
   rpfFastenerPricePerM: 644,
   screwRows: [
-    { length: "6\"", needed: 750, pails: 2, ordered: 1000, pricePerM: 644.00 },
-    { length: "7\"", needed: 650, pails: 2, ordered: 1000, pricePerM: 837.25 },
+    { length: "6\"", needed: 750, pails: 1, ordered: 1000, packageSize: 1000, pricePerM: 644.00 },
+    { length: "7\"", needed: 650, pails: 1, ordered: 1000, packageSize: 1000, pricePerM: 837.25 },
     { length: "8\"", needed: 500, pails: 1, ordered: 500, pricePerM: 934.00 },
     { length: "9\"", needed: 400, pails: 1, ordered: 500, pricePerM: 1133.50 },
     { length: "10\"", needed: 250, pails: 1, ordered: 500, pricePerM: 1217.25 }
@@ -693,6 +693,11 @@ function estimatorRoundUpTo(n, step){
   return Math.ceil(Number(n || 0) / step) * step;
 }
 
+function estimatorScrewPackageSize(length){
+  length = Number(length || 0);
+  return length >= 8 ? 500 : 1000;
+}
+
 function estimatorScrewRowsForAssembly(input){
   var area = Number(input.areaSf || 0);
   if (!area) return [];
@@ -713,12 +718,14 @@ function estimatorScrewRowsForAssembly(input){
   return lengths.map(function(length, i){
     var needed = i === lengths.length - 1 ? installed - used : Math.round(installed * (weights[i] / weightTotal));
     used += needed;
-    var pails = Math.max(1, Math.ceil(needed / 500));
+    var packageSize = estimatorScrewPackageSize(length);
+    var pails = Math.max(1, Math.ceil(needed / packageSize));
     return {
       length: length + "\"",
       needed: needed,
       pails: pails,
-      ordered: pails * 500,
+      packageSize: packageSize,
+      ordered: pails * packageSize,
       pricePerM: priceByLength[length] || priceByLength[10]
     };
   });
@@ -817,7 +824,8 @@ function estimatorGeneratedLineItems(input){
   add("3\" insulation plates", input.insulationPlateCount + " plates / " + Math.ceil((input.insulationPlateCount || 0) / 500) + " pails", estimatorMoney(input.insulationPlatePricePerM) + "/M", (input.insulationPlateCount / 1000) * input.insulationPlatePricePerM);
   (input.screwRows || []).forEach(function(row){
     add(row.length + " insulation screws", row.pails + " pail" + (row.pails === 1 ? "" : "s") +
-      " / " + row.ordered + " screws", estimatorMoney(row.pricePerM) + "/M, need " + row.needed,
+      " / " + row.ordered + " screws", estimatorMoney(row.pricePerM) + "/M, " +
+      (row.packageSize || estimatorScrewPackageSize(estimatorFirstNumber(row.length))) + "-count pail, need " + row.needed,
       (row.ordered / 1000) * row.pricePerM);
   });
   add("2\" seam plates for RPF", input.seamPlateCount + " plates / " + Math.ceil((input.seamPlateCount || 0) / 1000) + " cartons", input.seamPlateCount ? estimatorMoney(input.seamPlateCost) + "/1,000-count carton, 1 plate per LF rounded to cartons" : "not carried", input.seamPlateCount ? (Math.ceil(input.seamPlateCount / 1000) * input.seamPlateCost) : 0);

@@ -133,8 +133,8 @@ test("EPDM SA builder seeds repeatable material quantities from intake", () => {
   assert.equal(result.input.seamPlateCount, 1000);
   assert.equal(result.input.blockingCost, 10120);
   assert.deepEqual(result.input.screwRows.map((row) => [row.length, row.needed, row.pails, row.ordered]), [
-    ['6"', 730, 2, 1000],
-    ['7"', 608, 2, 1000],
+    ['6"', 730, 1, 1000],
+    ['7"', 608, 1, 1000],
     ['8"', 486, 1, 500],
     ['9"', 365, 1, 500],
     ['10"', 243, 1, 500]
@@ -265,10 +265,11 @@ test("Warrensburg screw order is broken out by length and pail count", () => {
     '9" insulation screws',
     '10" insulation screws'
   ]);
-  assert.match(screws[0].qty, /2 pails \/ 1000 screws/);
-  assert.match(screws[0].unit, /\$644\.00\/M, need 750/);
+  assert.match(screws[0].qty, /1 pail \/ 1000 screws/);
+  assert.match(screws[0].unit, /\$644\.00\/M, 1000-count pail, need 750/);
+  assert.match(screws[2].unit, /\$934\.00\/M, 500-count pail, need 500/);
   assert.match(screws[4].qty, /1 pail \/ 500 screws/);
-  assert.match(screws[4].unit, /\$1,217\.25\/M, need 250/);
+  assert.match(screws[4].unit, /\$1,217\.25\/M, 500-count pail, need 250/);
 });
 
 test("estimator saves and reloads editable estimate snapshots", () => {
