@@ -325,6 +325,7 @@ function dprPickFoundationJob(jobNo){
   dprScheduleCrewHoursAutofill();
   dprRefreshLaborCard();
   dprPopulateCrewFromPunches(false);  /* empty roster fills itself from the clock */
+  dprRefreshWeather();
   toast("Linked Foundation job " + (j.job_no || "") + " — fill in today's progress");
 }
 
@@ -389,6 +390,7 @@ function dprEnsureListeners(){
   if (dateEl) dateEl.addEventListener("change", dprScheduleSameDayLoad);
   if (dateEl) dateEl.addEventListener("change", dprScheduleCrewHoursAutofill); /* punches are per-day */
   if (dateEl) dateEl.addEventListener("change", function(){ dprPopulateCrewFromPunches(false); });
+  if (dateEl) dateEl.addEventListener("change", function(){ dprState.weather = null; dprRefreshWeather(); }); /* new day = new conditions */
   dprListenersInstalled = true;
 }
 
@@ -511,6 +513,7 @@ function dprPickBuilding(buildingId){
   dprScheduleCrewHoursAutofill();
   dprRefreshLaborCard();
   dprPopulateCrewFromPunches(false);  /* empty roster fills itself from the clock */
+  dprRefreshWeather();
   toast("Loaded “" + b.name + "” — review the fields, then fill in today's progress");
 }
 function dprRenderRoofPicker(){
@@ -1025,6 +1028,140 @@ async function dprRefreshLaborCard(){
   }
 }
 
+/* ================= day's weather at the job (Open-Meteo, free, no key) =====
+   Auto-pulls the report day's weather for the JOB'S location and saves it
+   with the DPR, so every daily carries a record of that day's conditions —
+   temp high/low, conditions, max wind, precipitation. Coordinates come from
+   the existing resolver dprResolveJobCenter() (photo GPS → traced centroid →
+   cached building geocode → address geocode) — no new location plumbing.
+
+   Never blocks the report: if coordinates can't be resolved or Open-Meteo is
+   unreachable, a subtle "weather unavailable" note shows and everything else
+   proceeds. Fetches are cached per (rounded coord, date) so switching fields
+   doesn't hammer the API. A snapshot already SAVED on the report for the same
+   date is trusted over a refetch (it's the record of the day), and a locked
+   report never refetches. */
+var dprWeatherCache = {};    /* "lat,lng|date" -> weather object | null (fetch failed — don't retry) */
+var dprWeatherFetchSeq = 0;  /* guards a slow fetch against a newer job/date selection */
+
+/* WMO weather-code → human label + glyph (Open-Meteo returns WMO codes). */
+var DPR_WMO_CODES = {
+  0: ["Clear", "☀️"], 1: ["Mainly clear", "🌤️"], 2: ["Partly cloudy", "⛅"], 3: ["Overcast", "☁️"],
+  45: ["Fog", "🌫️"], 48: ["Freezing fog", "🌫️"],
+  51: ["Light drizzle", "🌦️"], 53: ["Drizzle", "🌦️"], 55: ["Heavy drizzle", "🌦️"],
+  56: ["Freezing drizzle", "🌧️"], 57: ["Freezing drizzle", "🌧️"],
+  61: ["Light rain", "🌧️"], 63: ["Rain", "🌧️"], 65: ["Heavy rain", "🌧️"],
+  66: ["Freezing rain", "🌧️"], 67: ["Freezing rain", "🌧️"],
+  71: ["Light snow", "🌨️"], 73: ["Snow", "🌨️"], 75: ["Heavy snow", "🌨️"], 77: ["Snow grains", "🌨️"],
+  80: ["Rain showers", "🌦️"], 81: ["Rain showers", "🌦️"], 82: ["Violent rain showers", "🌧️"],
+  85: ["Snow showers", "🌨️"], 86: ["Snow showers", "🌨️"],
+  95: ["Thunderstorm", "⛈️"], 96: ["Thunderstorm w/ hail", "⛈️"], 99: ["Thunderstorm w/ hail", "⛈️"]
+};
+function dprWeatherLabel(code){
+  var e = DPR_WMO_CODES[code];
+  return e ? { label: e[0], icon: e[1] } : { label: "", icon: "" };
+}
+/* Maps one Open-Meteo daily-forecast response to the snapshot we save. Pure —
+   unit-tested directly. Returns null if the response has no usable day. */
+function dprWeatherFromApi(body, dateStr){
+  try{
+    var d = body && body.daily;
+    if (!d || !d.time || !d.time.length) return null;
+    var i = d.time.indexOf(dateStr);
+    if (i === -1) i = 0;
+    var num = function(v){ var n = Number(v); return isFinite(n) ? Math.round(n * 100) / 100 : null; };
+    var code = (d.weather_code || [])[i];
+    var lbl = dprWeatherLabel(code);
+    return {
+      date: dateStr,
+      source: "open-meteo",
+      code: (code == null ? null : Number(code)),
+      conditions: lbl.label,
+      icon: lbl.icon,
+      tempMaxF: num((d.temperature_2m_max || [])[i]),
+      tempMinF: num((d.temperature_2m_min || [])[i]),
+      windMph: num((d.wind_speed_10m_max || [])[i]),
+      precipIn: num((d.precipitation_sum || [])[i])
+    };
+  }catch(e){ return null; }
+}
+/* One compact human line — used by the on-form display and the PDF. Pass
+   plain=true for the PDF: jsPDF's built-in helvetica can't draw emoji, so the
+   glyph is dropped there and the conditions stay as words. */
+function dprWeatherSummary(w, plain){
+  if (!w) return "";
+  var parts = [];
+  var cond = plain ? (w.conditions || "") : [w.icon, w.conditions].filter(Boolean).join(" ");
+  if (cond) parts.push(cond);
+  if (w.tempMaxF != null || w.tempMinF != null){
+    parts.push((w.tempMaxF != null ? w.tempMaxF + "°" : "–") + "/" + (w.tempMinF != null ? w.tempMinF + "°" : "–") + "F");
+  }
+  if (w.windMph != null) parts.push("wind " + w.windMph + " mph");
+  if (w.precipIn != null) parts.push("precip " + w.precipIn + " in");
+  return parts.join(" · ");
+}
+async function dprFetchWeather(lat, lng, dateStr){
+  var url = "https://api.open-meteo.com/v1/forecast?latitude=" + lat.toFixed(4) +
+    "&longitude=" + lng.toFixed(4) +
+    "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,wind_speed_10m_max" +
+    "&temperature_unit=fahrenheit&wind_speed_unit=mph&precipitation_unit=inch&timezone=auto" +
+    "&start_date=" + dateStr + "&end_date=" + dateStr;
+  var r = await fetch(url);
+  if (!r.ok) throw new Error("weather fetch failed: " + r.status);
+  var body = await r.json();
+  return dprWeatherFromApi(body, dateStr);
+}
+function dprRenderWeather(){
+  var el = document.getElementById("dpr-weather");
+  if (!el) return;
+  var w = dprState.weather;
+  if (!w){ el.style.display = "none"; el.textContent = ""; return; }
+  el.style.display = "";
+  el.textContent = "Weather that day: " + dprWeatherSummary(w);
+}
+function dprRenderWeatherUnavailable(){
+  var el = document.getElementById("dpr-weather");
+  if (!el) return;
+  /* Only say "unavailable" when there's nothing saved to show. */
+  if (dprState.weather){ dprRenderWeather(); return; }
+  el.style.display = "";
+  el.textContent = "Weather unavailable for this job/date.";
+}
+async function dprRefreshWeather(){
+  var dateStr = (val("dpr-date") || "").trim();
+  var hasJob = !!((val("dpr-jobName") || "").trim() || dprState.buildingId);
+  var el = document.getElementById("dpr-weather");
+  if (!dateStr || !hasJob){
+    if (el && !dprState.weather){ el.style.display = "none"; el.textContent = ""; }
+    return;
+  }
+  /* A saved snapshot for this same date is the day's record — keep it. A
+     locked report never refetches at all. */
+  if (dprState.weather && dprState.weather.date === dateStr){ dprRenderWeather(); return; }
+  if (dprIsLocked()){ dprRenderWeather(); return; }
+  if (typeof fetch !== "function") return;
+  var seq = ++dprWeatherFetchSeq;
+  var center = null;
+  try{ center = await dprResolveJobCenter(dprSelectedRoofObj()); }catch(e){}
+  if (seq !== dprWeatherFetchSeq) return; /* superseded while resolving */
+  if (!center){ dprRenderWeatherUnavailable(); return; }
+  var key = center.lat.toFixed(2) + "," + center.lng.toFixed(2) + "|" + dateStr;
+  var w = dprWeatherCache[key];
+  if (w === undefined){
+    try{ w = await dprFetchWeather(center.lat, center.lng, dateStr); }
+    catch(e){ w = null; }
+    dprWeatherCache[key] = w;
+    if (seq !== dprWeatherFetchSeq) return;
+  }
+  if (!w){ dprRenderWeatherUnavailable(); return; }
+  /* A same-day report may have LOADED while this fetch was in flight (the
+     same-day continuation) — its saved snapshot is the day's record and must
+     not be overwritten by a fresh pull. */
+  if (dprState.weather && dprState.weather.date === dateStr){ dprRenderWeather(); return; }
+  dprState.weather = Object.assign({ lat: Math.round(center.lat * 10000) / 10000, lng: Math.round(center.lng * 10000) / 10000 }, w);
+  dprRenderWeather();
+}
+
 /* ================= material quantities (Phase-2 gated section) =================
    Repeatable {item, qty, unit} rows, same pattern as the crew roster. Only
    collected when the Quantities toggle is Yes. */
@@ -1392,6 +1529,7 @@ function dprCollect(){
     section: dprState.section || null,   /* the roof area traced for today (progress overlay) */
     signoff: dprState.signoff || null,   /* signature + lock state (see sign-off/lock hooks below) */
     hoursAmendments: dprState.hoursAmendments || null,  /* late-hours amendment trail (nightly sync writes these; carried so the PDF prints them) */
+    weather: dprState.weather || null,   /* the day's conditions at the job (Open-Meteo snapshot) */
     /* ---- Phase-2 gated sections: null = toggle on No (nothing to report) ---- */
     delays: dprToggleIsYes("dpr-delays-toggle") ? {
       cause: val("dpr-delays-cause"), hoursLost: val("dpr-delays-hours"), notes: val("dpr-delays-notes")
@@ -1521,6 +1659,7 @@ function dprFill(o){
   dprState.section = o.section || null;
   dprState.signoff = o.signoff || null;
   dprState.hoursAmendments = (o.hoursAmendments && o.hoursAmendments.length) ? o.hoursAmendments : null;
+  dprState.weather = o.weather || null;
   /* ---- Phase-2 gated sections (falsy / "" from Firestore's null-coercion = No) ---- */
   var dl = o.delays || null;
   dprSetGate("dpr-delays-toggle", "dpr-delays-body", !!dl);
@@ -1572,6 +1711,8 @@ function dprFill(o){
   dprScheduleCrewHoursAutofill();  /* punches may exist for this job + date */
   dprRefreshLaborCard();           /* job-to-date hours for the linked job (admin) */
   dprPopulateCrewFromPunches(false); /* a fresh (empty-crew) day fills itself from the clock */
+  dprRenderWeather();              /* saved snapshot first… */
+  dprRefreshWeather();             /* …then fetch only if the day has none yet */
 }
 
 /* ================= save (client-direct Firestore write, permission-gated by rules) ================= */
@@ -1681,6 +1822,7 @@ function dprNewReport(){
   dprJobNoAutoVal = "";
   dprState.foundationJobNo = null;
   dprState.foundationCustomerNo = null;
+  dprRenderWeather(); /* dprState.weather is fresh-null — hides the line */
   ["dpr-foreman", "dpr-jobName", "dpr-billTo", "dpr-location", "dpr-jobNo", "dpr-headcount", "dpr-hours", "dpr-squares", "dpr-summary", "dpr-bld-search",
    "dpr-delays-cause", "dpr-delays-hours", "dpr-delays-notes", "dpr-jsa-by", "dpr-jsa-crewpresent", "dpr-jsa-topics",
    "dpr-incidents-type", "dpr-incidents-reportedto", "dpr-incidents-desc", "dpr-equipment-notes", "dpr-visitors-notes",
@@ -2378,7 +2520,8 @@ async function generateDprPdf(o){
   heading("Job Information");
   kvTable([
     ["Job Name", o.jobName], ["Customer", o.billTo], ["Location", o.location],
-    ["Job No.", o.jobNo], ["Roof System", o.roofSystem], ["Date", o.date], ["Foreman", o.foreman]
+    ["Job No.", o.jobNo], ["Roof System", o.roofSystem], ["Date", o.date], ["Foreman", o.foreman],
+    ["Weather", dprWeatherSummary(o.weather, true)]   /* the day's saved snapshot (plain: no emoji in helvetica) */
   ]);
 
   heading("Crew & Production");
