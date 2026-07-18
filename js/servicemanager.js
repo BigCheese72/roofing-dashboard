@@ -658,7 +658,12 @@ function smOpenFoundationPicker(){
       return !smFoundationPick || String(j.job_no) !== String(smFoundationPick.job_no);
     });
     var best = ranked[0];
-    var seed = best ? (best.name || "") : (smJobNameFromProposal ? "" : getVal2("sm-pc-jobName"));
+    // Falling back to the job-name field would reintroduce the same problem
+    // when the current pick was the ONLY candidate: after a pick that field
+    // holds the current job's own name. Start empty instead — the full list is
+    // more useful than a list filtered to the job being corrected away from.
+    var seed = best ? (best.name || "")
+             : (smFoundationPick || smJobNameFromProposal) ? "" : getVal2("sm-pc-jobName");
     // Never overwrite what the manager has already typed: on a cold jobs read
     // they can be mid-search when this lands, and replacing their text with a
     // seed silently swaps in a plausible-looking wrong result.

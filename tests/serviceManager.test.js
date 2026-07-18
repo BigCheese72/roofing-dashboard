@@ -624,6 +624,24 @@ test("reopening the picker re-seeds (last query doesn't stick)", async () => {
   assert.strictEqual(ctx.document._els["sm-fdn-search"].value, "Prairie Farms");
 });
 
+test("'change' seeds empty when the current pick is the ONLY candidate", async () => {
+  // The exclusion filter empties the ranked list here; falling back to the
+  // job-name field would re-seed the very job being corrected away from.
+  const jobs = [
+    { job_no: "1", name: "Prairie Farms", address: "1 Dairy Ln", city: "Columbia", state: "MO" },
+    { job_no: "2", name: "North Terminal", address: "9 Depot Rd", city: "Moberly", state: "MO" },
+  ];
+  const ctx = loadSmLive({ jobs });
+  ctx.smCurrentProposal = { subject: "Prairie Farms proposal" };
+  ctx.smApplyFoundationPick(jobs[0], "subject");
+  assert.strictEqual(ctx.document._els["sm-pc-jobName"].value, "Prairie Farms");
+  ctx.smOpenFoundationPicker();
+  await new Promise((r) => setTimeout(r, 0));
+  assert.strictEqual(ctx.document._els["sm-fdn-search"].value, "",
+    "an empty box lists everything — better than filtering to the job being replaced");
+  assert.ok(/North Terminal/.test(ctx.document._els["sm-fdn-list"].innerHTML), "the alternative must be reachable");
+});
+
 test("'change' seeds away from the job you're correcting", async () => {
   const jobs = [
     { job_no: "1", name: "Prairie Farms", address: "1 Dairy Ln", city: "Columbia", state: "MO" },
