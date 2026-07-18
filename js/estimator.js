@@ -634,6 +634,60 @@ function estimatorUnlinkCompanyCam(){
   estimatorRenderCompanyCamLink();
 }
 
+function estimatorAiStatus(html){
+  var host = document.getElementById("estimator-ai-status");
+  if (host) host.innerHTML = html || "";
+}
+
+function estimatorAiList(label, items){
+  items = Array.isArray(items) ? items.filter(Boolean) : [];
+  if (!items.length) return "";
+  return "<b>" + esc(label) + ":</b> " + items.map(esc).join("; ") + ". ";
+}
+
+function estimatorApplyAiFields(fields){
+  fields = fields && typeof fields === "object" ? fields : {};
+  Object.keys(fields).forEach(function(key){
+    if (ESTIMATOR_FIELDS[key]) estimatorSetVal(ESTIMATOR_FIELDS[key], fields[key]);
+  });
+  estimatorInputSeed = Object.assign({}, estimatorInputSeed || ESTIMATOR_STARTER_DEFAULTS, estimatorReadForm());
+  estimatorActiveSavedEstimate = null;
+}
+
+async function estimatorAskAi(){
+  if (!estimatorIsOwner()){
+    if (typeof toast === "function") toast("Owner login required.");
+    return;
+  }
+  if (typeof authHeaders !== "function"){
+    estimatorAiStatus("AI estimate review is not available in this session.");
+    return;
+  }
+  estimatorAiStatus("Reviewing intake against the Warrensburg EPDM SA playbook...");
+  try{
+    var r = await fetch("/.netlify/functions/ai-service", {
+      method: "POST",
+      headers: await authHeaders(),
+      body: JSON.stringify({ action: "estimate_epdm_sa", estimate: estimatorReadForm() })
+    });
+    var out = null; try{ out = await r.json(); }catch(e){}
+    if (!r.ok || !out || !out.ok) throw new Error((out && out.error) || ("server error " + r.status));
+    var result = out.result || {};
+    estimatorApplyAiFields(result.fields || {});
+    var calc = estimatorApplyEpdmSaRules();
+    var status = (out.llm ? ("AI reviewed with " + esc(out.model || out.provider) + ". ") : "AI key not used; applied the local Warrensburg playbook. ") +
+      estimatorAiList("Applied", result.rulesApplied) +
+      estimatorAiList("Missing", result.missingInputs) +
+      estimatorAiList("Watch", result.warnings);
+    estimatorAiStatus(status);
+    if (typeof toast === "function") toast("Estimate seeded from Warrensburg playbook.");
+    return { ai: out, estimate: calc };
+  }catch(e){
+    estimatorAiStatus("AI estimate review failed: " + esc(e.message));
+    if (typeof toast === "function") toast("AI estimate review failed.");
+  }
+}
+
 function estimatorRoundUpTo(n, step){
   step = step || 1;
   return Math.ceil(Number(n || 0) / step) * step;

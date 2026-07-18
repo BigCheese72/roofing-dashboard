@@ -578,6 +578,7 @@
         metal, warranty, labor, travel, dumpsters, rental equipment, taxes, fees, and bond.</p>
       <div class="btnrow" style="margin:0 0 10px">
         <button class="btn primary" onclick="estimatorOpenRoofMapperMaps()">Load RoofMapper Map</button>
+        <button class="btn" onclick="estimatorAskAi()">AI Review / Seed</button>
         <button class="btn" onclick="estimatorApplyEpdmSaRules()">Build EPDM SA Estimate</button>
         <button class="btn" onclick="estimatorCalculateFromForm()">Calculate</button>
         <button class="btn" onclick="estimatorSaveCurrent('edge')">Save EDGE</button>
@@ -587,6 +588,7 @@
       </div>
       <p class="hint" style="margin:0">This is estimate-first. CompanyCam, roof drawings, and photos are optional evidence inputs;
         a work order is not required.</p>
+      <p class="hint" id="estimator-ai-status" style="margin:6px 0 0"></p>
     </div>
 
     <div class="card">

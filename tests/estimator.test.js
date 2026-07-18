@@ -145,6 +145,51 @@ test("EPDM SA builder seeds repeatable material quantities from intake", () => {
   assert.ok(result.lineItems.some((item) => item.name === "Lap/all-purpose sealant" && /51 tubes/.test(item.qty)));
 });
 
+test("AI estimator seed applies fields then runs Warrensburg takeoff rules", async () => {
+  const sb = loadEstimator();
+  sb.authHeaders = async () => ({ "Content-Type": "application/json", Authorization: "Bearer OWNER" });
+  sb.fetch = async (url, opts) => {
+    assert.equal(url, "/.netlify/functions/ai-service");
+    const body = JSON.parse(opts.body);
+    assert.equal(body.action, "estimate_epdm_sa");
+    return {
+      ok: true,
+      json: async () => ({
+        ok: true,
+        draft: true,
+        action: "estimate_epdm_sa",
+        provider: "stub",
+        llm: false,
+        result: {
+          fields: {
+            projectName: "Warrensburg Post Office",
+            fieldNotes: "20-year EPDM SA with taper and 2.6 ISO overlay",
+            areaSf: 9725.6,
+            perimeterLf: 575,
+            taperCost: 17300,
+            overlayIn: 2.6,
+            maxTaperIn: 4.5,
+            tearoffIn: 2,
+            retrofitDrainCount: 8,
+            scupperCount: 1,
+            equipmentCost: 10000,
+            disposalCost: 6000
+          },
+          rulesApplied: ["Warrensburg rules applied"],
+          missingInputs: [],
+          warnings: []
+        }
+      })
+    };
+  };
+  sb.estimatorOnShow();
+  const out = await sb.estimatorAskAi();
+  assert.equal(out.estimate.membraneRolls, 13);
+  assert.equal(out.estimate.input.spliceTapeRolls, 17);
+  assert.equal(out.estimate.input.insulationPlateCount, 3000);
+  assert.ok(sb.__elements["estimator-ai-status"].innerHTML.includes("Warrensburg rules applied"));
+});
+
 test("estimator links a real CompanyCam project id and name", () => {
   const sb = loadEstimator();
   sb.estimatorCompanyCamProjects = [
