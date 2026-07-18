@@ -57,3 +57,17 @@ test("estimator refuses owner-only actions for non-owner users", () => {
   const result = sb.estimatorCalculateFromForm({ quiet: true });
   assert.equal(result, undefined);
 });
+
+test("estimator links a real CompanyCam project id and name", () => {
+  const sb = loadEstimator();
+  sb.estimatorCompanyCamProjects = [
+    { id: "123", name: "Warrensburg Post Office", address: "Warrensburg, MO" }
+  ];
+  sb.estimatorSelectCompanyCamProject(0);
+  assert.equal(sb.__elements["est-companycam-id"].value, "123");
+  assert.equal(sb.__elements["est-companycam-name"].value, "Warrensburg Post Office");
+  assert.match(sb.__elements["est-companycam-link"].innerHTML, /Linked to CompanyCam project/);
+  const model = sb.estimatorReadForm();
+  assert.equal(model.companyCamProjectId, "123");
+  assert.equal(model.companyCamProjectName, "Warrensburg Post Office");
+});

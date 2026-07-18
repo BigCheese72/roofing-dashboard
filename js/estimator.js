@@ -8,7 +8,8 @@ var ESTIMATOR_DEFAULTS = {
   projectName: "Warrensburg Post Office",
   location: "Warrensburg, MO",
   contact: "Dan Staat",
-  companyCam: "",
+  companyCamProjectId: "",
+  companyCamProjectName: "",
   fieldNotes: "60 mil Elevate RubberGard EPDM SA. Tapered package plus continuous 2.6 inch ISO overlay. Rebuild perimeter above highest roof point after 4-5 inch stone coping removal. Include 20-year warranty, retrofit drains, lift/rental equipment, disposal, travel, metal, and both EDGE / Our Way pricing.",
   membrane: "epdm-sa",
   warrantyYears: 20,
@@ -78,7 +79,8 @@ var ESTIMATOR_FIELDS = {
   projectName: "est-project-name",
   location: "est-location",
   contact: "est-contact",
-  companyCam: "est-companycam",
+  companyCamProjectId: "est-companycam-id",
+  companyCamProjectName: "est-companycam-name",
   fieldNotes: "est-field-notes",
   membrane: "est-membrane",
   warrantyYears: "est-warranty-years",
@@ -110,6 +112,8 @@ var ESTIMATOR_FIELDS = {
   edgeBondRate: "est-edge-bond",
   ourMarkupRate: "est-our-markup"
 };
+
+var estimatorCompanyCamProjects = [];
 
 function estimatorIsOwner(){
   return !!(currentAuthClaims && currentAuthClaims.owner === true);
@@ -179,10 +183,87 @@ function estimatorLoadWarrensburg(opts){
   Object.keys(ESTIMATOR_FIELDS).forEach(function(key){
     estimatorSetVal(ESTIMATOR_FIELDS[key], ESTIMATOR_DEFAULTS[key]);
   });
+  estimatorRenderCompanyCamLink();
   estimatorCalculateFromForm({ quiet: true });
   if (!opts || !opts.quiet){
     if (typeof toast === "function") toast("Warrensburg estimate model loaded.");
   }
+}
+
+function estimatorRenderCompanyCamLink(){
+  var host = document.getElementById("est-companycam-link");
+  if (!host) return;
+  var id = document.getElementById("est-companycam-id");
+  var name = document.getElementById("est-companycam-name");
+  var projectId = id ? String(id.value || "").trim() : "";
+  var projectName = name ? String(name.value || "").trim() : "";
+  if (!projectId){
+    host.innerHTML = "No CompanyCam project linked.";
+    return;
+  }
+  host.innerHTML = "Linked to CompanyCam project: <b>" + esc(projectName || projectId) + "</b> " +
+    "<button class=\"btn danger\" type=\"button\" onclick=\"estimatorUnlinkCompanyCam()\">Unlink</button>";
+}
+
+function estimatorProjectButtonHtml(project, index){
+  return "<button class=\"cc-proj\" type=\"button\" onclick=\"estimatorSelectCompanyCamProject(" + index + ")\">" +
+    "<b>" + esc(project.name || "(unnamed project)") + "</b>" +
+    (project.address ? "<div class=\"addr\">" + esc(project.address) + "</div>" : "") +
+    "</button>";
+}
+
+async function estimatorSearchCompanyCam(){
+  if (!estimatorIsOwner()){
+    if (typeof toast === "function") toast("Owner login required.");
+    return;
+  }
+  var results = document.getElementById("est-companycam-results");
+  var search = document.getElementById("est-companycam-search");
+  var q = search ? search.value : "";
+  if (!results) return;
+  if (typeof ccApi !== "function"){
+    results.innerHTML = "<p class=\"hint\">CompanyCam API is not available.</p>";
+    return;
+  }
+  results.innerHTML = "<p class=\"hint\">Searching CompanyCam...</p>";
+  try{
+    var out = await ccApi({ action: "projects", q: q || "" });
+    estimatorCompanyCamProjects = out.projects || [];
+    if (!estimatorCompanyCamProjects.length){
+      results.innerHTML = "<p class=\"hint\">No CompanyCam projects found" + (q ? " for \"" + esc(q) + "\"" : "") + ".</p>";
+      return;
+    }
+    results.innerHTML = estimatorCompanyCamProjects.map(estimatorProjectButtonHtml).join("");
+  }catch(e){
+    results.innerHTML = "<p class=\"hint\">Couldn't search CompanyCam: " + esc(e.message) + "</p>";
+  }
+}
+
+function estimatorSelectCompanyCamProject(index){
+  if (!estimatorIsOwner()){
+    if (typeof toast === "function") toast("Owner login required.");
+    return;
+  }
+  var project = estimatorCompanyCamProjects[index];
+  if (!project) return;
+  estimatorSetVal("est-companycam-id", project.id || "");
+  estimatorSetVal("est-companycam-name", project.name || "");
+  var search = document.getElementById("est-companycam-search");
+  if (search) search.value = project.name || "";
+  var results = document.getElementById("est-companycam-results");
+  if (results) results.innerHTML = "";
+  estimatorRenderCompanyCamLink();
+  if (typeof toast === "function") toast("CompanyCam project linked to estimate.");
+}
+
+function estimatorUnlinkCompanyCam(){
+  if (!estimatorIsOwner()){
+    if (typeof toast === "function") toast("Owner login required.");
+    return;
+  }
+  estimatorSetVal("est-companycam-id", "");
+  estimatorSetVal("est-companycam-name", "");
+  estimatorRenderCompanyCamLink();
 }
 
 function estimatorMaterialItems(input){

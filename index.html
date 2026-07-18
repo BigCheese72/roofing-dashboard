@@ -591,7 +591,17 @@
           <div class="fld"><label>Project / Building</label><input type="text" id="est-project-name"></div>
           <div class="fld"><label>Location</label><input type="text" id="est-location"></div>
           <div class="fld"><label>Contact</label><input type="text" id="est-contact"></div>
-          <div class="fld"><label>CompanyCam Project</label><input type="text" id="est-companycam"></div>
+          <div class="fld"><label>CompanyCam Project</label>
+            <div class="btnrow" style="margin:0 0 6px">
+              <input type="text" id="est-companycam-search" placeholder="Search CompanyCam projects" style="flex:1;min-width:180px"
+                onkeydown="if(event.key==='Enter'){event.preventDefault();estimatorSearchCompanyCam();}">
+              <button class="btn" type="button" onclick="estimatorSearchCompanyCam()">Search</button>
+            </div>
+            <input type="hidden" id="est-companycam-id">
+            <input type="hidden" id="est-companycam-name">
+            <div id="est-companycam-link" class="hint">No CompanyCam project linked.</div>
+            <div id="est-companycam-results"></div>
+          </div>
         </div>
         <div class="fld"><label>Roof drawings / photo notes / field information</label>
           <textarea id="est-field-notes" rows="4"></textarea>
