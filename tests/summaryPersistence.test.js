@@ -73,7 +73,6 @@ function makeSaveSandbox(opts){
     fdb: {},
     navigator: { onLine: true },
     collect(){ return { id: "wo_t", jobName: "Flat Branch Pub", summary: sandbox.__fields.summary }; },
-    findingsPhotoIssues(){ return []; },
     loadDb(){ return { orders: {}, index: [] }; },
     saveDb(){ return true; },
     pruneCachedPhotoDrafts(){},
@@ -145,4 +144,28 @@ test("conflict path resolves false and stays un-queued; transient path keeps loc
   assert.match(catchBlock, /markSynced\(o\.id\);/);
   assert.match(catchBlock, /return false;/);
   assert.ok(catchBlock.indexOf("return localOk;") === -1, "conflict must never report success");
+});
+
+/* ---------- captions are OPTIONAL: Save must never be blocked by photo fields ----------
+   Mark was stuck unable to save an edited leak report whose photos had no
+   captions. The explicit Save used to reject a findings-type report with any
+   un-captioned/un-assigned photo — while the quiet auto-saves behind
+   Email/Share let the same report go out. Save must always succeed. */
+test("explicit Save proceeds with un-captioned, un-assigned photos on a findings-type report", async () => {
+  const sb = makeSaveSandbox();
+  sb.collect = function(){
+    return { id: "wo_cap", jobName: "Uncaptioned Job", woType: "Leak / Service", summary: "",
+      photos: [ { caption: "", finding_id: null }, { caption: "   ", finding_id: null } ] };
+  };
+  const ok = await sb.saveOrder({});   // explicit, non-quiet Save
+  assert.strictEqual(ok, true, "an edited report must save even with un-captioned, un-assigned photos");
+  assert.strictEqual(sb.__cloudWrites.length, 1, "the save actually reached the cloud write");
+  assert.ok(!sb.__toasts.some(function(m){ return /Fix before saving/.test(m); }),
+    "there must be no 'Fix before saving' block");
+});
+
+test("saveOrder carries no photo-field pre-save gate (guards against reintroduction)", () => {
+  const src = between(coreSource, "function saveOrder(opts)", "/* ================= offline-first");
+  assert.ok(src.indexOf("Fix before saving") === -1, "no caption/finding block toast in saveOrder");
+  assert.ok(src.indexOf("findingsPhotoIssues") === -1, "no findingsPhotoIssues gate in saveOrder");
 });
