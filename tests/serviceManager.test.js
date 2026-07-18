@@ -439,11 +439,70 @@ test("a failed jobs load is recorded so rows leave the 'checking' state", async 
     "a swallowed load failure would strand the proposal rows on 'Checking Foundation jobs…'");
 });
 
-test("the picker and the auto-match use separate staleness counters", () => {
-  const src = fs.readFileSync(path.join(__dirname, "..", "js", "servicemanager.js"), "utf8");
-  const picker = src.slice(src.indexOf("function smOpenFoundationPicker"), src.indexOf("function smCloseFoundationPicker"));
-  assert.ok(/smFdnPickerSeq/.test(picker) && !/smFdnMatchSeq/.test(picker),
-    "a shared counter lets the auto-match strand an open picker on 'Loading jobs…'");
+test("a concurrent auto-match doesn't strand an open picker on 'Loading jobs…'", async () => {
+  const jobs = [{ job_no: "17456", name: "Prairie Farms", address: "1 Dairy Ln", city: "Columbia", state: "MO" }];
+  const ctx = loadSmLive({ jobs });
+  ctx.fdnCache = null;
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  ctx.fdnLoadJobs = async () => { await gate; ctx.fdnCache = jobs; return jobs; };
+  ctx.smCurrentProposal = { subject: "Prairie Farms proposal" };
+
+  ctx.smOpenFoundationPicker();              // picker starts a cold load…
+  ctx.smMatchFoundationFromForm(true);       // …and the auto-match starts one too
+  release();
+  await new Promise((r) => setTimeout(r, 0));
+
+  assert.notStrictEqual(ctx.document._els["sm-fdn-list"].innerHTML, "Loading jobs…",
+    "a shared counter would let the auto-match cancel the picker's render");
+  assert.ok(/Prairie Farms/.test(ctx.document._els["sm-fdn-list"].innerHTML));
+});
+
+test("the picker never overwrites a query the manager is already typing", async () => {
+  const jobs = [
+    { job_no: "1", name: "Prairie Farms", address: "1 Dairy Ln", city: "Columbia", state: "MO" },
+    { job_no: "2", name: "North Terminal", address: "9 Depot Rd", city: "Moberly", state: "MO" },
+  ];
+  const ctx = loadSmLive({ jobs });
+  ctx.fdnCache = null;
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  ctx.fdnLoadJobs = async () => { await gate; ctx.fdnCache = jobs; return jobs; };
+  ctx.smCurrentProposal = { subject: "Prairie Farms proposal" };
+
+  ctx.smOpenFoundationPicker();
+  ctx.document._els["sm-fdn-search"].value = "north";   // typed while it loads
+  release();
+  await new Promise((r) => setTimeout(r, 0));
+
+  assert.strictEqual(ctx.document._els["sm-fdn-search"].value, "north", "typed input must survive the load");
+  assert.ok(/North Terminal/.test(ctx.document._els["sm-fdn-list"].innerHTML), "and must drive the list");
+});
+
+test("a manual pick re-points address and billTo, not just the name", async () => {
+  const jobs = [
+    { job_no: "17456", name: "Prairie Farms", customer_no: "ACME", address: "1100 N Providence Rd", city: "Columbia", state: "MO", zip: "65203" },
+    // A misc/service job with no address and no customer — both nullable in
+    // Foundation, so this is a real row shape, not a contrivance.
+    { job_no: "88888", name: "Moberly Depot", customer_no: "", address: "", city: "", state: "", zip: "" },
+  ];
+  const ctx = loadSmLive({ jobs });
+  ctx.smCurrentProposal = { subject: "Prairie Farms – roof repair proposal" };
+  ctx.document._els["sm-pc-jobName"].value = "Prairie Farms – roof repair proposal";
+  ctx.smJobNameFromProposal = true;
+  await ctx.smMatchFoundationFromForm(true);
+  assert.strictEqual(ctx.smFoundationPick.job_no, "17456");
+  assert.strictEqual(ctx.document._els["sm-pc-location"].value, "1100 N Providence Rd, Columbia, MO 65203");
+
+  ctx.smPickFoundationJob("88888");          // manager corrects it by hand
+  assert.strictEqual(ctx.smFoundationPick.job_no, "88888");
+  assert.strictEqual(ctx.document._els["sm-pc-jobName"].value, "Moberly Depot");
+  // The WO's building is resolved FROM location — keeping the old one would
+  // anchor job 88888's work order to job 17456's building.
+  assert.strictEqual(ctx.document._els["sm-pc-location"].value, "",
+    "the previous job's address must not survive a manual re-point");
+  assert.strictEqual(ctx.document._els["sm-pc-billTo"].value, "",
+    "nor its customer");
 });
 
 // ---------------------------------------------------------------------------

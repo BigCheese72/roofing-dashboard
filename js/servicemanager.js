@@ -571,13 +571,17 @@ function smApplyFoundationPick(job, via){
     setVal2("sm-pc-jobName", job.name || "");
     smJobNameFromProposal = false;
   }
+  // A manual correction re-points the SITE, so address and customer follow it
+  // the same way the name does — including to empty. Keeping the previous job's
+  // address here would be worse than a stale name: smSubmitPrecreate persists
+  // `location` onto the WO and ensureCustomerAndBuilding() resolves the
+  // BUILDING from it, so the WO would carry job B's number while anchored to
+  // job A's building and billed to job A's customer.
   if (typeof fdnComposeAddress === "function"){
-    var addr = fdnComposeAddress(job);
-    // A manual correction re-points the site, so the address follows it rather
-    // than keeping the previous job's.
-    if (addr && (manual || !getVal2("sm-pc-location"))) setVal2("sm-pc-location", addr);
+    var addr = fdnComposeAddress(job) || "";
+    if (manual || (addr && !getVal2("sm-pc-location"))) setVal2("sm-pc-location", addr);
   }
-  if (job.customer_no && (manual || !getVal2("sm-pc-billTo"))) setVal2("sm-pc-billTo", job.customer_no);
+  if (manual || (job.customer_no && !getVal2("sm-pc-billTo"))) setVal2("sm-pc-billTo", job.customer_no || "");
   var how = via === "address" ? "matched on address"
           : via === "name" ? "matched on job name"
           : via === "subject" ? "matched from the proposal subject"
@@ -612,6 +616,9 @@ function smOpenFoundationPicker(){
   if (m) m.style.display = "";
   var host = smEl("sm-fdn-list");
   if (host) host.innerHTML = "Loading jobs…";
+  // Clear last time's query synchronously, so the seed below applies on reopen
+  // while anything typed DURING this open still wins.
+  setVal2("sm-fdn-search", "");
   // Same staleness class as smMatchFoundationFromForm: a slow first load for
   // proposal A must not re-seed a picker the manager has since reopened for B.
   var seq = ++smFdnPickerSeq;
@@ -623,7 +630,10 @@ function smOpenFoundationPicker(){
     // proposal" would return zero rows for a job that's sitting right there.
     var best = smRankFoundationJobs(smFoundationSearchText(), null, 1)[0];
     var seed = best ? (best.name || "") : (smJobNameFromProposal ? "" : getVal2("sm-pc-jobName"));
-    setVal2("sm-fdn-search", String(seed || "").slice(0, 60));
+    // Never overwrite what the manager has already typed: on a cold jobs read
+    // they can be mid-search when this lands, and replacing their text with a
+    // seed silently swaps in a plausible-looking wrong result.
+    if (!getVal2("sm-fdn-search")) setVal2("sm-fdn-search", String(seed || "").slice(0, 60));
     smRenderFoundationPicker();
   };
   if (typeof fdnLoadJobs === "function") fdnLoadJobs(false).then(render).catch(function(){
