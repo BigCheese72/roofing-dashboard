@@ -72,6 +72,7 @@
   .estimator-edit-table input,.estimator-edit-table select{font-size:13px;padding:6px 7px}
   .estimator-edit-table td{min-width:92px}
   .estimator-edit-table td:first-child{min-width:220px}
+  .estimator-row-x{width:30px;height:30px;padding:0;text-align:center;line-height:1}
   .estimator-note{border:1px solid #E8A33D;border-left:5px solid #E8A33D;background:#FFF9EF;border-radius:6px;padding:10px;margin:8px 0;color:#3F4A52}
   @media (min-width:1024px){
     .estimator-layout{grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}

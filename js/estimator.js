@@ -420,7 +420,7 @@ function estimatorLineItemRowsHtml(items){
         "<option value=\"false\"" + (!item.taxable ? " selected" : "") + ">Cost / allowance</option>" +
       "</select></td>" +
       "<td><input type=\"text\" value=\"" + esc(estimatorMoney(item.total)) + "\" onchange=\"estimatorUpdateLineItem(" + i + ",'total',this.value)\"></td>" +
-      "<td class=\"num\"><button class=\"btn danger\" type=\"button\" onclick=\"estimatorDeleteLineItem(" + i + ")\">Delete</button></td>" +
+      "<td class=\"num\"><button class=\"btn danger estimator-row-x\" type=\"button\" onclick=\"estimatorDeleteLineItem(" + i + ")\" title=\"Remove line item\" aria-label=\"Remove line item\">X</button></td>" +
     "</tr>";
   }).join("");
 }
