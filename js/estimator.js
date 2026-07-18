@@ -122,6 +122,7 @@ var ESTIMATOR_FIELDS = {
 var estimatorCompanyCamProjects = [];
 var estimatorLineItems = null;
 var estimatorLastInput = null;
+var estimatorActiveSavedEstimate = null;
 var ESTIMATOR_STORE_KEY = "roofops_estimates_v1";
 
 function estimatorIsOwner(){
@@ -212,45 +213,107 @@ function estimatorLoadWarrensburg(opts){
   });
   estimatorRenderCompanyCamLink();
   estimatorLineItems = null;
+  estimatorActiveSavedEstimate = null;
   estimatorCalculateFromForm({ quiet: true });
   if (!opts || !opts.quiet){
     if (typeof toast === "function") toast("Warrensburg estimate model loaded.");
   }
 }
 
-function estimatorCurrentSnapshot(){
+function estimatorPricingChoice(result, method){
+  var key = method === "our" ? "our" : "edge";
+  return {
+    method: key,
+    label: key === "our" ? "Our Way" : "EDGE",
+    proposalAmount: key === "our" ? result.ourTotal : result.edgeTotal,
+    pricePerSquare: key === "our" ? result.pricePerSquareOur : result.pricePerSquareEdge
+  };
+}
+
+function estimatorTotalsForJobFile(result){
+  return {
+    taxableMaterials: result.taxableMaterials,
+    materialTax: result.materialTax,
+    otherCosts: result.otherCosts,
+    manHours: result.manHours,
+    edgeLabor: result.edgeLabor,
+    ourLabor: result.ourLabor,
+    edgeSubtotal: result.edgeSubtotal,
+    edgeProfit: result.edgeProfit,
+    edgeBond: result.edgeBond,
+    edgeTotal: result.edgeTotal,
+    ourDirect: result.ourDirect,
+    ourMarkup: result.ourMarkup,
+    ourTotal: result.ourTotal,
+    edgePerSquare: result.pricePerSquareEdge,
+    ourPerSquare: result.pricePerSquareOur
+  };
+}
+
+function estimatorCurrentSnapshot(method){
   var input = estimatorReadForm();
   var result = estimatorCalculate(input, estimatorLineItems || undefined);
+  var choice = estimatorPricingChoice(result, method);
+  var materialList = result.lineItems.map(function(item){
+    return {
+      name: item.name || "",
+      qty: item.qty || "",
+      unit: item.unit || "",
+      total: Number(item.total || 0),
+      taxable: item.taxable !== false
+    };
+  });
+  var totals = estimatorTotalsForJobFile(result);
   return {
     id: "est_" + Date.now(),
     savedAt: Date.now(),
+    recordType: "estimate_job_file",
     projectName: input.projectName || "(untitled estimate)",
     location: input.location || "",
     contact: input.contact || "",
+    pricingMethod: choice.method,
+    pricingLabel: choice.label,
+    proposalAmount: choice.proposalAmount,
+    proposalPricePerSquare: choice.pricePerSquare,
     input: input,
-    lineItems: result.lineItems,
-    totals: {
-      edgeTotal: result.edgeTotal,
-      ourTotal: result.ourTotal,
-      edgePerSquare: result.pricePerSquareEdge,
-      ourPerSquare: result.pricePerSquareOur
+    lineItems: materialList,
+    totals: totals,
+    jobFile: {
+      projectName: input.projectName || "(untitled estimate)",
+      location: input.location || "",
+      contact: input.contact || "",
+      companyCamProjectId: input.companyCamProjectId || "",
+      companyCamProjectName: input.companyCamProjectName || "",
+      fieldNotes: input.fieldNotes || "",
+      membrane: input.membrane || "",
+      warrantyYears: input.warrantyYears,
+      roofAreaSf: input.areaSf,
+      slopeType: input.slopeType,
+      pricingMethod: choice.method,
+      pricingLabel: choice.label,
+      proposalAmount: choice.proposalAmount,
+      proposalPricePerSquare: choice.pricePerSquare,
+      inputs: input,
+      materialList: materialList,
+      totals: totals
     }
   };
 }
 
-function estimatorSaveCurrent(){
+function estimatorSaveCurrent(method){
   if (!estimatorIsOwner()){
     if (typeof toast === "function") toast("Owner login required.");
     return;
   }
-  var snap = estimatorCurrentSnapshot();
+  var snap = estimatorCurrentSnapshot(method);
   var db = estimatorSavedDb();
   db.estimates = db.estimates.filter(function(e){ return e.id !== snap.id; });
   db.estimates.unshift(snap);
   db.estimates = db.estimates.slice(0, 50);
   try{
     estimatorWriteSavedDb(db);
-    if (typeof toast === "function") toast("Estimate saved on this device.");
+    estimatorActiveSavedEstimate = snap;
+    if (typeof toast === "function") toast(snap.pricingLabel + " estimate job file saved.");
     estimatorRenderSavedList();
   }catch(e){
     if (typeof toast === "function") toast("Could not save estimate: " + e.message);
@@ -272,13 +335,16 @@ function estimatorRenderSavedList(){
   if (!host) return;
   var db = estimatorSavedDb();
   if (!db.estimates.length){
-    host.innerHTML = "<p class=\"hint\">No saved estimates on this device yet.</p>";
+    host.innerHTML = "<p class=\"hint\">No saved estimate job files on this device yet.</p>";
     return;
   }
   host.innerHTML = db.estimates.map(function(e){
+    var chosen = e.pricingLabel || (e.pricingMethod === "our" ? "Our Way" : "EDGE");
+    var amount = e.proposalAmount || (e.pricingMethod === "our" ? e.totals && e.totals.ourTotal : e.totals && e.totals.edgeTotal);
     return "<div class=\"saved-item\"><div class=\"info\"><div class=\"name\">" + esc(e.projectName || "(untitled estimate)") +
-      "</div><div class=\"meta\">" + esc(e.location || "") + " · EDGE " + estimatorMoney(e.totals && e.totals.edgeTotal) +
-      " · Our Way " + estimatorMoney(e.totals && e.totals.ourTotal) + "</div></div>" +
+      "</div><div class=\"meta\">" + esc(e.location || "") + " - saved as " + esc(chosen) + " " + estimatorMoney(amount) +
+      " - EDGE " + estimatorMoney(e.totals && e.totals.edgeTotal) +
+      " - Our Way " + estimatorMoney(e.totals && e.totals.ourTotal) + "</div></div>" +
       "<button class=\"btn\" onclick=\"estimatorLoadSaved('" + esc(e.id) + "')\">Open</button></div>";
   }).join("");
 }
@@ -306,9 +372,10 @@ function estimatorLoadSaved(id){
       taxable: item.taxable !== false
     };
   });
+  estimatorActiveSavedEstimate = found;
   estimatorRenderCompanyCamLink();
   estimatorRecalculateLineItems();
-  if (typeof toast === "function") toast("Estimate loaded.");
+  if (typeof toast === "function") toast((found.pricingLabel || "Saved") + " estimate job file loaded.");
 }
 
 function estimatorRenderCompanyCamLink(){
@@ -373,6 +440,7 @@ function estimatorSelectCompanyCamProject(index){
   if (search) search.value = project.name || "";
   var results = document.getElementById("est-companycam-results");
   if (results) results.innerHTML = "";
+  estimatorActiveSavedEstimate = null;
   estimatorRenderCompanyCamLink();
   if (typeof toast === "function") toast("CompanyCam project linked to estimate.");
 }
@@ -384,6 +452,7 @@ function estimatorUnlinkCompanyCam(){
   }
   estimatorSetVal("est-companycam-id", "");
   estimatorSetVal("est-companycam-name", "");
+  estimatorActiveSavedEstimate = null;
   estimatorRenderCompanyCamLink();
 }
 
@@ -574,9 +643,11 @@ function estimatorRender(result){
     "</tbody></table>";
 }
 
-function estimatorProposalText(result){
-  var input = result.input;
-  var price = result.edgeTotal;
+function estimatorProposalText(source){
+  var saved = source && source.recordType === "estimate_job_file" ? source : null;
+  var result = saved ? estimatorCalculate(saved.input, saved.lineItems) : source;
+  var input = saved ? saved.input : result.input;
+  var price = saved ? saved.proposalAmount : result.edgeTotal;
   var lines = [];
   lines.push("WATKINS ROOFING PROPOSAL");
   lines.push("");
@@ -607,18 +678,34 @@ function estimatorProposalText(result){
   return lines.join("\n");
 }
 
+function estimatorCurrentMatchesSaved(saved){
+  if (!saved) return false;
+  var currentInput = estimatorReadForm();
+  var currentLineItems = estimatorLineItems || estimatorCalculate(currentInput).lineItems;
+  return JSON.stringify(currentInput) === JSON.stringify(saved.input) &&
+    JSON.stringify(currentLineItems) === JSON.stringify(saved.lineItems || []);
+}
+
 function estimatorCreateProposal(){
   if (!estimatorIsOwner()){
     if (typeof toast === "function") toast("Owner login required.");
     return;
   }
-  var result = estimatorRecalculateLineItems() || estimatorCalculateFromForm({ quiet: true });
-  var text = estimatorProposalText(result);
+  if (!estimatorActiveSavedEstimate){
+    if (typeof toast === "function") toast("Save EDGE or Save Our Way first.");
+    return;
+  }
+  if (!estimatorCurrentMatchesSaved(estimatorActiveSavedEstimate)){
+    estimatorActiveSavedEstimate = null;
+    if (typeof toast === "function") toast("Estimate changed. Save EDGE or Save Our Way again before creating the proposal.");
+    return;
+  }
+  var text = estimatorProposalText(estimatorActiveSavedEstimate);
   var card = document.getElementById("estimator-proposal-card");
   var pre = document.getElementById("estimator-proposal-text");
   if (pre) pre.textContent = text;
   if (card) card.style.display = "";
-  if (typeof toast === "function") toast("Proposal draft created.");
+  if (typeof toast === "function") toast("Proposal draft created from saved " + (estimatorActiveSavedEstimate.pricingLabel || "estimate") + " job file.");
   return text;
 }
 
@@ -645,7 +732,7 @@ function estimatorDownloadProposalText(){
     if (typeof toast === "function") toast("Create a proposal first.");
     return;
   }
-  var input = estimatorReadForm();
+  var input = estimatorActiveSavedEstimate ? estimatorActiveSavedEstimate.input : estimatorReadForm();
   var blob = new Blob([pre.textContent], { type: "text/plain;charset=utf-8" });
   var a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
@@ -676,6 +763,7 @@ function estimatorUpdateLineItem(index, field, value){
   }else{
     estimatorLineItems[index][field] = value;
   }
+  estimatorActiveSavedEstimate = null;
   return estimatorRecalculateLineItems();
 }
 
@@ -686,6 +774,7 @@ function estimatorDeleteLineItem(index){
   }
   if (!estimatorLineItems || !estimatorLineItems[index]) return;
   estimatorLineItems.splice(index, 1);
+  estimatorActiveSavedEstimate = null;
   return estimatorRecalculateLineItems();
 }
 
@@ -705,6 +794,7 @@ function estimatorAddLineItem(taxable){
     total: 0,
     taxable: taxable !== false
   });
+  estimatorActiveSavedEstimate = null;
   return estimatorRecalculateLineItems();
 }
 
@@ -713,6 +803,7 @@ function estimatorCalculateFromForm(opts){
     if (typeof toast === "function") toast("Owner login required.");
     return;
   }
+  estimatorActiveSavedEstimate = null;
   estimatorLastInput = estimatorReadForm();
   estimatorLineItems = estimatorGeneratedLineItems(estimatorLastInput).items;
   var result = estimatorCalculate(estimatorLastInput, estimatorLineItems);

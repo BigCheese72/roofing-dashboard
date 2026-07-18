@@ -136,16 +136,49 @@ test("estimator saves and reloads editable estimate snapshots", () => {
   sb.estimatorLineItems = result.lineItems.slice();
   const liftIndex = sb.estimatorLineItems.findIndex((item) => item.name === "Lift / rental equipment");
   sb.estimatorUpdateLineItem(liftIndex, "total", "12500");
-  sb.estimatorSaveCurrent();
+  sb.estimatorSaveCurrent("edge");
 
   const db = JSON.parse(sb.__storage[sb.ESTIMATOR_STORE_KEY]);
   assert.equal(db.estimates.length, 1);
   assert.equal(db.estimates[0].projectName, "Warrensburg Post Office");
+  assert.equal(db.estimates[0].recordType, "estimate_job_file");
+  assert.equal(db.estimates[0].pricingMethod, "edge");
+  assert.equal(db.estimates[0].proposalAmount, db.estimates[0].totals.edgeTotal);
+  assert.ok(db.estimates[0].jobFile.materialList.length > 20);
 
   sb.estimatorLineItems = null;
   sb.estimatorLoadSaved(db.estimates[0].id);
   const loadedLift = sb.estimatorLineItems.find((item) => item.name === "Lift / rental equipment");
   assert.equal(loadedLift.total, 12500);
+});
+
+test("saving Our Way creates a job file and proposal from that pricing path", () => {
+  const sb = loadEstimator();
+  sb.estimatorLoadWarrensburg({ quiet: true });
+  sb.estimatorSaveCurrent("our");
+
+  const db = JSON.parse(sb.__storage[sb.ESTIMATOR_STORE_KEY]);
+  const saved = db.estimates[0];
+  assert.equal(saved.recordType, "estimate_job_file");
+  assert.equal(saved.pricingMethod, "our");
+  assert.equal(saved.pricingLabel, "Our Way");
+  assert.equal(saved.proposalAmount, saved.totals.ourTotal);
+  assert.equal(saved.jobFile.companyCamProjectId, "");
+  assert.ok(saved.jobFile.materialList.some((item) => item.name === '10" insulation screws'));
+
+  sb.estimatorLoadSaved(saved.id);
+  const text = sb.estimatorCreateProposal();
+  assert.match(text, /WATKINS ROOFING PROPOSAL/);
+  assert.match(text, /Proposal Amount:\n\$304,042\.94/);
+  assert.doesNotMatch(text, /Our Way/);
+  assert.doesNotMatch(text, /EDGE/);
+});
+
+test("proposal creation requires saving the selected pricing method first", () => {
+  const sb = loadEstimator();
+  sb.estimatorLoadWarrensburg({ quiet: true });
+  const text = sb.estimatorCreateProposal();
+  assert.equal(text, undefined);
 });
 
 test("proposal draft uses the EDGE proposal amount without internal alternate pricing", () => {
