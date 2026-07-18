@@ -187,6 +187,14 @@ function bpSelectBuilding(buildingId){
     ccLinkedProjectName = b.companyCamProjectName || "";
     renderCCLinkInfo();
   }
+  /* Same inheritance rule as CompanyCam: picking an existing building should
+     carry its durable Foundation anchor onto a new work order, but must not
+     overwrite a job the tech already selected in this session. */
+  if (b.foundationJobNo && typeof fdnSetLinkedJob === "function" &&
+      (typeof fdnLinkedJobNo === "undefined" || !fdnLinkedJobNo)){
+    fdnSetLinkedJob(b.foundationJobNo, b.foundationJobName || "",
+      b.foundationCustomerNo || null, b.foundationAddress || "");
+  }
   currentRoofId = null;
   currentRoofIds = null;
   renderLocationDirectionsLink(); /* picked building's address is navigable immediately */

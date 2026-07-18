@@ -33,6 +33,11 @@ function makeSandbox(fields){
     bpCache: [],
     ccLinkedProjectId: null,
     ccLinkedProjectName: "",
+    fdnLinkedJobNo: null,
+    fdnLinkedJobName: "",
+    fdnLinkedCustomerNo: null,
+    fdnLinkedAddress: "",
+    __fdnLinks: [],
     changeOrderSignature: null,
     __refreshes: [],
     __fields: Object.assign({}, fields),
@@ -68,6 +73,18 @@ function makeSandbox(fields){
     renderMaterials(){},
     renderPhotos(){},
     renderCCLinkInfo(){},
+    fdnSetLinkedJob(jobNo, jobName, customerNo, address){
+      sandbox.fdnLinkedJobNo = jobNo || null;
+      sandbox.fdnLinkedJobName = jobName || "";
+      sandbox.fdnLinkedCustomerNo = customerNo || null;
+      sandbox.fdnLinkedAddress = address || "";
+      sandbox.__fdnLinks.push({
+        jobNo: sandbox.fdnLinkedJobNo,
+        jobName: sandbox.fdnLinkedJobName,
+        customerNo: sandbox.fdnLinkedCustomerNo,
+        address: sandbox.fdnLinkedAddress
+      });
+    },
     renderChangeOrderSignature(){},
     ensureInspectionChecklist(){},
     renderInspectionChecklist(){},
@@ -164,6 +181,61 @@ test("bpSelectBuilding clears stale roof selection before refreshing Inspection 
     currentRoofId: null,
     currentRoofIds: null
   }]);
+});
+
+test("bpSelectBuilding inherits a building's Foundation anchor on a new work order", () => {
+  const sandbox = makeSandbox({ billTo: "", jobName: "" });
+  sandbox.bpCache = [{
+    id: "bld_foundation",
+    name: "North Warehouse",
+    customerName: "Acme",
+    location: "100 Main St",
+    foundationJobNo: "17053",
+    foundationJobName: "North Warehouse Reroof",
+    foundationCustomerNo: "C-42",
+    foundationAddress: "100 Main St, Springfield IL"
+  }];
+
+  sandbox.bpSelectBuilding("bld_foundation");
+
+  assert.deepStrictEqual(sandbox.__fdnLinks, [{
+    jobNo: "17053",
+    jobName: "North Warehouse Reroof",
+    customerNo: "C-42",
+    address: "100 Main St, Springfield IL"
+  }]);
+  const out = sandbox.collect();
+  assert.strictEqual(out.foundationJobNo, "17053");
+  assert.strictEqual(out.foundationJobName, "North Warehouse Reroof");
+  assert.strictEqual(out.foundationCustomerNo, "C-42");
+  assert.strictEqual(out.foundationAddress, "100 Main St, Springfield IL");
+});
+
+test("bpSelectBuilding does not clobber a Foundation job already selected this session", () => {
+  const sandbox = makeSandbox({ billTo: "", jobName: "" });
+  sandbox.fdnLinkedJobNo = "99999";
+  sandbox.fdnLinkedJobName = "Explicit Job";
+  sandbox.fdnLinkedCustomerNo = "C-99";
+  sandbox.fdnLinkedAddress = "999 Chosen Ave";
+  sandbox.bpCache = [{
+    id: "bld_foundation",
+    name: "North Warehouse",
+    customerName: "Acme",
+    location: "100 Main St",
+    foundationJobNo: "17053",
+    foundationJobName: "North Warehouse Reroof",
+    foundationCustomerNo: "C-42",
+    foundationAddress: "100 Main St, Springfield IL"
+  }];
+
+  sandbox.bpSelectBuilding("bld_foundation");
+
+  assert.deepStrictEqual(sandbox.__fdnLinks, []);
+  const out = sandbox.collect();
+  assert.strictEqual(out.foundationJobNo, "99999");
+  assert.strictEqual(out.foundationJobName, "Explicit Job");
+  assert.strictEqual(out.foundationCustomerNo, "C-99");
+  assert.strictEqual(out.foundationAddress, "999 Chosen Ave");
 });
 
 test("fill refreshes Inspection roof picker with loaded fields and roof selection", () => {
