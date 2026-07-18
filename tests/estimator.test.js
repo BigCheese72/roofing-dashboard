@@ -208,9 +208,25 @@ test("editable estimate line items change, delete, and add costs", () => {
   const sb = loadEstimator();
   const base = sb.estimatorCalculate(sb.ESTIMATOR_DEFAULTS);
   sb.estimatorLineItems = base.lineItems.slice();
+  const membraneIndex = sb.estimatorLineItems.findIndex((item) => item.name === "60 mil EPDM SA membrane");
+  sb.estimatorUpdateLineItem(membraneIndex, "qty", "14 rolls");
+  let changed = sb.estimatorCalculate(sb.ESTIMATOR_DEFAULTS, sb.estimatorLineItems);
+  assert.equal(changed.materialItems[membraneIndex].total, 25900);
+  assert.ok(changed.edgeTotal > base.edgeTotal);
+
+  const screwIndex = sb.estimatorLineItems.findIndex((item) => item.name === '6" insulation screws');
+  sb.estimatorUpdateLineItem(screwIndex, "qty", "3 pails / 1500 screws");
+  changed = sb.estimatorCalculate(sb.ESTIMATOR_DEFAULTS, sb.estimatorLineItems);
+  assert.equal(changed.lineItems[screwIndex].total, 966);
+
+  const seamPlateIndex = sb.estimatorLineItems.findIndex((item) => item.name === '2" seam plates for RPF');
+  sb.estimatorUpdateLineItem(seamPlateIndex, "qty", "2000 plates / 2 cartons");
+  changed = sb.estimatorCalculate(sb.ESTIMATOR_DEFAULTS, sb.estimatorLineItems);
+  assert.equal(changed.lineItems[seamPlateIndex].total, 676.3);
+
   const taperIndex = sb.estimatorLineItems.findIndex((item) => item.name === "Tapered insulation package");
   sb.estimatorUpdateLineItem(taperIndex, "total", "20000");
-  let changed = sb.estimatorCalculate(sb.ESTIMATOR_DEFAULTS, sb.estimatorLineItems);
+  changed = sb.estimatorCalculate(sb.ESTIMATOR_DEFAULTS, sb.estimatorLineItems);
   assert.equal(changed.materialItems[taperIndex].total, 20000);
   assert.ok(changed.edgeTotal > base.edgeTotal);
 

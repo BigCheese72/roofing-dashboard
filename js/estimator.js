@@ -820,7 +820,7 @@ function estimatorGeneratedLineItems(input){
       " / " + row.ordered + " screws", estimatorMoney(row.pricePerM) + "/M, need " + row.needed,
       (row.ordered / 1000) * row.pricePerM);
   });
-  add("2\" seam plates for RPF", input.seamPlateCount + " plates / " + Math.ceil((input.seamPlateCount || 0) / 1000) + " cartons", input.seamPlateCount ? "1 plate per LF, rounded to cartons" : "not carried", input.seamPlateCount ? (Math.ceil(input.seamPlateCount / 1000) * input.seamPlateCost) : 0);
+  add("2\" seam plates for RPF", input.seamPlateCount + " plates / " + Math.ceil((input.seamPlateCount || 0) / 1000) + " cartons", input.seamPlateCount ? estimatorMoney(input.seamPlateCost) + "/1,000-count carton, 1 plate per LF rounded to cartons" : "not carried", input.seamPlateCount ? (Math.ceil(input.seamPlateCount / 1000) * input.seamPlateCost) : 0);
   add("RPF / curb securement fasteners", input.seamPlateCount + " screws", estimatorMoney(input.rpfFastenerPricePerM) + "/M, length by field thickness", (input.seamPlateCount / 1000) * input.rpfFastenerPricePerM);
   add("T-joint covers / detail patches", input.tJointCovers + " cartons", estimatorMoney(input.tJointCoverPrice) + "/carton, T-joints/angle changes/seam intersections", input.tJointCovers * input.tJointCoverPrice);
   add("Water Block", input.waterBlockTubes + " tubes", estimatorMoney(input.waterBlockPrice) + "/tube, drains/scuppers/perimeter/curbs", input.waterBlockTubes * input.waterBlockPrice);
@@ -1114,6 +1114,64 @@ function estimatorRecalculateLineItems(){
   return result;
 }
 
+function estimatorFirstNumber(text){
+  var match = /-?[\d,]+(?:\.\d+)?/.exec(String(text == null ? "" : text));
+  return match ? estimatorParseNumber(match[0]) : null;
+}
+
+function estimatorUnitPrice(text){
+  var match = /\$?\s*[\d,]+(?:\.\d+)?/.exec(String(text == null ? "" : text));
+  return match ? estimatorParseNumber(match[0]) : null;
+}
+
+function estimatorNumberBeforeWord(text, word){
+  var re = new RegExp("([\\d,]+(?:\\.\\d+)?)\\s*" + word, "i");
+  var match = re.exec(String(text == null ? "" : text));
+  return match ? estimatorParseNumber(match[1]) : null;
+}
+
+function estimatorRepriceLineItemFromQty(item){
+  if (!item) return null;
+  var qtyText = String(item.qty || "");
+  var unitText = String(item.unit || "");
+  var price = estimatorUnitPrice(unitText);
+  if (price == null) return null;
+  var unitLower = unitText.toLowerCase();
+  var qtyLower = qtyText.toLowerCase();
+  var qty = estimatorFirstNumber(qtyText);
+  if (qty == null) return null;
+
+  if (unitLower.indexOf("/sq") !== -1 && /sq\s*\/\s*roll/i.test(unitText)){
+    var sqPerRoll = estimatorNumberBeforeWord(unitText, "sq\\s*\\/\\s*roll") || 10;
+    return qty * sqPerRoll * price;
+  }
+  if (unitLower.indexOf("/sq") !== -1) return qty * price;
+  if (unitLower.indexOf("/100 lf roll") !== -1 || unitLower.indexOf("/100-foot roll") !== -1) return qty * price;
+  if (unitLower.indexOf("/m") !== -1){
+    var pieces = estimatorNumberBeforeWord(qtyText, "plates?") ||
+      estimatorNumberBeforeWord(qtyText, "screws?") ||
+      estimatorNumberBeforeWord(qtyText, "fasteners?") ||
+      qty;
+    return (pieces / 1000) * price;
+  }
+  if (unitLower.indexOf("/1,000-count carton") !== -1 || unitLower.indexOf("/1000-count carton") !== -1){
+    var cartons = estimatorNumberBeforeWord(qtyText, "cartons?") || Math.ceil(qty / 1000);
+    return cartons * price;
+  }
+  if (unitLower.indexOf("/lf") !== -1 || unitLower.indexOf("/sf") !== -1 ||
+      unitLower.indexOf("/ea") !== -1 || unitLower.indexOf("/tube") !== -1 ||
+      unitLower.indexOf("/carton") !== -1 || unitLower.indexOf("/pail") !== -1 ||
+      unitLower.indexOf("/3-gal pail") !== -1 || unitLower.indexOf("/5-gal pail") !== -1){
+    return qty * price;
+  }
+  if (qtyLower.indexOf("roll") !== -1 || qtyLower.indexOf("pail") !== -1 ||
+      qtyLower.indexOf("tube") !== -1 || qtyLower.indexOf("carton") !== -1 ||
+      qtyLower.indexOf("drain") !== -1){
+    return qty * price;
+  }
+  return null;
+}
+
 function estimatorUpdateLineItem(index, field, value){
   if (!estimatorIsOwner()){
     if (typeof toast === "function") toast("Owner login required.");
@@ -1126,6 +1184,10 @@ function estimatorUpdateLineItem(index, field, value){
     estimatorLineItems[index].taxable = String(value) === "true";
   }else{
     estimatorLineItems[index][field] = value;
+    if (field === "qty" || field === "unit"){
+      var repriced = estimatorRepriceLineItemFromQty(estimatorLineItems[index]);
+      if (repriced != null) estimatorLineItems[index].total = repriced;
+    }
   }
   estimatorActiveSavedEstimate = null;
   return estimatorRecalculateLineItems();
