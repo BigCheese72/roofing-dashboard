@@ -143,6 +143,20 @@ function dprPopulateForemen(){
   }catch(e){}
   dprSetDatalist("dl-dprForeman", names);
 }
+/* Foreman-field blur handler. The generic rememberFieldValue("dprForeman", …)
+   ends by calling populateFieldDatalist("dprForeman"), which rebuilds the
+   element with id dl-<key> = dl-dprForeman — the SAME datalist the roster lives
+   in — from device history ONLY, wiping the 9-name roster. And an erase-blur
+   (empty value) returns early WITHOUT rebuilding, so the roster never came back
+   (Mark: "the autofill list disappeared… even after I erased the field"). The
+   foreman field is the one input whose history key collides with its own rich
+   datalist id, so it needs its own handler: remember the name, then immediately
+   restore the full roster+history list. Restoring unconditionally covers the
+   erase case too, and re-arms the shared "Conducted By" (JSA) list as well. */
+function dprRememberForeman(value){
+  rememberFieldValue("dprForeman", value);
+  dprPopulateForemen();
+}
 /* Immediate (offline-safe) seed of the Crew pick-list: full roster + foremen +
    whatever's been typed on this device. dprPopulateDataLists() re-renders it
    later with prior-DPR crew names merged in. */
@@ -184,6 +198,7 @@ async function dprPopulateDataLists(force){
   dprPopulateForemen();     /* immediate/offline: roster + device history */
   dprPopulateCrewRoster();  /* immediate/offline: full crew roster */
   dprSetDatalist("dl-dprRentedType", DPR_RENTED_TYPES); /* rented-equipment type pick-list */
+  dprSetDatalist("dl-dprToolboxTalks", DPR_TOOLBOX_TALKS); /* toolbox-talk pick-list (free text still works) */
   if ((dprDataListsLoaded && !force) || !fdb) return;
   try{
     if (!dprBldCache){
@@ -316,6 +331,10 @@ function dprPickFoundationJob(jobNo){
   dprJobNoAutoVal = String(j.job_no || "");
   dprState.foundationJobNo = String(j.job_no || "");
   dprState.foundationCustomerNo = (j.customer_no != null ? String(j.customer_no) : null);
+  /* A straight-from-Foundation pick has no RoofOps building yet, so no
+     CompanyCam project to inherit — clear any carried over from a prior pick. */
+  dprState.companyCamProjectId = null;
+  dprState.companyCamProjectName = "";
   setVal("dpr-bld-search", "");
   var host = document.getElementById("dpr-bld-results");
   if (host) host.innerHTML = "";
@@ -324,6 +343,8 @@ function dprPickFoundationJob(jobNo){
   dprScheduleCrewHoursAutofill();
   dprRefreshLaborCard();
   dprPopulateCrewFromPunches(false);  /* empty roster fills itself from the clock */
+  dprRefreshWeather();
+  dprRenderLinkStatus();
   toast("Linked Foundation job " + (j.job_no || "") + " — fill in today's progress");
 }
 
@@ -362,8 +383,11 @@ function dprOnShow(){
   dprEnsureListeners();
   dprRenderCrew();
   dprRenderQuantities();
+  dprRenderRented();
+  dprRenderSectionChips();
   dprRenderPhotos();
   dprRenderSectionStatus();
+  dprRenderLinkStatus();
   dprApplySignoffLock();
   dprHideHistory();
 }
@@ -380,12 +404,16 @@ function dprEnsureListeners(){
   if (dprListenersInstalled) return;
   ["dpr-jobName", "dpr-billTo"].forEach(function(id){
     var el = document.getElementById(id);
-    if (el) el.addEventListener("blur", dprScheduleSameDayLoad);
+    if (el){
+      el.addEventListener("blur", dprScheduleSameDayLoad);
+      el.addEventListener("blur", dprRenderLinkStatus); /* a typed job shows the "filed under" chip too */
+    }
   });
   var dateEl = document.getElementById("dpr-date");
   if (dateEl) dateEl.addEventListener("change", dprScheduleSameDayLoad);
   if (dateEl) dateEl.addEventListener("change", dprScheduleCrewHoursAutofill); /* punches are per-day */
   if (dateEl) dateEl.addEventListener("change", function(){ dprPopulateCrewFromPunches(false); });
+  if (dateEl) dateEl.addEventListener("change", function(){ dprState.weather = null; dprRefreshWeather(); }); /* new day = new conditions */
   dprListenersInstalled = true;
 }
 
@@ -500,14 +528,22 @@ function dprPickBuilding(buildingId){
   dprState.buildingId = buildingId;
   dprState.roofs = getBuildingRoofs(b);
   dprRenderRoofPicker();
+  /* Carry the building's CompanyCam project onto the DPR (job-centric linkage —
+     the same project the work orders / building history use). Lets the foreman
+     reach that job's CompanyCam photos straight from this report; stamped on the
+     doc in dprCollect() so the link travels with the report. */
+  dprState.companyCamProjectId = b.companyCamProjectId || null;
+  dprState.companyCamProjectName = b.companyCamProjectName || "";
   /* Prefer the building's Foundation job number (the accounting system of
      record) for Job No.; fall back to the parent-job derivation only if the
      building has no Foundation link. */
   if (!dprApplyFoundationJobNo(b)) dprAutofillJobNo(buildingId);
+  dprRenderLinkStatus();
   dprScheduleSameDayLoad();
   dprScheduleCrewHoursAutofill();
   dprRefreshLaborCard();
   dprPopulateCrewFromPunches(false);  /* empty roster fills itself from the clock */
+  dprRefreshWeather();
   toast("Loaded “" + b.name + "” — review the fields, then fill in today's progress");
 }
 function dprRenderRoofPicker(){
@@ -527,6 +563,60 @@ function dprSelectedRoofId(){
   if (sel && sel.value) return sel.value;
   var roofs = dprState.roofs || [];
   return roofs[0] ? roofs[0].id : "roof_default";
+}
+
+/* ================= visible, persistent job link =================
+   Mark: "I selected Frontier — it should SHOW on the DPR that it's linked to
+   Frontier, and stay linked." The link was only ever a disappearing toast; the
+   data persisted but nothing on screen confirmed it. This renders a durable
+   chip on the Job Info card — the job it's filed under, the job number, and the
+   Foundation / CompanyCam links that ride along — re-rendered on pick AND on
+   reload (dprFill), so the linkage is always visible and clearly sticks. */
+function dprHasJobLink(){
+  return !!(dprState.buildingId || dprState.foundationJobNo || (val("dpr-jobName") || "").trim());
+}
+function dprRenderLinkStatus(){
+  var host = document.getElementById("dpr-link-status");
+  if (!host) return;
+  if (!dprHasJobLink()){ host.style.display = "none"; host.innerHTML = ""; return; }
+  var jobName = (val("dpr-jobName") || "").trim();
+  var billTo = (val("dpr-billTo") || "").trim();
+  var jobNo = (val("dpr-jobNo") || "").trim();
+  var label = jobName || billTo || "this job";
+  var badges = [];
+  if (jobNo) badges.push('<span class="hint" style="margin:0">Job #' + esc(jobNo) + '</span>');
+  if (dprState.foundationJobNo) badges.push('<span class="evt-tag" style="background:#EAF4FF;color:#0d3c61">☁️ Foundation</span>');
+  if (dprState.companyCamProjectId){
+    badges.push('<span class="evt-tag" style="background:#E8F5E9;color:#2E7D32">📷 CompanyCam' +
+      (dprState.companyCamProjectName ? ": " + esc(dprState.companyCamProjectName) : "") + '</span>');
+  }
+  var locked = dprIsLocked();
+  host.style.display = "";
+  host.innerHTML =
+    '<div style="display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:8px 12px;background:#F1F8E9;border:1px solid #7CB342;border-radius:6px">' +
+      '<span style="font-weight:600;color:#33691E">🔗 Linked to ' + esc(label) + (billTo && billTo !== label ? ' <span class="hint" style="font-weight:400;color:#33691E">· ' + esc(billTo) + '</span>' : '') + '</span>' +
+      badges.join("") +
+      '<span style="flex:1"></span>' +
+      (locked ? '' :
+        '<button class="btn" onclick="dprShowJobSelect()" title="Pick a different job">Change</button>' +
+        '<button class="btn" onclick="dprUnlinkJob()" title="Clear this job link">Unlink</button>') +
+    '</div>';
+}
+/* Drop the job link (and its Foundation/CompanyCam ride-alongs) so the foreman
+   can re-pick or type a fresh one. Leaves the typed text fields alone — Unlink
+   removes the LINK, not the data the crew already entered. */
+function dprUnlinkJob(){
+  if (dprIsLocked()){ toast("This report is signed and locked."); return; }
+  dprState.buildingId = null;
+  dprState.foundationJobNo = null;
+  dprState.foundationCustomerNo = null;
+  dprState.companyCamProjectId = null;
+  dprState.companyCamProjectName = "";
+  dprState.roofs = [];
+  dprRenderRoofPicker();
+  dprRenderLinkStatus();
+  dprRefreshLaborCard();
+  toast("Job unlinked — pick or type a job to re-link.");
 }
 
 /* ================= one-per-day continuation =================
@@ -634,9 +724,84 @@ function dprRenderCrew(){
     });
   });
   dprRenderCrewTotal();
+  dprRenderToolboxSignins(); /* the sign-in list mirrors the crew roster */
 }
 function dprCrewCount(){
   return dprCrew.filter(function(c){ return (c.name || "").trim(); }).length;
+}
+
+/* ================= toolbox talk (gated) + crew sign-in =====================
+   Records the day's toolbox/tailgate safety talk and each crew member's
+   acknowledgement, so a signed daily carries the signed toolbox talk as part
+   of its record (Mark). The sign-in list REUSES the crew roster — every named
+   crew member gets an "acknowledged" check; who signed is captured on the doc
+   and printed in the PDF. Gated Yes/No like the other Phase-2 sections.
+
+   Ack state is kept keyed by nameKey (not row index) so it survives crew
+   re-renders, reordering, and hour auto-fills. A short talk list seeds a
+   datalist (free text still works) — extensible later from the safety-doc
+   toolbox-talk libraries in docs/RoofingSafetyDocumentSources.md. */
+var dprToolboxSigned = {};   /* nameKey -> true (this crew member acknowledged) */
+var DPR_TOOLBOX_TALKS = [
+  "Fall Protection", "Ladder Safety", "Heat Illness Prevention", "PPE",
+  "Housekeeping", "Hot Work / Torch Safety", "Electrical / Overhead Power Lines",
+  "Material Handling", "Scaffolding", "Aerial / Scissor Lift Safety",
+  "Silica / Dust", "Fire Prevention & Extinguishers"
+];
+function dprToolboxNamedCrew(){
+  return dprCrew.filter(function(c){ return (c.name || "").trim(); });
+}
+function dprRenderToolboxSignins(){
+  var host = document.getElementById("dpr-toolbox-signins");
+  if (!host) return;
+  var crew = dprToolboxNamedCrew();
+  if (!crew.length){
+    host.innerHTML = '<p class="hint" style="margin:4px 0">Add crew above, then each person acknowledges the talk here.</p>';
+    return;
+  }
+  var locked = dprIsLocked();
+  host.innerHTML = '<div class="hint" style="margin:6px 0 4px">Crew sign-in — each person acknowledges the talk:</div>' +
+    crew.map(function(c){
+      var k = dprNameKey(c.name);
+      return '<label style="display:flex;gap:8px;align-items:center;margin:0 0 4px">' +
+        '<input type="checkbox" data-dprtbx="' + esc(k) + '"' + (dprToolboxSigned[k] ? " checked" : "") + (locked ? " disabled" : "") + '>' +
+        '<span>' + esc(c.name.trim()) + '</span></label>';
+    }).join("") +
+    '<div class="hint" id="dpr-toolbox-count" style="margin:2px 0 0"></div>';
+  host.querySelectorAll("[data-dprtbx]").forEach(function(el){
+    el.addEventListener("change", function(){
+      var k = el.getAttribute("data-dprtbx");
+      if (el.checked) dprToolboxSigned[k] = true; else delete dprToolboxSigned[k];
+      dprRenderToolboxCount();
+    });
+  });
+  dprRenderToolboxCount();
+}
+function dprRenderToolboxCount(){
+  var el = document.getElementById("dpr-toolbox-count");
+  if (!el) return;
+  var crew = dprToolboxNamedCrew();
+  var signed = crew.filter(function(c){ return dprToolboxSigned[dprNameKey(c.name)]; }).length;
+  el.innerHTML = '<b>' + signed + '</b> of ' + crew.length + ' signed in';
+}
+/* The saved toolbox record: which talk + the crew who acknowledged (names, in
+   roster order). null when the section is toggled off. */
+function dprToolboxCollect(){
+  if (!dprToggleIsYes("dpr-toolbox-toggle")) return null;
+  var talk = (val("dpr-toolbox-talk") || "").trim();
+  var signedBy = dprToolboxNamedCrew()
+    .filter(function(c){ return dprToolboxSigned[dprNameKey(c.name)]; })
+    .map(function(c){ return c.name.trim(); });
+  if (!talk && !signedBy.length) return null; /* nothing to record */
+  return { talk: talk, signedBy: signedBy };
+}
+function dprToolboxFill(o){
+  var tb = o && o.toolbox ? o.toolbox : null;
+  dprSetGate("dpr-toolbox-toggle", "dpr-toolbox-body", !!tb);
+  setVal("dpr-toolbox-talk", tb ? (tb.talk || "") : "");
+  dprToolboxSigned = {};
+  if (tb && tb.signedBy) tb.signedBy.forEach(function(n){ var k = dprNameKey(n); if (k) dprToolboxSigned[k] = true; });
+  dprRenderToolboxSignins();
 }
 /* Sum of the per-person hours across named crew rows, rounded to 2dp (defensive
    against "" / garbage — same discipline as sumHours in the Foundation lib). */
@@ -945,6 +1110,140 @@ async function dprRefreshLaborCard(){
        the server is the real gate). */
     if (dprLaborCardJobAtFetch === jobNo) card.style.display = "none";
   }
+}
+
+/* ================= day's weather at the job (Open-Meteo, free, no key) =====
+   Auto-pulls the report day's weather for the JOB'S location and saves it
+   with the DPR, so every daily carries a record of that day's conditions —
+   temp high/low, conditions, max wind, precipitation. Coordinates come from
+   the existing resolver dprResolveJobCenter() (photo GPS → traced centroid →
+   cached building geocode → address geocode) — no new location plumbing.
+
+   Never blocks the report: if coordinates can't be resolved or Open-Meteo is
+   unreachable, a subtle "weather unavailable" note shows and everything else
+   proceeds. Fetches are cached per (rounded coord, date) so switching fields
+   doesn't hammer the API. A snapshot already SAVED on the report for the same
+   date is trusted over a refetch (it's the record of the day), and a locked
+   report never refetches. */
+var dprWeatherCache = {};    /* "lat,lng|date" -> weather object | null (fetch failed — don't retry) */
+var dprWeatherFetchSeq = 0;  /* guards a slow fetch against a newer job/date selection */
+
+/* WMO weather-code → human label + glyph (Open-Meteo returns WMO codes). */
+var DPR_WMO_CODES = {
+  0: ["Clear", "☀️"], 1: ["Mainly clear", "🌤️"], 2: ["Partly cloudy", "⛅"], 3: ["Overcast", "☁️"],
+  45: ["Fog", "🌫️"], 48: ["Freezing fog", "🌫️"],
+  51: ["Light drizzle", "🌦️"], 53: ["Drizzle", "🌦️"], 55: ["Heavy drizzle", "🌦️"],
+  56: ["Freezing drizzle", "🌧️"], 57: ["Freezing drizzle", "🌧️"],
+  61: ["Light rain", "🌧️"], 63: ["Rain", "🌧️"], 65: ["Heavy rain", "🌧️"],
+  66: ["Freezing rain", "🌧️"], 67: ["Freezing rain", "🌧️"],
+  71: ["Light snow", "🌨️"], 73: ["Snow", "🌨️"], 75: ["Heavy snow", "🌨️"], 77: ["Snow grains", "🌨️"],
+  80: ["Rain showers", "🌦️"], 81: ["Rain showers", "🌦️"], 82: ["Violent rain showers", "🌧️"],
+  85: ["Snow showers", "🌨️"], 86: ["Snow showers", "🌨️"],
+  95: ["Thunderstorm", "⛈️"], 96: ["Thunderstorm w/ hail", "⛈️"], 99: ["Thunderstorm w/ hail", "⛈️"]
+};
+function dprWeatherLabel(code){
+  var e = DPR_WMO_CODES[code];
+  return e ? { label: e[0], icon: e[1] } : { label: "", icon: "" };
+}
+/* Maps one Open-Meteo daily-forecast response to the snapshot we save. Pure —
+   unit-tested directly. Returns null if the response has no usable day. */
+function dprWeatherFromApi(body, dateStr){
+  try{
+    var d = body && body.daily;
+    if (!d || !d.time || !d.time.length) return null;
+    var i = d.time.indexOf(dateStr);
+    if (i === -1) i = 0;
+    var num = function(v){ var n = Number(v); return isFinite(n) ? Math.round(n * 100) / 100 : null; };
+    var code = (d.weather_code || [])[i];
+    var lbl = dprWeatherLabel(code);
+    return {
+      date: dateStr,
+      source: "open-meteo",
+      code: (code == null ? null : Number(code)),
+      conditions: lbl.label,
+      icon: lbl.icon,
+      tempMaxF: num((d.temperature_2m_max || [])[i]),
+      tempMinF: num((d.temperature_2m_min || [])[i]),
+      windMph: num((d.wind_speed_10m_max || [])[i]),
+      precipIn: num((d.precipitation_sum || [])[i])
+    };
+  }catch(e){ return null; }
+}
+/* One compact human line — used by the on-form display and the PDF. Pass
+   plain=true for the PDF: jsPDF's built-in helvetica can't draw emoji, so the
+   glyph is dropped there and the conditions stay as words. */
+function dprWeatherSummary(w, plain){
+  if (!w) return "";
+  var parts = [];
+  var cond = plain ? (w.conditions || "") : [w.icon, w.conditions].filter(Boolean).join(" ");
+  if (cond) parts.push(cond);
+  if (w.tempMaxF != null || w.tempMinF != null){
+    parts.push((w.tempMaxF != null ? w.tempMaxF + "°" : "–") + "/" + (w.tempMinF != null ? w.tempMinF + "°" : "–") + "F");
+  }
+  if (w.windMph != null) parts.push("wind " + w.windMph + " mph");
+  if (w.precipIn != null) parts.push("precip " + w.precipIn + " in");
+  return parts.join(" · ");
+}
+async function dprFetchWeather(lat, lng, dateStr){
+  var url = "https://api.open-meteo.com/v1/forecast?latitude=" + lat.toFixed(4) +
+    "&longitude=" + lng.toFixed(4) +
+    "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,wind_speed_10m_max" +
+    "&temperature_unit=fahrenheit&wind_speed_unit=mph&precipitation_unit=inch&timezone=auto" +
+    "&start_date=" + dateStr + "&end_date=" + dateStr;
+  var r = await fetch(url);
+  if (!r.ok) throw new Error("weather fetch failed: " + r.status);
+  var body = await r.json();
+  return dprWeatherFromApi(body, dateStr);
+}
+function dprRenderWeather(){
+  var el = document.getElementById("dpr-weather");
+  if (!el) return;
+  var w = dprState.weather;
+  if (!w){ el.style.display = "none"; el.textContent = ""; return; }
+  el.style.display = "";
+  el.textContent = "Weather that day: " + dprWeatherSummary(w);
+}
+function dprRenderWeatherUnavailable(){
+  var el = document.getElementById("dpr-weather");
+  if (!el) return;
+  /* Only say "unavailable" when there's nothing saved to show. */
+  if (dprState.weather){ dprRenderWeather(); return; }
+  el.style.display = "";
+  el.textContent = "Weather unavailable for this job/date.";
+}
+async function dprRefreshWeather(){
+  var dateStr = (val("dpr-date") || "").trim();
+  var hasJob = !!((val("dpr-jobName") || "").trim() || dprState.buildingId);
+  var el = document.getElementById("dpr-weather");
+  if (!dateStr || !hasJob){
+    if (el && !dprState.weather){ el.style.display = "none"; el.textContent = ""; }
+    return;
+  }
+  /* A saved snapshot for this same date is the day's record — keep it. A
+     locked report never refetches at all. */
+  if (dprState.weather && dprState.weather.date === dateStr){ dprRenderWeather(); return; }
+  if (dprIsLocked()){ dprRenderWeather(); return; }
+  if (typeof fetch !== "function") return;
+  var seq = ++dprWeatherFetchSeq;
+  var center = null;
+  try{ center = await dprResolveJobCenter(dprSelectedRoofObj()); }catch(e){}
+  if (seq !== dprWeatherFetchSeq) return; /* superseded while resolving */
+  if (!center){ dprRenderWeatherUnavailable(); return; }
+  var key = center.lat.toFixed(2) + "," + center.lng.toFixed(2) + "|" + dateStr;
+  var w = dprWeatherCache[key];
+  if (w === undefined){
+    try{ w = await dprFetchWeather(center.lat, center.lng, dateStr); }
+    catch(e){ w = null; }
+    dprWeatherCache[key] = w;
+    if (seq !== dprWeatherFetchSeq) return;
+  }
+  if (!w){ dprRenderWeatherUnavailable(); return; }
+  /* A same-day report may have LOADED while this fetch was in flight (the
+     same-day continuation) — its saved snapshot is the day's record and must
+     not be overwritten by a fresh pull. */
+  if (dprState.weather && dprState.weather.date === dateStr){ dprRenderWeather(); return; }
+  dprState.weather = Object.assign({ lat: Math.round(center.lat * 10000) / 10000, lng: Math.round(center.lng * 10000) / 10000 }, w);
+  dprRenderWeather();
 }
 
 /* ================= material quantities (Phase-2 gated section) =================
@@ -1270,6 +1569,183 @@ function dprRenderPhotos(){
   });
 }
 
+/* ================= CompanyCam import (into the DPR) =================
+   Mark: "I don't have a link to CompanyCam anything on the DPR." Job-centric
+   linkage — the DPR reaches the SAME CompanyCam project the work orders /
+   building history use, and pulls that job's photos straight into today's
+   report so they print in the PDF.
+
+   Self-contained on purpose, mirroring how the roof-section trace replicates
+   RoofMapper rather than calling into it: the work-order ccImport() is welded
+   to the WO globals (photos[], findings, project lock + WO save), so re-pointing
+   it at the DPR would destabilise the WO flow. This reuses only the pure shared
+   plumbing — ccApi() (the server proxy) and ccCompress() (image resize) — and
+   writes into dprPhotos in the exact shape dprIngestPhotos() produces, so the
+   save/render path is unchanged. If the linked building already has a project we
+   open it directly; otherwise the foreman picks one and it's remembered on the
+   report (dprState.companyCamProjectId) so the link shows and sticks. */
+var dprCcProjId = null, dprCcPage = 1, dprCcPhotos = [], dprCcSelected = {};
+function dprEnsureCcModal(){
+  var existing = document.getElementById("dpr-cc-modal");
+  if (existing) return existing;
+  var modal = document.createElement("div");
+  modal.id = "dpr-cc-modal";
+  modal.style.cssText = "display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:10000";
+  modal.innerHTML =
+    '<div style="position:absolute;inset:16px;background:#fff;border-radius:8px;display:flex;flex-direction:column;overflow:hidden">' +
+      '<div style="display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid #ddd">' +
+        '<b id="dpr-cc-title" style="font-size:16px;flex:1">Import from CompanyCam</b>' +
+        '<button class="btn" onclick="dprCcClose()">✕ Close</button>' +
+      '</div>' +
+      '<div id="dpr-cc-body" style="flex:1;overflow:auto;padding:12px 14px"></div>' +
+    '</div>';
+  document.body.appendChild(modal);
+  return modal;
+}
+function dprOpenCompanyCam(){
+  if (!dprCanCreate()){ toast("Your role can view reports but can't edit them."); return; }
+  if (dprIsLocked()){ toast("This report is signed and locked."); return; }
+  if (typeof ccApi !== "function"){ toast("CompanyCam isn't available right now."); return; }
+  dprCcSelected = {};
+  dprEnsureCcModal().style.display = "";
+  lockBodyScroll();
+  /* Linked building already carries a project — go straight to its photos. */
+  if (dprState.companyCamProjectId){
+    dprCcOpenProject(dprState.companyCamProjectId, dprState.companyCamProjectName || "");
+  } else {
+    dprCcShowProjects((val("dpr-jobName") || val("dpr-location") || "").trim());
+  }
+}
+function dprCcClose(){
+  var modal = document.getElementById("dpr-cc-modal");
+  if (modal) modal.style.display = "none";
+  unlockBodyScroll();
+  dprCcSelected = {};
+}
+function dprCcShowProjects(q){
+  var title = document.getElementById("dpr-cc-title");
+  if (title) title.textContent = "Import from CompanyCam";
+  var b = document.getElementById("dpr-cc-body");
+  if (!b) return;
+  b.innerHTML =
+    '<div style="display:flex;gap:8px;margin-bottom:10px">' +
+      '<input type="text" id="dpr-cc-search" placeholder="Search projects (job name, address…)" style="flex:1" value="' + esc(q || "") + '">' +
+      '<button class="btn primary" onclick="dprCcDoSearch()">Search</button>' +
+    '</div>' +
+    '<div id="dpr-cc-list" class="hint">Loading recent projects…</div>';
+  var inp = document.getElementById("dpr-cc-search");
+  if (inp) inp.addEventListener("keydown", function(e){ if (e.key === "Enter") dprCcDoSearch(); });
+  dprCcLoadProjects(q);
+}
+function dprCcDoSearch(){
+  var el = document.getElementById("dpr-cc-search");
+  dprCcLoadProjects(el ? el.value : "");
+}
+var dprCcProjectsCache = [];
+async function dprCcLoadProjects(q){
+  var list = document.getElementById("dpr-cc-list");
+  if (!list) return;
+  list.className = "hint"; list.textContent = "Loading…";
+  try{
+    var out = await ccApi({ action: "projects", q: q || "" });
+    var ps = out.projects || [];
+    dprCcProjectsCache = ps;
+    if (!ps.length){ list.textContent = "No projects found" + (q ? ' for "' + q + '"' : "") + "."; return; }
+    list.className = "";
+    /* Index-based lookup (not name interpolated into onclick) — the same
+       apostrophe-in-name escaping trap ccLoadProjects() documents. */
+    list.innerHTML = ps.map(function(p, i){
+      return '<button class="cc-proj" onclick="dprCcOpenProjectAt(' + i + ')">' +
+        '<b>' + esc(p.name) + '</b>' +
+        (p.address ? '<div class="addr">' + esc(p.address) + '</div>' : '') +
+        '</button>';
+    }).join("");
+  }catch(e){ list.textContent = "Couldn't load projects: " + e.message; }
+}
+function dprCcOpenProjectAt(i){
+  var p = dprCcProjectsCache[i];
+  if (p) dprCcOpenProject(p.id, p.name);
+}
+async function dprCcOpenProject(id, name){
+  dprCcProjId = id; dprCcPage = 1; dprCcPhotos = []; dprCcSelected = {};
+  /* Remember the picked project on the report so the link chip shows it and it
+     saves with the DPR (job-centric — this is the CompanyCam link Mark wanted). */
+  dprState.companyCamProjectId = id;
+  dprState.companyCamProjectName = name || dprState.companyCamProjectName || "";
+  dprRenderLinkStatus();
+  var title = document.getElementById("dpr-cc-title");
+  if (title) title.textContent = name || "Project photos";
+  var b = document.getElementById("dpr-cc-body");
+  if (!b) return;
+  b.innerHTML =
+    '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">' +
+      '<button class="btn" onclick="dprCcShowProjects(\'\')">← Projects</button>' +
+      '<span class="hint" style="margin:0" id="dpr-cc-count">Tap photos to select</span>' +
+      '<span style="flex:1"></span>' +
+      '<button class="btn primary" onclick="dprCcImport()">Import Selected</button>' +
+    '</div>' +
+    '<div class="cc-grid" id="dpr-cc-grid"></div>' +
+    '<div style="margin-top:10px"><button class="btn" id="dpr-cc-more" onclick="dprCcLoadPhotos()">Load more</button></div>';
+  dprCcLoadPhotos();
+}
+async function dprCcLoadPhotos(){
+  var grid = document.getElementById("dpr-cc-grid");
+  var more = document.getElementById("dpr-cc-more");
+  if (!grid || !more) return;
+  more.disabled = true; more.textContent = "Loading…";
+  try{
+    var out = await ccApi({ action: "photos", project_id: dprCcProjId, page: dprCcPage });
+    var ph = out.photos || [];
+    ph.forEach(function(p){
+      var i = dprCcPhotos.length;
+      dprCcPhotos.push(p);
+      var d = document.createElement("div");
+      d.className = "cc-ph"; d.id = "dprccph-" + i;
+      d.innerHTML = '<img src="' + esc(p.thumb) + '" loading="lazy">';
+      d.onclick = function(){
+        if (dprCcSelected[i]){ delete dprCcSelected[i]; d.classList.remove("sel"); }
+        else { dprCcSelected[i] = true; d.classList.add("sel"); }
+        var n = Object.keys(dprCcSelected).length;
+        var cnt = document.getElementById("dpr-cc-count");
+        if (cnt) cnt.textContent = n ? (n + " selected") : "Tap photos to select";
+      };
+      grid.appendChild(d);
+    });
+    dprCcPage++;
+    more.disabled = false;
+    more.textContent = ph.length < 30 ? "No more photos" : "Load more";
+    if (ph.length < 30) more.disabled = true;
+    if (!dprCcPhotos.length) grid.innerHTML = '<p class="hint">No photos in this project yet.</p>';
+  }catch(e){
+    more.disabled = false; more.textContent = "Load more";
+    toast("Couldn't load photos: " + e.message);
+  }
+}
+async function dprCcImport(){
+  var keys = Object.keys(dprCcSelected);
+  if (!keys.length){ toast("Tap the photos you want first."); return; }
+  var ok = 0, fail = 0;
+  for (var k = 0; k < keys.length; k++){
+    var p = dprCcPhotos[+keys[k]];
+    if (!p) continue;
+    toast("Importing photo " + (k + 1) + " of " + keys.length + "…");
+    try{
+      var out = await ccApi({ action: "image", url: p.full });
+      var compressed = await ccCompress(out.dataUrl);   /* {caption,img,thumb,w,h,...} */
+      /* Shape it exactly like a DPR camera/library capture (dprIngestPhotos). */
+      compressed.localId = makeLocalPhotoId();
+      compressed.ccPhotoId = p.id;
+      compressed.gps = p.gps || null;   /* CompanyCam's own GPS if present — seeds pin placement, same as a camera capture */
+      dprPhotos.push(compressed);
+      ok++;
+    }catch(e){ fail++; }
+  }
+  dprRenderPhotos();
+  dprCcClose();
+  toast(ok + " photo" + (ok === 1 ? "" : "s") + " imported from CompanyCam" +
+    (fail ? " (" + fail + " failed)" : "") + " — remember to Save the report.");
+}
+
 /* ================= collect / fill =================
    Uses val()/setVal() so the logic is exercisable in the same VM-sandbox test
    harness the other modules use (tests/changeOrderAutofill.test.js style). */
@@ -1298,6 +1774,8 @@ function dprCollect(){
     jobNo: val("dpr-jobNo"),          /* from Foundation (building link / job pick) or typed */
     foundationJobNo: dprState.foundationJobNo || null,          /* stamps the building's Foundation link on save (ensureCustomerAndBuilding) */
     foundationCustomerNo: dprState.foundationCustomerNo || null,
+    companyCamProjectId: dprState.companyCamProjectId || null,   /* CompanyCam project this job is linked to (job-centric — from the building, or picked in the DPR CC import) */
+    companyCamProjectName: dprState.companyCamProjectName || "",
     roofSystem: val("dpr-roofSystem"),
     crew: dprCrew.filter(function(c){ return (c.name || "").trim(); }).map(function(c){
       return {
@@ -1314,6 +1792,7 @@ function dprCollect(){
     section: dprState.section || null,   /* the roof area traced for today (progress overlay) */
     signoff: dprState.signoff || null,   /* signature + lock state (see sign-off/lock hooks below) */
     hoursAmendments: dprState.hoursAmendments || null,  /* late-hours amendment trail (nightly sync writes these; carried so the PDF prints them) */
+    weather: dprState.weather || null,   /* the day's conditions at the job (Open-Meteo snapshot) */
     /* ---- Phase-2 gated sections: null = toggle on No (nothing to report) ---- */
     delays: dprToggleIsYes("dpr-delays-toggle") ? {
       cause: val("dpr-delays-cause"), hoursLost: val("dpr-delays-hours"), notes: val("dpr-delays-notes")
@@ -1330,6 +1809,7 @@ function dprCollect(){
       type: val("dpr-incidents-type"), reportedTo: val("dpr-incidents-reportedto"), description: val("dpr-incidents-desc")
     } : null,
     equipment: dprToggleIsYes("dpr-equipment-toggle") ? { notes: val("dpr-equipment-notes") } : null,
+    toolbox: dprToolboxCollect(),   /* toolbox/tailgate talk + crew sign-in (part of the signed daily record) */
     rentedEquipment: rentedRows,                    /* structured rentals (type/company/unit/note) */
     preUseChecklist: dprPreUseForSave(rentedRows),  /* lift pre-use inspection (scaffold — see DPR_PREUSE_CHECKLIST) */
     visitors: dprToggleIsYes("dpr-visitors-toggle") ? { notes: val("dpr-visitors-notes") } : null,
@@ -1344,6 +1824,65 @@ function dprToggleIsYes(id){ return val(id) === "Yes"; }
 function dprSetGate(toggleId, bodyId, yes){
   setVal(toggleId, yes ? "Yes" : "No");
   dprGate(toggleId, bodyId, "Yes");
+  /* Chip-driven layout: an OFF section's whole CARD collapses (the chip row
+     is the way back in), and the chips re-render to show the new state. The
+     per-card <select> stays (hidden) as the source of truth, so this is the
+     ONE place gate state changes and everything stays in sync. */
+  var sec = dprSectionByToggle(toggleId);
+  if (sec){
+    var card = document.getElementById(sec.card);
+    if (card) card.style.display = yes ? "" : "none";
+    dprRenderSectionChips();
+  }
+}
+
+/* ================= compact section chips (Mark: buttons, not tall cards) ====
+   One "More to report?" row of chips replaces the eight always-visible Yes/No
+   cards. A chip turns its section on (card + body appear right below) or back
+   off (card collapses; its data drops from collect(), exactly like the old
+   select set to No). All existing collect()/fill() logic reads the same hidden
+   toggles as before — the chips are pure UI over dprSetGate(). */
+var DPR_SECTIONS = [
+  { key: "delays",     label: "Delays",       card: "dpr-card-delays",     toggle: "dpr-delays-toggle",     body: "dpr-delays-body" },
+  { key: "quantities", label: "Quantities",   card: "dpr-card-quantities", toggle: "dpr-quantities-toggle", body: "dpr-quantities-body" },
+  { key: "jsa",        label: "JSA",          card: "dpr-card-jsa",        toggle: "dpr-jsa-toggle",        body: "dpr-jsa-body" },
+  { key: "incidents",  label: "Incidents",    card: "dpr-card-incidents",  toggle: "dpr-incidents-toggle",  body: "dpr-incidents-body" },
+  { key: "equipment",  label: "Equipment",    card: "dpr-card-equipment",  toggle: "dpr-equipment-toggle",  body: "dpr-equipment-body" },
+  { key: "rented",     label: "Rented Equip", card: "dpr-card-rented",     toggle: "dpr-rented-toggle",     body: "dpr-rented-body" },
+  { key: "toolbox",    label: "Toolbox Talk", card: "dpr-card-toolbox",    toggle: "dpr-toolbox-toggle",    body: "dpr-toolbox-body" },
+  { key: "visitors",   label: "Visitors",     card: "dpr-card-visitors",   toggle: "dpr-visitors-toggle",   body: "dpr-visitors-body" }
+];
+function dprSectionByToggle(toggleId){
+  for (var i = 0; i < DPR_SECTIONS.length; i++){
+    if (DPR_SECTIONS[i].toggle === toggleId) return DPR_SECTIONS[i];
+  }
+  return null;
+}
+function dprRenderSectionChips(){
+  var host = document.getElementById("dpr-section-chips");
+  if (!host) return;
+  var locked = dprIsLocked();
+  host.innerHTML = DPR_SECTIONS.map(function(sec){
+    var on = val(sec.toggle) === "Yes";
+    return '<button class="btn' + (on ? ' primary' : '') + '" data-dprsec="' + esc(sec.key) + '"' +
+      (locked ? ' disabled' : '') +
+      ' onclick="dprToggleSection(\'' + esc(sec.key) + '\')">' +
+      (on ? '✓ ' : '+ ') + esc(sec.label) + '</button>';
+  }).join("");
+}
+function dprToggleSection(key){
+  if (dprIsLocked()){ toast("This report is signed and locked."); return; }
+  var sec = null;
+  for (var i = 0; i < DPR_SECTIONS.length; i++){ if (DPR_SECTIONS[i].key === key) sec = DPR_SECTIONS[i]; }
+  if (!sec) return;
+  var turningOn = val(sec.toggle) !== "Yes";
+  dprSetGate(sec.toggle, sec.body, turningOn);
+  if (turningOn){
+    /* Land the foreman on the section they just opened. */
+    var card = document.getElementById(sec.card);
+    if (card){ try{ card.scrollIntoView({ behavior: "smooth", block: "start" }); }catch(e){} }
+  }
+  dprRenderSectionChips(); /* chips disable while locked */
 }
 function dprFill(o){
   o = o || {};
@@ -1357,6 +1896,8 @@ function dprFill(o){
   dprJobNoAutoVal = String(o.jobNo || "");
   dprState.foundationJobNo = o.foundationJobNo || null;
   dprState.foundationCustomerNo = o.foundationCustomerNo || null;
+  dprState.companyCamProjectId = o.companyCamProjectId || null;
+  dprState.companyCamProjectName = o.companyCamProjectName || "";
   setVal("dpr-roofSystem", o.roofSystem || "");
   setVal("dpr-date", o.date || dprTodayStr());
   setVal("dpr-headcount", o.headcount || "");
@@ -1383,6 +1924,7 @@ function dprFill(o){
   dprState.section = o.section || null;
   dprState.signoff = o.signoff || null;
   dprState.hoursAmendments = (o.hoursAmendments && o.hoursAmendments.length) ? o.hoursAmendments : null;
+  dprState.weather = o.weather || null;
   /* ---- Phase-2 gated sections (falsy / "" from Firestore's null-coercion = No) ---- */
   var dl = o.delays || null;
   dprSetGate("dpr-delays-toggle", "dpr-delays-body", !!dl);
@@ -1413,6 +1955,7 @@ function dprFill(o){
   }; });
   dprPreUse = o.preUseChecklist || null;
   dprRenderRented();
+  dprToolboxFill(o);
   var vis = o.visitors || null;
   dprSetGate("dpr-visitors-toggle", "dpr-visitors-body", !!vis);
   setVal("dpr-visitors-notes", vis ? vis.notes : "");
@@ -1429,10 +1972,13 @@ function dprFill(o){
   dprRenderCrew();
   dprRenderPhotos();
   dprRenderSectionStatus();
+  dprRenderLinkStatus();           /* the job link is visible + sticks on reload */
   dprSyncHours();                  /* a loaded report's crew hours roll up too */
   dprScheduleCrewHoursAutofill();  /* punches may exist for this job + date */
   dprRefreshLaborCard();           /* job-to-date hours for the linked job (admin) */
   dprPopulateCrewFromPunches(false); /* a fresh (empty-crew) day fills itself from the clock */
+  dprRenderWeather();              /* saved snapshot first… */
+  dprRefreshWeather();             /* …then fetch only if the day has none yet */
 }
 
 /* ================= save (client-direct Firestore write, permission-gated by rules) ================= */
@@ -1542,9 +2088,13 @@ function dprNewReport(){
   dprJobNoAutoVal = "";
   dprState.foundationJobNo = null;
   dprState.foundationCustomerNo = null;
+  dprState.companyCamProjectId = null;
+  dprState.companyCamProjectName = "";
+  dprRenderWeather(); /* dprState.weather is fresh-null — hides the line */
   ["dpr-foreman", "dpr-jobName", "dpr-billTo", "dpr-location", "dpr-jobNo", "dpr-headcount", "dpr-hours", "dpr-squares", "dpr-summary", "dpr-bld-search",
    "dpr-delays-cause", "dpr-delays-hours", "dpr-delays-notes", "dpr-jsa-by", "dpr-jsa-crewpresent", "dpr-jsa-topics",
-   "dpr-incidents-type", "dpr-incidents-reportedto", "dpr-incidents-desc", "dpr-equipment-notes", "dpr-visitors-notes"].forEach(function(id){ setVal(id, ""); });
+   "dpr-incidents-type", "dpr-incidents-reportedto", "dpr-incidents-desc", "dpr-equipment-notes", "dpr-visitors-notes",
+   "dpr-toolbox-talk"].forEach(function(id){ setVal(id, ""); });
   setVal("dpr-roofSystem", "");
   setVal("dpr-date", dprTodayStr());
   dprRefreshLaborCard(); /* job link + jobNo both cleared now -> hides the labor card */
@@ -1552,8 +2102,11 @@ function dprNewReport(){
   dprQuantities = [];
   dprRented = [];
   dprPreUse = null;
+  dprToolboxSigned = {};
+  dprSetGate("dpr-toolbox-toggle", "dpr-toolbox-body", false);
   dprSetGate("dpr-rented-toggle", "dpr-rented-body", false);
   dprRenderRented();
+  dprRenderToolboxSignins();
   dprSetGate("dpr-delays-toggle", "dpr-delays-body", false);
   dprSetGate("dpr-quantities-toggle", "dpr-quantities-body", false);
   dprSetGate("dpr-jsa-toggle", "dpr-jsa-body", false);
@@ -1569,6 +2122,7 @@ function dprNewReport(){
   dprRenderCrew();
   dprRenderPhotos();
   dprRenderSectionStatus();
+  dprRenderLinkStatus();
   dprApplySignoffLock();
   var results = document.getElementById("dpr-bld-results");
   if (results) results.innerHTML = "";
@@ -1710,6 +2264,15 @@ function dprEnsureSectionModal(){
         '<button class="btn" onclick="dprSectionCancel()">✕ Close</button>' +
       '</div>' +
       '<p class="hint" id="dpr-section-hint" style="margin:8px 14px 0"></p>' +
+      /* Address escape hatch (Mark: "there\'s no way of getting to your job — I
+         can\'t put in an address"). Satellite mode only (a flat roof plan has no
+         address); pre-filled from the job\'s Location and used to fly the map to
+         the roof when auto-locate can\'t. Enter or Go both jump. */
+      '<div id="dpr-section-addr-row" class="btnrow" style="display:none;margin:8px 14px 0;gap:6px">' +
+        '<input type="text" id="dpr-section-addr" placeholder="Type the job address to jump to the roof…" style="flex:1;min-width:160px" ' +
+          'onkeydown="if(event.key===\'Enter\'){event.preventDefault();dprSectionGoToAddress();}">' +
+        '<button class="btn primary" id="dpr-section-addr-go" onclick="dprSectionGoToAddress()">Go</button>' +
+      '</div>' +
       '<div id="dpr-section-map" style="flex:1;margin:8px 14px;min-height:220px;background:#ECEFF1;border-radius:6px"></div>' +
       '<div class="btnrow" id="dpr-section-tracebtns" style="margin:0 14px 12px">' +
         '<button class="btn" onclick="dprSectionUndo()">↩ Undo point</button>' +
@@ -1732,14 +2295,31 @@ async function dprOpenSectionTrace(){
   lockBodyScroll();
   var roof = dprSelectedRoofObj();
   var hint = document.getElementById("dpr-section-hint");
+  var addrRow = document.getElementById("dpr-section-addr-row");
+  if (addrRow) addrRow.style.display = "none";
   hint.textContent = "Loading map…";
   try{
     var ctx = await dprSetupSectionMap("dpr-section-map", roof, { readOnly: false });
     dprTrace = { active: true, points: [], map: ctx.map, mode: ctx.mode, frameUrl: ctx.frameUrl,
       w: ctx.w, h: ctx.h, markers: [], poly: null };
-    hint.textContent = ctx.mode === "image"
-      ? "Tap the corners of the area worked today on the roof plan, all the way around."
-      : "Tap the corners of the area worked today. Need at least 3 points.";
+    /* Satellite mode gets the address escape hatch; a flat roof plan has no
+       address, so hide it there. Pre-fill from the job's Location. */
+    if (ctx.mode !== "image" && addrRow){
+      addrRow.style.display = "";
+      var addrInput = document.getElementById("dpr-section-addr");
+      if (addrInput && !addrInput.value) addrInput.value = (val("dpr-location") || val("dpr-jobName") || "").trim();
+    }
+    if (ctx.mode === "image"){
+      hint.textContent = "Tap the corners of the area worked today on the roof plan, all the way around.";
+    } else if (ctx.located){
+      hint.textContent = "Tap the corners of the area worked today. Need at least 3 points.";
+    } else {
+      /* Couldn't auto-locate the job — point the foreman straight at the address
+         box instead of leaving them stranded on a whole-country map. */
+      hint.textContent = "Couldn't locate this job automatically — type the address above and tap Go to jump to the roof, then tap the corners of the area worked today.";
+      var ai = document.getElementById("dpr-section-addr");
+      if (ai) try{ ai.focus(); }catch(e){}
+    }
     /* Seed from an existing section so re-opening edits rather than restarts. */
     if (dprState.section && dprState.section.mode === ctx.mode &&
         (ctx.mode !== "image" || dprState.section.imageFrameUrl === ctx.frameUrl)){
@@ -1762,9 +2342,39 @@ async function dprOpenSectionTrace(){
     hint.textContent = "Couldn't load the map: " + e.message;
   }
 }
+/* Address escape hatch: geocode whatever the foreman typed and fly the trace
+   map to the roof. Caches the hit back onto the building (like dprResolveJobCenter
+   does) so next time it auto-locates. Never touches already-placed trace points. */
+async function dprSectionGoToAddress(){
+  if (!dprTrace || !dprTrace.map || dprTrace.mode === "image") return;
+  var input = document.getElementById("dpr-section-addr");
+  var goBtn = document.getElementById("dpr-section-addr-go");
+  var hint = document.getElementById("dpr-section-hint");
+  var addr = input ? (input.value || "").trim() : "";
+  if (!addr){ if (input) try{ input.focus(); }catch(e){} return; }
+  if (goBtn){ goBtn.disabled = true; goBtn.textContent = "…"; }
+  try{
+    var geo = await geocodeAddress(addr);
+    if (geo && typeof geo.lat === "number"){
+      dprTrace.map.setView([geo.lat, geo.lng], 20);
+      if (hint) hint.textContent = "Tap the corners of the area worked today. Need at least 3 points.";
+      /* Cache it so the job auto-locates next time (same store the resolver reads). */
+      var bId = dprState.buildingId || dprBuildingId(val("dpr-billTo"), val("dpr-jobName"));
+      if (bId){ try{ if (typeof bnmCacheGeocode === "function") bnmCacheGeocode(bId, geo); }catch(e){} }
+    } else {
+      if (hint) hint.textContent = "Couldn't find that address — check it, or pinch-zoom the map to the roof and trace.";
+      toast("Couldn't find that address.");
+    }
+  }catch(e){
+    toast("Address lookup failed: " + e.message);
+  }
+  if (goBtn){ goBtn.disabled = false; goBtn.textContent = "Go"; }
+}
 
 /* Sets up a Leaflet map on the given div for the roof's base map (or satellite).
-   Resolves { map, mode:"geo"|"image", frameUrl, w, h }. Shared by trace + progress. */
+   Resolves { map, mode:"geo"|"image", frameUrl, w, h, located }. `located` is
+   false only when satellite mode couldn't place the map on the job (no coord,
+   no device GPS) — the caller then offers the address box. Shared by trace + progress. */
 async function dprSetupSectionMap(divId, roof, opts){
   opts = opts || {};
   var div = document.getElementById(divId);
@@ -1778,7 +2388,7 @@ async function dprSetupSectionMap(divId, roof, opts){
     var bounds = [[0, 0], [dims.h, dims.w]];
     L.imageOverlay(base.url, bounds).addTo(map);
     map.fitBounds(bounds);
-    return { map: map, mode: "image", frameUrl: base.url, w: dims.w, h: dims.h };
+    return { map: map, mode: "image", frameUrl: base.url, w: dims.w, h: dims.h, located: true };
   }
   var map2 = L.map(divId, { zoomControl: true, attributionControl: false });
   L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
@@ -1787,20 +2397,26 @@ async function dprSetupSectionMap(divId, roof, opts){
     var llb = boundsToLatLngBounds(base.bounds);
     L.imageOverlay(base.url, llb).addTo(map2);
     map2.fitBounds(llb);
-    return { map: map2, mode: "geo", frameUrl: null, w: null, h: null };
+    return { map: map2, mode: "geo", frameUrl: null, w: null, h: null, located: true };
   }
   /* Satellite: zoom straight to the job — best-available GPS/coordinate for
      the site (photo GPS → building's cached/geometry coord → geocoded address
      on file → this device's GPS), else a wide view to pan from. */
+  var located = true;
   var resolved = await dprResolveJobCenter(roof);
   if (resolved){ map2.setView([resolved.lat, resolved.lng], resolved.zoom || 20); }
   else {
     var dev = null;
     try{ dev = await captureDeviceGps(); }catch(e){}
     if (dev && dev.ok){ map2.setView([dev.lat, dev.lng], 20); }
-    else { map2.setView([39.8, -98.6], 4); toast("Couldn't locate the job — pan/zoom to the roof, then trace."); }
+    else {
+      /* No coord and no device GPS — leave the map wide and let the caller
+         steer the foreman to the address box (no toast; the hint says it). */
+      map2.setView([39.8, -98.6], 4);
+      located = false;
+    }
   }
-  return { map: map2, mode: "geo", frameUrl: null, w: null, h: null };
+  return { map: map2, mode: "geo", frameUrl: null, w: null, h: null, located: located };
 }
 /* Best-known coordinate for the current job, most-precise first. "gps location
    or the address in the file" (Mark): today's on-site photo GPS, then the
@@ -2054,10 +2670,11 @@ var DPR_LOCK_READONLY_FIELDS = ["dpr-foreman", "dpr-jobName", "dpr-billTo", "dpr
   "dpr-jobNo", "dpr-roofSystem", "dpr-date", "dpr-headcount", "dpr-hours", "dpr-squares",
   "dpr-summary", "dpr-bld-search",
   "dpr-delays-hours", "dpr-delays-notes", "dpr-jsa-by", "dpr-jsa-topics",
-  "dpr-incidents-reportedto", "dpr-incidents-desc", "dpr-equipment-notes", "dpr-visitors-notes"];
+  "dpr-incidents-reportedto", "dpr-incidents-desc", "dpr-equipment-notes", "dpr-visitors-notes",
+  "dpr-toolbox-talk"];
 /* <select> has no readOnly — the gated toggles + their dropdowns lock via disabled. */
 var DPR_LOCK_DISABLED_SELECTS = ["dpr-delays-toggle", "dpr-quantities-toggle", "dpr-jsa-toggle",
-  "dpr-incidents-toggle", "dpr-equipment-toggle", "dpr-rented-toggle", "dpr-visitors-toggle",
+  "dpr-incidents-toggle", "dpr-equipment-toggle", "dpr-rented-toggle", "dpr-toolbox-toggle", "dpr-visitors-toggle",
   "dpr-delays-cause", "dpr-jsa-crewpresent", "dpr-incidents-type", "dpr-roof"];
 function dprApplySignoffLock(){
   var locked = dprIsLocked();
@@ -2093,6 +2710,8 @@ function dprApplySignoffLock(){
   var capRow = document.getElementById("dpr-capture-row");
   if (capRow && locked) capRow.style.display = "none";
   else if (capRow && dprCanCreate()) capRow.style.display = "";
+  dprRenderToolboxSignins(); /* re-render so the sign-in checkboxes lock too */
+  dprRenderSectionChips();   /* chips disable while locked */
 }
 /* Visible amendment note — a signed report whose hours were corrected by the
    nightly late-punch sync says so, and when, so the finalized record is never
@@ -2232,7 +2851,8 @@ async function generateDprPdf(o){
   heading("Job Information");
   kvTable([
     ["Job Name", o.jobName], ["Customer", o.billTo], ["Location", o.location],
-    ["Job No.", o.jobNo], ["Roof System", o.roofSystem], ["Date", o.date], ["Foreman", o.foreman]
+    ["Job No.", o.jobNo], ["Roof System", o.roofSystem], ["Date", o.date], ["Foreman", o.foreman],
+    ["Weather", dprWeatherSummary(o.weather, true)]   /* the day's saved snapshot (plain: no emoji in helvetica) */
   ]);
 
   heading("Crew & Production");
@@ -2305,6 +2925,14 @@ async function generateDprPdf(o){
         .concat(pc.notes ? [["Defects / Notes", pc.notes]] : [])
         .concat(pc.completedBy ? [["Completed By (operator)", pc.completedBy]] : []));
     }
+  }
+  if (o.toolbox && (o.toolbox.talk || (o.toolbox.signedBy && o.toolbox.signedBy.length))){
+    heading("Toolbox Talk");
+    var tbSigned = (o.toolbox.signedBy || []).filter(Boolean);
+    kvTable([
+      ["Talk Given", o.toolbox.talk || ""],
+      ["Crew Signed In", tbSigned.length ? String(tbSigned.length) + " — " + tbSigned.join(", ") : "None recorded"]
+    ]);
   }
   if (o.visitors && o.visitors.notes && o.visitors.notes.trim()){
     heading("Site Visitors");

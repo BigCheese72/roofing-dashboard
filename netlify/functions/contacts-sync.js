@@ -13,11 +13,17 @@
 //     as outlook.js / graph-selftest.js. Auth runs FIRST, before any env read
 //     or Graph call, so an unauthenticated caller gets 401 and never a 500
 //     that leaks configuration state.
-//   * Mail is READ-ONLY. It issues GETs only. It NEVER PATCHes `isRead`, and
-//     reading a message via Graph does not mark it read as a side effect (that
-//     is an Outlook-client behaviour, not a Graph one) — so the 322 unread in
-//     Mark's inbox stay unread. It never sends, replies, forwards, moves,
-//     deletes, or creates rules.
+//   * Mail is never SENT and never DELETED. Reading is GET-only; it NEVER
+//     PATCHes `isRead`, and reading a message via Graph does not mark it read
+//     as a side effect (that is an Outlook-client behaviour, not a Graph one)
+//     — so the 322 unread in Mark's inbox stay unread. It never sends,
+//     forwards, or marks mail read. Three additive mail writes exist, each
+//     documented at its own handler and none of which can send or delete:
+//     `move` (move-to-folder only), `rules_create` (additive move-to-folder
+//     inbox rules), and `create_draft` (compose a Drafts-only reply or new
+//     message for Mark to review and send HIMSELF — never auto-sent). The
+//     delegated token holds Mail.ReadWrite and has NO Mail.Send, so a send is
+//     impossible even in principle; this code adds no send path regardless.
 //   * The ONLY writes are to /me/contacts, and only via `upsert`, and only for
 //     the exact payload the caller passes. Existing contacts are PATCHed
 //     (merge — Graph only overwrites the properties present in the body), never
@@ -25,12 +31,25 @@
 //   * `dryRun: true` on upsert reports what it *would* do and writes nothing.
 //   * It never returns the delegated token, the refresh token, or the client
 //     secret. It returns signature-derived contact fields and a few raw
-//     signature lines (Mark's own mail, shown back to Mark) — not message
-//     bodies wholesale, not subjects.
+//     signature lines (Mark's own mail, shown back to Mark). The `mail_read`
+//     action DOES return full message bodies — but only Mark's own mail, back
+//     to Mark, for his morning brief; it is READ-ONLY (GET, never marks read).
 //   * URLs found in signatures are recorded as text into the contact's
 //     businessHomePage. Nothing here ever fetches or follows them.
+//
+// MORNING-BRIEF ASSISTANT actions (added on this same delegated path — no new
+// credential, no new consent):
+//   * `mail_read` — READ-ONLY full message bodies (subject + from + date + body
+//     text + preview) for the brief to quote. GET only; never marks read.
+//   * `calendar_list` / `calendar_create` — read events / add an event to Mark's
+//     OWN calendar (additive; no attendees ⇒ no invite ⇒ no outbound send; no
+//     update/delete action exists). These require the delegated Calendars.ReadWrite
+//     scope, which the RoofOps app registration does NOT hold yet. Until Steve
+//     adds it + grants admin consent and Mark re-runs ms-auth-start, both
+//     calendar actions NO-OP with a clear "calendar scope not granted yet"
+//     message (gated via hasCalendarScope()) rather than failing with a raw 403.
 const { requirePermission } = require("./lib/authGuard");
-const { graphFetchDelegated } = require("./lib/graphDelegatedAuth");
+const { graphFetchDelegated, hasCalendarScope } = require("./lib/graphDelegatedAuth");
 
 function resp(code, obj) {
   return { statusCode: code, headers: { "Content-Type": "application/json" }, body: JSON.stringify(obj) };
@@ -339,6 +358,308 @@ function splitName(displayName, email) {
   if (parts.length === 1) return { givenName: parts[0], surname: null, displayName: dn };
   return { givenName: parts[0], surname: parts.slice(1).join(" "), displayName: dn };
 }
+
+// ---------------------------------------------------------------------------
+// INBOX RULE BUILDER — the safe, additive, move-only rule spec used by the
+// rules_create action. Kept as a pure function so the guardrails can be unit
+// tested without a mailbox.
+//
+// A caller rule may carry any of three condition arrays, matching the Graph
+// messageRule predicate properties of the same name:
+//   * senderContains  — substrings matched against the sender address/name
+//   * subjectContains — substrings matched against the subject line
+//   * bodyContains     — substrings matched against the body text
+// Type-based auto-filing (Leaks / Invoices / Warranties …) lives on subject/
+// body; sender-based filing is the original behaviour. All three are OR-combined
+// by Graph, so any one hit files the mail — which is exactly why every keyword
+// must be high-confidence (see the guardrail below).
+//
+// The action a built rule carries is ALWAYS move-only: moveToFolder +
+// stopProcessingRules, both hard-coded here. There is no path that emits
+// forward, redirect, delete, or markAsRead — regardless of what the caller
+// sends. This preserves the file-wide never-send / never-delete guarantee.
+const RULE_CONDITION_FIELDS = ["senderContains", "subjectContains", "bodyContains"];
+const RULE_MIN_KEYWORD_LEN = 3;
+// Tokens too broad to anchor a high-confidence auto-file rule. A subject/body
+// rule keyed on any of these would sweep up unrelated mail, so we reject the
+// whole rule rather than file mail wrongly.
+const RULE_BROAD_TOKENS = new Set([
+  "the", "a", "an", "and", "or", "of", "to", "in", "on", "at", "is", "it",
+  "for", "re", "fw", "fwd", "hi", "hey", "fyi", "all", "you", "your", "www",
+]);
+// A bare mail domain (gmail.com, yahoo.com, acme.com, "@acme.com") is a fine
+// SENDER anchor — that is the whole point of senderContains — but inside a
+// subject/body match it is over-broad (it would hit every quoted address), so
+// it is rejected there only.
+const RULE_BARE_DOMAIN_RE = /^@?[a-z0-9-]+(?:\.[a-z0-9-]+)+$/i;
+
+// Returns a human-readable reason string if a keyword is unsafe for `field`,
+// or null if it passes. field is one of RULE_CONDITION_FIELDS.
+function ruleKeywordProblem(kw, field) {
+  if (typeof kw !== "string") return "non-string keyword in " + field;
+  const t = kw.trim();
+  if (!t) return "empty keyword in " + field;
+  if (t.length < RULE_MIN_KEYWORD_LEN) {
+    return "keyword '" + t + "' in " + field + " is shorter than " + RULE_MIN_KEYWORD_LEN + " chars";
+  }
+  if (RULE_BROAD_TOKENS.has(t.toLowerCase())) return "over-broad token '" + t + "' in " + field;
+  if ((field === "subjectContains" || field === "bodyContains") && RULE_BARE_DOMAIN_RE.test(t)) {
+    return "bare domain '" + t + "' in " + field + " is over-broad";
+  }
+  return null;
+}
+
+// Build the Graph messageRule payload for one caller rule, or return a skip
+// reason. A rule is VALID only if it has a destinationId AND at least one
+// non-empty, all-keywords-safe condition array among sender/subject/body.
+// If ANY keyword fails a guardrail the whole rule is skipped — we never
+// silently drop the bad keyword and file on the rest.
+function buildInboxRule(r) {
+  if (!r || !r.destinationId) return { skip: "needs destinationId" };
+  const conditions = {};
+  let total = 0;
+  for (const field of RULE_CONDITION_FIELDS) {
+    const raw = r[field];
+    if (raw == null) continue;
+    if (!Array.isArray(raw)) return { skip: field + " must be an array" };
+    const cleaned = [];
+    for (const kw of raw) {
+      const problem = ruleKeywordProblem(kw, field);
+      if (problem) return { skip: problem };
+      cleaned.push(kw.trim());
+    }
+    if (cleaned.length) { conditions[field] = cleaned; total += cleaned.length; }
+  }
+  if (!total) {
+    return { skip: "needs destinationId + at least one non-empty condition (senderContains/subjectContains/bodyContains)" };
+  }
+  return {
+    matchCount: total,
+    payload: {
+      displayName: r.displayName,
+      sequence: r.sequence,
+      isEnabled: true,
+      conditions,
+      // HARD-CODED move-only action. Never forward/redirect/delete/markRead.
+      actions: { moveToFolder: r.destinationId, stopProcessingRules: true },
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// DRAFT COMPOSITION — helpers for the `create_draft` action.
+//
+// create_draft only ever CREATES a draft (a reply draft via Graph's
+// createReply, or a fresh message via POST /me/messages — Graph files both in
+// Drafts). It never sends. Mark reviews every draft and sends it himself.
+// These helpers are pure (no Graph, no I/O) so they can be unit-tested without
+// a mailbox; they are exported on _internals below.
+// ---------------------------------------------------------------------------
+
+// Mark's house sign-off. Appended to a draft body unless the caller supplied a
+// full formatted body (bodyHtml) or the text already signs off — so a morning
+// routine that only writes the substance still produces a draft in his voice.
+const SIGNOFF_TEXT = "Respectfully,\nMark";
+
+function escapeHtml(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+// Append the sign-off to plain-text body content, unless the text already ends
+// with a "Respectfully" sign-off (idempotent — never doubles it).
+function textWithSignoff(text) {
+  const t = String(text == null ? "" : text).replace(/\s+$/, "");
+  if (/(^|\n)\s*respectfully\b/i.test(t)) return t;   // already signed off
+  return (t ? t + "\n\n" : "") + SIGNOFF_TEXT;
+}
+
+// Normalize a caller's recipient list into Graph's shape. Accepts bare address
+// strings ("a@b.com") or objects ({address|email, name}); silently drops
+// anything without a plausible "@" local so a typo can't become a bad send —
+// and this is a DRAFT anyway, so Mark sees the recipients before anything goes.
+function normalizeRecipients(list) {
+  const out = [];
+  for (const r of (Array.isArray(list) ? list : [])) {
+    let address = null, name = null;
+    if (typeof r === "string") address = r;
+    else if (r && typeof r === "object") { address = r.address || r.email || null; name = r.name || null; }
+    address = String(address == null ? "" : address).trim();
+    if (address.indexOf("@") < 1) continue;
+    out.push({ emailAddress: name ? { address, name: String(name) } : { address } });
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// MORNING-BRIEF helpers — pure (no Graph, no I/O), exported on _internals for
+// unit testing without a mailbox.
+// ---------------------------------------------------------------------------
+
+// Map a Graph message resource to the compact row the brief consumes. `withBody`
+// adds the full plain-text body (mail_read); otherwise only the short preview is
+// returned. Nothing here can mark a message read — it only reshapes a GET result.
+function mapMailMessage(m, opts) {
+  opts = opts || {};
+  const from = (m.from && m.from.emailAddress) || (m.sender && m.sender.emailAddress) || {};
+  const row = {
+    id: m.id,
+    subject: (m.subject || "(no subject)"),
+    from: { name: from.name || null, address: String(from.address || "").toLowerCase() || null },
+    date: m.receivedDateTime || m.sentDateTime || null,
+    // Output key is `read` (a plain boolean the brief can show), NOT an `isRead:`
+    // key — an `isRead:` object key reads as a mark-as-read mutation and is
+    // forbidden by the source-scan guardrail in contactsSyncCreateDraft.test.js.
+    // This only READS the Graph field; nothing here ever writes it.
+    read: !!m.isRead,
+    preview: (m.bodyPreview || "").trim() || null,
+    webLink: m.webLink || null,
+  };
+  if (opts.withBody) {
+    row.body = ((m.body && m.body.content) || "").trim() || null;
+    row.to = (m.toRecipients || []).map(r => (r.emailAddress && r.emailAddress.address) || null).filter(Boolean);
+    row.cc = (m.ccRecipients || []).map(r => (r.emailAddress && r.emailAddress.address) || null).filter(Boolean);
+  }
+  return row;
+}
+
+// Graph resolves these well-known names in the folder path directly, so we hand
+// them straight back rather than looking them up (e.g. Sent Items = "sentitems").
+const WELL_KNOWN_FOLDERS = { inbox: 1, sentitems: 1, drafts: 1, deleteditems: 1, archive: 1, junkemail: 1, outbox: 1 };
+// Resolve a mail folder by DISPLAY NAME (or a well-known name) to its id so a
+// caller can list e.g. "Proposals" without first fetching the folder table.
+// Checks well-known names, then top-level folders, then ONE level of child
+// folders (via $expand). Returns null when nothing matches — the caller
+// surfaces "folder not found" rather than guessing a wrong folder. READ-ONLY.
+async function resolveFolderIdByName(name) {
+  const wanted = String(name || "").trim();
+  if (!wanted) return null;
+  const wk = wanted.toLowerCase().replace(/\s+/g, "");
+  if (WELL_KNOWN_FOLDERS[wk]) return wk;
+  const j = await gj("/me/mailFolders?$top=100&$select=id,displayName&$expand=childFolders($select=id,displayName)");
+  const want = wanted.toLowerCase();
+  for (const f of (j.value || [])) {
+    if (String(f.displayName || "").toLowerCase() === want) return f.id;
+    for (const c of (f.childFolders || [])) {
+      if (String(c.displayName || "").toLowerCase() === want) return c.id;
+    }
+  }
+  return null;
+}
+
+// Resolve a named window ("today" | "week") or an explicit {start,end} into the
+// ISO boundaries /me/calendarView needs. `now` is injectable for deterministic
+// tests. "today" = local midnight → next local midnight; "week" = now → +7 days.
+// Explicit start/end (ISO strings) win over the named range.
+function resolveCalendarRange(input, now) {
+  input = input || {};
+  now = now instanceof Date ? now : new Date();
+  if (input.start && input.end) {
+    const s = new Date(input.start), e = new Date(input.end);
+    if (isNaN(s.getTime()) || isNaN(e.getTime())) {
+      const err = new Error("calendar_list: invalid start/end date"); err.statusCode = 400; throw err;
+    }
+    return { startDateTime: s.toISOString(), endDateTime: e.toISOString() };
+  }
+  const range = String(input.range || "today").toLowerCase();
+  if (range === "week") {
+    return { startDateTime: now.toISOString(), endDateTime: new Date(now.getTime() + 7 * 24 * 3600 * 1000).toISOString() };
+  }
+  const startLocal = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+  const endLocal = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0, 0);
+  return { startDateTime: startLocal.toISOString(), endDateTime: endLocal.toISOString() };
+}
+
+// Flatten a Graph event into the brief's row shape.
+function mapEvent(e) {
+  const org = (e.organizer && e.organizer.emailAddress) || {};
+  return {
+    id: e.id,
+    subject: e.subject || "(no title)",
+    start: (e.start && e.start.dateTime) || null,
+    end: (e.end && e.end.dateTime) || null,
+    timeZone: (e.start && e.start.timeZone) || null,
+    isAllDay: !!e.isAllDay,
+    location: (e.location && e.location.displayName) || null,
+    organizer: { name: org.name || null, address: String(org.address || "").toLowerCase() || null },
+    attendees: (e.attendees || []).map(a => ({
+      name: (a.emailAddress && a.emailAddress.name) || null,
+      address: (a.emailAddress && String(a.emailAddress.address || "").toLowerCase()) || null,
+      response: (a.status && a.status.response) || null,
+    })),
+    preview: (e.bodyPreview || "").trim() || null,
+    webLink: e.webLink || null,
+  };
+}
+
+// A YYYY-MM-DD date, taken from the leading 10 chars of a date/ISO string when
+// present (so "2026-07-20" and "2026-07-20T00:00:00Z" both stay the 20th — no
+// timezone shift), else from a Date's LOCAL components. Never toISOString (that
+// would convert to UTC and can roll an all-day date back a day).
+function dateOnly(v) {
+  const s = String(v == null ? "" : v);
+  const m = /^(\d{4}-\d{2}-\d{2})/.exec(s);
+  if (m) return m[1];
+  const d = new Date(v);
+  if (isNaN(d.getTime())) return null;
+  const p = n => String(n).padStart(2, "0");
+  return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
+}
+
+// Build the POST /me/events payload for calendar_create. Pure + validating:
+// throws a 400-tagged error when subject or a start/end pair is missing/invalid.
+//
+// ADDITIVE + NON-SENDING by construction: this shape can only CREATE an event on
+// Mark's OWN calendar. It carries no id (cannot target/modify/delete an existing
+// event) and DELIBERATELY has no `attendees` field — an event with attendees
+// makes Graph email invitations immediately, which would be an outbound "send"
+// this integration must never do. If Mark wants to invite people he adds them in
+// Outlook after reviewing the event.
+function buildEventPayload(input) {
+  input = input || {};
+  const subject = typeof input.subject === "string" ? input.subject.trim() : "";
+  if (!subject) { const e = new Error("calendar_create needs a subject"); e.statusCode = 400; throw e; }
+
+  const isAllDay = !!input.isAllDay;
+  const tz = input.timeZone || "America/Chicago"; // Watkins is in the Central zone
+  const ev = { subject };
+
+  if (isAllDay) {
+    if (!input.start || !input.end) { const e = new Error("all-day calendar_create needs start and end dates"); e.statusCode = 400; throw e; }
+    const sd = dateOnly(input.start), ed = dateOnly(input.end);
+    if (!sd || !ed) { const e = new Error("all-day calendar_create needs valid start/end dates"); e.statusCode = 400; throw e; }
+    // Graph uses an EXCLUSIVE end for all-day events, so end must be a later day
+    // than start (a single all-day event on the 20th is start=20, end=21).
+    if (ed <= sd) { const e = new Error("all-day calendar_create end date must be after start date"); e.statusCode = 400; throw e; }
+    ev.isAllDay = true;
+    ev.start = { dateTime: sd + "T00:00:00", timeZone: tz };
+    ev.end = { dateTime: ed + "T00:00:00", timeZone: tz };
+  } else {
+    if (!input.start || !input.end) { const e = new Error("calendar_create needs start and end date-times"); e.statusCode = 400; throw e; }
+    const s = new Date(input.start), en = new Date(input.end);
+    if (isNaN(s.getTime()) || isNaN(en.getTime())) { const e = new Error("calendar_create needs valid start/end date-times"); e.statusCode = 400; throw e; }
+    if (en.getTime() <= s.getTime()) { const e = new Error("calendar_create end must be after start"); e.statusCode = 400; throw e; }
+    ev.start = { dateTime: s.toISOString(), timeZone: tz };
+    ev.end = { dateTime: en.toISOString(), timeZone: tz };
+  }
+
+  if (typeof input.location === "string" && input.location.trim()) ev.location = { displayName: input.location.trim() };
+  if (typeof input.body === "string" && input.body.trim()) ev.body = { contentType: "Text", content: input.body.trim() };
+  return ev;
+}
+
+// The no-op response returned by calendar actions until the delegated grant
+// actually carries Calendars.ReadWrite. Kept as one place so both actions speak
+// with one voice, and so a test can assert the exact shape.
+const CALENDAR_NOT_GRANTED = {
+  calendarScopeGranted: false,
+  error: "calendar scope not granted yet — the RoofOps M365 app does not have " +
+    "delegated Calendars.ReadWrite. Steve must add it to the app registration and " +
+    "grant admin consent, then Mark re-runs ms-auth-start to refresh the token. " +
+    "Until then, calendar read/create is unavailable (mail actions are unaffected).",
+};
 
 // ---------------------------------------------------------------------------
 // Handler
@@ -696,9 +1017,19 @@ exports.handler = async function (event) {
       const pages = Math.min(5, Math.max(1, parseInt(body.pages || "3", 10)));
       let url = body.nextLink;
       if (!url) {
-        if (!body.folderId) return resp(400, { error: "folderId required" });
-        url = "/me/mailFolders/" + encodeURIComponent(body.folderId) + "/messages" +
-          "?$top=200&$select=id,subject,from,receivedDateTime,isRead";
+        // folderId wins; otherwise resolve folderName ("Proposals", "sentitems",
+        // …) to an id server-side so the Service Manager proposals view can
+        // point at a folder by name without a separate folders round-trip.
+        let folderId = body.folderId;
+        if (!folderId && body.folderName) {
+          folderId = await resolveFolderIdByName(body.folderName);
+          if (!folderId) return resp(404, { error: "Folder not found: " + body.folderName });
+        }
+        if (!folderId) return resp(400, { error: "folderId or folderName required" });
+        // hasAttachments added so a proposals UI can flag which mails carry a PDF
+        // (still READ-ONLY — selecting a field never mutates it).
+        url = "/me/mailFolders/" + encodeURIComponent(folderId) + "/messages" +
+          "?$top=200&$select=id,subject,from,receivedDateTime,isRead,hasAttachments";
       }
       const rows = [];
       let next = url;
@@ -713,11 +1044,43 @@ exports.handler = async function (event) {
             n: ea.name || null,
             d: m.receivedDateTime || null,
             r: !!m.isRead,
+            a: !!m.hasAttachments,
           });
         }
         next = j["@odata.nextLink"] || null;
       }
       return resp(200, { rows, nextLink: next });
+    }
+
+    // ---- attachments_list: READ-ONLY list of a message's attachments (id, name,
+    // type, size). Used by the Service Manager proposals view to find the PDF on
+    // an emailed proposal. GET only; nothing here sends, moves, or deletes.
+    if (action === "attachments_list") {
+      if (!body.messageId) return resp(400, { error: "messageId required" });
+      const j = await gj("/me/messages/" + encodeURIComponent(body.messageId) +
+        "/attachments?$select=id,name,contentType,size,isInline");
+      const attachments = (j.value || []).map(a => ({
+        id: a.id, name: a.name || null, contentType: a.contentType || null,
+        size: a.size || 0, isInline: !!a.isInline,
+      }));
+      return resp(200, { attachments });
+    }
+
+    // ---- attachment_get: READ-ONLY fetch of ONE file attachment's bytes
+    // (base64 contentBytes), so a proposal PDF can be viewed / handed to the AI
+    // scope-prefill. Capped so a runaway attachment can't balloon the response.
+    // GET only — no mutation of any kind.
+    if (action === "attachment_get") {
+      if (!body.messageId || !body.attachmentId) return resp(400, { error: "messageId and attachmentId required" });
+      const a = await gj("/me/messages/" + encodeURIComponent(body.messageId) +
+        "/attachments/" + encodeURIComponent(body.attachmentId));
+      if ((a.size || 0) > 12 * 1024 * 1024) return resp(413, { error: "Attachment too large" });
+      return resp(200, {
+        id: a.id, name: a.name || null, contentType: a.contentType || null,
+        size: a.size || 0,
+        // Present on fileAttachment; null for item/reference attachments.
+        contentBytes: a.contentBytes || null,
+      });
     }
 
     // ---- move: THE ONLY MAIL MUTATION IN THIS FILE. POST /messages/{id}/move.
@@ -760,6 +1123,105 @@ exports.handler = async function (event) {
       });
     }
 
+    // ---- create_draft: THE ONLY MAIL-COMPOSE ACTION. Creates a DRAFT and
+    // nothing more. It NEVER sends — Mark reviews the draft in Outlook and
+    // sends it himself. There is deliberately no /send, no /sendMail, no
+    // send-and-reply, no delete, and no isRead here. Two forms:
+    //   reply:  { replyToMessageId, bodyText | bodyHtml }
+    //           -> POST /me/messages/{id}/createReply (Graph files the reply
+    //              draft in Drafts, quoting the original), then PATCH the BODY
+    //              of that one newly-created draft to insert Mark's message
+    //              above the quoted history.
+    //   fresh:  { toRecipients:[...], subject, bodyText | bodyHtml, ccRecipients? }
+    //           -> POST /me/messages (Graph files a plain new message in
+    //              Drafts; a message is not sent until an explicit /send this
+    //              function never issues).
+    // Every write here targets ONLY a draft this call just created. The
+    // delegated token has Mail.ReadWrite and NO Mail.Send, so a send is
+    // impossible in principle; this code adds no send path regardless.
+    if (action === "create_draft") {
+      // A caller who hands us a full formatted body (bodyHtml) has written the
+      // whole message; we use it verbatim and do NOT auto-append the sign-off.
+      // Otherwise we compose from bodyText and sign it off in Mark's voice.
+      const hasHtml = typeof body.bodyHtml === "string" && body.bodyHtml.trim() !== "";
+      const replyToMessageId = body.replyToMessageId ? String(body.replyToMessageId) : null;
+
+      if (replyToMessageId) {
+        // 1. Ask Graph to build the reply draft. This is a CREATE — it files a
+        //    draft in Drafts and sends nothing. It quotes the original thread.
+        const draft = await gj("/me/messages/" + encodeURIComponent(replyToMessageId) + "/createReply", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        });
+        const draftId = draft && draft.id;
+        if (!draftId) return resp(502, { error: "createReply did not return a draft id" });
+
+        // 2. Insert Mark's message ABOVE the quoted history, preserving the
+        //    thread, then PATCH — targeting ONLY this just-created draft's body.
+        const orig = (draft.body && draft.body.content) || "";
+        const isText = String((draft.body && draft.body.contentType) || "html").toLowerCase() === "text";
+        let contentType, content;
+        if (isText) {
+          const mine = hasHtml ? String(body.bodyHtml) : textWithSignoff(body.bodyText);
+          contentType = "Text";
+          content = orig ? mine + "\n\n" + orig : mine;
+        } else {
+          const mine = hasHtml
+            ? String(body.bodyHtml)
+            : escapeHtml(textWithSignoff(body.bodyText)).replace(/\n/g, "<br>");
+          contentType = "HTML";
+          content = orig ? mine + "<br><br>" + orig : mine;
+        }
+        await gj("/me/messages/" + encodeURIComponent(draftId), {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ body: { contentType, content } }),
+        });
+
+        return resp(200, {
+          created: true,
+          kind: "reply",
+          id: draftId,
+          webLink: draft.webLink || null,
+          replyToMessageId,
+        });
+      }
+
+      // Fresh draft. Needs at least one recipient and gets a signed-off body.
+      const toRecipients = normalizeRecipients(body.toRecipients);
+      if (!toRecipients.length) {
+        return resp(400, {
+          error: "create_draft needs either replyToMessageId (to draft a reply) " +
+            "or toRecipients (a non-empty array of email addresses, for a fresh draft)",
+        });
+      }
+      const message = {
+        subject: typeof body.subject === "string" ? body.subject : "",
+        toRecipients,
+        body: hasHtml
+          ? { contentType: "HTML", content: String(body.bodyHtml) }
+          : { contentType: "Text", content: textWithSignoff(body.bodyText) },
+      };
+      const cc = normalizeRecipients(body.ccRecipients);
+      if (cc.length) message.ccRecipients = cc;
+
+      // POST /me/messages creates a DRAFT in Drafts (Graph's default for a
+      // plain message create) — not sent, no notification, fully reversible
+      // (Mark can delete or edit it in Outlook).
+      const created = await gj("/me/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(message),
+      });
+      return resp(200, {
+        created: true,
+        kind: "fresh",
+        id: created && created.id,
+        webLink: (created && created.webLink) || null,
+      });
+    }
+
     // ---- rules_create: adds inbox rules. ADDITIVE ONLY — it never edits,
     // disables or deletes an existing rule. The only action a created rule may
     // carry is moveToFolder: this code refuses to build a rule that deletes,
@@ -768,29 +1230,94 @@ exports.handler = async function (event) {
       const wanted = (body.rules || []).slice(0, 12);
       const results = [];
       for (const r of wanted) {
-        if (!r.destinationId || !Array.isArray(r.senderContains) || !r.senderContains.length) {
-          results.push({ name: r.displayName, status: "skipped", reason: "needs destinationId + senderContains" });
+        const built = buildInboxRule(r);
+        if (built.skip) {
+          results.push({ name: r.displayName, status: "skipped", reason: built.skip });
           continue;
         }
-        const payload = {
-          displayName: r.displayName,
-          sequence: r.sequence,
-          isEnabled: true,
-          conditions: { senderContains: r.senderContains },
-          actions: { moveToFolder: r.destinationId, stopProcessingRules: true },
-        };
         try {
           const created = await gj("/me/mailFolders/inbox/messageRules", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
+            body: JSON.stringify(built.payload),
           });
-          results.push({ name: r.displayName, status: "created", id: created && created.id, matchCount: r.senderContains.length });
+          results.push({ name: r.displayName, status: "created", id: created && created.id, matchCount: built.matchCount });
         } catch (e) {
           results.push({ name: r.displayName, status: "error", error: String(e.message || e).slice(0, 180) });
         }
       }
       return resp(200, { results });
+    }
+
+    // ---- mail_read: READ-ONLY full bodies (as plain text) for the messages the
+    // morning brief wants to quote. Accepts a single messageId or an array
+    // (capped). Prefer text so the brief gets clean quotable content, not HTML.
+    // GET only — selecting body/isRead does NOT mark the message read.
+    if (action === "mail_read") {
+      const ids = []
+        .concat(body.messageId ? [body.messageId] : [])
+        .concat(Array.isArray(body.messageIds) ? body.messageIds : [])
+        .map(String).filter(Boolean).slice(0, 15);
+      if (!ids.length) return resp(400, { error: "mail_read needs messageId or messageIds[]" });
+      const out = [];
+      for (const id of ids) {
+        try {
+          const m = await gj("/me/messages/" + encodeURIComponent(id) +
+            "?$select=id,subject,from,sender,toRecipients,ccRecipients,receivedDateTime,isRead,bodyPreview,body,webLink",
+            { headers: { Prefer: 'outlook.body-content-type="text"' } });
+          out.push(mapMailMessage(m, { withBody: true }));
+        } catch (e) {
+          out.push({ id, error: String(e.message || e).slice(0, 160) });
+        }
+      }
+      return resp(200, { messages: out });
+    }
+
+    // ---- calendar_list: READ-ONLY events in a window (today | week | explicit
+    // start/end). GATED: no-op with a clear message until the delegated grant
+    // carries Calendars.ReadWrite (Steve consents + Mark re-signs-in). Uses
+    // /me/calendarView so recurring instances are expanded.
+    if (action === "calendar_list") {
+      if (!(await hasCalendarScope())) return resp(200, CALENDAR_NOT_GRANTED);
+      let range;
+      try { range = resolveCalendarRange(body, new Date()); }
+      catch (e) { return resp(e.statusCode || 400, { error: e.message }); }
+      const { startDateTime, endDateTime } = range;
+      const n = parseInt(body.top, 10);
+      const top = Math.min(100, Math.max(1, Number.isFinite(n) ? n : 50));
+      const url = "/me/calendarView?startDateTime=" + encodeURIComponent(startDateTime) +
+        "&endDateTime=" + encodeURIComponent(endDateTime) +
+        "&$select=id,subject,start,end,isAllDay,location,organizer,attendees,bodyPreview,webLink" +
+        "&$orderby=start/dateTime&$top=" + top;
+      const j = await gj(url, { headers: { Prefer: 'outlook.timezone="America/Chicago"' } });
+      const events = (j.value || []).map(mapEvent);
+      return resp(200, { calendarScopeGranted: true, events, count: events.length, window: { startDateTime, endDateTime } });
+    }
+
+    // ---- calendar_create: additive event on Mark's OWN calendar. GATED the same
+    // way as calendar_list. POST /me/events cannot modify or delete any existing
+    // event (no id, no such action), and the payload carries no attendees, so it
+    // never emails an invitation — creating an event sends no mail and notifies
+    // no one.
+    if (action === "calendar_create") {
+      if (!(await hasCalendarScope())) return resp(200, CALENDAR_NOT_GRANTED);
+      let payload;
+      try { payload = buildEventPayload(body); }
+      catch (e) { return resp(e.statusCode || 400, { error: e.message }); }
+      const created = await gj("/me/events", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      return resp(200, {
+        calendarScopeGranted: true,
+        created: true,
+        id: created && created.id,
+        subject: created && created.subject,
+        start: created && created.start,
+        end: created && created.end,
+        webLink: (created && created.webLink) || null,
+      });
     }
 
     return resp(400, { error: "Unknown action: " + String(action) });
@@ -802,4 +1329,6 @@ exports.handler = async function (event) {
 };
 
 // Exported for reasoning/testing about the filter and parser without a mailbox.
-module.exports._internals = { classify, parseSignature, splitName, sigLines };
+module.exports._internals = { classify, parseSignature, splitName, sigLines, buildInboxRule, ruleKeywordProblem, textWithSignoff, normalizeRecipients, escapeHtml,
+  mapMailMessage, resolveCalendarRange, mapEvent, dateOnly, buildEventPayload, CALENDAR_NOT_GRANTED,
+  resolveFolderIdByName, WELL_KNOWN_FOLDERS };

@@ -53,14 +53,36 @@ const crypto = require("crypto");
 // from this scope string, so the headline feature would have failed with a
 // permission error even after a successful sign-in. Contacts.ReadWrite is
 // likewise part of the consented delegated permission set.
+//
+// Calendars.ReadWrite is the DESIRED set for the morning-brief assistant's
+// calendar actions (contacts-sync calendar_list / calendar_create). It is NOT
+// yet admin-consented on the RoofOps app registration as of this change, so:
+//   * This constant drives ONLY the interactive AUTHORIZE flow (ms-auth-start's
+//     authorize URL + exchangeCodeForToken). Once Steve adds Calendars.ReadWrite
+//     to the app and grants admin consent, Mark re-runs ms-auth-start and the
+//     resulting refresh token carries the calendar scope.
+//   * The REFRESH path deliberately does NOT send this scope string (see
+//     refreshAccessToken) — requesting an un-consented scope on a refresh_token
+//     grant would fail the whole refresh and take down the working mail/contacts
+//     integration. Omitting scope on refresh returns exactly the scopes actually
+//     granted to the stored token, so calendar "lights up" automatically after
+//     the re-sign-in and is simply absent before it. hasCalendarScope() reads
+//     the stored grant so callers can gate cleanly instead of 403-ing.
 const DELEGATED_SCOPES = [
   "offline_access",
   "Mail.ReadWrite",
   "MailboxSettings.ReadWrite",
   "Contacts.ReadWrite",
   "Files.ReadWrite",
+  "Calendars.ReadWrite",
   "User.Read"
 ].join(" ");
+
+// The one scope the calendar actions need. Used to detect whether the stored
+// delegated grant actually carries it yet (it won't until Steve consents +
+// Mark re-signs-in), so calendar_list / calendar_create can no-op with a clear
+// message rather than failing with a raw Graph 403.
+const CALENDAR_SCOPE = "Calendars.ReadWrite";
 
 const ALLOWED_REDIRECTS = {
   "leak-work-orders.netlify.app": "https://leak-work-orders.netlify.app/.netlify/functions/ms-auth-callback",
@@ -148,11 +170,18 @@ function exchangeCodeForToken(code, redirectUri) {
   });
 }
 
+// NOTE: `scope` is intentionally OMITTED here. On a refresh_token grant, Azure
+// AD v2 returns an access token for exactly the scopes the refresh token was
+// granted when `scope` is absent — which is what we want: it can never fail by
+// requesting a scope that isn't consented yet (the reason we must not pin
+// DELEGATED_SCOPES here now that it lists the not-yet-granted Calendars.ReadWrite),
+// and it automatically starts returning the calendar scope the moment Mark
+// re-signs-in after Steve grants it. Pinning an explicit list would instead
+// SILENTLY DROP any newly consented scope on the next refresh.
 function refreshAccessToken(refreshToken) {
   return postToken({
     grant_type: "refresh_token",
     refresh_token: refreshToken,
-    scope: DELEGATED_SCOPES,
   });
 }
 
@@ -298,6 +327,28 @@ async function getDelegatedAccessToken() {
   return cachedAccess.accessToken;
 }
 
+// Does a granted-scope string carry the calendar scope? Pure + case-insensitive
+// (Azure echoes scopes back with inconsistent casing), matched on whole
+// space-separated tokens so a substring can't false-positive. Exported for tests.
+function scopeStringHasCalendar(scopeStr) {
+  const want = CALENDAR_SCOPE.toLowerCase();
+  return String(scopeStr || "").toLowerCase().split(/\s+/).filter(Boolean).includes(want);
+}
+
+// Whether the CURRENTLY STORED delegated grant includes Calendars.ReadWrite.
+// Reads the token doc's `scope` (populated at sign-in and refreshed on rotation)
+// — no Graph call. Returns false (fail closed → calendar gated off) if the doc
+// is missing, has no scope recorded, or is unreadable, so calendar actions stay
+// disabled until a re-sign-in demonstrably grants the scope.
+async function hasCalendarScope() {
+  try {
+    const stored = await loadDelegatedTokenDoc();
+    return scopeStringHasCalendar(stored && stored.scope);
+  } catch (e) {
+    return false;
+  }
+}
+
 async function graphFetchDelegated(pathOrUrl, options) {
   const token = await getDelegatedAccessToken();
   const opts = Object.assign({}, options);
@@ -308,6 +359,9 @@ async function graphFetchDelegated(pathOrUrl, options) {
 
 module.exports = {
   DELEGATED_SCOPES,
+  CALENDAR_SCOPE,
+  scopeStringHasCalendar,
+  hasCalendarScope,
   requireEnv,
   resolveRedirectUri,
   signState,

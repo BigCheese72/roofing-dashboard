@@ -61,6 +61,13 @@
   <button class="tab cond" id="tab-reports" onclick="showView('reports')" title="Reports">📋<span class="tab-label"> Reports</span></button>
   <button class="tab cond" id="tab-roofmapper" onclick="showView('roofmapper')" title="RoofMapper">🗺️<span class="tab-label"> RoofMapper</span></button>
   <button class="tab cond" id="tab-dpr" onclick="showView('dpr')" title="Daily Progress Report">📅<span class="tab-label"> Daily Report</span></button>
+  <!-- Service Manager tab (dispatch + proposals). Hidden by default; shown by
+       updateServiceManagerUI() only for owner / admin / ops_manager /
+       service_manager (canServiceManage()) — the SAME role set that already
+       holds warranty.manage_reports, which server-gates the proposal source
+       (contacts-sync). UI-hiding is convenience only, per docs/AUTH_DESIGN.md;
+       no new permission key (see js/servicemanager.js header). -->
+  <button class="tab cond" id="tab-servicemanager" onclick="showView('servicemanager')" style="display:none" title="Service Manager — dispatch &amp; proposals">🚚<span class="tab-label"> Service Manager</span></button>
   <!-- Admin-only tab (hidden for field techs; shown/hidden by updateAdminUI()
        off the signed-in user's real role, never a toggle). Consolidates every
        admin/maintenance control on one page — see #view-admin. -->
@@ -309,12 +316,14 @@
       <div class="btnrow"><button class="btn" onclick="addRepair()">+ Add Repair</button></div>
     </div>
 
-    <!-- Work Order (stored type "Repair") AND Leak / Service — see
-         onWoTypeChange() (Mark, from prod: Repair-only gating made this look
-         "missing" on the Leak form). Change Order keeps its own free-text
-         Materials textarea (#woMaterials) inside its own card; this is the
-         itemized list for executed work. Rows live in materials[]
-         (js/workorders.js) and persist with the work order. -->
+    <!-- Work Order (stored type "Repair"), Leak / Service AND Change Order —
+         see onWoTypeChange() (Mark, from prod: Repair-only gating made this
+         look "missing" on the Leak form; Change Order added per "a change
+         order form needs materials too"). This itemized list is the primary
+         materials entry for all three. Rows live in materials[]
+         (js/workorders.js) and persist with the work order. The Change
+         Order card's old free-text #woMaterials survives as a hidden-until-
+         populated "Additional Material Notes" legacy field. -->
     <div class="card" id="wo-materials-card" style="display:none">
       <h2 class="cond">Material List</h2>
       <div id="materials-list"></div>
@@ -329,7 +338,15 @@
         <div class="fld"><label>PO Number (optional)</label><input type="text" id="woPONumber"></div>
         <div class="fld"><label>Date Completed (optional)</label><input type="text" id="woDateCompleted"></div>
       </div>
-      <div class="fld"><label>Materials</label>
+      <!-- Legacy free-text materials. The itemized Material List card above
+           is now the primary materials entry on a Change Order; this field
+           is hidden by default and revealed only for existing records that
+           already have text here (see onWoTypeChange()), so no historical CO
+           loses its materials note. Kept editable + printed by the Change
+           Order report builders under "Additional Material Notes". -->
+      <div class="fld" id="wo-co-materials-legacy" style="display:none">
+        <label>Additional Material Notes (legacy)</label>
+        <p class="hint" style="margin:0 0 8px">Older change orders captured materials as free text here. Prefer the itemized <b>Material List</b> above; this note is kept so nothing is lost and still prints on the change order.</p>
         <textarea id="woMaterials" rows="3" placeholder="One item per line"></textarea></div>
       <div class="fld"><label>Description of Work Performed</label>
         <textarea id="woDescription" rows="4"></textarea></div>
@@ -454,12 +471,12 @@
         <option value="">Send to…</option>
       </select>
       <input type="text" id="emailTo" placeholder="or type any email (separate with commas)" style="width:280px">
-      <button class="btn primary" onclick="sendEmailNow()">Send Email Now</button>
-      <button class="btn primary" onclick="sharePdf()">Share / Email PDF</button>
-      <button class="btn primary" onclick="downloadPdf()">Download PDF</button>
-      <button class="btn" onclick="emailDoc()">Email (text only)</button>
-      <button class="btn" onclick="copyDoc()">Copy Text</button>
-      <button class="btn" onclick="window.print()">Print</button>
+      <button class="btn primary" onclick="sendEmailNow()" title="Emails the finished PDF straight to the recipients above — no mail app needed. Saves the work order and builds the PDF first.">Send Email Now</button>
+      <button class="btn primary" onclick="sharePdf()" title="Hands the PDF to your device's own share sheet / mail app instead of sending it directly.">Share / Email PDF</button>
+      <button class="btn primary" onclick="downloadPdf()" title="Saves the report PDF to this device.">Download PDF</button>
+      <button class="btn" onclick="emailDoc()" title="Sends a plain-text version through your mail app — no photos, no PDF.">Email (text only)</button>
+      <button class="btn" onclick="copyDoc()" title="Copies the report as plain text to your clipboard.">Copy Text</button>
+      <button class="btn" onclick="window.print()" title="Opens your device's print dialog for the on-screen report.">Print</button>
     </div>
     <p class="hint no-print">"Send Email Now" emails the finished PDF directly to the recipients above — no mail app needed,
       works the same on phone and computer. The other buttons are backups: "Share / Email PDF" uses your own mail app,
@@ -471,12 +488,8 @@
   <div id="view-saved" style="display:none">
     <div class="btnrow">
       <button class="btn" onclick="newOrder()">+ New Work Order</button>
-      <input type="file" id="importInput" accept=".json,application/json" style="display:none"
-        onchange="importOrderFile(this.files); this.value='';">
-      <button class="btn" id="saved-import-btn" style="display:none" onclick="document.getElementById('importInput').click()">Import Work Order File</button>
     </div>
     <p class="hint" id="cloud-status"></p>
-    <p class="hint" id="saved-import-hint" style="display:none">Import a work order file (.workorder.json) received from elsewhere.</p>
     <div id="saved-list"></div>
   </div>
 
@@ -834,16 +847,17 @@
            free Esri World_Imagery tiles the live map uses and render them
            beneath the line art. See rmFetchBasemapImage()/"Export layout
            pass" in DEV_NOTES.md. -->
-      <label class="hint" style="display:flex;align-items:center;gap:6px;margin:0 0 10px">
+      <label class="hint" style="display:flex;align-items:center;gap:6px;margin:0 0 10px"
+        title="Export only: draws the satellite image beneath the outline so the export isn't just line art. Off by default because it makes the export slower and heavier.">
         <input type="checkbox" id="rm-export-basemap-cb" onchange="rmState.exportIncludeBasemap = this.checked">
         🛰️ Include satellite imagery under the drawing
       </label>
       <div class="btnrow">
-        <button class="btn" onclick="rmZoomToOutline()">🔍 Zoom to Roof</button>
-        <button class="btn primary" onclick="rmPreviewExport()">👁️ Preview Export</button>
-        <button class="btn" onclick="rmExportSVG()">Export SVG</button>
-        <button class="btn" onclick="rmExportPNG()">Export PNG</button>
-        <button class="btn" onclick="rmExportPDF()">Export PDF</button>
+        <button class="btn" onclick="rmZoomToOutline()" title="Fits the map tight to this roof's outline.">🔍 Zoom to Roof</button>
+        <button class="btn primary" onclick="rmPreviewExport()" title="Shows exactly what you'll get — outline, edge measurements, features, legend, and scale bar — before you export. You can export from inside the preview too.">👁️ Preview Export</button>
+        <button class="btn" onclick="rmExportSVG()" title="Exports as SVG — a sharp line drawing that scales to any size (good for editing later).">Export SVG</button>
+        <button class="btn" onclick="rmExportPNG()" title="Exports as PNG — a plain image, easy to drop into an email or report.">Export PNG</button>
+        <button class="btn" onclick="rmExportPDF()" title="Exports as a print-ready PDF.">Export PDF</button>
       </div>
       <p class="hint" id="rm-export-hint" style="margin:8px 0 0"></p>
     </div>
@@ -883,6 +897,11 @@
       <div class="card">
         <h2 class="cond">Daily Progress Report</h2>
         <p class="hint" id="dpr-continue-notice" style="display:none;color:#2E7D32"></p>
+        <!-- Persistent, visible job link (Mark: "it should SHOW it's linked to
+             Frontier and stay linked"). Rendered by dprRenderLinkStatus() on
+             pick and on reload — the job it's filed under + its Foundation /
+             CompanyCam links. Hidden until there's a job. -->
+        <div id="dpr-link-status" style="display:none;margin:0 0 12px"></div>
         <div class="btnrow" style="margin:0 0 12px">
           <button class="btn" onclick="dprShowJobSelect()">🔍 Select Job</button>
           <span class="hint" style="margin:0">Pick the job — its customer, address and job number fill in automatically. Or just type a new one below.</span>
@@ -896,7 +915,7 @@
         <div class="fld" style="max-width:320px">
           <label>Foreman <span class="hint" style="font-weight:400">— who's filling this out</span></label>
           <input type="text" id="dpr-foreman" list="dl-dprForeman" placeholder="Start typing a name…"
-            onblur="rememberFieldValue('dprForeman', this.value)">
+            onblur="dprRememberForeman(this.value)">
         </div>
         <div class="grid">
           <div class="fld"><label>Job Name</label><input type="text" id="dpr-jobName" list="dl-dprJobName" onblur="rememberFieldValue('jobName', this.value)"></div>
@@ -907,6 +926,10 @@
           <div class="fld"><label>Roof System</label><input type="text" id="dpr-roofSystem" list="dl-roofSystem"></div>
         </div>
         <div id="dpr-roof-picker" style="display:none"></div>
+        <!-- The day's weather at the job — auto-pulled from Open-Meteo for the
+             job's location and saved with the report (js/dpr.js dprRefreshWeather).
+             Display-only, never blocks the report. -->
+        <p class="hint" id="dpr-weather" style="display:none;margin:8px 0 0"></p>
       </div>
 
       <div class="card">
@@ -934,13 +957,24 @@
         <div id="dpr-foundation-labor-body" class="hint">Loading…</div>
       </div>
 
+      <!-- Compact togglers for the optional sections (Mark: buttons, not a
+           tall stack of Yes/No cards). Tapping a chip reveals that section's
+           card below; untouched sections stay fully collapsed. The hidden
+           per-card <select> toggles remain the source of truth, so
+           collect()/fill() logic is unchanged — see dprToggleSection()
+           (js/dpr.js). -->
+      <div class="card">
+        <h2 class="cond">More to report?</h2>
+        <div class="btnrow" style="flex-wrap:wrap;gap:6px" id="dpr-section-chips"></div>
+      </div>
+
       <!-- ============ Yes/No-gated sections (DPR Phase 2) ============
            Each defaults to No and stays out of the way; flipping to Yes reveals
            the details via dprGate() (js/dpr.js). Data stored on the DPR doc as
            null (No) or an object/rows (Yes) — see dprCollect(). -->
-      <div class="card">
+      <div class="card" id="dpr-card-delays" style="display:none">
         <h2 class="cond">Delays</h2>
-        <div class="fld" style="max-width:220px">
+        <div class="fld" style="max-width:220px;display:none">
           <label>Any delays today?</label>
           <select id="dpr-delays-toggle" onchange="dprGate('dpr-delays-toggle','dpr-delays-body','Yes')">
             <option>No</option><option>Yes</option>
@@ -961,9 +995,9 @@
         </div>
       </div>
 
-      <div class="card">
+      <div class="card" id="dpr-card-quantities" style="display:none">
         <h2 class="cond">Material Quantities</h2>
-        <div class="fld" style="max-width:220px">
+        <div class="fld" style="max-width:220px;display:none">
           <label>Track quantities today?</label>
           <select id="dpr-quantities-toggle" onchange="dprGate('dpr-quantities-toggle','dpr-quantities-body','Yes')">
             <option>No</option><option>Yes</option>
@@ -975,9 +1009,9 @@
         </div>
       </div>
 
-      <div class="card">
+      <div class="card" id="dpr-card-jsa" style="display:none">
         <h2 class="cond">Job Safety Analysis (JSA)</h2>
-        <div class="fld" style="max-width:220px">
+        <div class="fld" style="max-width:220px;display:none">
           <label>JSA completed today?</label>
           <select id="dpr-jsa-toggle" onchange="dprGate('dpr-jsa-toggle','dpr-jsa-body','Yes')">
             <option>No</option><option>Yes</option>
@@ -994,9 +1028,9 @@
         </div>
       </div>
 
-      <div class="card">
+      <div class="card" id="dpr-card-incidents" style="display:none">
         <h2 class="cond">Incidents / Near Misses</h2>
-        <div class="fld" style="max-width:220px">
+        <div class="fld" style="max-width:220px;display:none">
           <label>Any incidents today?</label>
           <select id="dpr-incidents-toggle" onchange="dprGate('dpr-incidents-toggle','dpr-incidents-body','Yes')">
             <option>No</option><option>Yes</option>
@@ -1016,9 +1050,9 @@
         </div>
       </div>
 
-      <div class="card">
+      <div class="card" id="dpr-card-equipment" style="display:none">
         <h2 class="cond">Equipment On Site</h2>
-        <div class="fld" style="max-width:220px">
+        <div class="fld" style="max-width:220px;display:none">
           <label>Equipment used today?</label>
           <select id="dpr-equipment-toggle" onchange="dprGate('dpr-equipment-toggle','dpr-equipment-body','Yes')">
             <option>No</option><option>Yes</option>
@@ -1035,9 +1069,9 @@
            rented LIFT is recorded, the daily pre-use safety checklist scaffold
            reveals (items pending Mark's OSHA/ANSI list — js/dpr.js
            DPR_PREUSE_CHECKLIST). -->
-      <div class="card">
+      <div class="card" id="dpr-card-rented" style="display:none">
         <h2 class="cond">Rented Equipment</h2>
-        <div class="fld" style="max-width:220px">
+        <div class="fld" style="max-width:220px;display:none">
           <label>Any rented equipment on site today?</label>
           <select id="dpr-rented-toggle" onchange="dprGate('dpr-rented-toggle','dpr-rented-body','Yes')">
             <option>No</option><option>Yes</option>
@@ -1050,9 +1084,28 @@
         </div>
       </div>
 
-      <div class="card">
+      <!-- Toolbox / tailgate safety talk + crew sign-in. When the daily is
+           signed off, the talk given + the crew who acknowledged become part
+           of the signed record and print in the PDF. Sign-in reuses the crew
+           roster above (js/dpr.js dprRenderToolboxSignins). -->
+      <div class="card" id="dpr-card-toolbox" style="display:none">
+        <h2 class="cond">Toolbox Talk</h2>
+        <div class="fld" style="max-width:220px;display:none">
+          <label>Toolbox talk given today?</label>
+          <select id="dpr-toolbox-toggle" onchange="dprGate('dpr-toolbox-toggle','dpr-toolbox-body','Yes')">
+            <option>No</option><option>Yes</option>
+          </select>
+        </div>
+        <div id="dpr-toolbox-body" style="display:none">
+          <div class="fld"><label>Talk given</label>
+            <input type="text" id="dpr-toolbox-talk" list="dl-dprToolboxTalks" placeholder="e.g. Fall Protection, Ladder Safety"></div>
+          <div id="dpr-toolbox-signins"></div>
+        </div>
+      </div>
+
+      <div class="card" id="dpr-card-visitors" style="display:none">
         <h2 class="cond">Site Visitors</h2>
-        <div class="fld" style="max-width:220px">
+        <div class="fld" style="max-width:220px;display:none">
           <label>Any visitors today?</label>
           <select id="dpr-visitors-toggle" onchange="dprGate('dpr-visitors-toggle','dpr-visitors-body','Yes')">
             <option>No</option><option>Yes</option>
@@ -1087,6 +1140,10 @@
         <div class="btnrow" style="margin:0">
           <button class="btn primary" onclick="document.getElementById('dprCamInput').click()">📷 Take Photo</button>
           <button class="btn" onclick="document.getElementById('dprLibInput').click()">+ Add Photos</button>
+          <!-- Pull this job's CompanyCam photos straight into the report (they
+               print in the PDF). Opens the linked project directly, or lets the
+               foreman pick one. See dprOpenCompanyCam() in js/dpr.js. -->
+          <button class="btn" onclick="dprOpenCompanyCam()">☁️ From CompanyCam</button>
         </div>
         <input type="file" id="dprCamInput" accept="image/*" capture="environment" style="display:none"
           onchange="dprAddPhotosFromCamera(this.files); this.value='';">
@@ -1107,6 +1164,156 @@
     </div>
   </div>
 
+  <!-- ================= SERVICE MANAGER VIEW (dispatch + proposals) =================
+       One place to pre-create a work order from a proposal (or blank), cross-
+       reference it to the real Foundation job, assign it to a CREW for a DAY,
+       and watch a live per-crew dispatch board that clears as work completes.
+       Gated to service_manager-and-up via tab visibility (updateServiceManagerUI);
+       all logic in js/servicemanager.js. See that file's header for the model. -->
+  <div id="view-servicemanager" style="display:none">
+    <h2 class="cond" style="margin:0 0 10px">🚚 Service Manager</h2>
+
+    <!-- Sign-in / permission gate (defence-in-depth; the tab is already hidden
+         for non-managers, this just keeps the body from flashing if reached
+         directly). Shown/hidden by smApplyPermissionUI(). -->
+    <div class="card" id="sm-gate" style="display:none;background:#FFF4E5;border:1px solid #E8A33D">
+      <p style="margin:0">The Service Manager workspace is available to service managers and up. Sign in with a manager account to use it.</p>
+    </div>
+
+    <div id="sm-body">
+      <!-- Segmented control: Proposals inbox vs live Dispatch board. -->
+      <div class="btnrow" style="margin:0 0 12px">
+        <button class="btn" id="sm-seg-proposals" onclick="smShowSection('proposals')">📨 Proposals</button>
+        <button class="btn" id="sm-seg-board" onclick="smShowSection('board')">🚚 Dispatch Board</button>
+      </div>
+
+      <!-- ---------- PROPOSALS ---------- -->
+      <div id="sm-section-proposals">
+        <div class="card">
+          <div class="btnrow" style="margin:0 0 10px;align-items:center">
+            <div class="fld" style="margin:0;min-width:180px">
+              <label style="font-size:12px">Proposal source</label>
+              <select id="sm-proposal-source" onchange="smLoadProposals()">
+                <option value="Proposals">📁 Proposals folder</option>
+                <option value="sentitems">📤 Sent Items (sent by me)</option>
+              </select>
+            </div>
+            <button class="btn" onclick="smLoadProposals()" title="Reload proposals from Outlook">🔄 Refresh</button>
+            <button class="btn" onclick="document.getElementById('sm-proposal-upload').click()" title="Upload a proposal PDF from this device">⬆️ Upload PDF</button>
+            <input type="file" id="sm-proposal-upload" accept="application/pdf" style="display:none" onchange="smUploadProposal(this)">
+          </div>
+          <p class="hint" style="margin:0 0 10px">Proposals from Nathan or sent by you. A <b>✅ WO exists</b> flag is a best-effort
+            match by customer / address / subject — always confirm. Pick a proposal to pre-create its work order.</p>
+          <div id="sm-proposals-list" class="hint">Loading proposals…</div>
+        </div>
+      </div>
+
+      <!-- ---------- DISPATCH BOARD ---------- -->
+      <div id="sm-section-board" style="display:none">
+        <div class="card">
+          <div class="btnrow" style="margin:0 0 10px;align-items:center;flex-wrap:wrap">
+            <div class="fld" style="margin:0;min-width:160px">
+              <label style="font-size:12px">Day</label>
+              <input type="date" id="sm-board-date" onchange="smRenderBoard()">
+            </div>
+            <button class="btn" onclick="smBoardSetDay(0)" title="Today">Today</button>
+            <button class="btn" onclick="smBoardSetDay(1)" title="Tomorrow">Tomorrow</button>
+            <button class="btn" onclick="smBoardSetDay(2)" title="Day after tomorrow">+2</button>
+            <span style="flex:1"></span>
+            <button class="btn primary" onclick="smOpenPrecreate(null)" title="Pre-create a blank work order and assign it">➕ New Work Order</button>
+            <button class="btn" onclick="smOpenAssignExisting()" title="Assign an already-saved work order to a crew/day">📋 Assign Existing</button>
+            <button class="btn" onclick="smRenderBoard()" title="Refresh the board">🔄</button>
+          </div>
+          <p class="hint" style="margin:0 0 10px">Live board for the selected day. A crew's work order <b>drops off when it's cleared</b>.
+            Run low? Add more with the buttons above.</p>
+          <div id="sm-board" class="hint">Loading board…</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ================= Service Manager: Pre-create Work Order =================
+     Compact create form (from a selected proposal or blank). Prefills customer/
+     address/scope, cross-references Foundation for the real job, and assigns a
+     crew + day. On save it builds the WO and writes it through the same
+     cloud-save path as the edit form (js/servicemanager.js). -->
+<div id="sm-precreate-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)smClosePrecreate()">
+  <div style="background:#fff;max-width:620px;margin:4vh auto;border-radius:8px;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;width:96%">
+    <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
+      <b class="cond" style="font-size:17px" id="sm-precreate-title">Pre-create Work Order</b>
+      <span style="flex:1"></span>
+      <button class="btn" onclick="smClosePrecreate()">Close</button>
+    </div>
+    <div style="padding:14px 16px;overflow:auto">
+      <div id="sm-precreate-proposal" class="card" style="display:none;background:#EFF6FF;border:1px solid #90C2F0;margin:0 0 12px"></div>
+      <div class="grid">
+        <div class="fld"><label>Work Order Type</label><select id="sm-pc-woType"></select></div>
+        <div class="fld"><label>Target date (crew day)</label><input type="date" id="sm-pc-date"></div>
+        <div class="fld"><label>Customer / Bill To</label><input type="text" id="sm-pc-billTo" list="dl-billTo"></div>
+        <div class="fld"><label>Job / Building name</label><input type="text" id="sm-pc-jobName" list="dl-jobName"></div>
+      </div>
+      <div class="fld"><label>Address / Location</label><input type="text" id="sm-pc-location" list="dl-location"></div>
+      <div class="fld"><label>Scope of work (repair description)</label><textarea id="sm-pc-scope" rows="3" placeholder="What needs doing…"></textarea></div>
+
+      <!-- Foundation cross-reference: match this proposal's address/name to the
+           real Foundation job so accounting identity is bound from creation. -->
+      <div class="card" style="margin:12px 0;background:#F6FBF6;border:1px solid #B5D9B5">
+        <div class="btnrow" style="margin:0;align-items:center">
+          <b style="font-size:13px">🏗️ Foundation job</b>
+          <span style="flex:1"></span>
+          <button class="btn" type="button" onclick="smMatchFoundationFromForm()" title="Find the matching Foundation job by address/name">🔎 Cross-reference</button>
+        </div>
+        <div id="sm-pc-foundation" class="hint" style="margin:8px 0 0">Not linked. Cross-reference to bind the real job number.</div>
+      </div>
+
+      <!-- CompanyCam link/create. DELIBERATE RULE EXCEPTION: RoofOps normally
+           never creates CompanyCam projects. This flow offers a one-click CREATE
+           only when the WO is Foundation-linked AND no existing project matches
+           the address — a gated, audit-logged action (see js/servicemanager.js
+           smCreateCompanyCamProject + netlify/functions/companycam.js). -->
+      <div class="card" style="margin:12px 0;background:#FFF7F0;border:1px solid #E8A33D">
+        <div class="btnrow" style="margin:0;align-items:center">
+          <b style="font-size:13px">📸 CompanyCam project</b>
+          <span style="flex:1"></span>
+          <button class="btn" type="button" onclick="smCheckCompanyCam()" title="Search CompanyCam for a matching project by address/name">🔎 Check CompanyCam</button>
+        </div>
+        <div id="sm-pc-companycam" class="hint" style="margin:8px 0 0">Check for an existing CompanyCam project to link. Creating one is a deliberate action, offered only when Foundation-linked with no match.</div>
+      </div>
+
+      <!-- AI scope-prefill (Phase 2). Hidden until the endpoint reports a key is
+           configured (capability probe) — inert on keyless deploys. -->
+      <div class="btnrow" id="sm-pc-ai-row" style="display:none;margin:0 0 8px">
+        <button class="btn" type="button" onclick="smAiPrefillScope()" title="Read the proposal PDF and draft the scope for you to confirm">✨ AI: draft scope from proposal</button>
+      </div>
+
+      <div class="fld"><label>Assign to crew (foreman)</label><input type="text" id="sm-pc-crew" list="dl-smCrew" placeholder="e.g. Kelly Walker"></div>
+      <p class="hint" style="margin:2px 0 0">Leave crew blank to pre-create without dispatching yet — it'll be a saved work order you can assign later.</p>
+    </div>
+    <div style="padding:12px 16px;border-top:1px solid var(--line)">
+      <button class="btn primary" style="width:100%" onclick="smSubmitPrecreate()">Create &amp; Assign Work Order</button>
+    </div>
+  </div>
+</div>
+
+<!-- Service Manager: assign an EXISTING saved work order to a crew/day. -->
+<div id="sm-assign-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)smCloseAssignExisting()">
+  <div style="background:#fff;max-width:620px;margin:5vh auto;border-radius:8px;max-height:88vh;display:flex;flex-direction:column;overflow:hidden;width:96%">
+    <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
+      <b class="cond" style="font-size:17px">Assign Existing Work Order</b>
+      <span style="flex:1"></span>
+      <button class="btn" onclick="smCloseAssignExisting()">Close</button>
+    </div>
+    <div style="padding:14px 16px;overflow:auto">
+      <div class="grid">
+        <div class="fld"><label>Assign to crew (foreman)</label><input type="text" id="sm-assign-crew" list="dl-smCrew"></div>
+        <div class="fld"><label>Target date (crew day)</label><input type="date" id="sm-assign-date"></div>
+      </div>
+      <input type="text" id="sm-assign-search" placeholder="Search saved work orders by job, address, customer…" style="width:100%;margin:6px 0 10px;box-sizing:border-box" oninput="smRenderAssignList()">
+      <div id="sm-assign-list" class="hint">Loading work orders…</div>
+    </div>
+  </div>
 </div>
 
 <div id="cc-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)closeCC()">
@@ -1507,8 +1714,15 @@
 </div>
 
 <div id="photo-lightbox" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:10000" onclick="if(event.target===this)closePhotoLightbox()">
-  <button class="btn" style="position:absolute;top:14px;right:14px" onclick="closePhotoLightbox()">✕ Close</button>
+  <button class="btn" style="position:absolute;top:14px;right:14px;z-index:1" onclick="closePhotoLightbox()">✕ Close</button>
   <img id="photo-lightbox-img" class="photo-lightbox-img" src="">
+  <div class="photo-lightbox-zoombar" onclick="event.stopPropagation()">
+    <button class="btn" onclick="zoomLightboxBy(1/1.4)" title="Zoom out" aria-label="Zoom out">−</button>
+    <span class="zoom-pct" id="photo-lightbox-pct">100%</span>
+    <button class="btn" onclick="zoomLightboxBy(1.4)" title="Zoom in" aria-label="Zoom in">＋</button>
+    <button class="btn" onclick="resetLightboxZoom(true)" title="Reset zoom" aria-label="Reset zoom">Reset</button>
+  </div>
+  <div class="photo-lightbox-hint">Scroll or ± to zoom · drag to pan · double-click to toggle</div>
 </div>
 
 <!-- ================= Send Feedback (reachable from every screen) =================
@@ -1573,6 +1787,10 @@
      this one is the app-wide list. -->
 <datalist id="dl-roofSystem"></datalist>
 <datalist id="dl-photoCaption"></datalist>
+<!-- Service Manager crew (foreman) picker — seeded from DPR_FOREMEN by
+     js/servicemanager.js (a "crew" is keyed by its foreman name, matching how
+     the DPR already identifies a crew). -->
+<datalist id="dl-smCrew"></datalist>
 <datalist id="dl-assetLabel"></datalist>
 <!-- Foremen roster for the Daily Progress Report's Foreman field. Populated
      from DPR_FOREMEN in js/dpr.js (see dprPopulateForemen()). Empty until
@@ -1589,6 +1807,7 @@
 <datalist id="dl-dprJobNo"></datalist>
 <datalist id="dl-dprCrew"></datalist>
 <datalist id="dl-dprRentedType"></datalist>
+<datalist id="dl-dprToolboxTalks"></datalist>
 
 <!-- Modularized (see DEV_NOTES.md) -- index.html is now just markup + these
      script tags in order. Plain globals, not ES modules: this app's
@@ -1611,6 +1830,11 @@
 <script src="js/workorders.js"></script>
 <script src="js/roofmapper.js"></script>
 <script src="js/dpr.js"></script>
+<!-- Service Manager workspace: proposals inbox, Foundation cross-ref, pre-create
+     work order, crew/day assignment, live dispatch board. Loaded after dpr.js
+     (reuses DPR_FOREMEN as the crew roster) and workorders.js (dispatch fields
+     live in collect()/fill()). See js/servicemanager.js header. -->
+<script src="js/servicemanager.js"></script>
 <script src="js/roles-admin.js"></script>
 <!-- AI training-label write path (see js/ailabels.js). Pure data plumbing,
      no UI of its own and deliberately no callers yet — loaded so the flows
@@ -1645,6 +1869,7 @@ populateWarrantyGuidelines();
 showView("home");
 renderSaved();
 updateAdminUI();
+updateServiceManagerUI();
 registerServiceWorker();
 </script>
 </body>

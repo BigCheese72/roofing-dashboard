@@ -2758,6 +2758,10 @@ function rmRenderFootprints(){
   map.fitBounds(bounds, { padding: [30, 30] });
   setTimeout(function(){ map.invalidateSize(); }, 60);
 }
+function rmSelectedFootprintTitle(tags, fp){
+  var linkedName = rmState.linkedJobBuildingName || rmState.pendingBuildingName || rmState.linkedJobName || rmState.linkedJobNo;
+  return linkedName || tags.name || (fp.osmType === "way" ? "Unnamed building" : "Unnamed building group");
+}
 function rmSelectFootprint(id){
   var fp = rmState.footprints.find(function(f){ return f.id === id; });
   if (!fp) return;
@@ -2773,7 +2777,14 @@ function rmSelectFootprint(id){
   });
   var tags = fp.tags || {};
   var addrParts = [tags["addr:housenumber"], tags["addr:street"]].filter(Boolean).join(" ");
-  var infoHtml = "<b>" + esc(tags.name || (fp.osmType === "way" ? "Unnamed building" : "Unnamed building group")) + "</b>";
+  var infoHtml = "<b>" + esc(rmSelectedFootprintTitle(tags, fp)) + "</b>";
+  if (rmState.linkedJobNo || rmState.linkedJobName){
+    var linkedBits = [];
+    if (rmState.linkedJobNo) linkedBits.push("#" + rmState.linkedJobNo);
+    if (rmState.linkedJobAddress) linkedBits.push(rmState.linkedJobAddress);
+    infoHtml += "<br><span style='color:var(--muted);font-size:12px'>Linked Foundation job" +
+      (linkedBits.length ? ": " + esc(linkedBits.join(" - ")) : "") + "</span>";
+  }
   if (addrParts) infoHtml += "<br>" + esc(addrParts);
   var typeLabel = (tags.building && tags.building !== "yes" && tags.building) ||
     tags.healthcare || tags.amenity || tags.shop || tags.office || tags.leisure || null;
@@ -5521,7 +5532,10 @@ async function rmBpSelectCompanyCamProject(i){
   toast("Linking CompanyCam project…");
   try{
     var ids = await ensureCustomerAndBuilding({
-      jobName: p.name || "", billTo: "", location: p.address || "", companyCamProjectId: p.id
+      jobName: p.name || "", billTo: "", location: p.address || "", companyCamProjectId: p.id,
+      foundationJobNo: rmState.linkedJobNo,
+      foundationCustomerNo: rmState.linkedJobCustomerNo,
+      foundationAddress: rmState.linkedJobAddress
     });
     if (!ids.buildingId) throw new Error("couldn't create/link building (need internet connection)");
     var freshBld = {};
@@ -6481,7 +6495,12 @@ async function rmCreateBuildingAndSave(){
   var addr = rmState.linkedJobAddress || [tags["addr:housenumber"], tags["addr:street"]].filter(Boolean).join(" ");
   toast("Creating building…");
   try{
-    var ids = await ensureCustomerAndBuilding({ jobName: jobName, billTo: billTo, location: addr });
+    var ids = await ensureCustomerAndBuilding({
+      jobName: jobName, billTo: billTo, location: addr,
+      foundationJobNo: rmState.linkedJobNo,
+      foundationCustomerNo: rmState.linkedJobCustomerNo,
+      foundationAddress: rmState.linkedJobAddress
+    });
     if (!ids.buildingId) throw new Error("couldn't create building (need internet connection)");
     if (rmSplitState.savingAll) await rmSaveSplitSectionsToBuilding(ids.buildingId);
     else await rmSaveOutlineToBuilding(ids.buildingId);

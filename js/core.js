@@ -537,13 +537,12 @@ async function checkAuthBootstrapStatus(){
   }catch(e){ authBootstrapStatus = true; }
   renderLoginGate();
 }
-/* The gate holds AT MOST one body-scroll lock, released the instant it
-   hides. Without this guard, the hide paths below (esp. a successful login:
-   onAuthStateChanged -> renderLoginGate() with currentAuthUser set) took the
-   early return and never called unlockBodyScroll(), so body{overflow:hidden}
-   set when the gate opened stayed on forever -- a tech who freshly signed in
-   then couldn't scroll the page (WO/leak form frozen). Idempotent so repeated
-   renders (token refresh, re-render) can't stack the lock either. */
+/* Idempotent login-gate scroll lock (prod hotfix 27bacb9, ported onto dev's
+   ref-counted lockBodyScroll): the gate holds AT MOST one lock, released the
+   instant it hides. Without this, the signed-in hide path (onAuthStateChanged
+   -> renderLoginGate() with currentAuthUser set) early-returned without
+   unlocking, so body{overflow:hidden} stayed on after a fresh login and froze
+   the WO/leak form. */
 var loginGateScrollLocked = false;
 function setLoginGateScrollLock(on){
   if (on === loginGateScrollLocked) return;
@@ -1364,6 +1363,32 @@ var isAdmin = false;
 function recomputeIsAdmin(){
   isAdmin = !!(currentAuthClaims && (currentAuthClaims.owner === true || currentAuthClaims.role === "admin"));
   updateAdminUI();
+  updateServiceManagerUI();
+}
+/* Service-Manager-and-up gate for the dispatch/proposals workspace. Same
+   claims-based, UI-only convenience as isAdmin (see the "admin mode" comment
+   above): owner + admin + ops_manager + service_manager — the EXACT role set
+   that already holds warranty.manage_reports, which server-gates the proposal
+   source (contacts-sync). No new permission key: WO writes are client-direct
+   under the existing open `workorders` rules and the proposal source is
+   already gated, so there is nothing new to enforce server-side in v1. See the
+   header of js/servicemanager.js. */
+function canServiceManage(){
+  if (!currentAuthClaims) return false;
+  if (currentAuthClaims.owner === true) return true;
+  var r = currentAuthClaims.role;
+  return r === "admin" || r === "ops_manager" || r === "service_manager";
+}
+/* Shows/hides the Service Manager tab off the signed-in user's real role, the
+   same pattern updateAdminUI() uses for tab-admin. Bounces off the SM view if
+   access is revoked while it's open. */
+function updateServiceManagerUI(){
+  var tab = document.getElementById("tab-servicemanager");
+  var can = canServiceManage();
+  if (tab) tab.style.display = can ? "" : "none";
+  if (!can && typeof currentViewName !== "undefined" && currentViewName === "servicemanager"){
+    showView("edit");
+  }
 }
 /* Attaches the signed-in user's Firebase ID token as a Bearer header --
    the actual trust boundary every claims-gated server function verifies
@@ -1609,18 +1634,14 @@ function updateAdminUI(){
   if (!isAdmin && typeof currentViewName !== "undefined" && currentViewName === "admin"){
     showView("edit");
   }
-  /* Saved view access control (Mark) -- Import Work Order File and, per
-     saved work order, Delete, are admin-only (Export was removed
+  /* Saved view access control (Mark) -- per saved work order, Delete is
+     admin-only (Import Work Order File and Export were both removed
      entirely, not gated -- see "Export button removed" in DEV_NOTES.md).
      updateAdminUI() re-draws the Saved list immediately on every auth-state
      change (drawSaved() itself checks isAdmin for the per-row Delete
      button) so signing in/out or a role change takes effect without
      needing a tab change. See "Saved view access control" in
      DEV_NOTES.md. */
-  var importBtn = document.getElementById("saved-import-btn");
-  if (importBtn) importBtn.style.display = isAdmin ? "" : "none";
-  var importHint = document.getElementById("saved-import-hint");
-  if (importHint) importHint.style.display = isAdmin ? "" : "none";
   if (document.getElementById("saved-list")) drawSaved();
   renderCCLinkInfo();
   if (document.getElementById("view-history") && document.getElementById("view-history").style.display !== "none"){
@@ -2335,19 +2356,34 @@ function onWoTypeChange(){
   var isRepair = val("woType") === "Repair";
   var rc = document.getElementById("wo-repair-card");
   if (rc) rc.style.display = isRepair ? "" : "none";
-  /* Material List: Work Order (Repair) AND Leak / Service (Mark, from prod:
-     the Repair-only gate made the card look "missing" on the Leak form — a
-     leak call burns material too, so both repair-capable forms show it).
-     Change Order keeps its own free-text #woMaterials inside its card;
-     Inspection stays out; WARRANTY is a pending decision from Mark —
-     deliberately NOT added yet. DISPLAY GATING ONLY — like repairs[],
-     collect()/fill() round-trip materials[] for every type and all three
-     report builders print materials whenever present, so nothing about
-     save/report behavior changes here. (WORK_ORDER_TYPES[0] is checked
-     inline — the isLeakType var is only declared further down in this
-     function; don't reference it before its declaration.) */
+  /* Material List: Work Order (Repair), Leak / Service AND Change Order
+     (Mark: "a change order form needs materials too"). Repair/Leak were
+     added earlier (the Repair-only gate had made the card look "missing" on
+     the Leak form — a leak call burns material too). Change Order now uses
+     this SAME itemized list as its primary materials entry; the old
+     free-text #woMaterials inside its card is demoted to a clearly-labelled
+     "Additional Material Notes" legacy field, shown only when it already
+     carries text (see the co-materials-legacy gate below) so no existing CO
+     record loses that data. Inspection stays out; WARRANTY is a pending
+     decision from Mark — deliberately NOT added yet. DISPLAY GATING ONLY —
+     like repairs[], collect()/fill() round-trip materials[] for every type,
+     and the report builders print materials whenever present (the three
+     Change Order builders were taught to print the itemized list too — see
+     export.js). (WORK_ORDER_TYPES[0] is checked inline — the isLeakType var
+     is only declared further down in this function; don't reference it
+     before its declaration.) */
   var mc = document.getElementById("wo-materials-card");
-  if (mc) mc.style.display = (isRepair || val("woType") === WORK_ORDER_TYPES[0]) ? "" : "none";
+  if (mc) mc.style.display = (isRepair || isCO || val("woType") === WORK_ORDER_TYPES[0]) ? "" : "none";
+  /* Legacy Change Order free-text materials (#woMaterials, wrapped in
+     #wo-co-materials-legacy): the itemized Material List above is now the
+     primary entry on a Change Order, so this field is hidden for new work
+     rather than presenting a confusing second "Materials" box. It is
+     revealed ONLY on a Change Order that already has text in it — an
+     existing record — so that data stays visible, editable and preserved on
+     the next save. fill() sets #woMaterials before calling this function, so
+     the value is already in place when we check it. */
+  var coLegacy = document.getElementById("wo-co-materials-legacy");
+  if (coLegacy) coLegacy.style.display = (isCO && String(val("woMaterials") || "").trim()) ? "" : "none";
   /* Repair is a project/scope report, not a leak diagnosis — findings
      (leak pins/conditions) don't apply to it, per Mark. Change Order is a
      scope of work, not a leak diagnosis either — same reasoning. */
@@ -2428,21 +2464,24 @@ function onWoTypeChange(){
      section in its PDF) and Warranty stay hidden — widening later is just
      this condition. */
   var dsr = document.getElementById("wo-draft-summary-row");
-  /* Two gates, both must pass: (1) a summary-bearing report type, and (2) this
-     deploy actually HAS an AI key. Production ships with no key, so the button
-     stays hidden there rather than offering a draft that can only be a
-     deterministic placeholder; it flips visible automatically the moment a key
-     is provisioned (the probe re-runs this on resolve). aiSummaryConfigured()
-     is null-until-probed, so the button starts hidden and only appears once we
-     KNOW a key exists — never a flash of a dead control. */
+  /* Teaser, not a hard gate (Mark, 2026-07-17): show the "✨ Draft Summary"
+     button on every summary-bearing report type (Inspection, Leak, Work Order)
+     regardless of whether THIS deploy has an AI key. On a keyed deploy (dev, or
+     prod once a key is provisioned) tapping generates a real draft; on a
+     keyless deploy (production today) tapping shows a friendly "coming soon"
+     toast instead of a dead no-op or an error — that branch lives in
+     draftReportSummary() (js/workorders.js), driven by the same capability
+     probe. Change Order (its own document, no Summary section in its PDF) and
+     Warranty stay hidden — widening later is just this condition. */
   var wantsSummary = (isInspection || isLeakType || isRepair);
-  /* aiSummaryConfigured()/probeAiSummaryCapability() live outside this function
-     (above), so typeof-guard them — same convention as the other neighbor
-     calls here — for isolated-function unit tests and any load order. Until the
-     probe resolves (aiReady === null) the row stays hidden. */
-  var aiReady = (typeof aiSummaryConfigured === "function") ? aiSummaryConfigured() : null;
-  if (dsr) dsr.style.display = (wantsSummary && aiReady === true) ? "" : "none";
-  if (wantsSummary && aiReady === null && typeof probeAiSummaryCapability === "function") probeAiSummaryCapability();
+  if (dsr) dsr.style.display = wantsSummary ? "" : "none";
+  /* Pre-warm the capability probe so a tap branches instantly (real draft vs
+     coming-soon) without waiting on the round-trip. Cached + typeof-guarded for
+     isolated-function unit tests and load order — same convention as the other
+     neighbor calls here; draftReportSummary() also awaits it as a fallback if
+     the button is tapped before this resolves. */
+  if (wantsSummary && typeof aiSummaryConfigured === "function" && aiSummaryConfigured() === null &&
+      typeof probeAiSummaryCapability === "function") probeAiSummaryCapability();
   var ic = document.getElementById("wo-inspection-card");
   if (ic) ic.style.display = isInspection ? "" : "none";
   if (isInspection){ ensureInspectionChecklist(); renderInspectionChecklist(); renderInspectionRoofPicker(); }
@@ -2958,40 +2997,20 @@ async function syncPinCorrectionsToHistory(o){
     if (any) await batch.commit();
   }catch(e){ console.warn("pin correction sync failed", e); }
 }
-/* Photo-capture rework follow-up (Mark): on a work order type that has
-   findings (Leak/Service, Inspection, Warranty — see hasFindings in
-   onWoTypeChange()), every photo must have both a caption and an
-   assigned finding before the explicit Save can succeed — "General / no
-   specific finding" is no longer an acceptable end state for those
-   types. Repair and Change Order have no findings at all, so this never
-   applies to them. Deliberately checked only here (the explicit Save
-   button, opts.quiet unset) and NOT on the internal quiet auto-saves
-   ccImport() and autoSaveBeforeReport() already make — a freshly
-   imported photo hasn't had a chance to be captioned yet, and blocking
-   Send/Share/Download entirely over this felt too disruptive for field
-   use. See "Caption + finding enforcement" in DEV_NOTES.md. */
-function findingsPhotoIssues(o){
-  var hasFindings = o.woType !== "Repair" && o.woType !== "Change Order";
-  if (!hasFindings) return [];
-  var issues = [];
-  (o.photos || []).forEach(function(p, i){
-    var missing = [];
-    if (!(p.caption || "").trim()) missing.push("a caption");
-    if (!p.finding_id) missing.push("a finding");
-    if (missing.length) issues.push("Photo " + (i + 1) + " needs " + missing.join(" and "));
-  });
-  return issues;
-}
 function saveOrder(opts){
   opts = opts || {};
   var o = collect();
-  if (!opts.quiet){
-    var photoIssues = findingsPhotoIssues(o);
-    if (photoIssues.length){
-      toast("Fix before saving: " + photoIssues.join("; "));
-      return Promise.resolve(false);
-    }
-  }
+  /* No pre-save gate on photo fields. Captions and finding assignment are
+     OPTIONAL — a report/work order must ALWAYS be savable, captions or not
+     (Mark: he got stuck, unable to save an edited leak report because its
+     photos had no captions). This used to block the explicit Save whenever a
+     findings-type report (Leak/Service, Inspection, Warranty) had any
+     un-captioned OR un-assigned photo. That was doubly wrong: it blocked the
+     SAFE action (Save) while the quiet auto-saves behind Email/Share/Download
+     let an identical report go OUT the door — you could send it but not save
+     it. Any caption/finding quality nudge belongs on the send/export path or
+     as a non-blocking hint, never blocking Save. See "Caption + finding
+     enforcement" in DEV_NOTES.md. */
   currentId = o.id;
   var db = loadDb();
   /* Carry the clobber-guard base forward across collect() (which rebuilds the
@@ -3230,34 +3249,6 @@ function deleteOrder(id){
       .catch(function(){ toast("Deleted on this device \u2014 cloud copy may remain (check internet)"); });
   } else toast("Deleted on this device");
 }
-/* Admin-only — see deleteOrder() above for why the check lives here too,
-   not just on the button. */
-function importOrderFile(files){
-  if (!isAdmin){ toast("Admin mode required to import."); return; }
-  var f = files && files[0];
-  if (!f) return;
-  var r = new FileReader();
-  r.onload = function(){
-    try{
-      var o = JSON.parse(r.result);
-      if (!o || !o.id || typeof o !== "object") throw new Error("bad file");
-      var db = loadDb();
-      db.orders[o.id] = o;
-      db.index = db.index.filter(function(e){ return e.id !== o.id; });
-      db.index.unshift({ id:o.id, jobName:o.jobName || "(untitled)", jobNo:o.jobNo,
-        location:o.location, serviceDate:o.serviceDate, savedAt:Date.now() });
-      if (saveDb(db)){
-        renderSaved();
-        toast("Imported \u2713 \u2014 it's in your Saved list now.");
-      }
-      if (fdb) cloudSaveOrder(o).catch(function(){});
-    }catch(e){
-      toast("That file isn't a valid work order export.");
-    }
-  };
-  r.onerror = function(){ toast("Couldn't read that file."); };
-  r.readAsText(f);
-}
 function mergedIndex(){
   var db = loadDb();
   var map = {};
@@ -3328,11 +3319,14 @@ function showView(v){
   if (v === "admin" && !isAdmin){
     v = "edit";
   }
+  if (v === "servicemanager" && !canServiceManage()){
+    v = "edit";
+  }
   currentViewName = v;
   /* "home" has no header tab (reached via "+ New", the empty-state button
      in Building History, or tapping the logo) — every other view still
      keeps its tab exactly as before. */
-  ["home","edit","preview","saved","history","reports","roofmapper","dpr","admin"].forEach(function(name){
+  ["home","edit","preview","saved","history","reports","roofmapper","dpr","servicemanager","admin"].forEach(function(name){
     var viewEl = document.getElementById("view-" + name);
     if (viewEl) viewEl.style.display = (name === v ? "" : "none");
     var tabEl = document.getElementById("tab-" + name);
@@ -3345,6 +3339,7 @@ function showView(v){
   if (v === "reports"){ renderReportsList(); if (isAdmin){ loadFeedbackBacklog(); loadAuditLogBacklog(); } }
   if (v === "roofmapper") rmOnShow();
   if (v === "dpr" && typeof dprOnShow === "function") dprOnShow();
+  if (v === "servicemanager" && typeof smOnShow === "function") smOnShow();
   if (v === "admin" && typeof rolesAdminOnShow === "function") rolesAdminOnShow();
   window.scrollTo(0,0);
   if (v === "edit" && pendingPinFindingId){

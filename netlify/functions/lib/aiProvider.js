@@ -562,6 +562,48 @@ async function identifyIssue(input, opts) {
   }
 }
 
+// (c) SCOPE DRAFT: proposal text + light job context -> a plain-text scope of
+//     work draft for a service manager to confirm/edit. Text-only (no photos):
+//     the source is a proposal's words, not pixels — PDF-pixel/vision extraction
+//     is a flagged follow-up. Same stub-until-keyed contract as the others:
+//     no key -> deterministic composeStubScope (zero external calls); a key ->
+//     the model drafts, with fallback to the stub if the call fails. Returns
+//     { text, provider, model, llm, fallback? } like the others.
+const MAX_SCOPE_TOKENS = 700;
+const SCOPE_SYSTEM =
+  "You are a commercial roofing service manager drafting the SCOPE OF WORK for a work order from a proposal. " +
+  "Use ONLY what the proposal text and the provided context state — never invent quantities, prices, materials, " +
+  "or work the proposal does not describe. Write a concise, plain-text scope a crew can act on: what to do and " +
+  "where. No markdown, no headings, no preamble, no pricing, no disclaimer. This is a DRAFT the service manager " +
+  "will review and edit before it becomes the work order.";
+function sanitizeProposalText(raw) { return s(raw, 6000); }
+function composeStubScope(proposalText, context) {
+  const jn = (context && context.jobName) ? s(context.jobName, 200) : "the site";
+  const loc = (context && context.location) ? (" at " + s(context.location, 200)) : "";
+  const body = s(proposalText, 1500).replace(/\s+/g, " ").trim();
+  const head = "Scope of work for " + jn + loc + " (draft from proposal):\n";
+  return body ? (head + body) : (head + "Review the proposal and enter the scope of work.");
+}
+async function draftScope(input, opts) {
+  opts = opts || {};
+  const text = sanitizeProposalText(input && input.proposalText);
+  const context = {
+    jobName: s(input && input.context && input.context.jobName, 200),
+    location: s(input && input.context && input.context.location, 200),
+  };
+  const provider = resolveProvider(opts.env || process.env);
+  const stub = composeStubScope(text, context);
+  if (provider.name === "stub") return { text: stub, provider: "stub", model: null, llm: false };
+  try {
+    const parts = [{ kind: "text", text: "Draft the scope of work.\nContext (JSON): " + JSON.stringify(context) + "\nProposal text:\n" + text }];
+    const out = await callProvider(provider, SCOPE_SYSTEM, parts, MAX_SCOPE_TOKENS);
+    return { text: String(out).slice(0, 4000), provider: provider.name, model: provider.model, llm: true };
+  } catch (e) {
+    console.error("draftScope provider call failed:", e && e.message);
+    return { text: stub, provider: "stub", model: null, llm: false, fallback: true, errorDetail: String((e && e.message) || "unknown error").slice(0, 300) };
+  }
+}
+
 module.exports = {
   ISSUE_VOCABULARY,
   CAUSE_VOCABULARY,
@@ -575,8 +617,11 @@ module.exports = {
   cleanWorkOrderId,
   sanitizeReport,
   sanitizeIssueContext,
+  sanitizeProposalText,
+  composeStubScope,
   extractJson,
   clampIssueResult,
   generateSummary,
-  identifyIssue
+  identifyIssue,
+  draftScope
 };
