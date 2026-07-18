@@ -71,3 +71,26 @@ test("estimator links a real CompanyCam project id and name", () => {
   assert.equal(model.companyCamProjectId, "123");
   assert.equal(model.companyCamProjectName, "Warrensburg Post Office");
 });
+
+test("editable estimate line items change, delete, and add costs", () => {
+  const sb = loadEstimator();
+  const base = sb.estimatorCalculate(sb.ESTIMATOR_DEFAULTS);
+  sb.estimatorLineItems = base.lineItems.slice();
+  const taperIndex = sb.estimatorLineItems.findIndex((item) => item.name === "Tapered insulation package");
+  sb.estimatorUpdateLineItem(taperIndex, "total", "20000");
+  let changed = sb.estimatorCalculate(sb.ESTIMATOR_DEFAULTS, sb.estimatorLineItems);
+  assert.equal(changed.materialItems[taperIndex].total, 20000);
+  assert.ok(changed.edgeTotal > base.edgeTotal);
+
+  sb.estimatorDeleteLineItem(taperIndex);
+  changed = sb.estimatorCalculate(sb.ESTIMATOR_DEFAULTS, sb.estimatorLineItems);
+  assert.equal(changed.lineItems.some((item) => item.name === "Tapered insulation package"), false);
+  assert.ok(changed.edgeTotal < base.edgeTotal);
+
+  sb.estimatorAddLineItem(false);
+  const last = sb.estimatorLineItems.length - 1;
+  sb.estimatorUpdateLineItem(last, "name", "Extra lift delivery");
+  sb.estimatorUpdateLineItem(last, "total", "2500");
+  changed = sb.estimatorCalculate(sb.ESTIMATOR_DEFAULTS, sb.estimatorLineItems);
+  assert.ok(changed.otherItems.some((item) => item.name === "Extra lift delivery" && item.total === 2500));
+});

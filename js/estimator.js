@@ -114,6 +114,8 @@ var ESTIMATOR_FIELDS = {
 };
 
 var estimatorCompanyCamProjects = [];
+var estimatorLineItems = null;
+var estimatorLastInput = null;
 
 function estimatorIsOwner(){
   return !!(currentAuthClaims && currentAuthClaims.owner === true);
@@ -184,6 +186,7 @@ function estimatorLoadWarrensburg(opts){
     estimatorSetVal(ESTIMATOR_FIELDS[key], ESTIMATOR_DEFAULTS[key]);
   });
   estimatorRenderCompanyCamLink();
+  estimatorLineItems = null;
   estimatorCalculateFromForm({ quiet: true });
   if (!opts || !opts.quiet){
     if (typeof toast === "function") toast("Warrensburg estimate model loaded.");
@@ -266,13 +269,19 @@ function estimatorUnlinkCompanyCam(){
   estimatorRenderCompanyCamLink();
 }
 
-function estimatorMaterialItems(input){
+function estimatorGeneratedLineItems(input){
   var areaSquares = input.areaSf / 100;
   var fieldRolls = Math.ceil((input.areaSf * (1 + input.membraneWasteRate)) / (input.membraneRollSq * 100));
   var membraneRolls = fieldRolls + input.extraSaRollsForWalls;
   var items = [];
-  function add(name, qty, unit, total){
-    items.push({ name: name, qty: qty, unit: unit, total: Number(total || 0) });
+  function add(name, qty, unit, total, taxable){
+    items.push({
+      name: name,
+      qty: qty,
+      unit: unit,
+      total: Number(total || 0),
+      taxable: taxable !== false
+    });
   }
   add("60 mil EPDM SA membrane", membraneRolls + " rolls", "10 SQ", membraneRolls * input.membraneRollSq * input.membraneSqPrice);
   add("Tapered insulation package", input.slopeType === "tapered" ? "quote" : "structural slope", "", input.slopeType === "tapered" ? input.taperCost : 0);
@@ -292,23 +301,54 @@ function estimatorMaterialItems(input){
   add("Pipe boots", input.pipeBoots, "", input.pipeBoots * input.pipeBootPrice);
   add("Scupper flashing material", "allowance", "", input.scupperFlashing);
   add("Miscellaneous detail materials", "allowance", "", input.miscDetailMaterials);
+  add("Wall / blocking rebuild allowance", "allowance", "", input.blockingCost, false);
+  add("New perimeter sheet metal", input.perimeterLf + " LF", estimatorMoney(input.metalLfCost) + "/LF", input.perimeterLf * input.metalLfCost, false);
+  add("Retrofit drains", input.retrofitDrainCount + " drains", estimatorMoney(input.retrofitDrainCost) + "/EA", input.retrofitDrainCount * input.retrofitDrainCost, false);
+  add("Disposal / dumpsters", "allowance", "", input.disposalCost, false);
+  add("Lift / rental equipment", "allowance", "", input.equipmentCost, false);
+  add("Travel - per diem and hotels", "allowance", "", (input.crewSize * input.perDiem * input.workingDays) +
+    (input.hotelRooms * input.hotelNightCost * input.hotelNights), false);
+  add(input.warrantyYears + "-year warranty fee", input.areaSf + " SF", estimatorMoney(input.warrantyRateSf) + "/SF", input.areaSf * input.warrantyRateSf, false);
   return { items: items, fieldRolls: fieldRolls, membraneRolls: membraneRolls, areaSquares: areaSquares };
 }
 
-function estimatorCalculate(input){
+function estimatorMaterialItems(input){
+  var generated = estimatorGeneratedLineItems(input);
+  return {
+    items: generated.items.filter(function(item){ return item.taxable; }),
+    fieldRolls: generated.fieldRolls,
+    membraneRolls: generated.membraneRolls,
+    areaSquares: generated.areaSquares
+  };
+}
+
+function estimatorCalculate(input, lineItems){
   input = Object.assign({}, ESTIMATOR_DEFAULTS, input || {});
-  var material = estimatorMaterialItems(input);
-  var taxableMaterials = material.items.reduce(function(sum, item){ return sum + item.total; }, 0);
+  var generated = estimatorGeneratedLineItems(input);
+  var activeItems = (lineItems || generated.items).map(function(item){
+    return {
+      name: item.name || "",
+      qty: item.qty || "",
+      unit: item.unit || "",
+      total: Number(item.total || 0),
+      taxable: item.taxable !== false
+    };
+  });
+  var taxableMaterials = activeItems.reduce(function(sum, item){ return sum + (item.taxable ? item.total : 0); }, 0);
+  var otherCosts = activeItems.reduce(function(sum, item){ return sum + (!item.taxable ? item.total : 0); }, 0);
   var materialTax = taxableMaterials * input.materialTaxRate;
   var manHours = input.crewSize * input.hoursPerDay * input.workingDays;
   var edgeLabor = manHours * input.edgeLaborRate;
   var ourLabor = manHours * input.ourLaborRate;
-  var travel = (input.crewSize * input.perDiem * input.workingDays) +
-    (input.hotelRooms * input.hotelNightCost * input.hotelNights);
-  var metal = input.perimeterLf * input.metalLfCost;
-  var drains = input.retrofitDrainCount * input.retrofitDrainCost;
-  var warrantyFee = input.areaSf * input.warrantyRateSf;
-  var allowances = input.blockingCost + metal + drains + input.disposalCost + input.equipmentCost + travel + warrantyFee;
+  var travel = activeItems.filter(function(item){ return item.name === "Travel - per diem and hotels"; })
+    .reduce(function(sum, item){ return sum + item.total; }, 0);
+  var metal = activeItems.filter(function(item){ return item.name === "New perimeter sheet metal"; })
+    .reduce(function(sum, item){ return sum + item.total; }, 0);
+  var drains = activeItems.filter(function(item){ return item.name === "Retrofit drains"; })
+    .reduce(function(sum, item){ return sum + item.total; }, 0);
+  var warrantyFee = activeItems.filter(function(item){ return item.name.indexOf("warranty fee") !== -1; })
+    .reduce(function(sum, item){ return sum + item.total; }, 0);
+  var allowances = otherCosts;
   var edgeSubtotal = taxableMaterials + materialTax + edgeLabor + allowances;
   var edgeProfit = edgeSubtotal * input.edgeProfitRate;
   var edgeContract = edgeSubtotal + edgeProfit;
@@ -321,11 +361,14 @@ function estimatorCalculate(input){
 
   return {
     input: input,
-    materialItems: material.items,
-    fieldRolls: material.fieldRolls,
-    membraneRolls: material.membraneRolls,
-    areaSquares: material.areaSquares,
+    lineItems: activeItems,
+    materialItems: activeItems.filter(function(item){ return item.taxable; }),
+    otherItems: activeItems.filter(function(item){ return !item.taxable; }),
+    fieldRolls: generated.fieldRolls,
+    membraneRolls: generated.membraneRolls,
+    areaSquares: generated.areaSquares,
     taxableMaterials: taxableMaterials,
+    otherCosts: otherCosts,
     materialTax: materialTax,
     manHours: manHours,
     edgeLabor: edgeLabor,
@@ -342,8 +385,8 @@ function estimatorCalculate(input){
     ourDirect: ourDirect,
     ourMarkup: ourMarkup,
     ourTotal: ourTotal,
-    pricePerSquareEdge: edgeTotal / material.areaSquares,
-    pricePerSquareOur: ourTotal / material.areaSquares,
+    pricePerSquareEdge: edgeTotal / generated.areaSquares,
+    pricePerSquareOur: ourTotal / generated.areaSquares,
     wallBuildRequiredIn: netWallRise,
     wallNote: "Max taper " + input.maxTaperIn + "\" + " + input.overlayIn + "\" overlay - " +
       input.tearoffIn + "\" tear-off = " + (Math.round(netWallRise * 10) / 10) +
@@ -356,14 +399,26 @@ function estimatorRowHtml(label, amount, costSq){
     (costSq == null ? "" : estimatorMoney(costSq)) + "</td></tr>";
 }
 
+function estimatorLineItemRowsHtml(items){
+  return items.map(function(item, i){
+    return "<tr>" +
+      "<td><input type=\"text\" value=\"" + esc(item.name) + "\" onchange=\"estimatorUpdateLineItem(" + i + ",'name',this.value)\"></td>" +
+      "<td><input type=\"text\" value=\"" + esc(item.qty) + "\" onchange=\"estimatorUpdateLineItem(" + i + ",'qty',this.value)\"></td>" +
+      "<td><input type=\"text\" value=\"" + esc(item.unit || "") + "\" onchange=\"estimatorUpdateLineItem(" + i + ",'unit',this.value)\"></td>" +
+      "<td><select onchange=\"estimatorUpdateLineItem(" + i + ",'taxable',this.value)\">" +
+        "<option value=\"true\"" + (item.taxable ? " selected" : "") + ">Material / taxed</option>" +
+        "<option value=\"false\"" + (!item.taxable ? " selected" : "") + ">Cost / allowance</option>" +
+      "</select></td>" +
+      "<td><input type=\"text\" value=\"" + esc(estimatorMoney(item.total)) + "\" onchange=\"estimatorUpdateLineItem(" + i + ",'total',this.value)\"></td>" +
+      "<td class=\"num\"><button class=\"btn danger\" type=\"button\" onclick=\"estimatorDeleteLineItem(" + i + ")\">Delete</button></td>" +
+    "</tr>";
+  }).join("");
+}
+
 function estimatorRender(result){
   var host = document.getElementById("estimator-results");
   if (!host) return;
   var sq = result.areaSquares;
-  var materialRows = result.materialItems.map(function(item){
-    return "<tr><td>" + esc(item.name) + "</td><td>" + esc(item.qty) + "</td><td>" +
-      esc(item.unit || "") + "</td><td class=\"num\">" + estimatorMoney(item.total) + "</td></tr>";
-  }).join("");
   host.innerHTML =
     "<div class=\"estimator-results-grid\">" +
       "<div class=\"estimator-total\"><b>EDGE Method</b><strong>" + estimatorMoney(result.edgeTotal) + "</strong><span>" + estimatorMoney(result.pricePerSquareEdge) + " / SQ</span></div>" +
@@ -371,21 +426,20 @@ function estimatorRender(result){
       "<div class=\"estimator-total\"><b>Difference</b><strong>" + estimatorMoney(result.ourTotal - result.edgeTotal) + "</strong><span>Our Way over EDGE</span></div>" +
     "</div>" +
     "<div class=\"estimator-note\">" + esc(result.wallNote) + "</div>" +
-    "<table class=\"estimator-table\"><thead><tr><th>Material</th><th>Qty</th><th>Basis</th><th class=\"num\">Amount</th></tr></thead><tbody>" +
-      materialRows +
-      "<tr><td><b>Material subtotal</b></td><td></td><td></td><td class=\"num\"><b>" + estimatorMoney(result.taxableMaterials) + "</b></td></tr>" +
-      "<tr><td>Material tax</td><td></td><td>" + esc(String(Math.round(result.input.materialTaxRate * 10000) / 100)) + "%</td><td class=\"num\">" + estimatorMoney(result.materialTax) + "</td></tr>" +
+    "<div class=\"btnrow\" style=\"margin:0 0 8px\">" +
+      "<button class=\"btn\" type=\"button\" onclick=\"estimatorAddLineItem(true)\">Add Material</button>" +
+      "<button class=\"btn\" type=\"button\" onclick=\"estimatorAddLineItem(false)\">Add Equipment / Cost</button>" +
+    "</div>" +
+    "<table class=\"estimator-table estimator-edit-table\"><thead><tr><th>Item</th><th>Qty</th><th>Basis</th><th>Type</th><th>Amount</th><th></th></tr></thead><tbody>" +
+      estimatorLineItemRowsHtml(result.lineItems) +
+      "<tr><td><b>Material subtotal</b></td><td></td><td></td><td></td><td class=\"num\"><b>" + estimatorMoney(result.taxableMaterials) + "</b></td><td></td></tr>" +
+      "<tr><td>Material tax</td><td></td><td>" + esc(String(Math.round(result.input.materialTaxRate * 10000) / 100)) + "%</td><td></td><td class=\"num\">" + estimatorMoney(result.materialTax) + "</td><td></td></tr>" +
+      "<tr><td>Other costs / allowances</td><td></td><td></td><td></td><td class=\"num\">" + estimatorMoney(result.otherCosts) + "</td><td></td></tr>" +
     "</tbody></table>" +
     "<table class=\"estimator-table\"><thead><tr><th>Direct / Allowance</th><th class=\"num\">Amount</th><th class=\"num\">Cost / SQ</th></tr></thead><tbody>" +
       estimatorRowHtml("EDGE labor - " + result.manHours + " MH @ " + estimatorMoney(result.input.edgeLaborRate) + "/hr", result.edgeLabor, result.edgeLabor / sq) +
       estimatorRowHtml("Our labor - " + result.manHours + " MH @ " + estimatorMoney(result.input.ourLaborRate) + "/hr", result.ourLabor, result.ourLabor / sq) +
-      estimatorRowHtml("Wall / blocking rebuild allowance", result.input.blockingCost, result.input.blockingCost / sq) +
-      estimatorRowHtml("New perimeter sheet metal", result.metal, result.metal / sq) +
-      estimatorRowHtml("Retrofit drains", result.drains, result.drains / sq) +
-      estimatorRowHtml("Disposal / dumpsters", result.input.disposalCost, result.input.disposalCost / sq) +
-      estimatorRowHtml("Lift / rental equipment", result.input.equipmentCost, result.input.equipmentCost / sq) +
-      estimatorRowHtml("Travel - per diem and hotels", result.travel, result.travel / sq) +
-      estimatorRowHtml(result.input.warrantyYears + "-year warranty fee @ " + estimatorMoney(result.input.warrantyRateSf) + "/SF", result.warrantyFee, result.warrantyFee / sq) +
+      estimatorRowHtml("Other editable costs / allowances", result.otherCosts, result.otherCosts / sq) +
     "</tbody></table>" +
     "<table class=\"estimator-table\"><thead><tr><th>Pricing Method</th><th class=\"num\">Subtotal</th><th class=\"num\">Add-on</th><th class=\"num\">Total</th></tr></thead><tbody>" +
       "<tr><td>EDGE: material tax + " + esc(String(Math.round(result.input.edgeProfitRate * 10000) / 100)) + "% profit + " +
@@ -398,12 +452,67 @@ function estimatorRender(result){
     "</tbody></table>";
 }
 
+function estimatorRecalculateLineItems(){
+  if (!estimatorLineItems) return estimatorCalculateFromForm({ quiet: true });
+  estimatorLastInput = estimatorReadForm();
+  var result = estimatorCalculate(estimatorLastInput, estimatorLineItems);
+  estimatorRender(result);
+  return result;
+}
+
+function estimatorUpdateLineItem(index, field, value){
+  if (!estimatorIsOwner()){
+    if (typeof toast === "function") toast("Owner login required.");
+    return;
+  }
+  if (!estimatorLineItems || !estimatorLineItems[index]) return;
+  if (field === "total"){
+    estimatorLineItems[index].total = estimatorParseNumber(value);
+  }else if (field === "taxable"){
+    estimatorLineItems[index].taxable = String(value) === "true";
+  }else{
+    estimatorLineItems[index][field] = value;
+  }
+  return estimatorRecalculateLineItems();
+}
+
+function estimatorDeleteLineItem(index){
+  if (!estimatorIsOwner()){
+    if (typeof toast === "function") toast("Owner login required.");
+    return;
+  }
+  if (!estimatorLineItems || !estimatorLineItems[index]) return;
+  estimatorLineItems.splice(index, 1);
+  return estimatorRecalculateLineItems();
+}
+
+function estimatorAddLineItem(taxable){
+  if (!estimatorIsOwner()){
+    if (typeof toast === "function") toast("Owner login required.");
+    return;
+  }
+  if (!estimatorLineItems){
+    var seed = estimatorCalculate(estimatorReadForm());
+    estimatorLineItems = seed.lineItems.slice();
+  }
+  estimatorLineItems.push({
+    name: taxable ? "New material item" : "New equipment / cost item",
+    qty: "allowance",
+    unit: "",
+    total: 0,
+    taxable: taxable !== false
+  });
+  return estimatorRecalculateLineItems();
+}
+
 function estimatorCalculateFromForm(opts){
   if (!estimatorIsOwner()){
     if (typeof toast === "function") toast("Owner login required.");
     return;
   }
-  var result = estimatorCalculate(estimatorReadForm());
+  estimatorLastInput = estimatorReadForm();
+  estimatorLineItems = estimatorGeneratedLineItems(estimatorLastInput).items;
+  var result = estimatorCalculate(estimatorLastInput, estimatorLineItems);
   estimatorRender(result);
   if (!opts || !opts.quiet){
     if (typeof toast === "function") toast("Estimate calculated.");
