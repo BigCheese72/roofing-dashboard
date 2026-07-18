@@ -946,13 +946,24 @@
         <div id="dpr-foundation-labor-body" class="hint">Loading…</div>
       </div>
 
+      <!-- Compact togglers for the optional sections (Mark: buttons, not a
+           tall stack of Yes/No cards). Tapping a chip reveals that section's
+           card below; untouched sections stay fully collapsed. The hidden
+           per-card <select> toggles remain the source of truth, so
+           collect()/fill() logic is unchanged — see dprToggleSection()
+           (js/dpr.js). -->
+      <div class="card">
+        <h2 class="cond">More to report?</h2>
+        <div class="btnrow" style="flex-wrap:wrap;gap:6px" id="dpr-section-chips"></div>
+      </div>
+
       <!-- ============ Yes/No-gated sections (DPR Phase 2) ============
            Each defaults to No and stays out of the way; flipping to Yes reveals
            the details via dprGate() (js/dpr.js). Data stored on the DPR doc as
            null (No) or an object/rows (Yes) — see dprCollect(). -->
-      <div class="card">
+      <div class="card" id="dpr-card-delays" style="display:none">
         <h2 class="cond">Delays</h2>
-        <div class="fld" style="max-width:220px">
+        <div class="fld" style="max-width:220px;display:none">
           <label>Any delays today?</label>
           <select id="dpr-delays-toggle" onchange="dprGate('dpr-delays-toggle','dpr-delays-body','Yes')">
             <option>No</option><option>Yes</option>
@@ -973,9 +984,9 @@
         </div>
       </div>
 
-      <div class="card">
+      <div class="card" id="dpr-card-quantities" style="display:none">
         <h2 class="cond">Material Quantities</h2>
-        <div class="fld" style="max-width:220px">
+        <div class="fld" style="max-width:220px;display:none">
           <label>Track quantities today?</label>
           <select id="dpr-quantities-toggle" onchange="dprGate('dpr-quantities-toggle','dpr-quantities-body','Yes')">
             <option>No</option><option>Yes</option>
@@ -987,9 +998,9 @@
         </div>
       </div>
 
-      <div class="card">
+      <div class="card" id="dpr-card-jsa" style="display:none">
         <h2 class="cond">Job Safety Analysis (JSA)</h2>
-        <div class="fld" style="max-width:220px">
+        <div class="fld" style="max-width:220px;display:none">
           <label>JSA completed today?</label>
           <select id="dpr-jsa-toggle" onchange="dprGate('dpr-jsa-toggle','dpr-jsa-body','Yes')">
             <option>No</option><option>Yes</option>
@@ -1006,9 +1017,9 @@
         </div>
       </div>
 
-      <div class="card">
+      <div class="card" id="dpr-card-incidents" style="display:none">
         <h2 class="cond">Incidents / Near Misses</h2>
-        <div class="fld" style="max-width:220px">
+        <div class="fld" style="max-width:220px;display:none">
           <label>Any incidents today?</label>
           <select id="dpr-incidents-toggle" onchange="dprGate('dpr-incidents-toggle','dpr-incidents-body','Yes')">
             <option>No</option><option>Yes</option>
@@ -1028,9 +1039,9 @@
         </div>
       </div>
 
-      <div class="card">
+      <div class="card" id="dpr-card-equipment" style="display:none">
         <h2 class="cond">Equipment On Site</h2>
-        <div class="fld" style="max-width:220px">
+        <div class="fld" style="max-width:220px;display:none">
           <label>Equipment used today?</label>
           <select id="dpr-equipment-toggle" onchange="dprGate('dpr-equipment-toggle','dpr-equipment-body','Yes')">
             <option>No</option><option>Yes</option>
@@ -1047,9 +1058,9 @@
            rented LIFT is recorded, the daily pre-use safety checklist scaffold
            reveals (items pending Mark's OSHA/ANSI list — js/dpr.js
            DPR_PREUSE_CHECKLIST). -->
-      <div class="card">
+      <div class="card" id="dpr-card-rented" style="display:none">
         <h2 class="cond">Rented Equipment</h2>
-        <div class="fld" style="max-width:220px">
+        <div class="fld" style="max-width:220px;display:none">
           <label>Any rented equipment on site today?</label>
           <select id="dpr-rented-toggle" onchange="dprGate('dpr-rented-toggle','dpr-rented-body','Yes')">
             <option>No</option><option>Yes</option>
@@ -1066,9 +1077,9 @@
            signed off, the talk given + the crew who acknowledged become part
            of the signed record and print in the PDF. Sign-in reuses the crew
            roster above (js/dpr.js dprRenderToolboxSignins). -->
-      <div class="card">
+      <div class="card" id="dpr-card-toolbox" style="display:none">
         <h2 class="cond">Toolbox Talk</h2>
-        <div class="fld" style="max-width:220px">
+        <div class="fld" style="max-width:220px;display:none">
           <label>Toolbox talk given today?</label>
           <select id="dpr-toolbox-toggle" onchange="dprGate('dpr-toolbox-toggle','dpr-toolbox-body','Yes')">
             <option>No</option><option>Yes</option>
@@ -1081,9 +1092,9 @@
         </div>
       </div>
 
-      <div class="card">
+      <div class="card" id="dpr-card-visitors" style="display:none">
         <h2 class="cond">Site Visitors</h2>
-        <div class="fld" style="max-width:220px">
+        <div class="fld" style="max-width:220px;display:none">
           <label>Any visitors today?</label>
           <select id="dpr-visitors-toggle" onchange="dprGate('dpr-visitors-toggle','dpr-visitors-body','Yes')">
             <option>No</option><option>Yes</option>
