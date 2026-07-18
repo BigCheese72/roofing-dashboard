@@ -46,6 +46,7 @@ Cross-cutting PRs additionally need **Lead review** before merge.
 | **Work Orders & Photos** | `js/workorders.js`, `js/photos.js` (owns the shared photo lightbox) | Never lose edits on back-out (flush + un-synced warning). Mark's other two field-use items are done — photo-zoom lightbox (#167) and captions-don't-block-Save (#169) are **live on prod** | `fix/wo-backout-autosave` — **PR #171** | 🟢 Open, awaiting cross-review. Will rebase onto #170 per H-1. **Holds `js/workorders.js`; `js/photos.js` released** |
 | **RoofMapper (Codex)** | `js/roofmapper.js` | Fix #76: restore Foundation link from selected buildings | `codex/foundation-building-link-restore` — **PR #170** | 🔴 Open — **touches `js/workorders.js`, which #171 holds. Lead is sequencing (see Handoff H-1)** |
 | **Warranty** | warranty module (claims/determination + `warranty.manage_reports` report ingestion). **No lane file exists** — see H-5 | None claimed — registering only | `agent/warranty` (worktree, board edit only) | ⚪ Idle. **Holds nothing.** Every warranty change today lands in someone else's file; awaiting a lane assignment from the Lead |
+| **Admin** | `js/roles-admin.js`, `netlify/functions/admin.js`, `netlify/functions/auth.js`, `netlify/functions/lib/permissions.js`, `netlify/functions/lib/authGuard.js`, `firestore.rules`, `docs/AUTH_DESIGN.md` | None claimed — recon only. Scope reported to Lead; **holding all shared-file edits pending lane assignment** | `agent/admin-recon` (local, read-only) | ⚪ Registered 2026-07-18. **Holds nothing.** See **H-7** — most Admin *UI* logic is in `js/core.js`, not in an Admin lane file |
 
 ---
 
@@ -61,9 +62,14 @@ One agent at a time. Claim by adding your name + change; release on merge or aba
 | `js/workorders.js` | **Work Orders & Photos** | Back-out flush + un-synced-edit warning | PR #171 | 2026-07-18 |
 | `js/foundation.js` | *free* | — | — | — |
 | `js/companycam.js` | *free* | — | — | — |
+| `firestore.rules` | *free* — **Admin reviews every change** | Security rules deploy with each promotion and are fail-closed; any lane changing them needs an Admin sign-off in review, not just Claude+Codex | — | Added 2026-07-18 |
 
 > `index.html` is the highest-contention file in the repo — nearly every feature wants a
 > little markup. Claim it late, keep the diff small, release it fast.
+
+> `firestore.rules` is not high-contention but it *is* high-blast-radius: a wrong rule is a
+> data-exposure bug that no test in `tests/` currently catches. Admin agent asks to be tagged
+> on any PR that touches it.
 
 ---
 
@@ -184,6 +190,7 @@ want both.
 **Blocked on:** Lead lane assignment. Holding all edits to `js/workorders.js` and `js/photos.js`
 per my standing instruction; also holding `js/history.js`, `js/core.js`, `js/export.js`, and
 `index.html` since all four are shared or owned. Until assigned I am editing **only this board**.
+
 **H-6 — Change Orders has no lane file; the section lives in 5 shared files**
 *(raised by Change Orders, 2026-07-18)*
 Registering the lane and reporting location as instructed. **I have taken no edits** — no
@@ -232,6 +239,88 @@ lock row on `js/export.js` is a board gap, not a per-section quirk.** Treat item
 the equivalent item in H-5 as one request.
 
 **Blocked on:** Lead assigning a lane. Until then I edit nothing but this board.
+
+**H-7 — Admin has a lane file, but most Admin UI logic isn't in it** *(raised by Admin, 2026-07-18)*
+*(Renumbered twice on rebase — Warranty took H-5 and Change Orders took H-6 concurrently. All
+three registrations stand. **Note for the Lead:** three agents picked the same next number
+within one hour because the board has no reservation step. Suggest handoff IDs be assigned by
+you, or keyed by section (`ADM-1`, `WAR-1`) instead of a global counter.)*
+Registering my lane and reporting scope. The backend half of Admin is clean and self-contained
+— `netlify/functions/admin.js`, `auth.js`, `lib/permissions.js`, `lib/authGuard.js`,
+`firestore.rules` are all unambiguously mine and touched by nobody else. The **client** half is
+not. `js/roles-admin.js` (285 lines) is the only dedicated Admin client file, and it covers
+exactly one section: the roles×permissions matrix editor. Everything else Admin-ish lives in
+`js/core.js`:
+
+| What | `js/core.js` anchor |
+|---|---|
+| `currentAuthClaims` + claims refresh on auth state change | ~`:167–183` |
+| Account modal (role line, Manage Users button) | ~`:220–246`, `signOutUser` `:247` |
+| **User Management modal** — render, invite, disable, enable, delete, `saveUserRole` | `:283–530` |
+| Login gate — bootstrap, sign-in, accept-invite (+ `?invite=` token handling) | `:532–640` |
+| `recomputeIsAdmin()` / client-side `hasPerm()` | `:1363–1397` |
+| `callAdminApi()` — the auth'd transport every admin call rides | `:1449` |
+| Owner-only gates (3 call sites) | `:1498`, `:1539`, `:1577` |
+| `updateAdminUI()` — admin tab visibility, revoke-bounce, Saved-list Delete gating | `:1624` |
+| Feedback + audit-log viewers | `:2038`, `:2077` |
+
+Plus `index.html`: `:78` account toggle, `:122–202` `#view-admin`, `:195–201` roles card,
+`:1546–1553` account modal, `:1836` script tag.
+
+**This is structurally the same problem as H-2 (Inspections).** Roughly 500+ lines of
+user-management and auth-gating logic sit in the single most contended shared file in the repo.
+Every Admin change — including the held #109 login-history section and the future job-financials
+view — is therefore a `js/core.js` lock request rather than work in my own lane.
+
+**I am not proposing the extraction yet, and I have edited nothing but this board.** Unlike
+`js/photos.js`, `js/core.js` has no quiet window — it's the app's spine. I want the Lead's call
+on scope before anything moves. Two questions:
+
+1. Is a `js/users-admin.js` extraction (the `:283–530` User Management modal + its `index.html`
+   modal markup, pure move, no behaviour change) worth scheduling — or does Admin just keep
+   requesting `js/core.js` locks per change? The modal block is the cleanest seam; the login
+   gate and `callAdminApi()` are genuinely core and should stay.
+2. Where does **#109 login history** land? It's held for prod and, per my memory of the
+   promotion notes, must deploy together with its Firestore rules. When it unblocks it will
+   want both `js/core.js` and `firestore.rules`. Worth sequencing now rather than discovering
+   the contention later.
+
+**Security note for the whole team, no action needed:** anything touching roles, permission
+keys, `authGuard.js`, or `firestore.rules` should get an explicit Admin review on top of
+Claude+Codex, and per Mark's standing rule never promotes to prod without his sign-off. The
+existing design is sound on this point and I want to keep it that way — enforcement is
+server-side against the live `roles/{roleId}` doc, the client grid in `roles-admin.js` is
+display-only, and the owner role is locked all-true in both the editor and
+`set_role_permissions`. Tests already covering this: `adminViewAccess`, `functionsAuth`,
+`inviteTokens`, `inviteEmailA2hsCopy`, `rolesAdminClientMirror`, `rolesPermissionsAdmin`,
+`delegatedAuth`. The gap I can see is that **`firestore.rules` has no test coverage at all** —
+flagging it, not fixing it unprompted.
+
+**Addendum after rebase — overlap with Warranty's H-5, which landed the same day.**
+Warranty registered concurrently and its scope lists three files that are in *my* lane:
+`netlify/functions/lib/permissions.js:72,191,257` (the `warranty.manage_reports` key) and
+`firestore.rules:76-90,254-268` (the `warranty_reports` / `warranty_review_queue` rules). We
+have not collided — neither of us has edited anything — but the boundary needs a ruling, so
+adding it to what I'm asking the Lead:
+
+3. **Who owns a permission key: the section that uses it, or Admin?** My proposal, and I think
+   it's the one that keeps the security property intact: **the registry files stay Admin's**
+   (`permissions.js`, `authGuard.js`, `firestore.rules`), and a section wanting a key added,
+   removed, or re-scoped requests it through the board and I make the edit. Rationale — the
+   `PERMISSION_KEYS` / `PERMISSION_SCOPES` / `SEED_ROLES` triple has to stay internally
+   consistent or `isValidPermissionValue()` silently starts rejecting or accepting the wrong
+   thing, and that is exactly the class of change that should never land without an Admin read.
+   Sections own the *enforcement call sites* in their own files; Admin owns the *registry*.
+   Warranty's own note reinforces this: `warranty.manage_reports` is already load-bearing in
+   `outlook.js`, `contacts-sync.js`, and `js/servicemanager.js`, so it is not really Warranty's
+   key at all anymore — it is a cross-lane key that three other sections depend on.
+   If the Lead prefers the opposite rule, I'll follow it; I just don't want it left implicit.
+
+I **concur with Warranty's lock-table gap finding** and it generalises: `js/history.js`,
+`js/export.js`, and `js/servicemanager.js` all appear in section scopes but have no lock row,
+so two agents can enter them blind. Suggest the Lead add rows for all three. That's a Lead
+call, not something I'll edit into the table myself.
+
 
 ### Resolved
 
