@@ -662,6 +662,43 @@ const CALENDAR_NOT_GRANTED = {
 };
 
 // ---------------------------------------------------------------------------
+// CONTACT PAGING LIMIT — for the `existing` action.
+//
+// This used to be a bare `out.length < 500` in the paging loop, and the reply
+// reported `count: out.length` with no indication that the walk had stopped
+// early. That is a cap that LIES: once the address book passed 500, a caller
+// diffing "who do I already have?" got a truthful-looking answer that was
+// silently incomplete.
+//
+// It bit for real on 2026-07-19. Backfilling contact cards for the field crew
+// pushed the book from 444 past 500; the very next diff reported people as
+// missing who demonstrably had cards (upsert found and PATCHed them), because
+// they sorted beyond the 500th row and were never fetched.
+//
+// A cap still has to exist — walking an arbitrarily large address book inside
+// a Lambda is its own failure mode — so the fix is three parts, and the third
+// matters most:
+//   1. Raise the default far above any plausible Watkins address book.
+//   2. Let the caller ask for a different one, hard-ceilinged.
+//   3. REPORT truncation (`truncated` + `hasMore`), so a partial result can
+//      never again be mistaken for a complete one.
+const DEFAULT_CONTACTS_LIMIT = 5000;
+const MAX_CONTACTS_LIMIT = 25000;
+// Pages are 100 contacts each; this is a belt-and-braces stop so a pathological
+// nextLink chain can't spin forever even if the row count never advances.
+const MAX_CONTACT_PAGES = 400;
+
+// Clamp a caller-supplied limit. Anything unparseable falls back to the
+// default rather than becoming NaN (which would make every `<` comparison
+// false and silently return zero contacts). Pure — exported for tests.
+function contactsLimit(raw) {
+  if (raw === undefined || raw === null || raw === "") return DEFAULT_CONTACTS_LIMIT;
+  const n = Math.floor(Number(raw));
+  if (!Number.isFinite(n) || n <= 0) return DEFAULT_CONTACTS_LIMIT;
+  return Math.min(n, MAX_CONTACTS_LIMIT);
+}
+
+// ---------------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------------
 exports.handler = async function (event) {
@@ -785,11 +822,17 @@ exports.handler = async function (event) {
       return resp(200, { enriched: out });
     }
 
-    // ---- existing: current /me/contacts, for dedupe
+    // ---- existing: current /me/contacts, for dedupe.
+    // Pages until the address book is exhausted or `limit` is reached (see
+    // contactsLimit above for why the old silent 500 cap was a bug). ALWAYS
+    // reports whether it stopped early: `truncated` is the flag a caller must
+    // check before treating this as the complete set.
     if (action === "existing") {
+      const limit = contactsLimit(body.limit);
       const out = [];
+      let pages = 0;
       let next = "/me/contacts?$top=100&$select=id,displayName,emailAddresses,companyName,jobTitle,businessPhones,mobilePhone";
-      while (next && out.length < 500) {
+      while (next && out.length < limit && pages < MAX_CONTACT_PAGES) {
         const j = await gj(next);
         for (const c of (j.value || [])) {
           out.push({
@@ -803,8 +846,24 @@ exports.handler = async function (event) {
           });
         }
         next = j["@odata.nextLink"] || null;
+        pages++;
       }
-      return resp(200, { contacts: out, count: out.length });
+      // truncated === "there are more contacts we did not fetch". A caller
+      // diffing against this set MUST NOT conclude "missing" when truncated.
+      const truncated = !!next;
+      return resp(200, {
+        contacts: out,
+        count: out.length,
+        limit,
+        pagesWalked: pages,
+        truncated,
+        hasMore: truncated,
+        ...(truncated ? {
+          warning: "Result is INCOMPLETE — stopped at limit " + limit + ". Do not treat a " +
+            "contact absent from this list as missing; raise `limit` or verify individually " +
+            "(upsert with dryRun:true reports would_create vs would_update per address).",
+        } : {}),
+      });
     }
 
     // ---- upsert: THE ONLY WRITE. Creates a contact, or PATCHes an existing one
@@ -1331,4 +1390,5 @@ exports.handler = async function (event) {
 // Exported for reasoning/testing about the filter and parser without a mailbox.
 module.exports._internals = { classify, parseSignature, splitName, sigLines, buildInboxRule, ruleKeywordProblem, textWithSignoff, normalizeRecipients, escapeHtml,
   mapMailMessage, resolveCalendarRange, mapEvent, dateOnly, buildEventPayload, CALENDAR_NOT_GRANTED,
-  resolveFolderIdByName, WELL_KNOWN_FOLDERS };
+  resolveFolderIdByName, WELL_KNOWN_FOLDERS,
+  contactsLimit, DEFAULT_CONTACTS_LIMIT, MAX_CONTACTS_LIMIT, MAX_CONTACT_PAGES };
