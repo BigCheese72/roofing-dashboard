@@ -17,6 +17,13 @@ var STORE_KEY = "leak-workorders-v1";
    the underlying imagery doesn't get any sharper. Shared by the pin modal,
    asset modal, and building-history roof map — all satellite mode. */
 var SAT_MAX_NATIVE_ZOOM = 20;
+var SAT_TILE_PUBLIC = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
+var SAT_TILE_PROXY = "/.netlify/functions/arcgis-tile?z={z}&y={y}&x={x}";
+function satelliteTileUrlTemplate(){
+  var host = window.location.hostname;
+  if (window.location.protocol === "file:" || host === "localhost" || host === "127.0.0.1") return SAT_TILE_PUBLIC;
+  return SAT_TILE_PROXY;
+}
 /* Mark: his RTK ortho is ~2cm/pixel -- vastly more detail than satellite
    tiles top out at (SAT_MAX_NATIVE_ZOOM above is the real, empirically-
    verified Esri ceiling). An ortho/GeoTIFF overlay itself never raises the
@@ -537,12 +544,12 @@ async function checkAuthBootstrapStatus(){
   }catch(e){ authBootstrapStatus = true; }
   renderLoginGate();
 }
-/* Idempotent login-gate scroll lock (prod hotfix 27bacb9, ported onto dev's
-   ref-counted lockBodyScroll): the gate holds AT MOST one lock, released the
-   instant it hides. Without this, the signed-in hide path (onAuthStateChanged
-   -> renderLoginGate() with currentAuthUser set) early-returned without
-   unlocking, so body{overflow:hidden} stayed on after a fresh login and froze
-   the WO/leak form. */
+/* Idempotent login-gate scroll lock (prod hotfix 27bacb9): the gate holds AT
+   MOST one lock, released the instant it hides. Without this, the signed-in
+   hide path (onAuthStateChanged -> renderLoginGate() with currentAuthUser set)
+   early-returned without unlocking, so body{overflow:hidden} stayed on after a
+   fresh login and froze the WO/leak form. Pairs with the ref-counted
+   lockBodyScroll/unlockBodyScroll below. */
 var loginGateScrollLocked = false;
 function setLoginGateScrollLock(on){
   if (on === loginGateScrollLocked) return;
@@ -1628,10 +1635,16 @@ function updateAdminUI(){
      revoked while the Admin page is open, bounce back to Edit. */
   var adminTab = document.getElementById("tab-admin");
   if (adminTab) adminTab.style.display = isAdmin ? "" : "none";
+  var estimatorTab = document.getElementById("tab-estimator");
+  var claimsOwner = !!(currentAuthClaims && currentAuthClaims.owner === true);
+  if (estimatorTab) estimatorTab.style.display = claimsOwner ? "" : "none";
   var sel = document.getElementById("adminPhotoSize");
   if (isAdmin && sel) sel.value = globalPhotoSizePref;
   if (isAdmin && typeof updateWarrantyReviewBadge === "function") updateWarrantyReviewBadge();
   if (!isAdmin && typeof currentViewName !== "undefined" && currentViewName === "admin"){
+    showView("edit");
+  }
+  if (!claimsOwner && typeof currentViewName !== "undefined" && currentViewName === "estimator"){
     showView("edit");
   }
   /* Saved view access control (Mark) -- per saved work order, Delete is
@@ -1670,7 +1683,6 @@ function updateAdminUI(){
      require settings.security regardless of what any client shows. */
   var rolesCard = document.getElementById("roles-admin-card");
   if (rolesCard){
-    var claimsOwner = !!(currentAuthClaims && currentAuthClaims.owner === true);
     rolesCard.style.display = claimsOwner ? "" : "none";
   }
 }
@@ -1896,7 +1908,7 @@ var FEEDBACK_TYPES = [
 ];
 var FEEDBACK_VIEW_LABELS = {
   home: "Home", edit: "Work Order Form", preview: "Report Preview", saved: "Saved Work Orders",
-  history: "Building History", reports: "Reports", roofmapper: "RoofMapper"
+  history: "Building History", reports: "Reports", estimator: "Estimator", roofmapper: "RoofMapper"
 };
 var feedbackState = { type: null, screenshot: null };
 function openFeedbackModal(){
@@ -3319,6 +3331,9 @@ function showView(v){
   if (v === "admin" && !isAdmin){
     v = "edit";
   }
+  if (v === "estimator" && !(currentAuthClaims && currentAuthClaims.owner === true)){
+    v = "edit";
+  }
   if (v === "servicemanager" && !canServiceManage()){
     v = "edit";
   }
@@ -3326,7 +3341,7 @@ function showView(v){
   /* "home" has no header tab (reached via "+ New", the empty-state button
      in Building History, or tapping the logo) — every other view still
      keeps its tab exactly as before. */
-  ["home","edit","preview","saved","history","reports","roofmapper","dpr","servicemanager","admin"].forEach(function(name){
+  ["home","edit","preview","saved","history","reports","estimator","roofmapper","dpr","servicemanager","admin"].forEach(function(name){
     var viewEl = document.getElementById("view-" + name);
     if (viewEl) viewEl.style.display = (name === v ? "" : "none");
     var tabEl = document.getElementById("tab-" + name);
@@ -3337,6 +3352,7 @@ function showView(v){
   if (v === "saved") renderSaved();
   if (v === "history") renderHistoryList();
   if (v === "reports"){ renderReportsList(); if (isAdmin){ loadFeedbackBacklog(); loadAuditLogBacklog(); } }
+  if (v === "estimator" && typeof estimatorOnShow === "function") estimatorOnShow();
   if (v === "roofmapper") rmOnShow();
   if (v === "dpr" && typeof dprOnShow === "function") dprOnShow();
   if (v === "servicemanager" && typeof smOnShow === "function") smOnShow();

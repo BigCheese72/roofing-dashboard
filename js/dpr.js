@@ -589,6 +589,14 @@ function dprRenderLinkStatus(){
   if (dprState.companyCamProjectId){
     badges.push('<span class="evt-tag" style="background:#E8F5E9;color:#2E7D32">📷 CompanyCam' +
       (dprState.companyCamProjectName ? ": " + esc(dprState.companyCamProjectName) : "") + '</span>');
+    /* One tap from the day's report to that job's CompanyCam project. Same
+       helper and same label as the work-order form -- see ccProjectDeepLink()
+       in js/companycam.js for why there is no https fallback. typeof-guarded
+       because js/companycam.js loads before this file but the DPR is also
+       exercised in tests without it. */
+    if (typeof ccOpenProjectButtonHtml === "function"){
+      badges.push(ccOpenProjectButtonHtml(dprState.companyCamProjectId));
+    }
   }
   var locked = dprIsLocked();
   host.style.display = "";
@@ -1602,13 +1610,40 @@ function dprEnsureCcModal(){
   document.body.appendChild(modal);
   return modal;
 }
+/* ================= modal scroll-lock, made idempotent =================
+   core.js's lockBodyScroll() is REF-COUNTED (see its comment) so one modal's
+   unlock can't release another's. That only holds if every open pairs with
+   exactly one close. The DPR's modal openers broke the pairing two ways:
+   - The openers are async (lock, THEN await map/photo setup) and their buttons
+     are undebounced, so a double-tap on a slow connection — a foreman on a
+     roof — ran lockBodyScroll() twice while the single Close unlocked once.
+     The leftover count kept body{overflow:hidden} and FROZE the DPR: the same
+     failure Mark hit on the WO/leak form after login (prod hotfix 27bacb9,
+     back-ported to dev as eeb53e6).
+   - The closers unlocked unconditionally, so a close fired while that modal
+     was already shut stole a decrement from a different open modal.
+   Lock/unlock only on a genuine closed<->open transition, keyed per modal.
+   The two section modals (trace + progress map) share one element and one
+   close path (dprSectionCancel), so they deliberately share one key. */
+var dprScrollLocks = {};
+function dprLockScrollFor(key){
+  if (dprScrollLocks[key]) return;
+  dprScrollLocks[key] = true;
+  lockBodyScroll();
+}
+function dprUnlockScrollFor(key){
+  if (!dprScrollLocks[key]) return;
+  dprScrollLocks[key] = false;
+  unlockBodyScroll();
+}
+
 function dprOpenCompanyCam(){
   if (!dprCanCreate()){ toast("Your role can view reports but can't edit them."); return; }
   if (dprIsLocked()){ toast("This report is signed and locked."); return; }
   if (typeof ccApi !== "function"){ toast("CompanyCam isn't available right now."); return; }
   dprCcSelected = {};
   dprEnsureCcModal().style.display = "";
-  lockBodyScroll();
+  dprLockScrollFor("cc");
   /* Linked building already carries a project — go straight to its photos. */
   if (dprState.companyCamProjectId){
     dprCcOpenProject(dprState.companyCamProjectId, dprState.companyCamProjectName || "");
@@ -1619,7 +1654,7 @@ function dprOpenCompanyCam(){
 function dprCcClose(){
   var modal = document.getElementById("dpr-cc-modal");
   if (modal) modal.style.display = "none";
-  unlockBodyScroll();
+  dprUnlockScrollFor("cc");
   dprCcSelected = {};
 }
 function dprCcShowProjects(q){
@@ -2292,7 +2327,7 @@ async function dprOpenSectionTrace(){
   document.getElementById("dpr-section-title").textContent = "Trace Today's Section";
   document.getElementById("dpr-section-tracebtns").style.display = "";
   modal.style.display = "";
-  lockBodyScroll();
+  dprLockScrollFor("section");
   var roof = dprSelectedRoofObj();
   var hint = document.getElementById("dpr-section-hint");
   var addrRow = document.getElementById("dpr-section-addr-row");
@@ -2391,7 +2426,7 @@ async function dprSetupSectionMap(divId, roof, opts){
     return { map: map, mode: "image", frameUrl: base.url, w: dims.w, h: dims.h, located: true };
   }
   var map2 = L.map(divId, { zoomControl: true, attributionControl: false });
-  L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+  L.tileLayer(satelliteTileUrlTemplate(),
     { maxZoom: 22, maxNativeZoom: SAT_MAX_NATIVE_ZOOM, attribution: "Tiles © Esri" }).addTo(map2);
   if (base.kind === "ortho"){
     var llb = boundsToLatLngBounds(base.bounds);
@@ -2566,7 +2601,7 @@ function dprSectionFinish(){
 function dprSectionCancel(){
   var modal = document.getElementById("dpr-section-modal");
   if (modal) modal.style.display = "none";
-  unlockBodyScroll();
+  dprUnlockScrollFor("section");
   if (dprTrace && dprTrace.map){ try{ dprTrace.map.remove(); }catch(e){} }
   dprTrace = null;
 }
@@ -2602,7 +2637,7 @@ async function dprShowProgressMap(){
   document.getElementById("dpr-section-tracebtns").style.display = "none";
   document.getElementById("dpr-section-hint").textContent = "Loading progress…";
   modal.style.display = "";
-  lockBodyScroll();
+  dprLockScrollFor("section");
   try{
     var roof = dprSelectedRoofObj();
     var ctx = await dprSetupSectionMap("dpr-section-map", roof, { readOnly: true });

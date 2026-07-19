@@ -156,8 +156,11 @@ with no UI ever built, so they were removed outright rather than kept alongside 
 real schema. `roof_section` was also dropped; nothing uses it.)
 
 **Map rendering**: Leaflet (CDN, `unpkg.com/leaflet@1.9.4`, no build step) + Esri World
-Imagery tiles (`server.arcgisonline.com/.../World_Imagery/...`, free, no API key) for
-satellite. Non-georeferenced base maps use `L.CRS.Simple` + `L.imageOverlay` with a
+Imagery tiles for satellite. On Netlify hosts, the app requests those tiles through
+`/.netlify/functions/arcgis-tile`, which reads `ARCGIS_API_KEY` server-side and appends
+it as the ArcGIS token without shipping the key to browser JavaScript. Local
+`file://`/localhost development falls back to the public `server.arcgisonline.com`
+tile URL. Non-georeferenced base maps use `L.CRS.Simple` + `L.imageOverlay` with a
 virtual coordinate space matching the uploaded image's actual pixel dimensions (fetched
 via a plain `Image()` preload at pin-placement time — not stored anywhere, so it's
 always correct even if the underlying image is replaced).

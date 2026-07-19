@@ -394,10 +394,45 @@ var CC_LINK_INFO_HOST_IDS = ["cc-link-info", "cc-link-info-co"];
 function ccBuildingLinkControlVisible(woType){
   return woType !== "Change Order" && woType !== "Repair";
 }
+/* ---- "Open in CompanyCam" deep link (Mark, approved 2026-07-18) ----
+   A tech standing on the roof with the work order open should be one tap from
+   that job's CompanyCam project, not hunting for it in another app.
+
+   ccam://projects/<id> is CompanyCam's OWN documented mobile deep-link scheme
+   (docs.companycam.com/docs/mobile-deep-links). Deliberately NOT paired with a
+   guessed https://app.companycam.com/... web fallback: that URL is nowhere in
+   CompanyCam's docs, and a link that 404s is worse on a roof than no link.
+   See CC-1 on the coordination board -- if Mark confirms the web project URL,
+   the fallback is a two-line change here and nowhere else.
+
+   Consequence worth knowing: on a DESKTOP browser with no CompanyCam app
+   registered for the scheme, tapping this does nothing visible. The hint text
+   next to the button says "app" for exactly that reason. Field devices -- the
+   ones that matter for this button -- have the app.
+
+   Shared by the work-order form (renderCCLinkInfo below) and the DPR job
+   header (dprRenderJobLink in js/dpr.js) so both surfaces agree on one URL
+   shape and one label. */
+function ccProjectDeepLink(projectId){
+  var id = String(projectId || "").trim();
+  if (!id) return null;
+  /* Ids come from the CompanyCam API; keep the scheme URL free of anything
+     that isn't plainly an id rather than trusting that blindly. */
+  if (!/^[A-Za-z0-9_-]+$/.test(id)) return null;
+  return "ccam://projects/" + id;
+}
+function ccOpenProjectButtonHtml(projectId, opts){
+  var href = ccProjectDeepLink(projectId);
+  if (!href) return "";
+  opts = opts || {};
+  return '<a class="btn' + (opts.primary ? ' primary' : '') + '" href="' + esc(href) + '"' +
+    ' title="Open this project in the CompanyCam app">📷 Open in CompanyCam</a>';
+}
 function renderCCLinkInfo(){
   var linkedHtml = !ccLinkedProjectId ? "" :
     '<div class="cc-link">\ud83d\udd17 Locked to CompanyCam project: <b>' + esc(ccLinkedProjectName || ccLinkedProjectId) + '</b>' +
     '<span class="sp"></span><span class="hint" style="margin:0">Photos and history sync automatically.</span>' +
+    '<span class="sp"></span>' + ccOpenProjectButtonHtml(ccLinkedProjectId) +
     (isAdmin ? '<button class="btn danger" onclick="unlinkCC()">Unlink (admin)</button>' : '') +
     '</div>';
   CC_LINK_INFO_HOST_IDS.forEach(function(id){
