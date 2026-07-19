@@ -698,6 +698,52 @@ function contactsLimit(raw) {
   return Math.min(n, MAX_CONTACTS_LIMIT);
 }
 
+const CONTACTS_FIRST_PAGE =
+  "/me/contacts?$top=100&$select=id,displayName,emailAddresses,companyName,jobTitle,businessPhones,mobilePhone";
+
+// One Graph contact -> the shape callers consume. Pure.
+function mapContactRow(c) {
+  return {
+    id: c.id,
+    displayName: c.displayName || null,
+    companyName: c.companyName || null,
+    jobTitle: c.jobTitle || null,
+    emails: (c.emailAddresses || []).map(e => String(e.address || "").toLowerCase()).filter(Boolean),
+    businessPhones: c.businessPhones || [],
+    mobilePhone: c.mobilePhone || null,
+  };
+}
+
+// Walks /me/contacts and reports whether it saw the whole book.
+//
+// `fetchJson` is INJECTED rather than closed over so this walk can be unit
+// tested against synthetic pages without a mailbox — the paging loop is the
+// part that actually broke in production, so it needs behavioural coverage,
+// not a source-regex assertion.
+//
+// `truncated` is derived from `next` AFTER the loop, so it is correct on all
+// three exit paths: book exhausted (next null -> false), limit reached
+// (next still set -> true), and page-guard hit (next still set -> true).
+//
+// LIMIT SEMANTICS: the loop tests the limit BEFORE fetching, then appends the
+// whole page, so up to 99 contacts beyond `limit` can come back. That
+// over-delivery is deliberate. This data feeds "which contacts do I already
+// have?" diffs, where returning MORE is harmless and returning FEWER is
+// precisely the bug this guards against — so `limit` is a stop-fetching
+// threshold, not an exact ceiling, and we never trim rows we already hold.
+async function pageContacts(fetchJson, limit, maxPages) {
+  const out = [];
+  let pages = 0;
+  let next = CONTACTS_FIRST_PAGE;
+  while (next && out.length < limit && pages < maxPages) {
+    const j = await fetchJson(next);
+    for (const c of ((j && j.value) || [])) out.push(mapContactRow(c));
+    next = (j && j["@odata.nextLink"]) || null;
+    pages++;
+  }
+  return { contacts: out, pagesWalked: pages, truncated: !!next };
+}
+
 // ---------------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------------
@@ -829,28 +875,10 @@ exports.handler = async function (event) {
     // check before treating this as the complete set.
     if (action === "existing") {
       const limit = contactsLimit(body.limit);
-      const out = [];
-      let pages = 0;
-      let next = "/me/contacts?$top=100&$select=id,displayName,emailAddresses,companyName,jobTitle,businessPhones,mobilePhone";
-      while (next && out.length < limit && pages < MAX_CONTACT_PAGES) {
-        const j = await gj(next);
-        for (const c of (j.value || [])) {
-          out.push({
-            id: c.id,
-            displayName: c.displayName || null,
-            companyName: c.companyName || null,
-            jobTitle: c.jobTitle || null,
-            emails: (c.emailAddresses || []).map(e => String(e.address || "").toLowerCase()).filter(Boolean),
-            businessPhones: c.businessPhones || [],
-            mobilePhone: c.mobilePhone || null,
-          });
-        }
-        next = j["@odata.nextLink"] || null;
-        pages++;
-      }
       // truncated === "there are more contacts we did not fetch". A caller
       // diffing against this set MUST NOT conclude "missing" when truncated.
-      const truncated = !!next;
+      const { contacts: out, pagesWalked: pages, truncated } =
+        await pageContacts(gj, limit, MAX_CONTACT_PAGES);
       return resp(200, {
         contacts: out,
         count: out.length,
@@ -1391,4 +1419,5 @@ exports.handler = async function (event) {
 module.exports._internals = { classify, parseSignature, splitName, sigLines, buildInboxRule, ruleKeywordProblem, textWithSignoff, normalizeRecipients, escapeHtml,
   mapMailMessage, resolveCalendarRange, mapEvent, dateOnly, buildEventPayload, CALENDAR_NOT_GRANTED,
   resolveFolderIdByName, WELL_KNOWN_FOLDERS,
-  contactsLimit, DEFAULT_CONTACTS_LIMIT, MAX_CONTACTS_LIMIT, MAX_CONTACT_PAGES };
+  contactsLimit, DEFAULT_CONTACTS_LIMIT, MAX_CONTACTS_LIMIT, MAX_CONTACT_PAGES,
+  pageContacts, mapContactRow };
