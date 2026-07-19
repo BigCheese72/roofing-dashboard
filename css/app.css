@@ -58,30 +58,6 @@
   .fld{margin-bottom:12px}
   .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:0 14px}
 
-  .estimator-hero{border-top-color:var(--orange)}
-  .estimator-layout{display:grid;grid-template-columns:1fr;gap:0}
-  .estimator-results-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin:0 0 14px}
-  .estimator-total{border:1px solid var(--card-line);border-top:4px solid var(--orange);border-radius:6px;padding:12px;background:#F8FAFB}
-  .estimator-total b{display:block;color:var(--muted);font-size:12px;text-transform:uppercase}
-  .estimator-total strong{display:block;color:var(--slate);font-size:24px;line-height:1.2;margin-top:3px}
-  .estimator-total span{display:block;color:#3F4A52;font-size:13px;margin-top:3px}
-  .estimator-intake-steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin:8px 0 10px}
-  .estimator-intake-steps div{border:1px solid var(--card-line);border-radius:6px;background:#F8FAFB;padding:9px 10px}
-  .estimator-intake-steps b{display:block;color:var(--slate);font-size:12px;text-transform:uppercase}
-  .estimator-intake-steps span{display:block;color:var(--muted);font-size:12px;line-height:1.25;margin-top:3px}
-  .estimator-table{width:100%;border-collapse:collapse;margin:8px 0 12px;font-size:13px}
-  .estimator-table th,.estimator-table td{border-bottom:1px solid var(--line);padding:7px 6px;text-align:left;vertical-align:top}
-  .estimator-table th{color:var(--muted);font-size:12px}
-  .estimator-table td.num,.estimator-table th.num{text-align:right;white-space:nowrap}
-  .estimator-edit-table input,.estimator-edit-table select{font-size:13px;padding:6px 7px}
-  .estimator-edit-table td{min-width:92px}
-  .estimator-edit-table td:first-child{min-width:220px}
-  .estimator-row-x{width:30px;height:30px;padding:0;text-align:center;line-height:1}
-  .estimator-note{border:1px solid #E8A33D;border-left:5px solid #E8A33D;background:#FFF9EF;border-radius:6px;padding:10px;margin:8px 0;color:#3F4A52}
-  @media (min-width:1024px){
-    .estimator-layout{grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
-  }
-
   .btn{border:1px solid var(--line);background:#fff;color:#37474F;border-radius:4px;
     padding:8px 14px;font-size:13px;font-weight:700;cursor:pointer}
   .btn.danger{border-color:#D64545;color:#D64545}

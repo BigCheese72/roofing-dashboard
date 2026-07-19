@@ -604,140 +604,6 @@ async function draftScope(input, opts) {
   }
 }
 
-// (d) ESTIMATE INTAKE DRAFT: drawings/photo notes/field notes + current form
-//     values -> structured estimate-field recommendations. This is NOT the
-//     calculator. The model fills or flags inputs; RoofOps still computes the
-//     material list and EDGE/Our Way totals with deterministic Warrensburg
-//     rules in js/estimator.js.
-const MAX_ESTIMATE_TOKENS = 1200;
-const ESTIMATE_NUMERIC_FIELDS = [
-  "warrantyYears", "areaSf", "taperCost", "overlayIn", "overlaySq",
-  "overlayCostSq", "perimeterLf", "curbPerimeterLf", "stoneCopingIn",
-  "maxTaperIn", "tearoffIn", "blockingCost", "metalLfCost",
-  "equipmentCost", "disposalCost", "retrofitDrainCount",
-  "retrofitDrainCost", "scupperCount", "crewSize", "hoursPerDay",
-  "workingDays", "edgeLaborRate", "ourLaborRate", "perDiem",
-  "hotelRooms", "hotelNightCost", "hotelNights", "materialTaxRate",
-  "edgeProfitRate", "edgeBondRate", "ourMarkupRate", "warrantyRateSf",
-  "pipeBoots"
-];
-const ESTIMATE_TEXT_FIELDS = [
-  "projectName", "location", "contact", "roofMapId", "roofMapName",
-  "companyCamProjectId", "companyCamProjectName", "fieldNotes"
-];
-const ESTIMATE_ENUMS = {
-  membrane: ["epdm-sa", "tpo", "pvc"],
-  slopeType: ["tapered", "structural"]
-};
-const ESTIMATE_PLAYBOOK =
-  "Estimate like Mark/Watkins did for Warrensburg Post Office. Treat Warrensburg as the known-good EPDM SA example: " +
-  "60 mil Elevate RubberGard EPDM SA, 10 SQ rolls, one factory selvage edge on the 100-foot side, 20-year warranty, " +
-  "tapered insulation plus a continuous 2.6 inch ISO top layer when specified, mechanically fasten only the top layer, " +
-  "8 fasteners per 4x8 top board, screw length = total insulation thickness plus 2 inches rounded up, screws purchased by pail, " +
-  "RPF/RUSS around perimeter and curbs with 2 inch plates and fasteners at 12 inches on center, 3 inch splice tape at a minimum " +
-  "of 1.5 rolls per field EPDM roll when the selvage lap is used, 6 inch batten cover for end laps or exposed SA adhesive, " +
-  "5 inch QuickSeam flashing for pipes/drains/scuppers/curbs, QuickPrime, Water Block, lap sealant, T-joint/detail patches, " +
-  "retrofit drains, warranty fee, dumpsters, lift/rental equipment, travel, material tax, EDGE profit/bond, and Our Way markup. " +
-  "Some roofs are structurally sloped and do not carry tapered insulation unless field data says taper is needed. " +
-  "Never invent a dimension, roof area, perimeter, drain count, lift cost, taper quote, labor duration, tax, bond, or markup. " +
-  "Return missing items as missingInputs. RoofOps will calculate quantities and totals after you return fields.";
-const ESTIMATE_SYSTEM =
-  "You are the owner-only RoofOps estimating intake assistant for Watkins Roofing. " +
-  "Use the provided estimating playbook and current estimate data to prepare structured input fields for the RoofOps calculator. " +
-  "You do not produce a proposal price and you do not override the deterministic material calculator. " +
-  "Respond with ONLY JSON of this shape: " +
-  '{"fields": object, "assumptions": string[], "missingInputs": string[], "warnings": string[], "rulesApplied": string[]}. ' +
-  "Only include fields that are directly supported by the notes/data or by the Warrensburg playbook defaults. " +
-  "Use these exact field names when applicable: " +
-  ESTIMATE_TEXT_FIELDS.concat(ESTIMATE_NUMERIC_FIELDS).concat(Object.keys(ESTIMATE_ENUMS)).join(", ") + ".";
-
-function n(v) {
-  const num = Number(String(v == null ? "" : v).replace(/[$,%\s,]/g, ""));
-  return isFinite(num) ? num : null;
-}
-function sanitizeEstimateInput(raw) {
-  raw = (raw && typeof raw === "object") ? raw : {};
-  const out = {};
-  ESTIMATE_TEXT_FIELDS.forEach(function (key) { out[key] = s(raw[key], key === "fieldNotes" ? 6000 : 300); });
-  ESTIMATE_NUMERIC_FIELDS.forEach(function (key) {
-    const val = n(raw[key]);
-    out[key] = val == null ? 0 : val;
-  });
-  Object.keys(ESTIMATE_ENUMS).forEach(function (key) {
-    const val = s(raw[key], 40);
-    out[key] = ESTIMATE_ENUMS[key].indexOf(val) !== -1 ? val : "";
-  });
-  return out;
-}
-function clampEstimateFields(raw) {
-  const obj = (raw && typeof raw === "object") ? raw : {};
-  const fields = {};
-  ESTIMATE_TEXT_FIELDS.forEach(function (key) {
-    if (obj[key] != null) fields[key] = s(obj[key], key === "fieldNotes" ? 6000 : 300);
-  });
-  ESTIMATE_NUMERIC_FIELDS.forEach(function (key) {
-    if (obj[key] == null || obj[key] === "") return;
-    const val = n(obj[key]);
-    if (val != null) fields[key] = val;
-  });
-  Object.keys(ESTIMATE_ENUMS).forEach(function (key) {
-    const val = s(obj[key], 40);
-    if (ESTIMATE_ENUMS[key].indexOf(val) !== -1) fields[key] = val;
-  });
-  return fields;
-}
-function clampEstimateDraft(raw) {
-  const obj = (raw && typeof raw === "object") ? raw : {};
-  return {
-    fields: clampEstimateFields(obj.fields),
-    assumptions: rows(obj.assumptions, 12, function (x) { return s(x, 220); }),
-    missingInputs: rows(obj.missingInputs, 16, function (x) { return s(x, 180); }),
-    warnings: rows(obj.warnings, 12, function (x) { return s(x, 220); }),
-    rulesApplied: rows(obj.rulesApplied, 16, function (x) { return s(x, 220); })
-  };
-}
-function composeStubEstimateDraft(estimate) {
-  const notes = [estimate.fieldNotes, estimate.projectName, estimate.roofMapName].join(" ").toLowerCase();
-  const fields = {};
-  if (/epdm|rubbergard|sa membrane|self[- ]?adhered/.test(notes)) fields.membrane = "epdm-sa";
-  if (/structural|structurally sloped/.test(notes)) fields.slopeType = "structural";
-  else if (/taper/.test(notes)) fields.slopeType = "tapered";
-  if (/2\.6|2-6|two point six/.test(notes)) fields.overlayIn = 2.6;
-  if (/20[- ]?year|20 year/.test(notes)) fields.warrantyYears = 20;
-  return {
-    fields: fields,
-    assumptions: ["Using the saved Warrensburg EPDM SA estimating playbook; no live AI key was used."],
-    missingInputs: ["Review roof area, perimeter, taper quote, drains, curb perimeter, lift, disposal, and labor days before saving."],
-    warnings: ["This placeholder does not read PDFs or photos. It only applies obvious field-note cues."],
-    rulesApplied: [
-      "EPDM SA quantities are calculated by RoofOps after intake fields are set.",
-      "Warrensburg rules include 1.5 splice-tape rolls per field EPDM roll minimum, 6 inch batten cover, RPF/RUSS, and screws by thickness."
-    ]
-  };
-}
-async function draftEstimate(input, opts) {
-  opts = opts || {};
-  const estimate = sanitizeEstimateInput(input && input.estimate);
-  const provider = resolveProvider(opts.env || process.env);
-  const stub = composeStubEstimateDraft(estimate);
-  if (provider.name === "stub") return Object.assign(stub, { provider: "stub", model: null, llm: false });
-  try {
-    const parts = [{
-      kind: "text",
-      text: "Estimate playbook:\n" + ESTIMATE_PLAYBOOK +
-        "\n\nCurrent estimate intake (JSON):\n" + JSON.stringify(estimate)
-    }];
-    const out = await callProvider(provider, ESTIMATE_SYSTEM, parts, MAX_ESTIMATE_TOKENS);
-    const result = clampEstimateDraft(extractJson(out));
-    return Object.assign(result, { provider: provider.name, model: provider.model, llm: true });
-  } catch (e) {
-    console.error("draftEstimate provider call failed:", e && e.message);
-    return Object.assign(stub, {
-      provider: "stub", model: null, llm: false, fallback: true,
-      errorDetail: String((e && e.message) || "unknown error").slice(0, 300)
-    });
-  }
-}
 
 module.exports = {
   ISSUE_VOCABULARY,
@@ -753,13 +619,10 @@ module.exports = {
   sanitizeReport,
   sanitizeIssueContext,
   sanitizeProposalText,
-  sanitizeEstimateInput,
   composeStubScope,
   extractJson,
   clampIssueResult,
-  clampEstimateDraft,
   generateSummary,
   identifyIssue,
-  draftScope,
-  draftEstimate
+  draftScope
 };

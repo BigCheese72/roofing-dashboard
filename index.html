@@ -57,7 +57,6 @@
   <button class="tab cond" id="tab-saved" onclick="showView('saved')" title="Saved work orders">💾<span class="tab-label"> Saved</span> (<span id="saved-count">0</span>)</button>
   <button class="tab cond" id="tab-history" onclick="showView('history')" title="Building History">🏢<span class="tab-label"> Building History</span></button>
   <button class="tab cond" id="tab-reports" onclick="showView('reports')" title="Reports">📋<span class="tab-label"> Reports</span></button>
-  <button class="tab cond" id="tab-estimator" onclick="showView('estimator')" style="display:none" title="Estimator">EST<span class="tab-label"> Estimator</span></button>
   <button class="tab cond" id="tab-roofmapper" onclick="showView('roofmapper')" title="RoofMapper">🗺️<span class="tab-label"> RoofMapper</span></button>
   <button class="tab cond" id="tab-dpr" onclick="showView('dpr')" title="Daily Progress Report">📅<span class="tab-label"> Daily Report</span></button>
   <!-- Service Manager tab (dispatch + proposals). Hidden by default; shown by
@@ -567,163 +566,6 @@
     <div id="reports-list"></div>
   </div>
 
-  <!-- ================= ESTIMATOR VIEW (owner-only) =================
-       Estimate-first workspace. It starts from drawings/photos/field notes,
-       not from a saved work order. If the job sells, this becomes the first
-       building-history record; until then it is a private bid model. -->
-  <div id="view-estimator" style="display:none">
-    <div class="card estimator-hero">
-      <h2 class="cond">Estimator</h2>
-      <p class="hint">Private estimate workspace for roof drawings, photos, field measurements, cores, wall heights,
-        metal, warranty, labor, travel, dumpsters, rental equipment, taxes, fees, and bond.</p>
-      <div class="btnrow" style="margin:0 0 10px">
-        <button class="btn primary" onclick="estimatorOpenRoofMapperMaps()">Load RoofMapper Map</button>
-        <button class="btn" onclick="estimatorAskAi()">AI Review / Seed</button>
-        <button class="btn" onclick="estimatorApplyEpdmSaRules()">Build EPDM SA Estimate</button>
-        <button class="btn" onclick="estimatorCalculateFromForm()">Calculate</button>
-        <button class="btn" onclick="estimatorSaveCurrent('edge')">Save EDGE</button>
-        <button class="btn" onclick="estimatorSaveCurrent('our')">Save Our Way</button>
-        <button class="btn" onclick="estimatorOpenSaved()">Open Saved</button>
-        <button class="btn" onclick="estimatorCreateProposal()">Create Proposal</button>
-      </div>
-      <p class="hint" style="margin:0">This is estimate-first. CompanyCam, roof drawings, and photos are optional evidence inputs;
-        a work order is not required.</p>
-      <p class="hint" id="estimator-ai-status" style="margin:6px 0 0"></p>
-    </div>
-
-    <div class="card">
-      <h2 class="cond">Estimate Intake</h2>
-      <p class="hint">Use this like the estimating conversation: load a RoofMapper map, fill in the roof system,
-        taper/structural slope, wall height, drains, labor, travel, equipment, and notes, then build the EPDM SA material list.</p>
-      <div class="estimator-intake-steps">
-        <div><b>1. Map</b><span>RoofMapper area and perimeter</span></div>
-        <div><b>2. System</b><span>Membrane, warranty, taper or structural slope</span></div>
-        <div><b>3. Details</b><span>Drains, walls, metal, accessories, lift, disposal</span></div>
-        <div><b>4. Labor</b><span>Crew days, travel, tax, profit, bond, markup</span></div>
-        <div><b>5. Review</b><span>Edit material list, save EDGE or Our Way, create proposal</span></div>
-      </div>
-    </div>
-
-    <div class="card" id="estimator-roofmapper-card" style="display:none">
-      <h2 class="cond">RoofMapper Maps</h2>
-      <p class="hint">Pick a RoofMapper outline saved on this device. The estimator will pull in roof area and perimeter,
-        then you can add membrane, insulation, taper, wall height, metal, labor, and job costs.</p>
-      <div id="estimator-roofmapper-list"></div>
-    </div>
-
-    <div class="estimator-layout">
-      <div class="card">
-        <h2 class="cond">Project</h2>
-        <div class="grid">
-          <div class="fld"><label>Project / Building</label><input type="text" id="est-project-name"></div>
-          <div class="fld"><label>Location</label><input type="text" id="est-location"></div>
-          <div class="fld"><label>Contact</label><input type="text" id="est-contact"></div>
-          <div class="fld"><label>CompanyCam Project</label>
-            <div class="btnrow" style="margin:0 0 6px">
-              <input type="text" id="est-companycam-search" placeholder="Search CompanyCam projects" style="flex:1;min-width:180px"
-                onkeydown="if(event.key==='Enter'){event.preventDefault();estimatorSearchCompanyCam();}">
-              <button class="btn" type="button" onclick="estimatorSearchCompanyCam()">Search</button>
-            </div>
-            <input type="hidden" id="est-companycam-id">
-            <input type="hidden" id="est-companycam-name">
-            <div id="est-companycam-link" class="hint">No CompanyCam project linked.</div>
-            <div id="est-companycam-results"></div>
-          </div>
-          <div class="fld"><label>RoofMapper Map</label>
-            <div class="btnrow" style="margin:0 0 6px">
-              <button class="btn" type="button" onclick="estimatorOpenRoofMapperMaps()">Choose RoofMapper Map</button>
-            </div>
-            <input type="hidden" id="est-roofmap-id">
-            <input type="hidden" id="est-roofmap-name">
-            <div id="est-roofmap-link" class="hint">No RoofMapper map loaded.</div>
-          </div>
-        </div>
-        <div class="fld"><label>Roof drawings / photo notes / field information</label>
-          <textarea id="est-field-notes" rows="4"></textarea>
-        </div>
-      </div>
-
-      <div class="card">
-        <h2 class="cond">Roof System</h2>
-        <div class="grid">
-          <div class="fld"><label>Membrane</label><select id="est-membrane">
-            <option value="epdm-sa">60 mil EPDM SA</option>
-            <option value="tpo">TPO</option>
-            <option value="pvc">PVC</option>
-          </select></div>
-          <div class="fld"><label>Warranty Years</label><select id="est-warranty-years">
-            <option value="15">15</option>
-            <option value="20" selected>20</option>
-            <option value="25">25</option>
-            <option value="30">30</option>
-          </select></div>
-          <div class="fld"><label>Roof Area (SF)</label><input type="text" id="est-area-sf"></div>
-          <div class="fld"><label>Slope Type</label><select id="est-slope-type">
-            <option value="tapered">Tapered insulation</option>
-            <option value="structural">Structurally sloped</option>
-          </select></div>
-          <div class="fld"><label>Taper Package Cost</label><input type="text" id="est-taper-cost"></div>
-          <div class="fld"><label>Continuous ISO Overlay (in.)</label><input type="text" id="est-overlay-in"></div>
-          <div class="fld"><label>Overlay ISO Squares</label><input type="text" id="est-overlay-sq"></div>
-          <div class="fld"><label>Overlay ISO Cost / SQ</label><input type="text" id="est-overlay-cost-sq"></div>
-        </div>
-      </div>
-
-      <div class="card">
-        <h2 class="cond">Details, Walls, Metal, Equipment</h2>
-        <div class="grid">
-          <div class="fld"><label>Perimeter LF</label><input type="text" id="est-perimeter-lf"></div>
-          <div class="fld"><label>Curb / Equipment Perimeter LF</label><input type="text" id="est-curb-perimeter-lf"></div>
-          <div class="fld"><label>Stone Coping Removed (in.)</label><input type="text" id="est-stone-coping-in"></div>
-          <div class="fld"><label>Max Taper Height (in.)</label><input type="text" id="est-max-taper-in"></div>
-          <div class="fld"><label>Existing Tear-off Thickness (in.)</label><input type="text" id="est-tearoff-in"></div>
-          <div class="fld"><label>Installed Wall/Blocking Allowance</label><input type="text" id="est-blocking-cost"></div>
-          <div class="fld"><label>New Metal $/LF</label><input type="text" id="est-metal-lf-cost"></div>
-          <div class="fld"><label>Lift / Rental Equipment</label><input type="text" id="est-equipment-cost"></div>
-          <div class="fld"><label>Disposal / Dumpsters</label><input type="text" id="est-disposal-cost"></div>
-          <div class="fld"><label>Retrofit Drain Count</label><input type="text" id="est-retrofit-drain-count"></div>
-          <div class="fld"><label>Pipe Boot Count</label><input type="text" id="est-pipe-boots"></div>
-          <div class="fld"><label>Scupper Count</label><input type="text" id="est-scupper-count"></div>
-        </div>
-      </div>
-
-      <div class="card">
-        <h2 class="cond">Labor, Travel, Pricing</h2>
-        <div class="grid">
-          <div class="fld"><label>Crew Size</label><input type="text" id="est-crew-size"></div>
-          <div class="fld"><label>Hours / Day</label><input type="text" id="est-hours-day"></div>
-          <div class="fld"><label>Working Days</label><input type="text" id="est-working-days"></div>
-          <div class="fld"><label>EDGE Labor $/HR</label><input type="text" id="est-edge-labor-rate"></div>
-          <div class="fld"><label>Our Labor $/HR</label><input type="text" id="est-our-labor-rate"></div>
-          <div class="fld"><label>Per Diem $/Man/Day</label><input type="text" id="est-per-diem"></div>
-          <div class="fld"><label>Hotel Rooms</label><input type="text" id="est-hotel-rooms"></div>
-          <div class="fld"><label>Hotel $/Night</label><input type="text" id="est-hotel-night"></div>
-          <div class="fld"><label>Hotel Nights</label><input type="text" id="est-hotel-nights"></div>
-          <div class="fld"><label>Material Tax %</label><input type="text" id="est-tax-rate"></div>
-          <div class="fld"><label>EDGE Profit %</label><input type="text" id="est-edge-profit"></div>
-          <div class="fld"><label>EDGE Bond %</label><input type="text" id="est-edge-bond"></div>
-          <div class="fld"><label>Our Markup %</label><input type="text" id="est-our-markup"></div>
-        </div>
-      </div>
-    </div>
-
-    <div class="card">
-      <h2 class="cond">Estimate Results</h2>
-      <div id="estimator-results"><p class="hint">Load a RoofMapper map or enter values, then calculate.</p></div>
-    </div>
-    <div class="card" id="estimator-saved-card" style="display:none">
-      <h2 class="cond">Estimate Job Files</h2>
-      <div id="estimator-saved-list"></div>
-    </div>
-    <div class="card" id="estimator-proposal-card" style="display:none">
-      <h2 class="cond">Proposal Draft</h2>
-      <div class="btnrow" style="margin:0 0 10px">
-        <button class="btn" onclick="estimatorCopyProposal()">Copy Proposal Text</button>
-        <button class="btn" onclick="estimatorDownloadProposalText()">Download Text</button>
-      </div>
-      <pre id="estimator-proposal-text" style="white-space:pre-wrap;font-family:inherit;background:#F8FAFB;border:1px solid var(--line);border-radius:6px;padding:12px;margin:0"></pre>
-    </div>
-  </div>
 
   <!-- ================= ROOFMAPPER VIEW (Phase 1) ================= -->
   <div id="view-roofmapper" style="display:none">
@@ -2022,7 +1864,6 @@
      live in collect()/fill()). See js/servicemanager.js header. -->
 <script src="js/servicemanager.js"></script>
 <script src="js/roles-admin.js"></script>
-<script src="js/estimator.js"></script>
 <!-- AI training-label write path (see js/ailabels.js). Pure data plumbing,
      no UI of its own and deliberately no callers yet — loaded so the flows
      that confirm/correct an issue label (work orders, photos, inspections)
