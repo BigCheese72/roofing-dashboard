@@ -48,6 +48,8 @@ var smProposals = [];            // last-loaded proposal rows from contacts-sync
 var smWoIndex = [];              // recent saved-WO index (for WO-exists flag + assign list)
 var smCurrentProposal = null;    // proposal ref being pre-created from (or null)
 var smFoundationPick = null;     // Foundation job matched for the current pre-create
+var smJobNameFromProposal = false; // job-name field still holds the proposal subject (not hand-typed)
+var smFdnLoadFailed = false;     // a Foundation jobs load rejected this session
 var smCcPick = null;             // { id, name } CompanyCam project linked/created for this pre-create
 
 /* ---- small DOM/utility helpers (kept local so this module is self-contained
@@ -156,9 +158,22 @@ async function smLoadProposals(){
     var body = { action: "list_messages", pages: 3 };
     if (src === "sentitems") body.folderId = "sentitems"; else body.folderName = src;
     var data = await smApi(body);
-    smProposals = data.rows || [];
-    await smRefreshWoIndex();
+    var rows = data.rows || [];   // capture ONCE — `data.rows || []` allocates a
+    smProposals = rows;           // fresh array each time, so the identity guard
+    await smRefreshWoIndex();     // below would never hold.
     smRenderProposals();
+    // The Foundation jobs cache is primed in parallel (smOnShow → fdnPrimePicker)
+    // and usually loses this race, so re-render once it lands — otherwise every
+    // row keeps claiming "no Foundation job matched" on a cold open. Re-render
+    // on FAILURE too, so the row line moves off "Checking…" either way.
+    if (typeof fdnLoadJobs === "function" && smFdnCacheStatus() === "loading"){
+      fdnLoadJobs(false).then(function(){
+        if (smProposals === rows) smRenderProposals();
+      }).catch(function(){
+        smFdnLoadFailed = true;
+        if (smProposals === rows) smRenderProposals();
+      });
+    }
   } catch (e) {
     var msg = e.status === 404 ? "No “Proposals” folder found in the mailbox. Create one in Outlook, switch to Sent Items, or use Upload PDF." :
               e.status === 403 ? "Your account doesn't have access to the shared mailbox. (Needs the same access as warranty reports.)" :
@@ -178,14 +193,30 @@ function smRenderProposals(){
       : '<span style="color:#b26a00;white-space:nowrap">⚠️ No WO yet</span>';
     var att = p.a ? " 📎" : "";
     var when = smFmtDate(p.d);
+    // Show the Foundation cross-reference RIGHT HERE, before anything is
+    // clicked — "why didn't it link" should be answerable at a glance. If the
+    // jobs cache hasn't landed yet, say "checking" rather than asserting a
+    // no-match we haven't actually tested (smRenderProposals re-runs when the
+    // cache arrives — see smLoadProposals).
+    var fdnState = smFdnCacheStatus();
+    var fdnJob = (fdnState === "ready") ? smFindFoundationJob("", p.s || "") : null;
+    var fdnLine =
+      fdnState === "loading" ? '<div class="hint" style="margin:0 0 8px">🏗️ Checking Foundation jobs…</div>' :
+      fdnState === "empty"   ? '<div class="hint" style="margin:0 0 8px">🏗️ No Foundation jobs are cached yet — an admin can run a sync.</div>' :
+      fdnState === "error"   ? '<div class="hint" style="margin:0 0 8px">🏗️ Couldn\'t load the Foundation job list — you can still link a job by hand on the work order.</div>' :
+      fdnJob
+        ? '<div class="hint" style="margin:0 0 8px;color:#178a1c">🏗️ Foundation job #' + smEsc(fdnJob.job_no) +
+            " — " + smEsc(fdnJob.name || "") + "</div>"
+        : '<div class="hint" style="margin:0 0 8px">🏗️ No Foundation job matched from the subject — you can link one when you create the work order.</div>';
     return '<div class="card" style="margin:0 0 8px;padding:10px 12px">' +
       '<div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap">' +
         "<b>" + smEsc(p.s || "(no subject)") + "</b>" + att +
         ' <span style="flex:1"></span> ' + flag +
       "</div>" +
-      '<div class="hint" style="margin:2px 0 8px">' + smEsc(p.n || p.e || "") +
+      '<div class="hint" style="margin:2px 0 4px">' + smEsc(p.n || p.e || "") +
         (when ? (" · " + when) : "") +
         (match ? (" · looks like: " + smEsc(match.jobName || match.location || "")) : "") + "</div>" +
+      fdnLine +
       '<div class="btnrow" style="margin:0">' +
         '<button class="btn primary" onclick="smPrecreateFromProposal(' + i + ')">➕ Create Work Order</button>' +
         (p.a ? '<button class="btn" onclick="smViewProposalPdf(' + i + ')">📄 View PDF</button>' : "") +
@@ -271,49 +302,433 @@ function smWoExistsForProposal(p, index){
 
 /* ======================= Foundation cross-reference ======================
  * Reuses js/foundation.js's matching helpers (fdnAddressMatchKey /
- * fdnComposeAddress / fdnNormalizeText) — address-first, exact/unique only,
- * name-equality fallback, and it REFUSES to guess on ambiguity (>1 match), the
- * same doctrine as fdnFindMatchingBuilding(). Matches a proposal's address/name
- * against the Foundation jobs cache (fdnCache), rather than app buildings. */
-function smFindFoundationJob(loc, name, jobs){
+ * fdnComposeAddress / fdnNormalizeText) — address-first, exact/unique only, and
+ * it REFUSES to guess on ambiguity (>1 match), the same doctrine as
+ * fdnFindMatchingBuilding(). Matches a proposal against the Foundation jobs
+ * cache (fdnCache), rather than app buildings.
+ *
+ * WHY TIER 3 EXISTS (Mark, 2026-07-18 — "I see the proposal, why didn't it link
+ * to it"): an emailed proposal carries NO address (contacts-sync list_messages
+ * returns id/subject/sender/date/hasAttachments only), so the address tier can
+ * never fire from a proposal. That left exact name-equality as the only path —
+ * and the "name" we feed it is the EMAIL SUBJECT ("Prairie Farms – roof repair
+ * proposal"), which never equals the Foundation job name ("Prairie Farms").
+ * Tier 3 matches the job name as a whole-token run INSIDE that subject, which
+ * is how a real proposal actually names its site.
+ *
+ * Note the customer is deliberately NOT a match key: Foundation's customer for
+ * job 17456 is "ACME" while the site everyone says out loud is "Prairie Farms".
+ * The job/site NAME and the address are the human-stable identifiers. */
+
+/* Words that describe WORK rather than a SITE. A job named "Roof Replacement"
+ * must never become a containment key — it would swallow half of Nathan's
+ * subject lines. Null-prototype so inherited Object keys ("constructor") can't
+ * read as generic. */
+var SM_GENERIC_NAME_WORDS = Object.create(null);
+// NOTE the parens: `.split()` binds tighter than `+`, so without them only the
+// LAST literal would be split and the rest of the list silently dropped.
+("roof roofs roofing repair repairs replacement replace reroof recover coating coat " +
+ "proposal quote estimate bid service call job jobs work works project building bldg " +
+ "warranty inspection inspect leak leaks maintenance punch list tear off emergency " +
+ "annual new phase area section unit misc general").split(" ").forEach(function(w){
+  SM_GENERIC_NAME_WORDS[w] = 1;
+});
+
+/* smNorm() is regex-heavy and tier 3 runs it across the whole cache for every
+ * proposal row, so memoize per job object (S1: 50 rows × 5000 jobs measured
+ * 463ms before this). The property is non-enumerable so it never rides along
+ * into a Firestore write. */
+function smJobNameNorm(j){
+  if (!j) return "";
+  if (typeof j._smNameNorm === "string") return j._smNameNorm;
+  var v = smNorm(j.name);
+  try { Object.defineProperty(j, "_smNameNorm", { value: v, enumerable: false, configurable: true }); }
+  catch (e) { /* frozen/sealed job object — just recompute next time */ }
+  return v;
+}
+
+/* A Foundation job name may serve as a containment key only if what's LEFT
+ * after removing work-words still identifies a place: at least two such tokens.
+ * "Prairie Farms" → [prairie, farms] ✓. "Roof Replacement" → [replacement] ✗.
+ * "Columbia" → [columbia] ✗ (one word is not a site — it links "Columbia MO
+ * warehouse proposal" to the wrong job; the manual picker covers those). */
+function smNameIsDistinctive(nameNorm){
+  if (!nameNorm) return false;
+  var specific = nameNorm.split(" ").filter(function(t){
+    // Bare numerals and single letters are sequence markers, not place names —
+    // without this, "Roof Area 2 Section 3" and "Unit 5 Bldg 7" qualify on
+    // their digits alone once the work-words are stripped.
+    if (!t || t.length < 2 || /^\d+$/.test(t)) return false;
+    return !SM_GENERIC_NAME_WORDS[t];
+  });
+  return specific.length >= 2;
+}
+/* Whole-token containment: smNorm() collapses to single-spaced tokens, so
+ * padding both sides makes indexOf a token-boundary test ("prairie farms"
+ * matches "... prairie farms ..." but "farm" never matches "farms"). */
+function smContainsTokens(hayNorm, needleNorm){
+  if (!hayNorm || !needleNorm) return false;
+  return (" " + hayNorm + " ").indexOf(" " + needleNorm + " ") !== -1;
+}
+
+/* Full matcher. Returns { job, via } where `via` is "address" | "name" |
+ * "subject" | null, so the UI can say HOW it matched (a subject-containment hit
+ * is worth showing as such). smFindFoundationJob() is the thin job-only wrapper
+ * everything else uses. */
+function smFindFoundationJobDetailed(loc, name, jobs){
+  var miss = { job: null, via: null };
   var cache = jobs || ((typeof fdnCache !== "undefined" && fdnCache) ? fdnCache : null);
-  if (!cache || !cache.length) return null;
+  if (!cache || !cache.length) return miss;
+  // Tier 1 — address. Strongest signal, but only available when the manager
+  // typed/pasted one (a proposal email never carries it).
   if (typeof fdnAddressMatchKey === "function" && typeof fdnComposeAddress === "function"){
     var key = fdnAddressMatchKey(loc);
     if (key){
       var am = cache.filter(function(j){ return fdnAddressMatchKey(fdnComposeAddress(j)) === key; });
-      if (am.length === 1) return am[0];
-      if (am.length > 1) return null; // ambiguous → refuse to guess
+      if (am.length === 1) return { job: am[0], via: "address" };
+      if (am.length > 1) return miss; // ambiguous → refuse to guess
     }
   }
   var nm = smNorm(name);
-  if (!nm) return null;
-  var nameMatches = cache.filter(function(j){ return smNorm(j.name) === nm; });
-  return nameMatches.length === 1 ? nameMatches[0] : null;
+  if (!nm) return miss;
+  // Tier 2 — exact name equality (the manager typed the job name verbatim).
+  var exact = cache.filter(function(j){ return smJobNameNorm(j) === nm; });
+  if (exact.length === 1) return { job: exact[0], via: "name" };
+  if (exact.length > 1) return miss; // ambiguous → refuse to guess
+  // Tier 3 — job name appearing inside the text (an email subject).
+  var contained = cache.filter(function(j){
+    var jn = smJobNameNorm(j);
+    return smNameIsDistinctive(jn) && smContainsTokens(nm, jn);
+  });
+  if (!contained.length) return miss;
+  // Longest-wins is only legitimate for NESTED candidates — "Flat Branch Pub
+  // Annex" genuinely refines "Flat Branch Pub". Two DISJOINT sites named in one
+  // subject ("Prairie Farms and North Terminal") is real ambiguity, and picking
+  // whichever name happens to be longer would be arbitrary. So: take the
+  // longest, then require every rival to be contained within it.
+  var winner = contained.reduce(function(a, b){
+    return smJobNameNorm(b).length > smJobNameNorm(a).length ? b : a;
+  });
+  var wn = smJobNameNorm(winner);
+  // Two DIFFERENT jobs carrying the SAME name (a repeat customer, a job per
+  // building per year) is ambiguity, not nesting — a string contains itself, so
+  // without this the winner is decided by cache order and the WO silently binds
+  // to whichever job happened to sort first. Tier 2 already refuses this; tier 3
+  // must too, and it's the only tier an emailed proposal can reach.
+  var sameName = contained.filter(function(j){ return smJobNameNorm(j) === wn; });
+  if (sameName.length > 1) return miss;
+  var allNested = contained.every(function(j){
+    return j === winner || smContainsTokens(wn, smJobNameNorm(j));
+  });
+  return allNested ? { job: winner, via: "subject" } : miss;
 }
-async function smMatchFoundationFromForm(){
+function smFindFoundationJob(loc, name, jobs){
+  return smFindFoundationJobDetailed(loc, name, jobs).job;
+}
+
+/* Which of the four states the jobs cache is in. "loading" and "empty" look
+ * identical through a truthiness check but mean opposite things to a manager:
+ * one resolves itself, the other needs an admin to run a sync. fdnLoadJobs()
+ * also caches [] permanently for the session, so "empty" never self-clears. */
+function smFdnCacheStatus(){
+  var loaded = (typeof fdnCache !== "undefined" && fdnCache);
+  if (loaded) return fdnCache.length ? "ready" : "empty";
+  return smFdnLoadFailed ? "error" : "loading";
+}
+
+/* Ranked "did you mean" candidates for the picker and the no-match UI. Scores
+ * by how much of the job's name is present in the text, so an ambiguous or
+ * failed auto-match still puts the right job one tap away rather than making
+ * Mark scroll 500 jobs. Pure — tested directly. */
+function smRankFoundationJobs(text, jobs, limit){
+  var cache = jobs || ((typeof fdnCache !== "undefined" && fdnCache) ? fdnCache : null);
+  var hay = smNorm(text);
+  if (!cache || !cache.length || !hay) return [];
+  var hayToks = Object.create(null); // null-proto: "constructor" must not read as present
+  hay.split(" ").filter(Boolean).forEach(function(t){ hayToks[t] = 1; });
+  var scored = [];
+  cache.forEach(function(j){
+    var jn = smJobNameNorm(j);
+    if (!jn) return;
+    var toks = jn.split(" ").filter(Boolean);
+    if (!toks.length) return;
+    var hits = toks.filter(function(t){ return hayToks[t] && !SM_GENERIC_NAME_WORDS[t]; }).length;
+    if (!hits) return;
+    // Whole-name containment is a materially stronger signal than loose token
+    // overlap, so it outranks any partial hit.
+    var score = (hits / toks.length) + (smContainsTokens(hay, jn) ? 1 : 0);
+    scored.push({ job: j, score: score });
+  });
+  scored.sort(function(a, b){
+    if (b.score !== a.score) return b.score - a.score;
+    return smJobNameNorm(b.job).length - smJobNameNorm(a.job).length;
+  });
+  return scored.slice(0, limit || 5).map(function(s){ return s.job; });
+}
+
+/* The text we match a proposal against: whatever's in the job-name field PLUS
+ * the proposal subject (the field may hold a truncated/edited subject, and the
+ * site name can sit in either). Deduped — on a fresh proposal the two are the
+ * same string, and doubling it only creates a bogus token junction. */
+/* The candidate texts to match against, MOST AUTHORITATIVE FIRST — tried one at
+ * a time, never concatenated. Concatenating a hand-typed correction onto the
+ * subject made things worse two ways: "North Terminal" + a Prairie Farms
+ * subject became two disjoint candidates (→ refused, so typing the right name
+ * broke matching), and the field/subject seam could fabricate a token run that
+ * matches a third job outright. */
+function smFoundationMatchTexts(){
+  var name = getVal2("sm-pc-jobName");
+  var subj = (smCurrentProposal && smCurrentProposal.subject) || "";
+  var out = [];
+  // A name the manager typed themselves outranks the email subject.
+  if (name && !smJobNameFromProposal) out.push(name);
+  if (subj) out.push(subj);
+  if (name && out.indexOf(name) === -1) out.push(name);
+  return out;
+}
+/* Single best text for RANKING and for seeding the picker's search box. After a
+ * match has overwritten the job-name field, the proposal subject is the more
+ * useful basis — otherwise "change" opens pre-filtered to the very job you're
+ * trying to correct. */
+function smFoundationSearchText(){
+  var subj = (smCurrentProposal && smCurrentProposal.subject) || "";
+  if (subj) return subj;
+  return getVal2("sm-pc-jobName");
+}
+/* Guards the fire-and-forget match against a stale resolve. fdnLoadJobs() can
+ * be a cold 5000-doc Firestore read; without this, closing proposal A's form
+ * and opening B's lets A's in-flight match paint job A onto B and ship a WO
+ * cross-referenced to the wrong accounting job. */
+/* Two counters, not one: the picker and the auto-match run concurrently, and a
+ * shared counter let either cancel the other's render — leaving an open picker
+ * stuck on "Loading jobs…". */
+var smFdnMatchSeq = 0;
+var smFdnPickerSeq = 0;
+async function smMatchFoundationFromForm(silentOnMiss){
   var el = smEl("sm-pc-foundation");
-  var loc = getVal2("sm-pc-location"), name = getVal2("sm-pc-jobName");
+  var loc = getVal2("sm-pc-location");
+  var texts = smFoundationMatchTexts();
+  var seq = ++smFdnMatchSeq;
+  var forProposal = smCurrentProposal;
+  // Nothing to go on at all (blank New Work Order, nothing typed) — say so
+  // rather than reporting a "no match" we never actually looked for.
+  if (!loc && !texts.length){
+    if (el) el.innerHTML = "Add a job name or an address first, or " +
+      '<button class="btn" type="button" onclick="smOpenFoundationPicker()">🔗 link a Foundation job</button>.';
+    return;
+  }
   if (el) el.innerHTML = "Searching Foundation…";
-  try { if (typeof fdnLoadJobs === "function") await fdnLoadJobs(false); } catch (e) {}
-  var job = smFindFoundationJob(loc, name);
-  smFoundationPick = job;
+  // A failure here must be recorded, not just swallowed: if the auto-match is
+  // the first loader to fail, the proposal rows would otherwise sit on
+  // "Checking Foundation jobs…" forever (the REQUIRED-4 symptom by another path).
+  try { if (typeof fdnLoadJobs === "function") await fdnLoadJobs(false); }
+  catch (e) { smFdnLoadFailed = true; }
+  // The form moved on while we were away — drop this result on the floor.
+  if (seq !== smFdnMatchSeq || smCurrentProposal !== forProposal) return;
+  // Address first (it doesn't depend on any text), then each candidate text in
+  // priority order; the first confident hit wins.
+  var found = smFindFoundationJobDetailed(loc, "");
+  for (var ti = 0; !found.job && ti < texts.length; ti++){
+    found = smFindFoundationJobDetailed(loc, texts[ti]);
+  }
+  if (found.job){ smApplyFoundationPick(found.job, found.via); return; }
+  smFoundationPick = null;
+  el = smEl("sm-pc-foundation");
   if (!el) return;
-  if (job){
+  // No confident match — offer the near misses as one-tap links plus a full
+  // search, so "it didn't link" is never a dead end.
+  var near = smRankFoundationJobs(smFoundationSearchText(), null, 3);
+  el.innerHTML = "⚠️ No confident Foundation match" + (silentOnMiss ? " from the proposal" : " by address or name") +
+    " — it stays unlinked." +
+    (near.length ? ('<div style="margin:6px 0 0">Did you mean: ' + near.map(function(j){
+      return '<button class="btn" type="button" style="margin:2px 4px 0 0" onclick="smPickFoundationJob(' +
+        smEsc(JSON.stringify(String(j.job_no))) + ')">' +
+        smEsc(j.name || j.job_no) + ' <span class="hint">#' + smEsc(j.job_no) + "</span></button>";
+    }).join("") + "</div>") : "") +
+    '<div style="margin:6px 0 0"><button class="btn" type="button" onclick="smOpenFoundationPicker()">🔗 Search all Foundation jobs</button></div>';
+}
+/* Bind the picked job onto the form. JOB-CENTRIC: the Foundation job name and
+ * address become the WO's identity (that's what makes buildingId resolve to the
+ * same building next time), so an auto-filled proposal SUBJECT is replaced by
+ * the real job name — but a name the manager typed themselves is never
+ * overwritten (smJobNameFromProposal tracks which it is). */
+/* `via` is "address" | "name" | "subject" for an automatic match, or "manual"
+ * when the manager picked from the list. A MANUAL pick is always authoritative:
+ * it overwrites the job name even if an earlier (wrong) auto-match already
+ * stamped one, otherwise "change" could leave the WO carrying job 17456 under
+ * the name of a different job — exactly the identity split this binding
+ * exists to prevent. */
+function smApplyFoundationPick(job, via){
+  // The job (if any) whose values are currently sitting in the fields. Captured
+  // BEFORE the overwrite, because it's the only thing that distinguishes the
+  // two very different manual cases below.
+  var prev = smFoundationPick;
+  smFoundationPick = job || null;
+  if (!job){ smClearFoundationPick(); return; }
+  var manual = (via === "manual");
+  var prevAddr = (prev && typeof fdnComposeAddress === "function") ? (fdnComposeAddress(prev) || "") : "";
+
+  /* Adopting a field from the picked job. Two manual cases look identical at
+   * the call site but must behave differently:
+   *
+   *   RE-POINT  — a job was already linked and the manager is correcting it.
+   *               The old job's values must not survive; if the new job has
+   *               none, the field is cleared.
+   *   FIRST LINK — auto-match found nothing (this is when the "did you mean"
+   *               buttons appear), so the fields hold the MANAGER'S OWN typing
+   *               and there is no other copy of it. A blank field on the picked
+   *               job must not wipe that out.
+   *
+   * So: a value the job actually has always wins on a manual pick; a blank one
+   * only clears what the PREVIOUS pick put there. */
+  function smAdoptField(id, value, prevValue){
+    var cur = getVal2(id);
+    if (value){
+      if (manual || !cur) setVal2(id, value);
+      return;
+    }
+    if (manual && cur && prevValue && cur === prevValue) setVal2(id, "");
+  }
+
+  // The name additionally yields to a proposal-seeded subject (that's not the
+  // manager's typing — it's an email subject standing in for a job name).
+  if (job.name && (manual || smJobNameFromProposal || !getVal2("sm-pc-jobName"))){
+    setVal2("sm-pc-jobName", job.name);
+    smJobNameFromProposal = false;
+  } else if (!job.name && manual && prev && getVal2("sm-pc-jobName") === (prev.name || "")){
+    setVal2("sm-pc-jobName", "");
+    smJobNameFromProposal = false;
+  }
+  // location drives ensureCustomerAndBuilding() → buildingId, so both a stale
+  // value (wrong building) and a wrongly-cleared one (no building) matter.
+  if (typeof fdnComposeAddress === "function"){
+    smAdoptField("sm-pc-location", fdnComposeAddress(job) || "", prevAddr);
+  }
+  smAdoptField("sm-pc-billTo", job.customer_no || "", (prev && prev.customer_no) || "");
+  var how = via === "address" ? "matched on address"
+          : via === "name" ? "matched on job name"
+          : via === "subject" ? "matched from the proposal subject"
+          : "";
+  var el = smEl("sm-pc-foundation");
+  if (el){
     el.innerHTML = "✅ <b>" + smEsc(job.name || job.job_no) + "</b> — job #" + smEsc(job.job_number || job.job_no) +
       (job.customer_no ? (" · cust " + smEsc(job.customer_no)) : "") +
-      ' <button class="btn" type="button" style="margin-left:8px" onclick="smClearFoundationPick()">✕ unlink</button>';
-    if (!getVal2("sm-pc-jobName")) setVal2("sm-pc-jobName", job.name || "");
-    if (!getVal2("sm-pc-location") && typeof fdnComposeAddress === "function") setVal2("sm-pc-location", fdnComposeAddress(job));
-    if (!getVal2("sm-pc-billTo") && job.customer_no) setVal2("sm-pc-billTo", job.customer_no);
-  } else {
-    el.innerHTML = "⚠️ No confident Foundation match by address or name — it stays unlinked. You can still create the WO and link it later.";
+      (how ? ' <span class="hint">(' + how + " — confirm it's right)</span>" : "") +
+      ' <button class="btn" type="button" style="margin-left:8px" onclick="smOpenFoundationPicker()">change</button>' +
+      ' <button class="btn" type="button" onclick="smClearFoundationPick()">✕ unlink</button>';
   }
 }
 function smClearFoundationPick(){
   smFoundationPick = null;
   var el = smEl("sm-pc-foundation");
-  if (el) el.innerHTML = "Not linked. Cross-reference to bind the real job number.";
+  if (el){
+    el.innerHTML = "Not linked. " +
+      '<button class="btn" type="button" onclick="smOpenFoundationPicker()">🔗 Link a Foundation job</button>';
+  }
+}
+/* Clears the "this name came from the proposal subject" flag the moment the
+ * manager edits the field by hand (wired oninput in index.html). */
+function smJobNameEdited(){ smJobNameFromProposal = false; }
+
+/* ---- manual Foundation job picker (search/select fallback) ----
+ * Auto-match is deliberately conservative and refuses ambiguity; this is the
+ * one-tap way through whenever it declines or gets it wrong. Searches the same
+ * fdnCache the Select-Job picker uses, by name / job # / customer / city. */
+function smOpenFoundationPicker(){
+  var m = smEl("sm-fdn-modal");
+  if (m) m.style.display = "";
+  var host = smEl("sm-fdn-list");
+  if (host) host.innerHTML = "Loading jobs…";
+  // Clear last time's query synchronously, so the seed below applies on reopen
+  // while anything typed DURING this open still wins.
+  setVal2("sm-fdn-search", "");
+  // Same staleness class as smMatchFoundationFromForm: a slow first load for
+  // proposal A must not re-seed a picker the manager has since reopened for B.
+  var seq = ++smFdnPickerSeq;
+  var forProposal = smCurrentProposal;
+  var render = function(){
+    if (seq !== smFdnPickerSeq || smCurrentProposal !== forProposal) return;
+    // Seed from the best-ranked CANDIDATE's name, never the raw email subject:
+    // the filter is an AND over tokens, so seeding "Prairie Farms – roof repair
+    // proposal" would return zero rows for a job that's sitting right there.
+    // Exclude the job we're already linked to: "change" means the manager wants
+    // a DIFFERENT one, so seeding its name pre-filters the list to the very
+    // thing they're correcting away from.
+    var ranked = smRankFoundationJobs(smFoundationSearchText(), null, 4).filter(function(j){
+      return !smFoundationPick || String(j.job_no) !== String(smFoundationPick.job_no);
+    });
+    var best = ranked[0];
+    // Falling back to the job-name field would reintroduce the same problem
+    // when the current pick was the ONLY candidate: after a pick that field
+    // holds the current job's own name. Start empty instead — the full list is
+    // more useful than a list filtered to the job being corrected away from.
+    var seed = best ? (best.name || "")
+             : (smFoundationPick || smJobNameFromProposal) ? "" : getVal2("sm-pc-jobName");
+    // Never overwrite what the manager has already typed: on a cold jobs read
+    // they can be mid-search when this lands, and replacing their text with a
+    // seed silently swaps in a plausible-looking wrong result.
+    if (!getVal2("sm-fdn-search")) setVal2("sm-fdn-search", String(seed || "").slice(0, 60));
+    smRenderFoundationPicker();
+  };
+  if (typeof fdnLoadJobs === "function") fdnLoadJobs(false).then(render).catch(function(){
+    smFdnLoadFailed = true;
+    if (seq !== smFdnPickerSeq) return;
+    if (host) host.innerHTML = '<span style="color:#b23">Couldn\'t load the Foundation job list.</span>';
+  });
+  else render();
+}
+function smCloseFoundationPicker(){ var m = smEl("sm-fdn-modal"); if (m) m.style.display = "none"; }
+/* Pure filter so the search behaviour is testable without a DOM. Matches the
+ * Select-Job picker's field set (name / job # / customer / PM / city). */
+function smFilterFoundationJobs(query, jobs, limit){
+  var all = jobs || ((typeof fdnCache !== "undefined" && fdnCache) ? fdnCache : []) || [];
+  var q = smNorm(query);
+  if (!q) return all.slice(0, limit || 50);
+  var toks = q.split(" ").filter(Boolean);
+  return all.filter(function(j){
+    var hay = smNorm([j.name, j.job_no, j.job_number, j.customer_no, j.project_manager_no, j.city].join(" "));
+    return toks.every(function(t){ return hay.indexOf(t) !== -1; });
+  }).slice(0, limit || 50);
+}
+function smRenderFoundationPicker(){
+  var host = smEl("sm-fdn-list");
+  if (!host) return;
+  var q = getVal2("sm-fdn-search");
+  var rows = smFilterFoundationJobs(q, null, 50);
+  var note = "";
+  // Never dead-end: a strict AND-filter that finds nothing falls back to the
+  // ranked near-misses, then to the head of the list, so the picker always has
+  // something to tap.
+  if (!rows.length && q){
+    rows = smRankFoundationJobs(q, null, 25);
+    note = rows.length
+      ? '<div class="hint" style="margin:0 0 8px">No exact matches — closest jobs by name:</div>'
+      : "";
+    if (!rows.length){
+      rows = smFilterFoundationJobs("", null, 25);
+      note = rows.length ? '<div class="hint" style="margin:0 0 8px">No matches for “' + smEsc(q) + '” — showing the most recent jobs:</div>' : "";
+    }
+  }
+  if (!rows.length){ host.innerHTML = '<span class="hint">No Foundation jobs are cached yet — an admin can run a sync.</span>'; return; }
+  host.innerHTML = note + rows.map(function(j){
+    var meta = [j.customer_no, j.city, (typeof fdnComposeAddress === "function") ? fdnComposeAddress(j) : ""]
+      .filter(Boolean).map(smEsc).join(" · ");
+    return '<div class="card" style="margin:0 0 6px;padding:8px 10px;display:flex;gap:8px;align-items:center">' +
+      '<div style="flex:1"><b>' + smEsc(j.name || "(unnamed job)") + '</b> <span class="hint">#' + smEsc(j.job_no) + "</span>" +
+        '<div class="hint">' + meta + "</div></div>" +
+      '<button class="btn primary" onclick="smPickFoundationJob(' +
+        smEsc(JSON.stringify(String(j.job_no))) + ')">Link</button>' +
+    "</div>";
+  }).join("");
+}
+function smPickFoundationJob(jobNo){
+  var cache = (typeof fdnCache !== "undefined" && fdnCache) ? fdnCache : [];
+  var j = cache.find(function(x){ return String(x.job_no) === String(jobNo); });
+  if (!j) return;
+  // An explicit choice outranks anything auto-match decided.
+  smApplyFoundationPick(j, "manual");
+  smCloseFoundationPicker();
+  smToast("Linked to job #" + j.job_no);
 }
 
 /* ==================== CompanyCam link / create (rule exception) ===========
@@ -423,6 +838,9 @@ function smOpenPrecreate(seed){
   seed = seed || {};
   smCurrentProposal = seed.proposal || null;
   smFoundationPick = null;
+  // The seeded job name is the email SUBJECT, not a site name — a Foundation
+  // match is allowed to replace it (see smApplyFoundationPick).
+  smJobNameFromProposal = !!(seed.proposal && seed.jobName);
   var sel = smEl("sm-pc-woType");
   if (sel){
     var types = (typeof WORK_ORDER_TYPES !== "undefined" && WORK_ORDER_TYPES) ? WORK_ORDER_TYPES : ["Repair"];
@@ -452,6 +870,14 @@ function smOpenPrecreate(seed){
   smMaybeShowAiPrefill();
   var modal = smEl("sm-precreate-modal");
   if (modal) modal.style.display = "";
+  // Cross-reference Foundation IMMEDIATELY rather than waiting for a button
+  // nobody knew to press — the whole point is that the WO is born bound to the
+  // real job. Fire-and-forget: it paints into #sm-pc-foundation when it lands,
+  // and a miss degrades to the "did you mean / search all" fallback.
+  if (smCurrentProposal || seed.jobName || seed.location){
+    // .catch, not try/catch — this is async; a rejection would otherwise escape.
+    Promise.resolve().then(function(){ return smMatchFoundationFromForm(true); }).catch(function(){});
+  }
 }
 function smClosePrecreate(){ var m = smEl("sm-precreate-modal"); if (m) m.style.display = "none"; }
 async function smSubmitPrecreate(){
@@ -717,6 +1143,12 @@ async function smAssignExisting(id){
 if (typeof module !== "undefined" && module.exports){
   module.exports = {
     smFindFoundationJob: smFindFoundationJob,
+    smFindFoundationJobDetailed: smFindFoundationJobDetailed,
+    smFdnCacheStatus: smFdnCacheStatus,
+    smRankFoundationJobs: smRankFoundationJobs,
+    smFilterFoundationJobs: smFilterFoundationJobs,
+    smNameIsDistinctive: smNameIsDistinctive,
+    smContainsTokens: smContainsTokens,
     smWoExistsForProposal: smWoExistsForProposal,
     smGroupBoard: smGroupBoard,
     smYmdToMdy: smYmdToMdy,

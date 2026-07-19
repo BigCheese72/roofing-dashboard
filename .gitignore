@@ -5,3 +5,9 @@ __pycache__/
 # Never commit this.
 tools/buildings_config.json
 tools/_last_upload_preview.jpg
+
+# Node dependencies (installed locally to run the test suite).
+node_modules/
+
+# Netlify CLI local state.
+.netlify/
