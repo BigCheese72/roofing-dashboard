@@ -1042,12 +1042,26 @@ function renderLeakReportDoc(o){
     }
   } else {
     if (isInspection && (o.inspectionChecklist || []).length){
-      h += "<h3 class='cond'>Inspection Checklist</h3><table><thead><tr>" +
-        "<th>Component</th><th style='width:90px'>Condition</th><th>Notes</th></tr></thead><tbody>" +
-        o.inspectionChecklist.map(function(item){
-          return "<tr><td>" + esc(inspectionComponentLabel(item.key)) + "</td><td>" + esc(item.rating) +
-            "</td><td>" + esc(item.notes) + "</td></tr>";
-        }).join("") + "</tbody></table>";
+      /* Grouped by roof when the inspection covered more than one. A facility
+         with an EPDM roof, a TPO roof and a mod-bit roof used to print one
+         undifferentiated 8-row table, so a "Critical" on the drainage row said
+         nothing about WHICH roof was ponding. Single-roof reports print exactly
+         as before -- one table, no roof heading, no new chrome. */
+      var clGroups = inspectionChecklistByRoof(o.inspectionChecklist, o.roofLabels || {});
+      h += "<h3 class='cond'>Inspection Checklist</h3>";
+      clGroups.forEach(function(g){
+        if (clGroups.length > 1){
+          var sys = (o.roofSystems || {})[g.roofId];
+          h += "<h4 class='cond' style='margin:10px 0 4px'>" + esc(g.label) +
+            (sys ? " <span style='font-weight:400'>· " + esc(sys) + "</span>" : "") + "</h4>";
+        }
+        h += "<table><thead><tr>" +
+          "<th>Component</th><th style='width:90px'>Condition</th><th>Notes</th></tr></thead><tbody>" +
+          g.items.map(function(item){
+            return "<tr><td>" + esc(inspectionComponentLabel(item.key)) + "</td><td>" + esc(item.rating) +
+              "</td><td>" + esc(item.notes) + "</td></tr>";
+          }).join("") + "</tbody></table>";
+      });
     }
     var ff = filledFindings();
     if (ff.length){
@@ -1717,17 +1731,33 @@ async function generateLeakReportPdf(o, roofPlanData){
   } else {
     if (isInspection && (o.inspectionChecklist || []).length){
       heading("Inspection Checklist");
-      doc.autoTable({
-        startY: y,
-        head: [["Component", "Condition", "Notes"]],
-        body: o.inspectionChecklist.map(function(item){ return [inspectionComponentLabel(item.key), item.rating, item.notes]; }),
-        theme: "grid",
-        headStyles: { fillColor: [38, 50, 56], fontSize: 8 },
-        styles: { fontSize: 9, cellPadding: 4, textColor: [30, 39, 46], lineColor: [154, 165, 172], lineWidth: 0.5 },
-        columnStyles: { 1: { cellWidth: 70 } },
-        margin: { left: M, right: M }
+      /* Same roof grouping as the HTML report above, via the same shared
+         helper so the PDF and the on-screen report can never disagree about
+         which rating belongs to which roof. */
+      var pdfClGroups = inspectionChecklistByRoof(o.inspectionChecklist, o.roofLabels || {});
+      pdfClGroups.forEach(function(g){
+        if (pdfClGroups.length > 1){
+          var sys = (o.roofSystems || {})[g.roofId];
+          if (y > H - M - 60){ doc.addPage(); y = M; }
+          doc.setFont("helvetica", "bold");
+          doc.setFontSize(10);
+          doc.setTextColor(38, 50, 56);
+          doc.text(g.label + (sys ? " — " + sys : ""), M, y);
+          y += 12;
+        }
+        doc.autoTable({
+          startY: y,
+          head: [["Component", "Condition", "Notes"]],
+          body: g.items.map(function(item){ return [inspectionComponentLabel(item.key), item.rating, item.notes]; }),
+          theme: "grid",
+          headStyles: { fillColor: [38, 50, 56], fontSize: 8 },
+          styles: { fontSize: 9, cellPadding: 4, textColor: [30, 39, 46], lineColor: [154, 165, 172], lineWidth: 0.5 },
+          columnStyles: { 1: { cellWidth: 70 } },
+          margin: { left: M, right: M }
+        });
+        y = doc.lastAutoTable.finalY + 10;
       });
-      y = doc.lastAutoTable.finalY + 18;
+      y += 8;
     }
     var ff = filledFindings();
     if (ff.length){

@@ -70,6 +70,15 @@ function makeSandbox(opts){
     renderChecklistCalls: 0,
     toasts: [],
     toast(m){ sandbox.toasts.push(m); },
+    /* Multi-roof (2026-07-19): the checklist is now keyed by (roofId, key), so
+       the engine reads the inspector's roof selection. Default here is the
+       single-roof case -- no selection at all -- which must keep behaving
+       exactly as it did before multi-roof existed. Tests that care pass
+       opts.roofIds. */
+    currentRoofIds: opts.roofIds || null,
+    currentRoofId: opts.roofId || null,
+    inspectionRoofLabelCache: opts.roofLabels || {},
+    inspectionRoofSystemCache: {},
     /* Overridden per-test for the auto-pin cases. */
     async rmMaybeAutoAssignRoofForPin(){ return null; }
   };
