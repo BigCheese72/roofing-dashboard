@@ -96,7 +96,23 @@ var AI_ISSUE_LABELS = [
    this one may be a superset). */
 
 var AI_LABEL_SOURCES = ["leak", "inspection", "workorder"];
-var AI_LABEL_SCHEMA_VERSION = 1;
+/* schemaVersion 2 (Mark, approved 2026-07-19): v1 recorded only the CONFIRMED
+   answer. For fine-tuning, the disagreement is the signal -- a row where the
+   tech OVERRODE the model is worth more than one where he agreed, and v1 threw
+   that away. v2 adds what the model predicted alongside what the tech decided,
+   so every correction becomes a labelled error case.
+
+   Additive only: v1 rows stay readable, and every v2 field is optional at the
+   rules layer. A label recorded with no prediction (a tech labelling a photo
+   the AI never saw) is still a valid v2 row -- predicted* simply stays null and
+   `agreed` stays null rather than being forced to a misleading false.
+
+   COUPLING: firestore.rules pins this number. Bumping it here without
+   shipping the matching rules change means every write is REJECTED in
+   production. The rule now accepts [1, 2] so a stale client mid-deploy can
+   still write v1. */
+var AI_LABEL_SCHEMA_VERSION = 2;
+
 var AI_LABELS_COLLECTION = "ai_training_labels";
 
 /* ---- admin seam: extendable vocabulary ----
@@ -123,7 +139,28 @@ function loadAiLabelVocabExtra(){
 function aiLabelVocabulary(){
   return AI_ISSUE_LABELS.concat(aiLabelVocabExtra || []);
 }
+/* Cause vocabulary -- the browser-side mirror of CAUSE_VOCABULARY in
+   netlify/functions/lib/aiProvider.js. Hand-synced, same discipline as the
+   issue-label parity contract above and getBuildingRoofsServer(): the
+   browser/CommonJS split means there is no shared import, so a parity test
+   guards the two lists instead. */
+var AI_CAUSE_LABELS = [
+  { key: "weathering_age",          label: "Weathering / age" },
+  { key: "mechanical_damage",       label: "Mechanical damage" },
+  { key: "foot_traffic",            label: "Foot traffic" },
+  { key: "storm_event",             label: "Storm event" },
+  { key: "installation_defect",     label: "Installation defect" },
+  { key: "debris_accumulation",     label: "Debris accumulation" },
+  { key: "thermal_movement",        label: "Thermal movement" },
+  { key: "drainage_deficiency",     label: "Drainage deficiency" },
+  { key: "previous_repair_failure", label: "Previous repair failure" },
+  { key: "unconfirmed",             label: "Unconfirmed" }
+];
+function aiLabelCauseKeys(){
+  return AI_CAUSE_LABELS.map(function(c){ return c.key; });
+}
 function aiLabelKeys(){
+
   return aiLabelVocabulary().map(function(e){ return e.key; });
 }
 
@@ -206,7 +243,14 @@ function aiLabelBuildDoc(entry, uid){
     source: entry.source,                          // "leak" | "inspection" | "workorder"
     label: entry.label,                            // controlled-vocabulary key
     labelOther: str(entry.labelOther, 200),        // only meaningful when label === "other"
-    likelyCause: str(entry.likelyCause, 500),      // tech's short free-text cause
+    /* CONTROLLED (Mark, approved 2026-07-19): cause was free text, which is
+       useless for training -- "clogged drain", "drain blocked" and "debris in
+       drain" are one class typed three ways. It is now a CAUSE_VOCABULARY key,
+       with the tech's own wording preserved separately in causeNote so nothing
+       he wanted to say is lost. */
+    likelyCause: (aiLabelCauseKeys().indexOf(entry.likelyCause) !== -1) ? entry.likelyCause : "unconfirmed",
+    causeNote: str(entry.causeNote, 500),          // optional free text alongside the key
+
     photo: aiLabelNormalizePhotoRef(entry.photo),  // reference, NEVER a URL
     pin: aiLabelNormalizePin(entry.pin),           // {lat,lng,x,y} or null
     roofId: str(entry.roofId, 100) || "roof_default",
@@ -217,7 +261,20 @@ function aiLabelBuildDoc(entry, uid){
     customerId: str(entry.customerId, 200) || null,
     workOrderId: str(entry.workOrderId, 200) || null,
     findingId: str(entry.findingId, 100) || null,
+    /* ---- v2: what the MODEL said, alongside what the TECH decided ---- */
+    predictedLabel: str(entry.predictedLabel, 60) || null,      // vocab key the model returned
+    predictedCause: str(entry.predictedCause, 60) || null,      // vocab key, not free text
+    predictedConfidence: (["low","medium","high"].indexOf(entry.predictedConfidence) !== -1)
+      ? entry.predictedConfidence : null,
+    /* DERIVED, never taken from the caller: did the tech accept the call?
+       null when there was no prediction to agree with -- distinct from false,
+       which means the model was actively overridden. Conflating the two would
+       poison the error set with rows the model never saw. */
+    agreed: (typeof entry.predictedLabel === "string" && entry.predictedLabel)
+      ? (entry.predictedLabel === entry.label) : null,
+    modelId: str(entry.modelId, 80) || null,                    // which model made the call
     confirmedByUid: uid,                           // rules require this to match request.auth.uid
+
     confirmedByName: str(entry.confirmedByName, 120),
     confirmedAt: Date.now(),                       // plain number, same convention as audit_logs.ts
     createdAt: Date.now()

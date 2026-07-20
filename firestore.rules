@@ -314,7 +314,12 @@ service cloud.firestore {
     match /ai_training_labels/{labelId} {
       allow create: if request.auth != null
         && request.resource.data.confirmedByUid == request.auth.uid
-        && request.resource.data.schemaVersion == 1
+        // Accepts BOTH versions on purpose. v2 (predicted* / agreed / modelId /
+        // controlled cause) is additive, and a client still running the previous
+        // bundle mid-deploy must keep writing valid v1 rows rather than having
+        // its labels silently rejected. See AI_LABEL_SCHEMA_VERSION in
+        // js/ailabels.js -- these two MUST move together.
+        && request.resource.data.schemaVersion in [1, 2]
         && request.resource.data.source in ['leak', 'inspection', 'workorder']
         && request.resource.data.label is string
         && request.resource.data.label.size() >= 2

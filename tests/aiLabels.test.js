@@ -189,7 +189,7 @@ test("buildDoc: exact schema, unknown caller keys dropped, no URL can survive", 
   const sb = makeSandbox();
   const entry = validEntry({ secretUiState: { html: "<div>" }, img: "data:image/jpeg;base64,AAA" });
   const doc = sb.aiLabelBuildDoc(entry, "uid_test_1");
-  assert.strictEqual(doc.schemaVersion, 1);
+  assert.strictEqual(doc.schemaVersion, 2); // v2: prediction capture + controlled cause
   assert.strictEqual(doc.label, "ponding_water");
   assert.strictEqual(doc.buildingId, "bld_stable_doc_id_1");
   assert.strictEqual(doc.confirmedByUid, "uid_test_1");

@@ -555,14 +555,24 @@ async function identifyIssue(input, opts) {
   if (provider.name === "stub") {
     return Object.assign(composeStubIssue(context), { provider: "stub", model: null, llm: false });
   }
-  if (!isSignedPhotoUrl(input.photoUrl)) {
+  // The photo reaches the model one of two ways. A SIGNED Storage URL is the
+  // production path. An INLINE ~900px downscale (the same shape the summary
+  // path uses, validated by cleanInlineImage) is the dev path -- the dev
+  // Firebase project has no Storage bucket, so a photo there is a base64
+  // data-URL on the Firestore doc with nothing to sign. Without the inline
+  // option the only deploy context that HAS a key could never exercise
+  // issue-ID at all -- precisely how vision went untested before #145.
+  const inlineImage = cleanInlineImage(input.photoImage);
+  if (!inlineImage && !isSignedPhotoUrl(input.photoUrl)) {
     // Callers (ai-service.js) validate this first and 400; re-checked here so
     // no future caller can slip an unsigned/public URL into a prompt.
-    throw new Error("identifyIssue requires a signed https photo URL");
+    throw new Error("identifyIssue requires a signed https photo URL or an inline image");
   }
   try {
     const parts = [
-      { kind: "image", url: input.photoUrl },
+      inlineImage
+        ? { kind: "image_b64", mediaType: inlineImage.mediaType, data: inlineImage.data }
+        : { kind: "image", url: input.photoUrl },
       { kind: "text", text: "Identify the issue in this leak photo. Context (JSON):\n" + JSON.stringify(context) }
     ];
     const text = await callProvider(provider, buildIssueSystem(), parts, MAX_ISSUE_TOKENS);
