@@ -152,7 +152,7 @@ test("a dedup failure never blocks a save", () => {
 });
 
 test("the save path consults dedup BEFORE deriving an id from the name", () => {
-  const line = between(coreSource, "var bldId = (o.buildingId", "/* No job name");
+  const line = between(coreSource, "var resolvedStored = o.buildingId", "/* No job name");
   assert.match(line, /findExistingBuildingId\(o\)/);
   assert.match(line, /resolveMergedBuildingId\(o\.buildingId\)/,
     "a stored id still wins -- but is followed through a merge first");

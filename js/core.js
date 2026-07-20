@@ -1220,7 +1220,13 @@ async function resolveMergedBuildingId(buildingId){
       current = String(v.mergedIntoBuildingId);
     }
   }catch(e){ return buildingId; }
-  return current;
+  /* Hop budget exhausted -- a chain longer than MAX_MERGE_HOPS. `current` is
+     still an archived, EMPTIED husk here, so returning it would reproduce the
+     exact bug this function exists to fix. Hand back the original instead:
+     the record stays visibly mis-linked, which is recoverable, rather than
+     silently writing into a dead building, which is not. */
+  try{ console.warn("merge chain deeper than " + MAX_MERGE_HOPS + " hops from " + buildingId); }catch(_){ }
+  return buildingId;
 }
 async function findExistingBuildingId(o){
   if (!fdb) return null;
@@ -1266,8 +1272,12 @@ async function ensureCustomerAndBuilding(o){
   /* A STORED id still wins -- but follow it through a merge first, so a work
      order saved before its building was merged away re-homes itself onto the
      survivor instead of rewriting the emptied husk. */
-  var bldId = (o.buildingId ? await resolveMergedBuildingId(o.buildingId) : null) ||
-    (await findExistingBuildingId(o)) || buildingIdFor(o.billTo, o.jobName);
+  var resolvedStored = o.buildingId ? await resolveMergedBuildingId(o.buildingId) : null;
+  /* Was this order REDIRECTED onto a different building by a merge? That is the
+     precise question -- not "does the name still match", which is false on an
+     ordinary rename too and would break rename-in-place (see below). */
+  var redirectedByMerge = !!(resolvedStored && o.buildingId && resolvedStored !== o.buildingId);
+  var bldId = resolvedStored || (await findExistingBuildingId(o)) || buildingIdFor(o.billTo, o.jobName);
   /* No job name: nothing safe to write (a stored-id order must not get its
      building name blanked either) — but still hand back whatever identity
      the order already carries so callers never "lose" a stored id. */
@@ -1280,11 +1290,34 @@ async function ensureCustomerAndBuilding(o){
     }
     var bldRef = fdb.collection("buildings").doc(bldId);
     var snap = await bldRef.get();
-    var patch = {
-      name: bldName, customerId: custId || null, customerName: custName || "",
-      location: o.location || "", roofSystem: o.roofSystem || "",
-      updatedAt: Date.now()
-    };
+    /* DO NOT rename a building this order was REDIRECTED onto.
+
+       These fields were written unconditionally, which was safe while a stale
+       order could only ever write back to the building its own name derived.
+       Following a merge pointer changed that: the order now resolves to the
+       SURVIVOR, and a saved work order still carrying the loser's jobName
+       (nothing rewrites a saved order's form fields) would rename the survivor
+       to the dead duplicate and blank its address on the FIRST save after any
+       merge. On the KOMU case that means overwriting "Orr Street Studios" and
+       erasing its location -- turning a fix into data loss.
+
+       Identity fields are now written only when this order OWNS the building:
+       it is creating it, or its own name still derives this id. A redirected
+       order updates the link fields below and leaves identity alone. */
+    /* Renaming a job MUST still rename its building in place -- that is the
+       whole point of stored-id-first (audit FIX 1), and a test pins it. So the
+       guard keys on REDIRECTION, not on whether the name still derives the id.
+       An ordinary rename owns its building; an order followed onto a merge
+       survivor does not. */
+    var ownsBuilding = !redirectedByMerge;
+    var patch = { updatedAt: Date.now() };
+    if (ownsBuilding){
+      patch.name = bldName;
+      patch.customerId = custId || null;
+      patch.customerName = custName || "";
+      patch.location = o.location || "";
+      patch.roofSystem = o.roofSystem || "";
+    }
     if (o.companyCamProjectId) patch.companyCamProjectId = o.companyCamProjectId;
     /* Foundation (construction-accounting) job link — the durable per-site
        identity from the system of record, persisted onto the building exactly
@@ -1310,7 +1343,9 @@ async function ensureCustomerAndBuilding(o){
     try{
       var freshBld = snap.exists ? Object.assign({}, snap.data(), patch) : patch;
       var roofs = getBuildingRoofs(freshBld);
-      if (roofs.length === 1){
+      /* Guarded for the same reason: a redirected order must not push its own
+         (possibly empty) roofSystem into the survivor's only roof. */
+      if (roofs.length === 1 && ownsBuilding){
         roofs[0].roofSystem = patch.roofSystem;
         await saveBuildingRoofs(bldId, roofs);
       }

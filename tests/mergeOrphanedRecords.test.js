@@ -27,6 +27,11 @@ const ccSource = fs.readFileSync(path.join(__dirname, "..", "js", "companycam.js
 const historySource = fs.readFileSync(path.join(__dirname, "..", "js", "buildinghistory.js"), "utf8");
 const indexSource = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
 
+function from(src, start){
+  const a = src.indexOf(start);
+  assert.notStrictEqual(a, -1, "missing start: " + start);
+  return src.slice(a);
+}
 function between(src, start, end){
   const a = src.indexOf(start), b = src.indexOf(end, a);
   assert.notStrictEqual(a, -1, "missing start: " + start);
@@ -150,7 +155,7 @@ test("a Firestore failure returns the original id, never throws", () => {
 test("both the SAVE path and the READ path follow the pointer", () => {
   /* Save alone would leave an unsaved record still showing the empty husk;
      read alone would let the next save write the stale id straight back. */
-  assert.match(coreSource, /var bldId = \(o\.buildingId \? await resolveMergedBuildingId\(o\.buildingId\) : null\)/);
+  assert.match(coreSource, /resolvedStored = o\.buildingId \? await resolveMergedBuildingId\(o\.buildingId\)/);
   assert.match(photosSource, /bldId = await resolveMergedBuildingId\(bldId\)/);
 });
 
@@ -159,14 +164,41 @@ test("both the SAVE path and the READ path follow the pointer", () => {
 test("re-filing moves the work order AND its history and report together", () => {
   /* Updating only the work order would leave the timeline pointing at the old
      building -- the same split that caused this bug. */
-  const block = between(ccSource, "async function relinkModalPick", "toast(\"Filed under \"");
+  const block = from(ccSource, "async function relinkModalPick");
   assert.match(block, /collection\("workorders"\)/);
-  assert.match(block, /collection\("building_history_events"\)/);
-  assert.match(block, /collection\("reports"\)/);
+  /* Both follow-on collections are written through one loop, so assert the
+     names and the loop rather than two literal collection() calls. */
+  assert.match(block, /"building_history_events"/);
+  assert.match(block, /"reports"/);
+  assert.match(block, /fdb\.collection\(col\)\.doc\(evtId\)/);
+});
+
+test("re-filing targets the REAL history/report doc id, not the work order id", () => {
+  /* Review finding, 2026-07-19: the first cut wrote to .doc(o.id). The history
+     event and its report actually live at "evt_" + workOrderId
+     (logReportAndHistoryEvent, js/history.js). Writing to o.id missed both real
+     docs AND -- because set({merge:true}) creates -- conjured two malformed
+     stubs that render in the timeline and cannot be deleted, since
+     firestore.rules denies client deletes on both collections. */
+  const block = from(ccSource, "async function relinkModalPick");
+  assert.match(block, /var evtId = "evt_" \+ o\.id/);
+  assert.doesNotMatch(block, /collection\("building_history_events"\)\.doc\(o\.id\)/);
+  assert.doesNotMatch(block, /collection\("reports"\)\.doc\(o\.id\)/);
+});
+
+test("re-filing never CREATES a history entry a work order never had", () => {
+  const block = from(ccSource, "async function relinkModalPick");
+  assert.match(block, /snap\.exists/, "update in place only");
+});
+
+test("a failed follow-on write is reported, not papered over with a tick", () => {
+  const block = from(ccSource, "async function relinkModalPick");
+  assert.match(block, /followFailed/);
+  assert.match(block, /could not be moved/);
 });
 
 test("re-filing touches ONE record, never a building or a roof", () => {
-  const block = between(ccSource, "async function relinkModalPick", "toast(\"Filed under \"");
+  const block = from(ccSource, "async function relinkModalPick");
   assert.doesNotMatch(block, /roofs/, "re-filing must not move roofs -- that is what merge is for");
   assert.doesNotMatch(block, /merge_buildings/);
   assert.match(block, /confirm\(/, "a cross-building move is confirmed, not one-tap");

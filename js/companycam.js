@@ -952,8 +952,14 @@ async function openRelinkBuildingModal(){
         ? "This work order is filed under <b>" + esc(currentName) + "</b>."
         : "This work order isn't filed under any building yet.";
     }
-    var qs = await fdb.collection("buildings").orderBy("updatedAt", "desc").limit(500).get();
+    /* NOT orderBy("updatedAt") -- Firestore excludes documents that lack the
+       ordered field entirely, so every building written before updatedAt
+       existed would be invisible in this picker. That is precisely the legacy
+       record a mis-filed work order is most likely to belong to. An unordered
+       read returns them all; ranking below puts the right one on top anyway. */
+    var qs = await fdb.collection("buildings").limit(1000).get();
     var list = [];
+
     qs.forEach(function(d){
       var v = d.data() || {};
       if (v.archived) return;               /* never offer a husk as a destination */
@@ -1045,18 +1051,38 @@ async function relinkModalPick(i){
       customerId: b.customerId || null,
       customerName: b.customerName || ""
     };
-    await fdb.collection("workorders").doc(o.id).set({ buildingId: b.id }, { merge: true });
-    await Promise.all([
-      fdb.collection("building_history_events").doc(o.id).set(patch, { merge: true }).catch(function(){}),
-      fdb.collection("reports").doc(o.id).set(patch, { merge: true }).catch(function(){})
-    ]);
+    /* The history event and its report share ONE doc id, "evt_" + workOrderId
+       (logReportAndHistoryEvent(), js/history.js:1729). Writing to o.id would
+       miss both real docs AND -- because set({merge:true}) creates -- conjure
+       two malformed stubs carrying only buildingId/name. Those stubs render in
+       the survivor's timeline (queried by buildingId) and CANNOT be removed:
+       firestore.rules denies client deletes on both collections. Update in
+       place only; a re-file must never invent history a work order never had. */
+    var evtId = "evt_" + o.id;
+    /* customerId travels with the building -- leaving it behind points the WO
+       at the old customer while its building says otherwise. */
+    await fdb.collection("workorders").doc(o.id).set(
+      { buildingId: b.id, customerId: b.customerId || null }, { merge: true });
+    var followFailed = false;
+    for (var ci = 0; ci < 2; ci++){
+      var col = ci === 0 ? "building_history_events" : "reports";
+      try{
+        var ref = fdb.collection(col).doc(evtId);
+        var snap = await ref.get();
+        if (snap.exists) await ref.set(patch, { merge: true });
+      }catch(e){ followFailed = true; }
+    }
     /* Keep the open form in step so a save right after this doesn't write the
        old id straight back. */
     if (typeof currentBuildingId !== "undefined") currentBuildingId = b.id;
     var f = document.getElementById("buildingId");
     if (f) f.value = b.id;
     closeRelinkBuildingModal();
-    toast("Filed under " + name + " ✓ — reopen it to see its history.");
+    /* Never claim success the writes did not achieve -- a half-moved record is
+       exactly the split this whole fix exists to end. */
+    toast(followFailed
+      ? "Work order re-filed, but its timeline entry could not be moved — try again."
+      : "Filed under " + name + " ✓ — reopen it to see its history.");
   }catch(e){
     toast("Couldn't re-file: " + ((e && e.message) || "unknown"));
   }

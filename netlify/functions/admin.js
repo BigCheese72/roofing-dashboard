@@ -487,7 +487,6 @@ exports.handler = async function (event) {
       // history merges rather than failing at the limit.
       const writes = [];
       writes.push({ ref: db.collection("buildings").doc(destBuildingId), data: destPatch });
-      writes.push({ ref: db.collection("buildings").doc(sourceBuildingId), data: sourcePatch });
       evtSnap.forEach(d => writes.push({ ref: d.ref, data: reassign }));
       repSnap.forEach(d => writes.push({ ref: d.ref, data: reassign }));
       // Work orders and DPRs carry buildingId AND the denormalised name, same
@@ -495,6 +494,16 @@ exports.handler = async function (event) {
       // the survivor and reads with the survivor's name.
       woSnap.forEach(d => writes.push({ ref: d.ref, data: reassign }));
       dprSnap.forEach(d => writes.push({ ref: d.ref, data: reassign }));
+      // The DESTRUCTIVE patch goes LAST, deliberately. Chunks commit
+      // sequentially and are not atomic across chunk boundaries, and adding
+      // work orders + DPRs is exactly what pushes a busy building past 400
+      // writes into multiple chunks. With sourcePatch first, a chunk-2 failure
+      // (function timeout, DEADLINE_EXCEEDED) left the source already emptied
+      // and archived while records still pointed at it -- unrecoverable
+      // without a hand fix, and not even audit-logged, since that write comes
+      // after. Last means a mid-way failure leaves the source INTACT and the
+      // whole merge safely retryable.
+      writes.push({ ref: db.collection("buildings").doc(sourceBuildingId), data: sourcePatch });
       for (let i = 0; i < writes.length; i += 400) {
         const batch = db.batch();
         writes.slice(i, i + 400).forEach(w => batch.set(w.ref, w.data, { merge: true }));
