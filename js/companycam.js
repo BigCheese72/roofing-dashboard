@@ -335,7 +335,18 @@ async function ccImport(){
          reassignment afterward. */
       compressed.finding_id = ccTargetFindingId || null;
       photos.push(compressed);
-      if (ccTargetFindingId) maybeAutoPinFinding(compressed);
+      if (ccTargetFindingId){
+        /* Exactly one of these does anything -- each checks its own array
+           (findings[] vs inspectionChecklist[]) and no-ops otherwise. Same
+           pair addPhotosFromFiles() calls in js/photos.js.
+
+           maybeAutoPinFinding() alone was the whole story until the inspection
+           checklist grew its own "Add from CompanyCam" button: a checklist
+           item's id is not in findings[], so an imported photo silently
+           skipped the pin that a camera photo on the same row gets. */
+        await maybeAutoPinFinding(compressed);
+        await maybeAutoPinInspectionItem(compressed);
+      }
       ok++;
     }catch(e){ fail++; }
   }

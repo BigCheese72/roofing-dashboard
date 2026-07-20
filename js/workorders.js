@@ -590,6 +590,14 @@ function inspectionItemPhotoGalleryHtml(item){
     '<div class="btnrow" style="margin:0">' +
       '<button class="btn primary" onclick="document.getElementById(\'fcam-' + safeId + '\').click()">📷 Take Photo</button>' +
       '<button class="btn" onclick="document.getElementById(\'flib-' + safeId + '\').click()">+ Add Photos</button>' +
+      /* Mark, 2026-07-20: the crew routinely shoots a roof into CompanyCam
+         first and writes the inspection afterwards, so the photo for a
+         checklist section already exists and re-shooting it is busywork. The
+         leak-finding strip has had this since the beginning
+         (findingPhotoGalleryHtml); the checklist strip did not, for no reason
+         other than nobody adding it. openCC(itemId) targets this row exactly
+         as it targets a finding -- ccImport() attaches and auto-pins by id. */
+      '<button class="btn" onclick="openCC(\'' + safeId + '\')">Add from CompanyCam</button>' +
     '</div>' +
     '<input type="file" id="fcam-' + safeId + '" accept="image/*" capture="environment" style="display:none" ' +
       'onchange="addPhotosFromCamera(this.files, \'' + safeId + '\'); this.value=\'\';">' +
