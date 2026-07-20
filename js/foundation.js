@@ -336,12 +336,14 @@ function fdnRenderLaborInto(body, data) {
       ? " <span title=\"Punched on the clock, not yet posted to payroll\">⏱</span>" : "";
     return "<tr><td>" + fdnEsc((h.date || "").slice(0, 10)) + "</td><td>" + fdnEsc(h.name || h.employee_no) + pendingTag +
       "</td><td style=\"text-align:right\">" + fdnEsc(String(h.hours == null ? "" : h.hours)) +
-      "</td><td>" + fdnEsc(h.phase_no) + "</td><td>" + fdnEsc(h.cost_code_no) + "</td></tr>";
+      "</td><td>" + fdnEsc(h.phase_no) + "</td><td>" + fdnEsc(h.cost_code_no) +
+      "</td><td>" + fdnEsc(h.job_no || "") + "</td></tr>";
   }).join("");
   body.innerHTML = head +
     "<div style=\"overflow-x:auto\"><table style=\"width:100%;border-collapse:collapse;font-size:13px\">" +
     "<thead><tr><th style=\"text-align:left\">Date</th><th style=\"text-align:left\">Person</th>" +
-    "<th style=\"text-align:right\">Hours</th><th style=\"text-align:left\">Phase</th><th style=\"text-align:left\">Cost code</th></tr></thead>" +
+    "<th style=\"text-align:right\">Hours</th><th style=\"text-align:left\">Phase</th>" +
+    "<th style=\"text-align:left\">Cost code</th><th style=\"text-align:left\">Job #</th></tr></thead>" +
     "<tbody>" + trs + "</tbody></table></div>" +
     (rows.length > 25 ? "<span class=\"hint\" style=\"margin:6px 0 0;display:block\">Showing the 25 most recent of " + fdnEsc(String(rows.length)) + " entries.</span>" : "") +
     (unposted > 0 ? "<span class=\"hint\" style=\"margin:6px 0 0;display:block\">⏱ = punched, awaiting payroll posting — hours are current, dollars aren't booked yet.</span>" : "");

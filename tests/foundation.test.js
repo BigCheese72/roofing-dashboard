@@ -289,8 +289,12 @@ test("mapJobRow: description -> name and padded CHAR fields trimmed", () => {
 });
 
 test("mapHoursRow: only the non-pay columns survive, even if a pay column rides along", () => {
-  const m = fdb.mapHoursRow({ dated: new Date("2026-05-01T00:00:00Z"), employee_no: "E1 ", hours: 8, phase_no: "01", cost_code_no: "100", amount: 999, pay_rate: 55 });
-  assert.deepStrictEqual(Object.keys(m).sort(), ["cost_code_no", "date", "employee_no", "hours", "phase_no"].sort());
+  const m = fdb.mapHoursRow({ dated: new Date("2026-05-01T00:00:00Z"), employee_no: "E1 ", hours: 8, phase_no: "01", cost_code_no: "100", job_no: " 17488 ", amount: 999, pay_rate: 55 });
+  /* job_no joined this set on 2026-07-19 so a punch shows WHICH Foundation
+     job it landed on. It is a job identifier, not pay data -- the
+     pay-exclusion assertion below is the one that must never relax. */
+  assert.deepStrictEqual(Object.keys(m).sort(), ["cost_code_no", "date", "employee_no", "hours", "phase_no", "job_no"].sort());
+  assert.strictEqual(m.job_no, "17488", "trimmed like every other Foundation field");
   assert.strictEqual(m.employee_no, "E1");
   assert.strictEqual(m.hours, 8);
   assert.ok(!("amount" in m) && !("pay_rate" in m), "no pay field may exist on the mapped row");
