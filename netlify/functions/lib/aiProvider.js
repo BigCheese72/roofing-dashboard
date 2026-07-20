@@ -18,7 +18,10 @@
 //     fetch -- no SDK dependency for a code path that can't run yet.
 //     Precedence: AI_PROVIDER env forces a provider; otherwise Anthropic
 //     wins when both keys exist. AI_MODEL / ANTHROPIC_MODEL / OPENAI_MODEL
-//     override the per-provider default model.
+//     override the per-provider default model, and the per-tier
+//     ANTHROPIC_MODEL_EASY / _MODERATE override just one tier (see MODEL_TIERS).
+//   * Each capability declares a model TIER sized to its job -- classification
+//     does not pay narrative-drafting rates. See the MODEL_TIERS block.
 //   * Vision inputs are SIGNED URLs (Firebase Storage tokens, GCS/S3
 //     signature params -- isSignedPhotoUrl() is the gate) or SERVER-READ
 //     inline base64 blocks (cleanInlineImage() is the gate). Never a public
@@ -56,11 +59,37 @@ const MAX_VISION_PHOTOS = 8;
 const INLINE_IMAGE_MEDIA_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"];
 const MAX_INLINE_IMAGE_B64_CHARS = 5 * 1024 * 1024;
 
-// Default models. Anthropic default follows current guidance (Opus 4.8);
-// Mark can dial cost down via ANTHROPIC_MODEL / AI_MODEL when he provisions
-// the key -- model choice is env config, not a code change.
-const DEFAULT_ANTHROPIC_MODEL = "claude-opus-4-8";
-const DEFAULT_OPENAI_MODEL = "gpt-4o";
+// ---- Model tiers -----------------------------------------------------------
+// Each CAPABILITY declares how hard its job is; the tier decides which model
+// answers. The point is that a closed-vocabulary classification and a
+// customer-facing narrative draft should not cost the same.
+//
+//   easy      -- bounded, structured output the model picks from a fixed list
+//   moderate  -- open-ended prose a customer or a crew will read
+//
+// The tier belongs to the CAPABILITY, not the caller: resolveProvider() takes
+// it as an argument and no HTTP handler forwards a client-supplied value.
+// Otherwise a caller could ask for the expensive tier on a cheap job, and the
+// cost ceiling stops being a property of the code.
+//
+// A third (heavy) tier is deliberately absent -- Mark is holding Fable 5 for
+// later. Adding it is this table plus the capability that wants it; do not
+// pre-wire an unused tier.
+const MODEL_TIERS = ["easy", "moderate"];
+const DEFAULT_TIER = "moderate";
+// Defaulting to the DEARER tier is the safe direction: a capability that
+// forgets to declare one gets a good answer at a known cost, rather than a
+// cheap answer nobody notices is worse.
+const ANTHROPIC_TIER_MODELS = {
+  easy: "claude-haiku-4-5-20251001",
+  moderate: "claude-opus-4-8"
+};
+// OpenAI is the standby provider (Mark runs Anthropic). Tiers mirror it so a
+// provider switch doesn't silently collapse every capability onto one model.
+const OPENAI_TIER_MODELS = {
+  easy: "gpt-4o-mini",
+  moderate: "gpt-4o"
+};
 
 // ---- Controlled vocabulary for ISSUE-ID -----------------------------------
 // The issue-ID feature returns { issue, likelyCause, confidence } drawn ONLY
@@ -112,36 +141,58 @@ const CONFIDENCE_LEVELS = ["low", "medium", "high"];
 
 // ---- Provider resolution ---------------------------------------------------
 // Pure function of an env object (pass process.env in real handlers, a plain
-// object in tests). Returns { name, apiKey, model }; name === "stub" is the
-// no-key deterministic mode.
-function resolveProvider(env) {
+// object in tests) and a capability TIER. Returns { name, apiKey, tier, model };
+// name === "stub" is the no-key deterministic mode.
+//
+// `tier` is optional and defaults to "moderate" -- so every pre-tier call site
+// keeps resolving exactly the model it always did, and an unrecognised tier
+// degrades to moderate rather than throwing. A bad tier string must not be
+// able to take the roof-side flow down.
+function resolveProvider(env, tier) {
   env = env || {};
-  const stub = { name: "stub", apiKey: null, model: null };
+  tier = normalizeTier(tier);
+  const stub = { name: "stub", apiKey: null, tier: tier, model: null };
   const forced = String(env.AI_PROVIDER || "").toLowerCase().trim();
   if (forced === "stub") return stub;
   if (forced === "anthropic") {
-    return env.ANTHROPIC_API_KEY ? anthropicProvider(env) : stub;
+    return env.ANTHROPIC_API_KEY ? anthropicProvider(env, tier) : stub;
   }
   if (forced === "openai") {
-    return env.OPENAI_API_KEY ? openaiProvider(env) : stub;
+    return env.OPENAI_API_KEY ? openaiProvider(env, tier) : stub;
   }
   // No forced provider: Anthropic first, then OpenAI, then stub.
-  if (env.ANTHROPIC_API_KEY) return anthropicProvider(env);
-  if (env.OPENAI_API_KEY) return openaiProvider(env);
+  if (env.ANTHROPIC_API_KEY) return anthropicProvider(env, tier);
+  if (env.OPENAI_API_KEY) return openaiProvider(env, tier);
   return stub;
 }
-function anthropicProvider(env) {
+function normalizeTier(tier) {
+  const t = String(tier || "").toLowerCase().trim();
+  return MODEL_TIERS.indexOf(t) !== -1 ? t : DEFAULT_TIER;
+}
+// Override precedence, most specific first:
+//   1. ANTHROPIC_MODEL_EASY / _MODERATE -- retune ONE tier
+//   2. ANTHROPIC_MODEL / AI_MODEL       -- the pre-existing global escape
+//      hatch, still honoured: it pins every tier to one model, which is what
+//      you want when diagnosing whether a problem is the model at all
+//   3. the tier default
+function anthropicProvider(env, tier) {
   return {
     name: "anthropic",
     apiKey: env.ANTHROPIC_API_KEY,
-    model: env.ANTHROPIC_MODEL || env.AI_MODEL || DEFAULT_ANTHROPIC_MODEL
+    tier: tier,
+    model: env["ANTHROPIC_MODEL_" + tier.toUpperCase()]
+        || env.ANTHROPIC_MODEL || env.AI_MODEL
+        || ANTHROPIC_TIER_MODELS[tier]
   };
 }
-function openaiProvider(env) {
+function openaiProvider(env, tier) {
   return {
     name: "openai",
     apiKey: env.OPENAI_API_KEY,
-    model: env.OPENAI_MODEL || env.AI_MODEL || DEFAULT_OPENAI_MODEL
+    tier: tier,
+    model: env["OPENAI_MODEL_" + tier.toUpperCase()]
+        || env.OPENAI_MODEL || env.AI_MODEL
+        || OPENAI_TIER_MODELS[tier]
   };
 }
 
@@ -500,7 +551,10 @@ async function generateSummary(input, opts) {
   const report = input.report;
   const photoUrls = (input.photoUrls || []).filter(isSignedPhotoUrl).slice(0, MAX_VISION_PHOTOS);
   const photoImages = rows(input.photoImages, Math.max(0, MAX_VISION_PHOTOS - photoUrls.length), cleanInlineImage);
-  const provider = resolveProvider(opts.env || process.env);
+  // MODERATE: up to 8 photos of a roof plus the report, drafted into prose a
+  // customer reads over Mark's signature. The dearest call we make, and the
+  // one where a weak answer costs the most to clean up.
+  const provider = resolveProvider(opts.env || process.env, "moderate");
   const stubText = opts.stubText || composeStubSummary(report);
   const system = opts.system || SUMMARY_SYSTEM;
 
@@ -550,7 +604,14 @@ function promptProjection(report) {
 async function identifyIssue(input, opts) {
   opts = opts || {};
   const context = sanitizeIssueContext(input.context);
-  const provider = resolveProvider(opts.env || process.env);
+  // EASY: one photo -> one key from a 15-item list, one cause from 10, one
+  // confidence. Closed-vocabulary classification, 400 tokens, and
+  // clampIssueResult() re-enforces the vocabulary server-side whatever the
+  // model says. It is also never the last word -- Phase 1 output is a
+  // SUGGESTION a tech confirms or overrides, and only that human decision is
+  // written as a training row (tests/aiIssueCapture.test.js pins this). A
+  // wrong guess here becomes a labelled error case, not corrupt training data.
+  const provider = resolveProvider(opts.env || process.env, "easy");
 
   if (provider.name === "stub") {
     return Object.assign(composeStubIssue(context), { provider: "stub", model: null, llm: false });
@@ -612,7 +673,10 @@ async function draftScope(input, opts) {
     jobName: s(input && input.context && input.context.jobName, 200),
     location: s(input && input.context && input.context.location, 200),
   };
-  const provider = resolveProvider(opts.env || process.env);
+  // MODERATE: text-only and only 700 tokens, but the output is scope language
+  // a crew works to and a customer is billed against. Cheap to run at this
+  // tier; expensive to get wrong.
+  const provider = resolveProvider(opts.env || process.env, "moderate");
   const stub = composeStubScope(text, context);
   if (provider.name === "stub") return { text: stub, provider: "stub", model: null, llm: false };
   try {
@@ -632,6 +696,10 @@ module.exports = {
   CONFIDENCE_LEVELS,
   STUB_MARKER,
   MAX_VISION_PHOTOS,
+  MODEL_TIERS,
+  DEFAULT_TIER,
+  ANTHROPIC_TIER_MODELS,
+  OPENAI_TIER_MODELS,
   resolveProvider,
   isSignedPhotoUrl,
   cleanInlineImage,

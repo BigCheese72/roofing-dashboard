@@ -8372,8 +8372,46 @@ says "this voice and structure, tighter", including the plain-text
 "Recommended Repairs" section pattern. The deterministic template remains as both the
 no-key answer AND the outage fallback (`fallback: true` in the response) — a
 roof-side flow never dead-ends on an AI failure. Model choice is env config
-(`ANTHROPIC_MODEL`), not code. This is also the codebase's first concrete
+(`ANTHROPIC_MODEL`), not code — see "Model tiers" below for the per-capability
+routing that sits on top of it. This is also the codebase's first concrete
 step toward the "AI auto-detection of rooftop features" ROADMAP item.
+
+**Model tiers (2026-07-20).** `resolveProvider()` used to take no argument
+saying how hard the job was, so every capability resolved the same model: a
+photo classified against a 15-item list cost exactly what a customer-facing
+narrative draft cost. It now takes a **tier**, and each capability declares
+one at its call site:
+
+| Capability | Tier | Model | Why |
+|---|---|---|---|
+| `generateSummary` | `moderate` | `claude-opus-4-8` | up to 8 roof photos → prose a customer reads over Mark's signature |
+| `draftScope` | `moderate` | `claude-opus-4-8` | text-only and only 700 tokens, but a crew works to it and a customer is billed against it |
+| `identifyIssue` | `easy` | `claude-haiku-4-5-20251001` | one photo → one key from a closed 15-item vocabulary; `clampIssueResult()` re-enforces the vocabulary server-side, and Phase 1 output is a *suggestion* a tech confirms or overrides — only that human decision becomes a training row, so a wrong guess is a labelled error case, not corrupt data |
+
+Rules the tests pin (`tests/aiModelTiers.test.js`):
+
+* **The tier belongs to the capability, not the request.** No HTTP handler
+  forwards a client-supplied tier — otherwise a caller could ask for the dear
+  model on a cheap job and the cost ceiling stops being a property of the code.
+* **Omitted or unrecognised tier → `moderate`.** Degrading *upward* means a
+  typo costs money, not correctness, and every pre-tier call site kept
+  resolving exactly what it always did (which is why this refactor needed no
+  changes to the existing provider tests).
+* **Overrides, most specific first:** `ANTHROPIC_MODEL_EASY` /
+  `ANTHROPIC_MODEL_MODERATE` retune one tier; the pre-existing
+  `ANTHROPIC_MODEL` / `AI_MODEL` still pins *every* tier to one model (the
+  escape hatch for finding out whether a problem is the model at all).
+
+There is deliberately **no dormant HEAVY tier** — Mark is holding Claude Fable
+5 (`claude-fable-5`) for one later. Adding it is the `ANTHROPIC_TIER_MODELS`
+table plus whichever capability wants it. Three things to settle first: Fable 5
+costs $10/$50 per MTok (2× Opus 4.8, so a summary draft goes ~$0.17 → ~$0.34);
+it refuses with HTTP **200** + `stop_reason: "refusal"` and an empty `content`
+array, which today's `callAnthropic()` reports as the misleading `"Anthropic
+API returned no text"` (the documented fix is a server-side fallback to Opus
+4.8 on the same request); and it is **unavailable under zero data retention**,
+so the org needs 30-day retention or every request 400s regardless of payload.
+Fable turns also run long, which matters against Netlify's 26s function cap.
 
 **Phase 1.5 (2026-07-16): INLINE photos see the model too.** The signed-URL
 path alone left vision untestable ANYWHERE: dev (the only context with a
