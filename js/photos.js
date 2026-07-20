@@ -37,7 +37,14 @@ async function lookupProspectiveBuildingRoofInfo(){
   /* Stored id first (audit FIX 1 — this was a sixth hand-copied slug the
      audit's "5+ places" undercounted), canonical buildingIdFor()
      (js/core.js) as the legacy/new-order fallback. */
+  /* Follow a merged-away building to its survivor BEFORE reading roofs. This
+     is the exact path that showed Mark a phantom "Roof 1" with no base map on
+     the KOMU inspection: the stored id pointed at the record the merge had
+     just emptied. See resolveMergedBuildingId() in js/core.js. */
   var bldId = o.buildingId || buildingIdFor(o.billTo, o.jobName);
+  if (bldId && typeof resolveMergedBuildingId === "function"){
+    bldId = await resolveMergedBuildingId(bldId);
+  }
   if (!bldId) return null;
   /* The linked CompanyCam project is the durable, site-level anchor (it maps
      1:1 to a physical job site/address) — carried alongside the roofs so the

@@ -906,3 +906,195 @@ async function ccLinkModalPick(i){
   closeCcProjectPicker();
   if (typeof openBuildingHistory === "function" && currentViewName === "history") openBuildingHistory(buildingId);
 }
+
+/* ================= re-link THIS record to a different building =============
+   Mark, KOMU 2026-07-19. The merge now re-points work orders and DPRs, and
+   resolveMergedBuildingId() follows a merged-away pointer -- between them,
+   every orphan a merge created heals itself.
+
+   This is for the case neither covers: a record on the WRONG building for a
+   reason no merge explains. A work order saved under a mistyped job name that
+   spun its own building; an inspection started from the wrong picker result.
+   Without this the only remedies were merging two buildings that are NOT
+   duplicates (destructive and wrong) or editing Firestore by hand.
+
+   Scope is deliberately ONE record. It re-points the work order in front of
+   you; it does not touch the building, its roofs, or anyone else's records.
+   That makes it safe to reach for and unhelpful to reach for by accident. */
+var relinkModalCandidates = [];
+
+async function openRelinkBuildingModal(){
+  if (!fdb){ toast("Re-linking needs cloud sync."); return; }
+  var o = (typeof collect === "function") ? collect() : {};
+  if (!o.id){ toast("Save this work order first, then re-link it."); return; }
+  var modal = document.getElementById("relink-bld-modal");
+  if (!modal) return;
+  modal.style.display = "";
+  lockBodyScroll();
+  var cur = document.getElementById("relink-bld-current");
+  var host = document.getElementById("relink-bld-list");
+  if (host){ host.className = "hint"; host.textContent = "Loading buildings…"; }
+  try{
+    var currentId = o.buildingId || null;
+    var currentName = "";
+    if (currentId){
+      var cs = await fdb.collection("buildings").doc(currentId).get();
+      var cv = cs.exists ? cs.data() : {};
+      currentName = (typeof ccBuildingDisplayName === "function") ? ccBuildingDisplayName(cv) : (cv.name || currentId);
+      /* Say it plainly when the current target is a merged-away husk -- that
+         IS the diagnosis, and it tells the user this record will self-heal on
+         next save rather than needing a manual pick. */
+      if (cv.archived && cv.mergedIntoBuildingId) currentName += " (merged away — will re-home itself on save)";
+      else if (cv.archived) currentName += " (archived)";
+    }
+    if (cur){
+      cur.innerHTML = currentId
+        ? "This work order is filed under <b>" + esc(currentName) + "</b>."
+        : "This work order isn't filed under any building yet.";
+    }
+    /* NOT orderBy("updatedAt") -- Firestore excludes documents that lack the
+       ordered field entirely, so every building written before updatedAt
+       existed would be invisible in this picker. That is precisely the legacy
+       record a mis-filed work order is most likely to belong to. An unordered
+       read returns them all; ranking below puts the right one on top anyway. */
+    var qs = await fdb.collection("buildings").limit(1000).get();
+    var list = [];
+
+    qs.forEach(function(d){
+      var v = d.data() || {};
+      if (v.archived) return;               /* never offer a husk as a destination */
+      if (d.id === currentId) return;
+      list.push(Object.assign({ id: d.id }, v));
+    });
+    /* Ranked by the same identity ladder the dedup and merge tools use --
+       CompanyCam project, Foundation job, address -- so the building this
+       record almost certainly belongs to floats to the top instead of being
+       hunted for in 500 rows. */
+    relinkModalCandidates = relinkRankBuildings(list, o);
+    relinkModalRender();
+  }catch(e){
+    if (host){ host.className = "hint"; host.textContent = "Couldn't load buildings."; }
+  }
+}
+function relinkRankBuildings(list, o){
+  var addrKey = (typeof fdnAddressMatchKey === "function") ? fdnAddressMatchKey(o.location || "") : "";
+  return (list || []).map(function(b){
+    var rank = 9, why = "";
+    if (o.companyCamProjectId && b.companyCamProjectId === o.companyCamProjectId){
+      rank = 0; why = "same CompanyCam project";
+    } else if (o.foundationJobNo && b.foundationJobNo === o.foundationJobNo){
+      rank = 1; why = "same Foundation job";
+    } else if (addrKey && typeof fdnAddressMatchKey === "function" &&
+               fdnAddressMatchKey(b.location || "") === addrKey){
+      rank = 2; why = "same address";
+    }
+    return { building: b, rank: rank, why: why };
+  }).sort(function(a, b){
+    if (a.rank !== b.rank) return a.rank - b.rank;
+    return String(a.building.name || "").localeCompare(String(b.building.name || ""));
+  });
+}
+function relinkModalRender(){
+  var host = document.getElementById("relink-bld-list");
+  if (!host) return;
+  if (!relinkModalCandidates.length){
+    host.className = "hint";
+    host.textContent = "No other buildings found.";
+    return;
+  }
+  /* Ranked matches first; the rest are still reachable, because "no identity
+     matched" is exactly the situation a manual re-link exists for. */
+  var shown = relinkModalCandidates.slice(0, 40);
+  host.className = "";
+  host.innerHTML = shown.map(function(r, i){
+    var b = r.building;
+    var roofs = Array.isArray(b.roofs) ? b.roofs.length : 0;
+    var hasMap = (b.roofs || []).some(function(x){ return x && x.roof_base_map_url; }) || !!b.roof_base_map_url;
+    var bits = [];
+    if (roofs) bits.push(roofs + (roofs === 1 ? " roof" : " roofs"));
+    if (hasMap) bits.push("has base map");
+    var name = (typeof ccBuildingDisplayName === "function") ? ccBuildingDisplayName(b) : (b.name || b.id);
+    return '<div class="bld-item"><div class="info">' +
+      '<div class="name">' + esc(name) + '</div>' +
+      '<div class="meta">' + (b.location ? esc(b.location) + " · " : "") + esc(bits.join(" · ")) +
+        (r.why ? ' · <b>' + esc(r.why) + '</b>' : "") + '</div></div>' +
+      '<button class="btn primary" onclick="relinkModalPick(' + i + ')">File under this building</button>' +
+      '</div>';
+  }).join("") +
+    (relinkModalCandidates.length > shown.length
+      ? '<p class="hint" style="margin:6px 0 0">Showing the 40 closest of ' + relinkModalCandidates.length + '.</p>' : "");
+}
+function closeRelinkBuildingModal(){
+  var modal = document.getElementById("relink-bld-modal");
+  if (modal) modal.style.display = "none";
+  unlockBodyScroll();
+  relinkModalCandidates = [];
+}
+async function relinkModalPick(i){
+  var r = relinkModalCandidates[i];
+  if (!r) return;
+  var b = r.building;
+  var name = (typeof ccBuildingDisplayName === "function") ? ccBuildingDisplayName(b) : (b.name || b.id);
+  var o = (typeof collect === "function") ? collect() : {};
+  if (!o.id){ toast("Save this work order first."); return; }
+  if (!confirm("File this work order under \"" + name + "\"?\n\n" +
+    "Its history entry and report move with it. Only THIS record changes — no building, roof, or other work order is touched.")) return;
+  toast("Re-filing…");
+  try{
+    /* The work order, its history event and its report all carry buildingId
+       and the denormalised building name. Updating only the work order would
+       leave the timeline pointing at the old building -- the same split that
+       caused this bug in the first place. */
+    var patch = {
+      buildingId: b.id,
+      buildingName: name,
+      customerId: b.customerId || null,
+      customerName: b.customerName || ""
+    };
+    /* The history event and its report share ONE doc id, "evt_" + workOrderId
+       (logReportAndHistoryEvent(), js/history.js:1729). Writing to o.id would
+       miss both real docs AND -- because set({merge:true}) creates -- conjure
+       two malformed stubs carrying only buildingId/name. Those stubs render in
+       the survivor's timeline (queried by buildingId) and CANNOT be removed:
+       firestore.rules denies client deletes on both collections. Update in
+       place only; a re-file must never invent history a work order never had. */
+    var evtId = "evt_" + o.id;
+    /* customerId travels with the building -- leaving it behind points the WO
+       at the old customer while its building says otherwise. */
+    await fdb.collection("workorders").doc(o.id).set(
+      { buildingId: b.id, buildingName: name, customerId: b.customerId || null }, { merge: true });
+    var followFailed = false;
+    for (var ci = 0; ci < 2; ci++){
+      var col = ci === 0 ? "building_history_events" : "reports";
+      try{
+        var ref = fdb.collection(col).doc(evtId);
+        var snap = await ref.get();
+        if (snap.exists) await ref.set(patch, { merge: true });
+      }catch(e){ followFailed = true; }
+    }
+    /* Sync the form to the DESTINATION building, exactly as bpSelectBuilding()
+       does when a building is picked normally (js/workorders.js:181-184).
+
+       This is not cosmetic. ensureCustomerAndBuilding() writes name/location/
+       customerName from the FORM on every save, and a re-filed order is not
+       "redirected by a merge", so the ownsBuilding guard does not cover it.
+       Leaving the old jobName in the form meant the next save renamed the
+       destination to the mis-filed order's job name and overwrote its address --
+       the identical data loss the merge-redirect guard exists to prevent,
+       reached through a door that guard doesn't watch. Caught in review. */
+    if (typeof currentBuildingId !== "undefined") currentBuildingId = b.id;
+    if (typeof setVal === "function"){
+      setVal("jobName", b.name || "");
+      setVal("billTo", b.customerName || "");
+      setVal("location", b.location || "");
+    }
+    closeRelinkBuildingModal();
+    /* Never claim success the writes did not achieve -- a half-moved record is
+       exactly the split this whole fix exists to end. */
+    toast(followFailed
+      ? "Work order re-filed, but its timeline entry could not be moved — try again."
+      : "Filed under " + name + " ✓ — reopen it to see its history.");
+  }catch(e){
+    toast("Couldn't re-file: " + ((e && e.message) || "unknown"));
+  }
+}

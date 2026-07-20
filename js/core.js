@@ -1182,6 +1182,59 @@ function buildingIdFor(billTo, jobName){
 
    Returns a building id to write into, or null to fall back. Never throws: a
    dedup lookup failing offline must not block a save. */
+/* ---- follow a merged-away building to its survivor ----
+   Mark, KOMU 2026-07-19. merge_buildings archives the loser and stamps it with
+   mergedIntoBuildingId. Any record still STORING the loser's id -- a work order
+   saved before the merge, a DPR, anything a future collection forgets to
+   re-point -- would otherwise resolve to that archived husk, which the merge
+   has emptied (roofs: []), so getBuildingRoofs() synthesises a phantom
+   "Roof 1" with no base map and no history. The record looks broken; it is
+   orphaned.
+
+   The merge now re-points work orders and DPRs directly (admin.js), which
+   fixes it at the source. This is the SECOND line of defence, and the one that
+   heals rows already written before that fix existed -- including the KOMU
+   inspection -- with no backfill script and no migration.
+
+   Deliberately bounded: it follows at most MAX_MERGE_HOPS pointers and stops.
+   A cycle (A merged into B, B merged into A -- only reachable through a bug or
+   a hand-edit) must degrade to "use what you were given" rather than spin.
+   Returns the original id on any failure: a resolver that throws would break
+   every read path that calls it, which is far worse than one stale pointer. */
+var MAX_MERGE_HOPS = 3;
+async function resolveMergedBuildingId(buildingId){
+  if (!fdb || !buildingId) return buildingId;
+  var current = buildingId;
+  var seen = {};
+  try{
+    /* <= not <: the loop must be able to LOOK AT the target of the last
+       permitted hop. An earlier cut ran hop < MAX_MERGE_HOPS, which followed 3
+       pointers but never inspected the 3rd target -- so a chain of exactly 3
+       (A->B, B->C, C->D, D live) exhausted the budget and fell through to the
+       give-up branch, returning the original archived husk. That was strictly
+       WORSE than not having the guard: the caller then wrote into a dead
+       building. Chains of 3 are the normal shape of a dedup campaign. */
+    for (var hop = 0; hop <= MAX_MERGE_HOPS; hop++){
+      if (seen[current]) return buildingId; /* cycle -- keep the original */
+      seen[current] = true;
+      var snap = await fdb.collection("buildings").doc(current).get();
+      if (!snap.exists) return current;
+      var v = snap.data() || {};
+      /* Only follow a pointer on a record that was ACTUALLY merged away. An
+         archived-but-not-merged building is a deliberate act (someone filed it
+         out of the way) and its records should keep pointing at it. */
+      if (!v.archived || !v.mergedIntoBuildingId) return current;
+      current = String(v.mergedIntoBuildingId);
+    }
+  }catch(e){ return buildingId; }
+  /* Hop budget exhausted -- a chain longer than MAX_MERGE_HOPS. `current` is
+     still an archived, EMPTIED husk here, so returning it would reproduce the
+     exact bug this function exists to fix. Hand back the original instead:
+     the record stays visibly mis-linked, which is recoverable, rather than
+     silently writing into a dead building, which is not. */
+  try{ console.warn("merge chain deeper than " + MAX_MERGE_HOPS + " hops from " + buildingId); }catch(_){ }
+  return buildingId;
+}
 async function findExistingBuildingId(o){
   if (!fdb) return null;
   var wanted = [];
@@ -1201,7 +1254,13 @@ async function findExistingBuildingId(o){
   var addrKey = (typeof fdnAddressMatchKey === "function") ? fdnAddressMatchKey(o.location || "") : "";
   if (!addrKey) return null;
   try{
-    var scan = await fdb.collection("buildings").orderBy("updatedAt", "desc").limit(500).get();
+    /* NOT orderBy("updatedAt"): Firestore excludes docs lacking the ordered
+       field, so every building written before updatedAt existed was invisible
+       to the very function whose job is to STOP duplicates being created. A
+       legacy building at a matching address was never found, dedup returned
+       null, and a duplicate was minted -- the root cause of the merge workload
+       this whole change is servicing. */
+    var scan = await fdb.collection("buildings").limit(1000).get();
     var matches = [];
     scan.forEach(function(d){
       var v = d.data() || {};
@@ -1223,7 +1282,15 @@ async function ensureCustomerAndBuilding(o){
      base map, and CompanyCam link. Names only derive ids for legacy docs
      and first saves. */
   var custId = o.customerId || customerIdFor(o.billTo);
-  var bldId = o.buildingId || (await findExistingBuildingId(o)) || buildingIdFor(o.billTo, o.jobName);
+  /* A STORED id still wins -- but follow it through a merge first, so a work
+     order saved before its building was merged away re-homes itself onto the
+     survivor instead of rewriting the emptied husk. */
+  var resolvedStored = o.buildingId ? await resolveMergedBuildingId(o.buildingId) : null;
+  /* Was this order REDIRECTED onto a different building by a merge? That is the
+     precise question -- not "does the name still match", which is false on an
+     ordinary rename too and would break rename-in-place (see below). */
+  var redirectedByMerge = !!(resolvedStored && o.buildingId && resolvedStored !== o.buildingId);
+  var bldId = resolvedStored || (await findExistingBuildingId(o)) || buildingIdFor(o.billTo, o.jobName);
   /* No job name: nothing safe to write (a stored-id order must not get its
      building name blanked either) — but still hand back whatever identity
      the order already carries so callers never "lose" a stored id. */
@@ -1236,11 +1303,43 @@ async function ensureCustomerAndBuilding(o){
     }
     var bldRef = fdb.collection("buildings").doc(bldId);
     var snap = await bldRef.get();
-    var patch = {
-      name: bldName, customerId: custId || null, customerName: custName || "",
-      location: o.location || "", roofSystem: o.roofSystem || "",
-      updatedAt: Date.now()
-    };
+    /* DO NOT rename a building this order was REDIRECTED onto.
+
+       These fields were written unconditionally, which was safe while a stale
+       order could only ever write back to the building its own name derived.
+       Following a merge pointer changed that: the order now resolves to the
+       SURVIVOR, and a saved work order still carrying the loser's jobName
+       (nothing rewrites a saved order's form fields) would rename the survivor
+       to the dead duplicate and blank its address on the FIRST save after any
+       merge. On the KOMU case that means overwriting "Orr Street Studios" and
+       erasing its location -- turning a fix into data loss.
+
+       Identity fields are now written only when this order OWNS the building:
+       it is creating it, or its own name still derives this id. A redirected
+       order updates the link fields below and leaves identity alone. */
+    /* Renaming a job MUST still rename its building in place -- that is the
+       whole point of stored-id-first (audit FIX 1), and a test pins it. So the
+       guard keys on REDIRECTION, not on whether the name still derives the id.
+       An ordinary rename owns its building; an order followed onto a merge
+       survivor does not. */
+    var ownsBuilding = !redirectedByMerge;
+    /* A redirected order must never CREATE a building. A dangling pointer (the
+       merge destination later removed, or a hand-edit) resolves to an id with
+       no doc; without this, set({merge:true}) would conjure a nameless ghost --
+       no name, no customer, no location -- and file the work order under it,
+       where it reads as "Unnamed building" in every picker. Fall back to the
+       order's own stored id instead and leave the mis-link visible. */
+    if (redirectedByMerge && !snap.exists){
+      return { customerId: custId || null, buildingId: o.buildingId };
+    }
+    var patch = { updatedAt: Date.now() };
+    if (ownsBuilding){
+      patch.name = bldName;
+      patch.customerId = custId || null;
+      patch.customerName = custName || "";
+      patch.location = o.location || "";
+      patch.roofSystem = o.roofSystem || "";
+    }
     if (o.companyCamProjectId) patch.companyCamProjectId = o.companyCamProjectId;
     /* Foundation (construction-accounting) job link — the durable per-site
        identity from the system of record, persisted onto the building exactly
@@ -1266,7 +1365,9 @@ async function ensureCustomerAndBuilding(o){
     try{
       var freshBld = snap.exists ? Object.assign({}, snap.data(), patch) : patch;
       var roofs = getBuildingRoofs(freshBld);
-      if (roofs.length === 1){
+      /* Guarded for the same reason: a redirected order must not push its own
+         (possibly empty) roofSystem into the survivor's only roof. */
+      if (roofs.length === 1 && ownsBuilding){
         roofs[0].roofSystem = patch.roofSystem;
         await saveBuildingRoofs(bldId, roofs);
       }
