@@ -1510,6 +1510,15 @@ function collect(){
   var buildingId = o.buildingId || buildingIdFor(o.billTo, o.jobName); /* same stored-id-first rule as the lookup that filled the cache */
   o.roofLabels = (lookupRoofInfoMatchesBuilding(lastLookupRoofInfo, buildingId) && lastLookupRoofInfo.roofs) ?
     lastLookupRoofInfo.roofs.reduce(function(m, r){ m[r.id] = r.label || "Roof"; return m; }, {}) : null;
+  /* roofSystems rides alongside roofLabels for exactly the same reason: a
+     multi-roof inspection report has to say WHICH system each roof is, and the
+     report builders are synchronous with no Firestore access. Mark's case is a
+     facility carrying EPDM, TPO and mod-bit at once -- the label alone
+     ("Roof B") doesn't tell a reader what they're looking at. Null when no
+     roof lookup has happened, same as roofLabels; the report simply omits the
+     system rather than guessing one. */
+  o.roofSystems = (lookupRoofInfoMatchesBuilding(lastLookupRoofInfo, buildingId) && lastLookupRoofInfo.roofs) ?
+    lastLookupRoofInfo.roofs.reduce(function(m, r){ if (r.roofSystem) m[r.id] = r.roofSystem; return m; }, {}) : null;
   o.changeOrderSignature = changeOrderSignature || null;
   /* Service Manager dispatch (crew + day + status) and proposal linkage. Both
      null for an ordinary WO; carried here so an edit-form save never drops a
