@@ -532,6 +532,13 @@ function findingPhotoGalleryHtml(f){
       '<input type="text" placeholder="Caption" data-findingphoto="' + x.gi + '" value="' + esc(x.p.caption) + '" list="dl-photoCaption" onblur="rememberFieldValue(\'photoCaption\', this.value)">' +
       '<button class="btn danger" onclick="removePhoto(' + x.gi + ')">✕ Remove</button>' +
       photoGpsBadgeHtml(x.p, x.p.finding_id) +
+      /* AI issue-ID chip + confirm/correct (js/ailabels.js). Rendered on BOTH
+         the finding strip and the inspection-checklist strip: a checklist
+         photo is exactly as good a training row as a leak-finding one.
+         typeof-guarded because ailabels.js loads AFTER this file and is the
+         one module a deploy could legitimately ship without -- a missing
+         training-label module must cost one button, never the photo strip. */
+      ((typeof aiIssueChipHtml === "function") ? aiIssueChipHtml(x.gi) : "") +
       '</div>';
   }).join("");
   return '<div class="finding-photos">' +
@@ -570,6 +577,13 @@ function inspectionItemPhotoGalleryHtml(item){
       '<input type="text" placeholder="Caption" data-findingphoto="' + x.gi + '" value="' + esc(x.p.caption) + '" list="dl-photoCaption" onblur="rememberFieldValue(\'photoCaption\', this.value)">' +
       '<button class="btn danger" onclick="removePhoto(' + x.gi + ')">✕ Remove</button>' +
       photoGpsBadgeHtml(x.p, x.p.finding_id) +
+      /* AI issue-ID chip + confirm/correct (js/ailabels.js). Rendered on BOTH
+         the finding strip and the inspection-checklist strip: a checklist
+         photo is exactly as good a training row as a leak-finding one.
+         typeof-guarded because ailabels.js loads AFTER this file and is the
+         one module a deploy could legitimately ship without -- a missing
+         training-label module must cost one button, never the photo strip. */
+      ((typeof aiIssueChipHtml === "function") ? aiIssueChipHtml(x.gi) : "") +
       '</div>';
   }).join("");
   return '<div class="finding-photos">' +
