@@ -78,6 +78,30 @@ test("the confirm tells the truth about what happens to his text", () => {
   assert.doesNotMatch(block, /Replace the current Summary text with a generated draft/);
 });
 
+/* ================= the hint under the button ================= */
+
+test("the Draft Summary hint no longer claims there is no AI", () => {
+  /* It read "Placeholder generator for now (no AI yet)" long after prod was
+     keyed -- a false claim sitting in front of the user on every report. */
+  const indexSource = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
+  const block = between(indexSource, 'id="wo-draft-summary-row"', '<textarea id="summary"');
+  assert.doesNotMatch(block, /no AI yet/i);
+  assert.doesNotMatch(block, /Placeholder generator/i);
+  assert.match(block, /review and edit/i, "the review-before-sending instruction must survive");
+});
+
+test("the hint does not assert a key exists on THIS deploy", () => {
+  /* The button is a teaser on a keyless deploy -- shown, but a tap toasts
+     "coming soon". So the hint is visible with and without a key and must
+     describe the FEATURE, not the deploy's key state. Saying "AI drafts..."
+     is fine; "now wired up"/"is enabled" would be the old bug with the
+     opposite sign. */
+  const indexSource = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
+  const block = between(indexSource, 'id="wo-draft-summary-row"', '<textarea id="summary"');
+  assert.doesNotMatch(block, /now (live|wired|enabled|active)/i);
+  assert.doesNotMatch(block, /AI is (on|enabled|configured)/i);
+});
+
 /* ================= vision images ================= */
 
 test("vision images are validated through the same gate as every inline image", () => {

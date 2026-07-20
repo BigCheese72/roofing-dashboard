@@ -421,9 +421,17 @@
         <div class="btnrow" style="margin:0">
           <button class="btn" id="wo-draft-summary-btn" onclick="draftReportSummary(this)">✨ Draft Summary</button>
         </div>
-        <p class="hint" style="margin:6px 0 0">Writes a draft from this report's findings, checklist, repair scope,
-          and photos into the box below. Placeholder generator for now (no AI yet) — always review and edit
-          before saving or sending.</p>
+        <!-- Wording rule: this hint is visible on a KEYLESS deploy too (the
+             button is a teaser there — a tap toasts "coming soon"), so it must
+             describe what the feature DOES without asserting anything about
+             whether a key exists on this deploy. The original wording claimed
+             the feature was only a placeholder with no model behind it, and
+             stayed on screen long after prod was keyed. Don't re-introduce a
+             claim about key state in either direction; the toast owns that.
+             tests/aiSummarySeedVision.test.js pins this. -->
+        <p class="hint" style="margin:6px 0 0">AI drafts a summary from this report's findings, checklist,
+          repair scope and photos — reading the photos themselves, and building on anything you've already
+          typed rather than replacing it. Always review and edit before saving or sending.</p>
       </div>
       <div class="fld"><textarea id="summary" rows="5"></textarea></div>
     </div>
