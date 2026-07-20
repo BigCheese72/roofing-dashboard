@@ -32,7 +32,7 @@ const Module = require("module");
 
 const VALID_TECH = "VALID_TECH_TOKEN";     // role "tech"   -> doc.generate: true
 const VALID_VIEWER = "VALID_VIEWER_TOKEN"; // role "viewer" -> doc.generate: false
-const VALID_OWNER = "VALID_OWNER_TOKEN";   // owner-only estimator tools
+const VALID_OWNER = "VALID_OWNER_TOKEN";   // owner claim, role "owner" (no doc.generate grant)
 
 const ROLES = {
   tech: { permissions: { "doc.generate": true, "workorder.create": true } },
@@ -216,30 +216,39 @@ test("issue_id stub with no matching keywords -> indeterminate/unconfirmed/low",
   );
 });
 
-test("estimate_epdm_sa is owner-only and returns the Warrensburg playbook stub", async () => {
-  const denied = await aiService.handler(ev("POST", {
-    action: "estimate_epdm_sa",
-    estimate: { fieldNotes: "20-year EPDM SA with 2.6 overlay and taper" }
-  }, VALID_TECH));
-  assert.equal(denied.statusCode, 403);
-
+test("estimate_epdm_sa is GONE -- the estimator moved out of RoofOps", async () => {
+  /* The estimator tool was pulled out of the app on 2026-07-18 and lives on
+     only in the estimator-standalone branch. This endpoint must no longer
+     expose an estimate capability to anyone, owner included -- it is the
+     path customer contact/location details used to travel to a model. */
   const res = await aiService.handler(ev("POST", {
     action: "estimate_epdm_sa",
     estimate: { fieldNotes: "20-year EPDM SA with 2.6 overlay and taper" }
+  }, VALID_TECH));
+  assert.equal(res.statusCode, 400);
+  assert.equal(res.body, '{"error":"Unknown action"}');
+});
+
+test("owner bypasses doc.generate -- repo-wide convention, not an estimator change", async () => {
+  /* Pins the owner-exemption so nobody has to re-derive it. requirePermission()
+     short-circuits on caller.owner (netlify/functions/lib/authGuard.js:187) and
+     always has -- every endpoint in this repo inherits that.
+  
+     Worth recording because the Lead got this wrong during the estimator
+     cross-review and reported it to Mark as EST-1, "a real privilege change
+     made in passing". It was not. The estimator replaced the blanket
+     requirePermission("doc.generate") with verifyCaller + a per-action
+     `if (!caller.owner) getPermissionValue(...)`, which is the SAME
+     owner-exemption written out longhand. Behaviour was identical before it,
+     during it, and after the revert. The revert was still right -- it drops
+     estimator-only plumbing and restores the simpler gate -- but no privilege
+     ever changed. VALID_OWNER holds no doc.generate grant in ROLES and is
+     still allowed through, which is exactly the point. */
+  const res = await aiService.handler(ev("POST", {
+    action: "issue_id", photoUrl: SIGNED_URL
   }, VALID_OWNER));
   assert.equal(res.statusCode, 200);
-  const body = JSON.parse(res.body);
-  assert.equal(body.ok, true);
-  assert.equal(body.draft, true);
-  assert.equal(body.action, "estimate_epdm_sa");
-  assert.equal(body.source, "estimate_stub_v1");
-  assert.equal(body.provider, "stub");
-  assert.equal(body.llm, false);
-  assert.equal(body.result.fields.membrane, "epdm-sa");
-  assert.equal(body.result.fields.slopeType, "tapered");
-  assert.equal(body.result.fields.overlayIn, 2.6);
-  assert.equal(body.result.fields.warrantyYears, 20);
-  assert.ok(body.result.rulesApplied.some((line) => /Warrensburg/.test(line)));
+  assert.equal(JSON.parse(res.body).action, "issue_id");
 });
 
 test("summary stub (lib seam): clearly marked, deterministic, photosUsed 0", async () => {

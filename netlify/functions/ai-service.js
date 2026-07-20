@@ -1,6 +1,6 @@
-// RoofOps AI endpoint (provider-agnostic, stub-until-keyed) -- the HTTP
-// surface over netlify/functions/lib/aiProvider.js for small AI drafting
-// capabilities such as leak-photo ISSUE-ID and owner-only estimate intake.
+// RoofOps AI issue-identification endpoint (provider-agnostic, stub-until-
+// keyed) -- the HTTP surface over netlify/functions/lib/aiProvider.js for
+// the leak-photo ISSUE-ID capability.
 //
 // ONE CAPABILITY PER ENDPOINT (post-#119 cross-review convergence):
 //   * SUMMARY drafting lives at netlify/functions/generate-summary.js -- it
@@ -13,9 +13,6 @@
 //   * ISSUE-ID lives here: one signed leak-photo URL + context in,
 //     structured { issue, likelyCause, confidence } out -- controlled
 //     vocabulary only. The future leak-photo UI builds against this.
-//   * ESTIMATE INTAKE lives here: owner-only current estimator fields in,
-//     structured field recommendations out. RoofOps still calculates the
-//     material list and totals client-side from deterministic estimating rules.
 //
 // Whether a real model answers is decided per deploy context by which env
 // vars exist (dev holds ANTHROPIC_API_KEY as of 2026-07-16; production
@@ -42,11 +39,6 @@
 //                                     // Firestore-read pattern instead.)
 //     "context":  { "woType", "jobName", "roofSystem", "reportedArea",
 //                   "notes" }         // optional structured hints
-//   }
-// or
-//   {
-//     "action": "estimate_epdm_sa",
-//     "estimate": { ...current estimator intake fields... } // owner-only
 //   }
 //
 // Response 200 (JSON) -- provenance fields mirror generate-summary.js's
@@ -88,7 +80,7 @@
 // gate. Same reasoning as generate-summary.js -- kept consistent on
 // purpose. Open question from the #119 cross-review: whether leak-photo ID
 // deserves its own permission key once the UI lands.
-const { verifyCaller, getPermissionValue } = require("./lib/authGuard");
+const { requirePermission } = require("./lib/authGuard");
 const ai = require("./lib/aiProvider");
 
 function resp(code, obj) {
@@ -99,11 +91,10 @@ exports.handler = async function (event) {
   if (event.httpMethod !== "POST") return resp(405, { error: "Method not allowed" });
   try {
     // Identity first, body second -- an unauthenticated caller learns nothing,
-    // not even which actions exist. verifyCaller also primes the dev/prod
-    // credentials safety guard via the event's Host header.
-    let caller;
+    // not even which actions exist. (requirePermission also primes the
+    // dev/prod credentials safety guard via the event's Host header.)
     try {
-      caller = await verifyCaller(event);
+      await requirePermission(event, "doc.generate");
     } catch (e) {
       if (e && e.statusCode === 403) return resp(403, { error: "Forbidden" });
       if (e && e.statusCode) return resp(401, { error: "Unauthorized" });
@@ -115,10 +106,6 @@ exports.handler = async function (event) {
     catch (e) { return resp(400, { error: "Bad request" }); }
 
     if (body.action === "issue_id") {
-      if (!caller.owner) {
-        const allowed = await getPermissionValue(caller.role, "doc.generate");
-        if (allowed !== true) return resp(403, { error: "Forbidden" });
-      }
       if (!ai.isSignedPhotoUrl(body.photoUrl)) {
         return resp(400, { error: "photoUrl must be a signed https URL" });
       }
@@ -136,29 +123,6 @@ exports.handler = async function (event) {
         }
       };
       if (out.fallback) r.fallback = true;
-      return resp(200, r);
-    }
-
-    if (body.action === "estimate_epdm_sa") {
-      if (!caller.owner) return resp(403, { error: "Forbidden" });
-      const out = await ai.draftEstimate(
-        { estimate: body.estimate || {} },
-        { env: process.env }
-      );
-      const r = {
-        ok: true, draft: true, action: "estimate_epdm_sa",
-        source: out.llm ? out.provider : "estimate_stub_v1",
-        provider: out.provider, model: out.model, llm: out.llm,
-        result: {
-          fields: out.fields || {},
-          assumptions: out.assumptions || [],
-          missingInputs: out.missingInputs || [],
-          warnings: out.warnings || [],
-          rulesApplied: out.rulesApplied || []
-        }
-      };
-      if (out.fallback) r.fallback = true;
-      if (out.errorDetail) r.errorDetail = out.errorDetail;
       return resp(200, r);
     }
 

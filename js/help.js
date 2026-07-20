@@ -643,7 +643,6 @@ var HELP_ROLE_QUICKLINKS = {
   superintendent: ["dpr-start", "dpr-lift-checklist", "rm-reopen-roof", "bh-log-activity"],
   ops_manager: ["bh-recover-unlogged", "admin-delete-archive", "send-verify"],
   project_manager: ["wo-co", "wo-co-signature", "admin-basemap"],
-  estimator: ["wo-co", "wo-inspection", "rm-export"],
   billing: ["send-verify", "send-report"],
   service_manager: ["bh-recover-unlogged", "admin-logs"]
 };
