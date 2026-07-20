@@ -497,6 +497,65 @@ function rmGeomPolygonPerimeterMeters(ring){
   for (var i = 0; i < ring.length - 1; i++) total += rmGeomHaversineMeters(ring[i], ring[i + 1]);
   return total;
 }
+/* ---- Nested-roof cutouts (holes) ----
+   Mark's Roof 7-around-Roof 8 case: a roof can enclose something that isn't
+   part of its own field. Two kinds, and the difference is accounting, not
+   geometry:
+
+     kind "roof"  -- a penthouse/nested roof (sourceRoofId set). The hole area
+                     is still roof, it just belongs to the nested roof instead.
+                     Building total is UNCHANGED by the cutout.
+     kind "void"  -- a courtyard/atrium/lightwell (sourceRoofId null). The hole
+                     area is not roof at all and nobody owns it. Building total
+                     genuinely DROPS.
+
+   Conflating the two silently corrupts building-level totals in one direction
+   or the other, which is why the kind is stored rather than inferred.
+
+   ONE level of nesting only -- a hole never carries its own holes, and nothing
+   here recurses. Each hole's ring is MATERIALIZED (a copy, closed the same way
+   outline.ring is) rather than resolved through sourceRoofId at read time, so
+   a roof's numbers never shift because some other roof was edited. See
+   "Nested-roof cutouts" in DEV_NOTES.md. */
+function rmOutlineHoleRings(outline){
+  return ((outline && outline.holes) || []).map(function(h){ return h && h.ring; })
+    .filter(function(r){ return Array.isArray(r) && r.length >= 3; });
+}
+/* THE single place that derives an outline's area/perimeter numbers.
+   Everything that changes a ring calls this rather than recomputing inline.
+
+   This exists because the formula used to be copy-pasted at 14 sites, every
+   one of them recomputing from the OUTER ring alone. Teaching only the save
+   path about holes would have meant the next vertex drag / calibrate / square
+   / re-snap silently reverted areaSqFt back to gross -- the donut quietly
+   healing itself into a solid roof, with nothing visibly wrong until someone
+   reconciled a takeoff. Keep it that way: add ring math here, not at callers.
+
+   areaSqFt is NET (outer minus holes) because that's the roof you actually
+   walk, buy material for, and bill. grossAreaSqFt is retained alongside it so
+   both can be shown -- see rmFormatOutlineArea().
+
+   perimeterFt sums the outer ring AND every hole ring: the inner edge is a
+   real edge-metal termination, not a notional boundary. Per Mark, a penthouse
+   counts the donut's inner edge only -- the nested roof's own perimeter stays
+   on that roof's own record, so nothing is double-counted here. */
+function rmRecomputeOutlineMetrics(outline){
+  if (!outline || !Array.isArray(outline.ring) || outline.ring.length < 3) return outline;
+  var holeRings = rmOutlineHoleRings(outline);
+  var grossSqFt = rmGeomPolygonAreaSqMeters(outline.ring) * 10.7639;
+  var holesSqFt = holeRings.reduce(function(sum, r){
+    return sum + rmGeomPolygonAreaSqMeters(r) * 10.7639;
+  }, 0);
+  var perimeterM = holeRings.reduce(function(sum, r){
+    return sum + rmGeomPolygonPerimeterMeters(r);
+  }, rmGeomPolygonPerimeterMeters(outline.ring));
+  outline.grossAreaSqFt = grossSqFt;
+  /* Clamped at 0: a malformed hole bigger than its parent should read as
+     "no roof left", never as negative square footage on a report. */
+  outline.areaSqFt = Math.max(0, grossSqFt - holesSqFt);
+  outline.perimeterFt = perimeterM * 3.28084;
+  return outline;
+}
 /* ---- Split a roof outline into multiple labeled sections ("blob-splitting")
    Mark: an auto-pulled OSM footprint (or a hand trace) is often really
    several distinct roof sections -- a warehouse + office annex, several
@@ -598,12 +657,10 @@ function rmSplitRingByChord(ring, p1, p2){
    same area/perimeter math every saved outline uses, so the numbers shown
    in the split review panel match exactly what gets saved. */
 function rmMakeSplitSection(ring, label){
-  return {
+  return rmRecomputeOutlineMetrics({
     id: genId("split"), label: label, ring: ring,
-    areaSqFt: rmGeomPolygonAreaSqMeters(ring) * 10.7639,
-    perimeterFt: rmGeomPolygonPerimeterMeters(ring) * 3.28084,
     center: rmGeomRingCentroid(ring)
-  };
+  });
 }
 /* ---- Square Up (orthogonal snapping) ----
    Mark: roofs are mostly rectilinear, so a traced outline should "look
@@ -2988,8 +3045,7 @@ function rmOnVertexDragEnd(vertexIndex, droppedLatLng, marker){
   } else {
     rmClearSnapIndicator();
   }
-  outline.areaSqFt = rmGeomPolygonAreaSqMeters(outline.ring) * 10.7639;
-  outline.perimeterFt = rmGeomPolygonPerimeterMeters(outline.ring) * 3.28084;
+  rmRecomputeOutlineMetrics(outline);
   outline.center = rmGeomRingCentroid(outline.ring);
   /* A manual point move invalidates any prior "this shape is square" /
      "this edge is calibrated" guarantee -- clearing both rather than
@@ -3279,8 +3335,7 @@ async function rmCalibrateEdge(edgeIndex){
   var centroid = rmGeomRingCentroid(ring);
   var newRing = ring.map(function(p){ return rmGeomScalePoint(p, centroid, appliedFactor); });
   outline.ring = newRing;
-  outline.areaSqFt = rmGeomPolygonAreaSqMeters(newRing) * 10.7639;
-  outline.perimeterFt = rmGeomPolygonPerimeterMeters(newRing) * 3.28084;
+  rmRecomputeOutlineMetrics(outline);
   outline.center = rmGeomRingCentroid(newRing);
   delete outline.calibration;
   delete outline.inheritedScale;
@@ -3381,8 +3436,7 @@ function rmSquareUpOutline(){
   rmState.preSquareRing = outline.ring; /* for Undo -- one level, matches Calibrate's own no-history-stack simplicity */
   rmState.preSquareMeasurementState = rmSnapshotMeasurementState(outline);
   outline.ring = result.ring;
-  outline.areaSqFt = rmGeomPolygonAreaSqMeters(result.ring) * 10.7639;
-  outline.perimeterFt = rmGeomPolygonPerimeterMeters(result.ring) * 3.28084;
+  rmRecomputeOutlineMetrics(outline);
   outline.center = rmGeomRingCentroid(result.ring);
   outline.squared = { at: Date.now(), tolerance: RM_SQUARE_TOLERANCE_DEG, snappedEdges: result.snappedCount };
   rmInvalidateEdgeMeasurements(outline, "square_up");
@@ -3401,8 +3455,7 @@ function rmUndoSquareUp(){
   var outline = rmState.outline;
   if (!outline || !rmState.preSquareRing) return;
   outline.ring = rmState.preSquareRing;
-  outline.areaSqFt = rmGeomPolygonAreaSqMeters(outline.ring) * 10.7639;
-  outline.perimeterFt = rmGeomPolygonPerimeterMeters(outline.ring) * 3.28084;
+  rmRecomputeOutlineMetrics(outline);
   outline.center = rmGeomRingCentroid(outline.ring);
   delete outline.squared;
   rmRestoreMeasurementState(outline, rmState.preSquareMeasurementState);
@@ -3530,8 +3583,7 @@ function rmSnapExistingOutlineToNeighbors(){
   rmState.preResnapRing = ring; /* one-level Undo, same simplicity as Square Up/Calibrate */
   rmState.preResnapMeasurementState = rmSnapshotMeasurementState(outline);
   outline.ring = newRing;
-  outline.areaSqFt = rmGeomPolygonAreaSqMeters(newRing) * 10.7639;
-  outline.perimeterFt = rmGeomPolygonPerimeterMeters(newRing) * 3.28084;
+  rmRecomputeOutlineMetrics(outline);
   outline.center = rmGeomRingCentroid(newRing);
   rmInvalidateEdgeMeasurements(outline, "resnap_neighbors");
   if (rmState.outlineLayer) rmState.outlineLayer.setLatLngs(newRing.map(function(p){ return [p.lat, p.lng]; }));
@@ -3548,8 +3600,7 @@ function rmUndoResnapToNeighbors(){
   var outline = rmState.outline;
   if (!outline || !rmState.preResnapRing) return;
   outline.ring = rmState.preResnapRing;
-  outline.areaSqFt = rmGeomPolygonAreaSqMeters(outline.ring) * 10.7639;
-  outline.perimeterFt = rmGeomPolygonPerimeterMeters(outline.ring) * 3.28084;
+  rmRecomputeOutlineMetrics(outline);
   outline.center = rmGeomRingCentroid(outline.ring);
   rmRestoreMeasurementState(outline, rmState.preResnapMeasurementState);
   rmState.preResnapRing = null;
@@ -3724,8 +3775,7 @@ function rmApplyAlignFromScale(newLatLng){
 function rmFinalizeAlignTransform(){
   var outline = rmState.outline;
   if (!outline) return;
-  outline.areaSqFt = rmGeomPolygonAreaSqMeters(outline.ring) * 10.7639;
-  outline.perimeterFt = rmGeomPolygonPerimeterMeters(outline.ring) * 3.28084;
+  rmRecomputeOutlineMetrics(outline);
   outline.center = rmGeomRingCentroid(outline.ring);
   rmDrawEdgeDimensions(outline);
   rmRenderOutlineStats(outline);
@@ -3779,8 +3829,7 @@ function rmExitAlignMode(persist){
        persist=false) -- discard whatever was mid-drag, restore exactly
        what was there before align mode started. */
     outline.ring = rmAlignState.originalRing;
-    outline.areaSqFt = rmGeomPolygonAreaSqMeters(outline.ring) * 10.7639;
-    outline.perimeterFt = rmGeomPolygonPerimeterMeters(outline.ring) * 3.28084;
+    rmRecomputeOutlineMetrics(outline);
     outline.center = rmGeomRingCentroid(outline.ring);
     if (rmState.outlineLayer) rmState.outlineLayer.setLatLngs(outline.ring.map(function(p){ return [p.lat, p.lng]; }));
     rmDrawEdgeDimensions(outline);
@@ -3793,8 +3842,7 @@ function rmUndoAlign(){
   var outline = rmState.outline;
   if (!outline || !rmState.preAlignRing) return;
   outline.ring = rmState.preAlignRing;
-  outline.areaSqFt = rmGeomPolygonAreaSqMeters(outline.ring) * 10.7639;
-  outline.perimeterFt = rmGeomPolygonPerimeterMeters(outline.ring) * 3.28084;
+  rmRecomputeOutlineMetrics(outline);
   outline.center = rmGeomRingCentroid(outline.ring);
   rmRestoreMeasurementState(outline, rmState.preAlignMeasurementState);
   rmState.preAlignRing = null;
@@ -3821,18 +3869,16 @@ function rmGenerateOutline(){
   var fp = rmState.footprints.find(function(f){ return f.id === rmState.selectedId; });
   if (!fp) return;
   var ring = rmGeomCleanRing(fp.ring);
-  var outline = {
+  var outline = rmRecomputeOutlineMetrics({
     ring: ring,
     center: fp.center,
-    areaSqFt: rmGeomPolygonAreaSqMeters(ring) * 10.7639,
-    perimeterFt: rmGeomPolygonPerimeterMeters(ring) * 3.28084,
     source: "osm",
     osmId: fp.id,
     osmType: fp.osmType,
     tags: fp.tags || {},
     isSiteBoundary: !!fp.isSite,
     createdAt: Date.now()
-  };
+  });
   rmDrawFinalOutline(outline);
   toast(outline.isSiteBoundary ? "Site boundary captured — not a single roof, see warning below ⚠️" : "Roof outline generated ✓");
 }
@@ -5143,16 +5189,14 @@ function rmFinishTrace(){
   var tracedOnOrtho = rmState.orthoActive;
   var tracedOnGeoTiff = rmState.geoTiffActive;
   var tracedOnKmlOverlay = rmState.kmlOverlayActive;
-  var outline = {
+  var outline = rmRecomputeOutlineMetrics({
     ring: ring,
     center: rmGeomRingCentroid(ring),
-    areaSqFt: rmGeomPolygonAreaSqMeters(ring) * 10.7639,
-    perimeterFt: rmGeomPolygonPerimeterMeters(ring) * 3.28084,
     source: isWalk ? "walk_corners" : (tracedOnKmlOverlay ? "kml_groundoverlay_trace" : (tracedOnGeoTiff ? "geotiff_trace" : (tracedOnOrtho ? "ortho_trace" : "manual_trace"))),
     osmId: null, osmType: null, tags: {},
     isSiteBoundary: false,
     createdAt: Date.now()
-  };
+  });
   /* geotiff_trace is the OPPOSITE of tracedOnOrtho below -- real GPS
      geodata means the ring is already an accurate, real-world position,
      not a placeholder. Flagged explicitly so future code (and Mark) can
@@ -5195,8 +5239,7 @@ function rmFinishTrace(){
     var scaledRing = ring.map(function(p){ return rmGeomScalePoint(p, centroid, rmState.inheritedScaleFactor); });
     outline.ring = scaledRing;
     outline.center = centroid;
-    outline.areaSqFt = rmGeomPolygonAreaSqMeters(scaledRing) * 10.7639;
-    outline.perimeterFt = rmGeomPolygonPerimeterMeters(scaledRing) * 3.28084;
+    rmRecomputeOutlineMetrics(outline);
     outline.inheritedScale = {
       fromOutlineId: rmState.inheritedScaleFromOutlineId || null,
       factor: rmState.inheritedScaleFactor,
