@@ -304,6 +304,16 @@ async function openBuildingHistory(buildingId){
     var moveBtnHtml = isAdmin ? ('<button class="btn" style="margin-left:6px" onclick="openMoveRoofModal(\'' +
       buildingId + '\', \'' + historySelectedRoofId + '\', \'' + esc(roof.label || "Roof") +
       '\')">↔️ Move to Different Building</button>') : '';
+    /* Mark, field 2026-07-19: the button above re-points a ROOF at a different
+       RoofOps building. Nothing re-pointed the BUILDING at a different
+       CompanyCam project, so a building stuck on the wrong project -- or on
+       "(unnamed project)" -- could not be fixed in the app at all. Same admin
+       tier as Move: buildings.companyCamProjectId decides where this
+       building's photos and signed PDFs push, so it is the same class of
+       change, not a label edit. See openCcProjectPicker() in
+       js/companycam.js. */
+    var ccLinkBtnHtml = isAdmin ? ('<button class="btn" style="margin-left:6px" onclick="openCcProjectPicker(\'' +
+      buildingId + '\')">📷 ' + (bld.companyCamProjectId ? "Change" : "Link") + ' CompanyCam Project</button>') : '';
     var roofPickerHtml = roofs.length > 1 ?
       '<div class="fld" style="max-width:320px;margin-bottom:8px">' +
         '<label>Roof</label><div class="btnrow" style="margin:0;align-items:center">' +
@@ -313,8 +323,8 @@ async function openBuildingHistory(buildingId){
           return '<option value="' + esc(r.id) + '"' + (r.id === historySelectedRoofId ? ' selected' : '') + '>' +
             esc(r.label || "Roof") + (cond ? " — " + esc(cond) : "") + '</option>';
         }).join('') +
-        '</select>' + renameBtnHtml + openInMapperBtnHtml + moveBtnHtml + '</div></div>' :
-      '<p class="hint" style="margin:0 0 8px">Roof: <b>' + esc(roof.label || "Roof") + '</b>' + renameBtnHtml + openInMapperBtnHtml + moveBtnHtml + '</p>';
+        '</select>' + renameBtnHtml + openInMapperBtnHtml + moveBtnHtml + ccLinkBtnHtml + '</div></div>' :
+      '<p class="hint" style="margin:0 0 8px">Roof: <b>' + esc(roof.label || "Roof") + '</b>' + renameBtnHtml + openInMapperBtnHtml + moveBtnHtml + ccLinkBtnHtml + '</p>';
     var addRoofBtnHtml = '<button class="btn" onclick="promptAddRoof(\'' + buildingId + '\')">+ Add Roof</button>';
     var addFeatureBtnHtml = '<button class="btn" onclick="openAssetModal(\'' + buildingId + '\', null, \'' + historySelectedRoofId + '\')">+ Add Roof Feature</button>';
     var addActivityBtnHtml = '<button class="btn" onclick="openActivityModal(\'' + buildingId + '\')">+ Log Activity</button>';

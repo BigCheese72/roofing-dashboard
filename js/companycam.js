@@ -524,3 +524,176 @@ async function unlinkCC(){
     toast("Building-level CompanyCam link cleared");
   }catch(e){ console.warn("building-level CompanyCam unlink failed", e); }
 }
+
+/* ================= re-link a BUILDING to a CompanyCam project =================
+   Mark, field 2026-07-19: a building linked to the wrong CompanyCam project --
+   or to one showing as "(unnamed project)" -- had no in-app fix. Building
+   History's "Move to Different Building" re-points a ROOF at a different
+   RoofOps building, which is a different axis entirely; nothing re-pointed the
+   BUILDING at a different CompanyCam project.
+
+   Why it matters beyond display: buildings.companyCamProjectId is what every
+   push inherits (the building-link inheritance below, the DPR's job link, the
+   signed-PDF upload). A wrong link doesn't just read wrong in history -- it
+   sends photos and documents to the wrong customer's project.
+
+   HONEST LIMIT: this re-points a building at the RIGHT project. It cannot
+   rename a CompanyCam project. "(unnamed project)" is the proxy's fallback for
+   an empty pr.name (netlify/functions/companycam.js), so a project that is
+   genuinely unnamed IN CompanyCam still reads that way after re-linking. The
+   fix for that is renaming it in CompanyCam; RoofOps deliberately never writes
+   project names. */
+
+/* Ranks CompanyCam projects against a building's address + name, best first,
+   tagging each with WHY it matched so the picker shows its reasoning rather
+   than an unexplained order.
+
+   The matching rule is not new -- it is smMatchCompanyCamProject()'s
+   address-first-then-name logic (js/servicemanager.js), which exists because of
+   the Prairie Farms case: the CompanyCam site name routinely differs from the
+   Foundation customer name, so ADDRESS is the reliable key and name is the
+   fallback. The difference here is that a picker needs every candidate ranked,
+   not the single unambiguous auto-match that function returns. */
+function ccRankProjectsForBuilding(projects, address, name){
+  var norm = function(s){
+    if (typeof fdnNormalizeText === "function") return fdnNormalizeText(s);
+    return String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().replace(/\s+/g, " ");
+  };
+  var addrKey = (typeof fdnAddressMatchKey === "function") ? fdnAddressMatchKey(address) : "";
+  var nameKey = norm(name);
+  return (projects || []).map(function(p){
+    var pAddrKey = (typeof fdnAddressMatchKey === "function") ? fdnAddressMatchKey(p.address || "") : "";
+    var pName = norm(p.name);
+    var rank = 4, why = "";
+    if (addrKey && pAddrKey && pAddrKey === addrKey){ rank = 0; why = "address match"; }
+    else if (nameKey && pName && pName === nameKey){ rank = 1; why = "name match"; }
+    else if (nameKey && pName && (pName.indexOf(nameKey) !== -1 || nameKey.indexOf(pName) !== -1)){
+      rank = 2; why = "partial name match";
+    } else if (addrKey && pAddrKey && (pAddrKey.split("|")[0] === addrKey.split("|")[0])){
+      /* Same street line, different city/state token -- worth surfacing but
+         deliberately NOT called an address match, because a bare street-number
+         collision across towns is exactly how the wrong project gets linked. */
+      rank = 3; why = "same street, different city/state";
+    }
+    return { project: p, rank: rank, why: why };
+  }).sort(function(a, b){
+    if (a.rank !== b.rank) return a.rank - b.rank;
+    return String(a.project.name || "").localeCompare(String(b.project.name || ""));
+  });
+}
+
+var ccLinkModalBuildingId = null, ccLinkModalResults = [], ccLinkModalDebounce = null, ccLinkModalCurrentId = null;
+async function openCcProjectPicker(buildingId){
+  if (!fdb){ toast("Linking a CompanyCam project needs cloud sync."); return; }
+  ccLinkModalBuildingId = buildingId;
+  ccLinkModalResults = [];
+  var modal = document.getElementById("cc-link-modal");
+  if (!modal) return;
+  modal.style.display = "";
+  lockBodyScroll();
+  var bld = {};
+  try{
+    var snap = await fdb.collection("buildings").doc(buildingId).get();
+    bld = snap.exists ? snap.data() : {};
+  }catch(e){}
+  ccLinkModalCurrentId = bld.companyCamProjectId || null;
+  var cur = document.getElementById("cc-link-current");
+  if (cur){
+    cur.innerHTML = ccLinkModalCurrentId ?
+      "Currently linked to <b>" + esc(bld.companyCamProjectName || ccLinkModalCurrentId) + "</b>" :
+      "This building is <b>not linked</b> to a CompanyCam project yet.";
+  }
+  /* Prefill from the building's own address, falling back to its name -- the
+     search the user would have typed by hand, already typed for them. */
+  var seed = bld.location || bld.address || bld.name || "";
+  setVal("cc-link-search", seed);
+  ccLinkModalSearch(seed, bld);
+}
+function closeCcProjectPicker(){
+  var modal = document.getElementById("cc-link-modal");
+  if (modal) modal.style.display = "none";
+  unlockBodyScroll();
+  ccLinkModalBuildingId = null;
+  ccLinkModalResults = [];
+}
+function ccLinkModalOnInput(){
+  clearTimeout(ccLinkModalDebounce);
+  var q = val("cc-link-search");
+  ccLinkModalDebounce = setTimeout(function(){ ccLinkModalSearch(q); }, 400);
+}
+async function ccLinkModalSearch(q, bldHint){
+  var host = document.getElementById("cc-link-results");
+  if (host){ host.className = "hint"; host.textContent = "Searching CompanyCam…"; }
+  var bld = bldHint;
+  if (!bld && ccLinkModalBuildingId && fdb){
+    try{
+      var snap = await fdb.collection("buildings").doc(ccLinkModalBuildingId).get();
+      bld = snap.exists ? snap.data() : {};
+    }catch(e){ bld = {}; }
+  }
+  bld = bld || {};
+  try{
+    var out = await ccApi({ action: "projects", q: q || "" });
+    /* Ranked against the BUILDING's own address/name, not against the raw
+       query -- so clearing the search box still surfaces the best candidates
+       for this building rather than an arbitrary 100. */
+    ccLinkModalResults = ccRankProjectsForBuilding(out.projects || [],
+      bld.location || bld.address || "", bld.name || "");
+    ccLinkModalRender();
+  }catch(e){
+    ccLinkModalResults = [];
+    if (host){
+      host.className = "hint";
+      host.textContent = "Couldn't reach CompanyCam right now — try again in a moment.";
+    }
+  }
+}
+function ccLinkModalRender(){
+  var host = document.getElementById("cc-link-results");
+  if (!host) return;
+  if (!ccLinkModalResults.length){
+    host.className = "hint";
+    host.textContent = "No CompanyCam projects found for that search.";
+    return;
+  }
+  host.className = "";
+  host.innerHTML = ccLinkModalResults.map(function(r, i){
+    var p = r.project;
+    var isCurrent = ccLinkModalCurrentId && String(p.id) === String(ccLinkModalCurrentId);
+    var unnamed = !p.name || p.name === "(unnamed project)";
+    return '<div class="bld-item"><div class="info">' +
+      '<div class="name">' + esc(p.name || "(unnamed project)") +
+        (unnamed ? ' <span class="hint" style="margin:0">· unnamed in CompanyCam</span>' : "") +
+        (isCurrent ? ' <span class="evt-tag" style="background:#E8F5E9;color:#2E7D32">current</span>' : "") +
+      '</div>' +
+      '<div class="meta">' + (p.address ? esc(p.address) : '<span class="hint">no address</span>') +
+        (r.why ? " · " + esc(r.why) : "") + '</div></div>' +
+      (isCurrent ? '<button class="btn" disabled>Linked</button>' :
+        '<button class="btn primary" onclick="ccLinkModalPick(' + i + ')">Link</button>') +
+      '</div>';
+  }).join("");
+}
+async function ccLinkModalPick(i){
+  var r = ccLinkModalResults[i];
+  if (!r || !ccLinkModalBuildingId) return;
+  var p = r.project;
+  var name = p.name || "(unnamed project)";
+  /* Re-pointing decides where this building's photos and signed PDFs land, so
+     it is confirmed rather than one-tap -- the same care openMoveRoofModal()
+     takes over a cross-building move. */
+  var msg = "Link this building to CompanyCam project:\n\n" + name +
+    (p.address ? "\n" + p.address : "") +
+    "\n\nFuture photos and documents for this building will push to this project.";
+  if (!confirm(msg)) return;
+  try{
+    await fdb.collection("buildings").doc(ccLinkModalBuildingId).set(
+      { companyCamProjectId: String(p.id), companyCamProjectName: p.name || "" }, { merge: true });
+  }catch(e){
+    toast("Couldn't save the link — check your connection.");
+    return;
+  }
+  toast("Linked to " + name + " ✓");
+  var buildingId = ccLinkModalBuildingId;
+  closeCcProjectPicker();
+  if (typeof openBuildingHistory === "function" && currentViewName === "history") openBuildingHistory(buildingId);
+}
