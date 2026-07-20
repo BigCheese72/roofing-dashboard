@@ -11,8 +11,11 @@
 // flagged follow-up.
 //
 // Whether a real model answers is decided per deploy context by which env vars
-// exist (dev holds ANTHROPIC_API_KEY as of 2026-07-16; production deliberately
-// has none). With no key this is a deterministic stub — clearly marked
+// exist. BOTH dev and PRODUCTION hold ANTHROPIC_API_KEY (prod confirmed live
+// 2026-07-20 — Mark drafted a summary on a leak order from the production
+// app). The key is the ONLY gate: there is no separate feature flag, so a
+// keyed context means these buttons are live for the crew and every tap
+// bills. With no key this is a deterministic stub — clearly marked
 // (source:"scope_stub_v1" / llm:false) — and makes ZERO external calls. The
 // client hides the button on a keyless deploy via the `capability` probe.
 //

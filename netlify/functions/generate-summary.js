@@ -13,9 +13,10 @@
 // any AI is wired.
 //
 // PHASE 1 = LLM WITH PHOTO VISION -- NOW WIRED, through the shared provider
-// seam (lib/aiProvider.js, PR #122). Mark provisioned ANTHROPIC_API_KEY on
-// the DEV deploy context (2026-07-16); production's context deliberately has
-// no key, so prod resolves to the stub until a promotion Mark chooses.
+// seam (lib/aiProvider.js, PR #122). ANTHROPIC_API_KEY is provisioned on BOTH
+// the dev and PRODUCTION deploy contexts -- prod confirmed live 2026-07-20,
+// when Mark drafted a summary on a leak order from the production app. Treat
+// prod as billing on every tap; the key is the only gate.
 // Mark's requirement: the model actually LOOKS AT the photos, not just the
 // written findings. How a draft is produced:
 //   * resolveProvider(process.env) decides stub vs live -- purely from which
@@ -365,7 +366,7 @@ exports.handler = async function (event) {
     if (!report) return resp(400, { error: "Missing report" });
 
     // Stub vs live is decided by which env vars exist on THIS deploy context
-    // (dev holds ANTHROPIC_API_KEY; production deliberately doesn't yet).
+    // (dev AND production both hold ANTHROPIC_API_KEY as of 2026-07-20).
     // Signed photo URLs are minted ONLY when a live model will consume them
     // -- the stub path must never create a live URL with no purpose.
     const provider = resolveProvider(process.env);
