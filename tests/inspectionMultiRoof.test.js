@@ -34,6 +34,14 @@ const COMPONENTS_SRC = between(workordersSource,
 const ENGINE_BLOCK =
   between(photosSource, "function findingById", "/* Read-only lookup of the prospective building") +
   between(inspectionsSource, "function inspectionChecklistItemById", "function renderInspectionChecklist");
+/* The roof-PROFILE helpers live below renderInspectionChecklist() in
+   js/inspections.js -- next to the roof picker that fills their cache -- so
+   they need their own slice rather than being swept up by ENGINE_BLOCK.
+   Sliced separately, and deliberately not merged, so a future move of either
+   block fails loudly on its own marker instead of silently dropping half the
+   engine. */
+const PROFILE_BLOCK = between(inspectionsSource,
+  "var inspectionRoofSystemCache", "/* ---- add a roof WITHOUT a base map");
 
 function makeSandbox(opts){
   opts = opts || {};
@@ -54,6 +62,7 @@ function makeSandbox(opts){
   vm.createContext(sandbox);
   vm.runInContext(COMPONENTS_SRC, sandbox);
   vm.runInContext(ENGINE_BLOCK, sandbox);
+  vm.runInContext(PROFILE_BLOCK, sandbox);
   /* The engine block itself declares `var inspectionRoofLabelCache = {}`, which
      re-initialises it -- so seed the labels AFTER the block runs, not before,
      or they are silently wiped. In the app this cache is filled by
@@ -242,4 +251,77 @@ test("grouping tolerates an unknown roofId rather than dropping its rows", () =>
   const ghost = groups.find(g => g.roofId === "roof_gone");
   assert.ok(ghost, "rows for a removed roof must still be printed");
   assert.equal(ghost.items.length, 1);
+});
+
+/* ================= per-roof profile surfaced in the inspection =================
+   The roof PROFILE is not new -- roof.profile has carried install date, age,
+   warranty, condition and notes since RoofMapper's Roof Profile card, and
+   Building History already renders it. What was missing is that a tech rating
+   a roof could not SEE any of it, and that a roof had no recorded AREA unless
+   someone traced an outline on a base map. */
+
+function profileSandbox(roofs){
+  const sb = makeSandbox({ roofIds: roofs.map(r => r.id) });
+  sb.getRoofProfile = function(r){ return (r && r.profile) || {}; };
+  sb.cacheInspectionRoofMeta(roofs);
+  return sb;
+}
+
+test("profile summary reads as Mark describes a roof: system, area, age, warranty", () => {
+  const sb = profileSandbox([{ id: "roof_a", label: "Roof 1", roofSystem: "EPDM",
+    profile: { areaSquares: 34, estimatedAgeYears: 5, warrantyStatus: "Under Warranty" } }]);
+  assert.equal(sb.inspectionRoofProfileSummary("roof_a"), "EPDM · 34 sq · 5 yrs · Under Warranty");
+});
+
+test("profile summary shows only what is actually recorded", () => {
+  /* A roof with a bare profile must render nothing rather than a row of
+     "Not set" placeholders -- on a phone, blank beats noise. */
+  const sb = profileSandbox([
+    { id: "roof_a", label: "Roof 1", roofSystem: "TPO", profile: {} },
+    { id: "roof_b", label: "Roof 2", roofSystem: "", profile: {} }
+  ]);
+  assert.equal(sb.inspectionRoofProfileSummary("roof_a"), "TPO");
+  assert.equal(sb.inspectionRoofProfileSummary("roof_b"), "");
+});
+
+test("age falls back to installDate but is never invented", () => {
+  const sb = profileSandbox([
+    { id: "roof_a", label: "A", roofSystem: "", profile: { installDate: "2019-06-01" } },
+    { id: "roof_b", label: "B", roofSystem: "", profile: {} }
+  ]);
+  const derived = sb.inspectionRoofAgeYears({ installDate: "2019-06-01" });
+  assert.ok(derived >= 6, "an install date from 2019 should derive a real age, got " + derived);
+  assert.equal(sb.inspectionRoofAgeYears({}), null, "no age data must yield null, not 0");
+  assert.equal(sb.inspectionRoofAgeYears({ installDate: "not-a-date" }), null);
+});
+
+test("an explicit estimatedAgeYears wins over a derived one", () => {
+  const sb = profileSandbox([{ id: "roof_a", label: "A", roofSystem: "",
+    profile: { installDate: "2019-06-01", estimatedAgeYears: 2 } }]);
+  assert.equal(sb.inspectionRoofAgeYears({ installDate: "2019-06-01", estimatedAgeYears: 2 }), 2);
+});
+
+test("each roof keeps its OWN profile — no bleed between roofs", () => {
+  /* The whole point: "Roof 1 = EPDM 5yr under warranty, Roof 2 = TPO". */
+  const sb = profileSandbox([
+    { id: "roof_a", label: "Roof 1", roofSystem: "EPDM",
+      profile: { estimatedAgeYears: 5, warrantyStatus: "Under Warranty" } },
+    { id: "roof_b", label: "Roof 2", roofSystem: "TPO", profile: {} }
+  ]);
+  assert.equal(sb.inspectionRoofProfileSummary("roof_a"), "EPDM · 5 yrs · Under Warranty");
+  assert.equal(sb.inspectionRoofProfileSummary("roof_b"), "TPO");
+});
+
+test("a roof with no cached profile summarises without throwing", () => {
+  const sb = profileSandbox([{ id: "roof_a", label: "A", roofSystem: "EPDM", profile: {} }]);
+  assert.equal(sb.inspectionRoofProfileSummary("roof_unknown"), "");
+});
+
+test("singular year reads 'yr', plural reads 'yrs'", () => {
+  const sb = profileSandbox([
+    { id: "r1", label: "A", roofSystem: "", profile: { estimatedAgeYears: 1 } },
+    { id: "r2", label: "B", roofSystem: "", profile: { estimatedAgeYears: 3 } }
+  ]);
+  assert.equal(sb.inspectionRoofProfileSummary("r1"), "1 yr");
+  assert.equal(sb.inspectionRoofProfileSummary("r2"), "3 yrs");
 });

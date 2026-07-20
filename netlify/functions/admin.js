@@ -240,10 +240,17 @@ exports.handler = async function (event) {
       // Allow-list of fields — never let an arbitrary client payload write
       // unexpected keys onto a roof, even though this whole action is
       // already claims-gated.
+      // areaSquares (Mark, 2026-07-19): roofers size a roof in SQUARES (100
+      // sq ft), and on a multi-roof building "which one is the 34-square TPO"
+      // is how a roof actually gets identified in conversation. RoofMapper can
+      // only derive an area from a TRACED outline, which needs a base map --
+      // and the multi-roof buildings driving this work have no imagery yet, so
+      // a manually-recorded area is the only one they will have.
       const ALLOWED_PROFILE_FIELDS = ["installDate", "estimatedAgeYears", "healthScore",
         "condition", "manufacturer", "deckType", "insulationType", "warrantyProvider",
         "warrantyExpiration", "warrantyStatus", "drainageNotes", "customerContacts",
-        "internalNotes", "replacementHistory", "estimatedRemainingLifeYears"];
+        "internalNotes", "replacementHistory", "estimatedRemainingLifeYears",
+        "areaSquares"];
       const profile = {};
       ALLOWED_PROFILE_FIELDS.forEach(k => { if (rawProfile[k] !== undefined) profile[k] = rawProfile[k]; });
       profile.updatedAt = Date.now();

@@ -192,12 +192,12 @@ function renderInspectionChecklist(){
     /* Only banner the roof when there IS more than one -- a single-roof
        inspection looks exactly as it always has, no new chrome for the common
        case (field-first). */
+    var summary = inspectionRoofProfileSummary(g.roofId);
     var head = !multiRoof ? "" :
       '<div class="rowhead" style="margin:14px 0 6px;padding:6px 10px;background:#EAF4FF;' +
       'border-left:4px solid #0d3c61;border-radius:4px">' +
       '<b>' + esc(g.label) + '</b>' +
-      (inspectionRoofSystemCache[g.roofId] ?
-        ' <span class="hint" style="margin:0">· ' + esc(inspectionRoofSystemCache[g.roofId]) + '</span>' : "") +
+      (summary ? ' <span class="hint" style="margin:0">· ' + esc(summary) + '</span>' : "") +
       '</div>';
     return head + g.items.map(function(item){
       var i = inspectionChecklist.indexOf(item);
@@ -270,17 +270,19 @@ async function renderInspectionRoofPicker(){
   var list = !multi ? "" :
     info.roofs.map(function(r){
       var checked = currentRoofIds.indexOf(r.id) !== -1;
+      var summary = inspectionRoofProfileSummary(r.id);
       return '<label class="hint" style="display:flex;align-items:center;gap:6px;margin:2px 0;font-weight:400">' +
         '<input type="checkbox" class="wo-inspection-roof-cb" value="' + esc(r.id) + '"' + (checked ? ' checked' : '') +
         ' onchange="onInspectionRoofToggle()"> ' + esc(r.label || "Roof") +
-        (r.roofSystem ? ' <span class="hint" style="margin:0">· ' + esc(r.roofSystem) + '</span>' : "") +
+        (summary ? ' <span class="hint" style="margin:0">· ' + esc(summary) + '</span>' : "") +
         '</label>';
     }).join('');
+  var soleSummary = info.roofs[0] ? inspectionRoofProfileSummary(info.roofs[0].id) : "";
   host.innerHTML = '<div class="fld">' +
     '<label>' + (multi ? "Which roof(s) does this inspection cover?" : "Roofs on this building") + '</label>' +
     (multi ? list :
       '<p class="hint" style="margin:2px 0">' + esc((info.roofs[0] && info.roofs[0].label) || "Roof 1") +
-      ((info.roofs[0] && info.roofs[0].roofSystem) ? ' · ' + esc(info.roofs[0].roofSystem) : "") +
+      (soleSummary ? ' · ' + esc(soleSummary) : "") +
       '</p>') +
     '<button class="btn" type="button" style="margin-top:6px" onclick="inspectionAddRoof()">➕ Add roof</button>' +
     '</div>';
@@ -290,12 +292,53 @@ async function renderInspectionRoofPicker(){
    filled from the building's real roofs[] so neither has to re-read Firestore
    or guess a name. */
 var inspectionRoofSystemCache = {};
+/* The roof's persistent PROFILE (age, warranty, area, condition -- see
+   getRoofProfile() in js/core.js and the Roof Profile card in
+   js/roofmapper.js, which Building History already renders). Cached here so
+   the inspection form can SHOW what each roof actually is while it's being
+   rated, without a second Firestore read per roof. */
+var inspectionRoofProfileCache = {};
 function cacheInspectionRoofMeta(roofs){
   (roofs || []).forEach(function(r){
     if (!r || !r.id) return;
     inspectionRoofLabelCache[r.id] = r.label || "Roof";
     inspectionRoofSystemCache[r.id] = r.roofSystem || "";
+    inspectionRoofProfileCache[r.id] = (typeof getRoofProfile === "function") ? getRoofProfile(r) : (r.profile || {});
   });
+}
+/* One-line "what is this roof" summary: system · area · age · warranty.
+   Mark's framing -- "Roof 1 = EPDM 5yr under warranty, Roof 2 = TPO" -- is
+   exactly this line, and it is the thing a tech needs in front of them while
+   deciding whether a condition is warrantable.
+
+   Only ever renders facts that are actually recorded. A roof with an empty
+   profile shows nothing rather than a row of "Not set" placeholders: on a
+   phone, in the field, blank space is better than noise. Age prefers the
+   explicit estimatedAgeYears and falls back to deriving from installDate --
+   never invents one from nothing. */
+function inspectionRoofProfileSummary(roofId){
+  var p = inspectionRoofProfileCache[roofId] || {};
+  var bits = [];
+  var system = inspectionRoofSystemCache[roofId];
+  if (system) bits.push(system);
+  if (p.areaSquares != null && p.areaSquares !== "") bits.push(p.areaSquares + " sq");
+  var age = inspectionRoofAgeYears(p);
+  if (age != null) bits.push(age + (age === 1 ? " yr" : " yrs"));
+  if (p.warrantyStatus) bits.push(p.warrantyStatus);
+  else if (p.warrantyProvider) bits.push(p.warrantyProvider + " warranty");
+  if (p.condition) bits.push(p.condition);
+  return bits.join(" · ");
+}
+function inspectionRoofAgeYears(p){
+  if (p && p.estimatedAgeYears != null && p.estimatedAgeYears !== "") return p.estimatedAgeYears;
+  if (p && p.installDate){
+    var t = Date.parse(p.installDate);
+    if (!isNaN(t)){
+      var yrs = Math.floor((Date.now() - t) / (365.25 * 24 * 3600 * 1000));
+      if (yrs >= 0) return yrs;
+    }
+  }
+  return null;
 }
 /* ---- add a roof WITHOUT a base map (Mark, 2026-07-19) ----
    Until now the only way to add a roof was promptAddRoof() ->

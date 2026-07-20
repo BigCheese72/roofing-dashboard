@@ -81,6 +81,7 @@ function renderRoofProfileCard(buildingId, roof){
     '<div class="grid">' +
       '<div>' +
         profileFieldRow("Roof System", roof.roofSystem) +
+        profileFieldRow("Area", p.areaSquares, " squares") +
         profileFieldRow("Install Date", p.installDate) +
         profileFieldRow("Estimated Age", p.estimatedAgeYears, " years") +
         profileFieldRow("Health Score", p.healthScore, "/100") +
@@ -233,6 +234,7 @@ async function openRoofProfileModal(buildingId, roofId){
   var roof = getRoofById(bldSnap.exists ? bldSnap.data() : {}, roofId);
   var p = getRoofProfile(roof);
   setVal("profile-roofsystem", roof.roofSystem || "");
+  setVal("profile-areasquares", p.areaSquares != null ? p.areaSquares : "");
   setVal("profile-installdate", p.installDate || "");
   setVal("profile-estimatedage", p.estimatedAgeYears != null ? p.estimatedAgeYears : "");
   setVal("profile-healthscore", p.healthScore != null ? p.healthScore : "");
@@ -265,6 +267,7 @@ async function saveRoofProfileFromModal(){
   if (!profileModalBuildingId) return;
   var buildingId = profileModalBuildingId, roofId = profileModalRoofId;
   var profile = {
+    areaSquares: numOrNull("profile-areasquares"),
     installDate: val("profile-installdate").trim(),
     estimatedAgeYears: numOrNull("profile-estimatedage"),
     healthScore: numOrNull("profile-healthscore"),
