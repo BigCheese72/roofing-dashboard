@@ -1704,6 +1704,23 @@
 </div>
 
 
+<!-- Re-file ONE work order under a different building. Distinct from the merge
+     below: this moves a single record, not two buildings together. See
+     openRelinkBuildingModal() in js/companycam.js. -->
+<div id="relink-bld-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)closeRelinkBuildingModal()">
+  <div class="card" style="max-width:600px;margin:6vh auto;max-height:88vh;overflow:auto">
+    <h2 class="cond">File Under a Different Building</h2>
+    <p class="hint" id="relink-bld-current" style="margin:0 0 4px"></p>
+    <p class="hint" style="margin:0 0 10px">Only THIS work order moves — its history entry and report follow it. No
+      building, roof, or other work order is changed. Closest matches (same CompanyCam project, Foundation job, or
+      address) are listed first.</p>
+    <div id="relink-bld-list" class="hint"></div>
+    <div class="btnrow" style="margin-top:12px">
+      <button class="btn" onclick="closeRelinkBuildingModal()">Cancel</button>
+    </div>
+  </div>
+</div>
+
 <!-- Merge a duplicate building record into the one you have open. The building
      you opened is the SURVIVOR; you pick the duplicate to absorb. See
      openMergeBuildingModal() in js/companycam.js. -->
