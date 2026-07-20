@@ -1062,7 +1062,7 @@ async function relinkModalPick(i){
     /* customerId travels with the building -- leaving it behind points the WO
        at the old customer while its building says otherwise. */
     await fdb.collection("workorders").doc(o.id).set(
-      { buildingId: b.id, customerId: b.customerId || null }, { merge: true });
+      { buildingId: b.id, buildingName: name, customerId: b.customerId || null }, { merge: true });
     var followFailed = false;
     for (var ci = 0; ci < 2; ci++){
       var col = ci === 0 ? "building_history_events" : "reports";
@@ -1072,11 +1072,22 @@ async function relinkModalPick(i){
         if (snap.exists) await ref.set(patch, { merge: true });
       }catch(e){ followFailed = true; }
     }
-    /* Keep the open form in step so a save right after this doesn't write the
-       old id straight back. */
+    /* Sync the form to the DESTINATION building, exactly as bpSelectBuilding()
+       does when a building is picked normally (js/workorders.js:181-184).
+
+       This is not cosmetic. ensureCustomerAndBuilding() writes name/location/
+       customerName from the FORM on every save, and a re-filed order is not
+       "redirected by a merge", so the ownsBuilding guard does not cover it.
+       Leaving the old jobName in the form meant the next save renamed the
+       destination to the mis-filed order's job name and overwrote its address --
+       the identical data loss the merge-redirect guard exists to prevent,
+       reached through a door that guard doesn't watch. Caught in review. */
     if (typeof currentBuildingId !== "undefined") currentBuildingId = b.id;
-    var f = document.getElementById("buildingId");
-    if (f) f.value = b.id;
+    if (typeof setVal === "function"){
+      setVal("jobName", b.name || "");
+      setVal("billTo", b.customerName || "");
+      setVal("location", b.location || "");
+    }
     closeRelinkBuildingModal();
     /* Never claim success the writes did not achieve -- a half-moved record is
        exactly the split this whole fix exists to end. */

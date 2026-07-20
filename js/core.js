@@ -1207,7 +1207,14 @@ async function resolveMergedBuildingId(buildingId){
   var current = buildingId;
   var seen = {};
   try{
-    for (var hop = 0; hop < MAX_MERGE_HOPS; hop++){
+    /* <= not <: the loop must be able to LOOK AT the target of the last
+       permitted hop. An earlier cut ran hop < MAX_MERGE_HOPS, which followed 3
+       pointers but never inspected the 3rd target -- so a chain of exactly 3
+       (A->B, B->C, C->D, D live) exhausted the budget and fell through to the
+       give-up branch, returning the original archived husk. That was strictly
+       WORSE than not having the guard: the caller then wrote into a dead
+       building. Chains of 3 are the normal shape of a dedup campaign. */
+    for (var hop = 0; hop <= MAX_MERGE_HOPS; hop++){
       if (seen[current]) return buildingId; /* cycle -- keep the original */
       seen[current] = true;
       var snap = await fdb.collection("buildings").doc(current).get();
@@ -1247,7 +1254,13 @@ async function findExistingBuildingId(o){
   var addrKey = (typeof fdnAddressMatchKey === "function") ? fdnAddressMatchKey(o.location || "") : "";
   if (!addrKey) return null;
   try{
-    var scan = await fdb.collection("buildings").orderBy("updatedAt", "desc").limit(500).get();
+    /* NOT orderBy("updatedAt"): Firestore excludes docs lacking the ordered
+       field, so every building written before updatedAt existed was invisible
+       to the very function whose job is to STOP duplicates being created. A
+       legacy building at a matching address was never found, dedup returned
+       null, and a duplicate was minted -- the root cause of the merge workload
+       this whole change is servicing. */
+    var scan = await fdb.collection("buildings").limit(1000).get();
     var matches = [];
     scan.forEach(function(d){
       var v = d.data() || {};
@@ -1310,6 +1323,15 @@ async function ensureCustomerAndBuilding(o){
        An ordinary rename owns its building; an order followed onto a merge
        survivor does not. */
     var ownsBuilding = !redirectedByMerge;
+    /* A redirected order must never CREATE a building. A dangling pointer (the
+       merge destination later removed, or a hand-edit) resolves to an id with
+       no doc; without this, set({merge:true}) would conjure a nameless ghost --
+       no name, no customer, no location -- and file the work order under it,
+       where it reads as "Unnamed building" in every picker. Fall back to the
+       order's own stored id instead and leave the mis-link visible. */
+    if (redirectedByMerge && !snap.exists){
+      return { customerId: custId || null, buildingId: o.buildingId };
+    }
     var patch = { updatedAt: Date.now() };
     if (ownsBuilding){
       patch.name = bldName;

@@ -399,8 +399,18 @@ exports.handler = async function (event) {
 
       // Same auto-suffix rule move_roof uses, applied across the whole batch so
       // two roofs both called "Roof 1" cannot collide on the survivor.
+      // RETRY SAFETY. sourcePatch now commits LAST, so a chunk-2 failure leaves
+      // the source roofs intact -- which is the point, the merge stays
+      // retryable. But a retry then re-reads those roofs and would append them
+      // to a destination that already received them in the failed run, and the
+      // label auto-suffix below would helpfully rename the copies to "Roof 1
+      // (2)" instead of catching the collision. Skip any roof already present
+      // by id so a merge is idempotent.
+      const dstRoofIds = {};
+      dstRoofs.forEach(r => { if (r && r.id) dstRoofIds[r.id] = true; });
+      const roofsToMove = srcRoofs.filter(r => !(r && r.id && dstRoofIds[r.id]));
       const taken = dstRoofs.map(r => String(r.label || "").trim().toLowerCase());
-      const movedRoofs = srcRoofs.map(r => {
+      const movedRoofs = roofsToMove.map(r => {
         let label = r.label || "Roof";
         if (taken.indexOf(label.trim().toLowerCase()) !== -1) {
           let n = 2, candidate;

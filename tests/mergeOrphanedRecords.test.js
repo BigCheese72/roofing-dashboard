@@ -231,3 +231,88 @@ test("the re-file entry point is admin-gated and on the history card", () => {
   assert.match(indexSource, /id="relink-bld-modal"/);
   assert.match(indexSource, /id="relink-bld-list"/);
 });
+
+/* ================= regressions found in review =================
+   Every test below exists because a reviewer found the code wrong. The hop
+   tests in particular would have caught an off-by-one that made a 3-deep merge
+   chain resolve to an archived husk -- strictly worse than no guard at all. */
+
+test("a 3-pointer chain resolves to the live survivor, not the husk", () => {
+  /* THE off-by-one. The loop follows N pointers but must also LOOK AT the
+     target of the last one. A 3-link chain is the normal shape of a dedup
+     campaign (A->B, later B->C, later C->D). */
+  const sb = followSandbox({
+    a: { archived: true, mergedIntoBuildingId: "b" },
+    b: { archived: true, mergedIntoBuildingId: "c" },
+    c: { archived: true, mergedIntoBuildingId: "d" },
+    d: { name: "live survivor" }
+  });
+  return sb.resolveMergedBuildingId("a").then(id => assert.equal(id, "d"));
+});
+
+test("a chain deeper than the budget gives up on the ORIGINAL id", () => {
+  /* Visibly mis-linked is recoverable; silently writing into a dead building
+     is not. */
+  const sb = followSandbox({
+    a: { archived: true, mergedIntoBuildingId: "b" },
+    b: { archived: true, mergedIntoBuildingId: "c" },
+    c: { archived: true, mergedIntoBuildingId: "d" },
+    d: { archived: true, mergedIntoBuildingId: "e" },
+    e: { name: "live" }
+  });
+  return sb.resolveMergedBuildingId("a").then(id => assert.equal(id, "a"));
+});
+
+test("a dangling merge pointer never creates a nameless ghost building", () => {
+  /* resolveMergedBuildingId returns the missing target; without a guard the
+     save path would set({merge:true}) it into existence with no name, no
+     customer and no location, then file the work order under it. */
+  assert.match(coreSource, /if \(redirectedByMerge && !snap\.exists\)/);
+  assert.match(coreSource, /buildingId: o\.buildingId/);
+});
+
+test("the destructive source patch commits LAST", () => {
+  /* Chunks are not atomic across boundaries. Source-first meant a mid-way
+     failure left the building emptied and archived with records still pointing
+     at it, and no audit entry. */
+  const destIdx = MERGE.indexOf("doc(destBuildingId), data: destPatch");
+  const srcIdx = MERGE.indexOf("doc(sourceBuildingId), data: sourcePatch");
+  const woIdx = MERGE.indexOf("woSnap.forEach");
+  assert.ok(destIdx !== -1 && srcIdx !== -1 && woIdx !== -1);
+  assert.ok(srcIdx > woIdx, "sourcePatch must be pushed after the record re-points");
+});
+
+test("a merge retry does not duplicate roofs onto the survivor", () => {
+  /* The flip side of retry-safety: the source keeps its roofs on failure, so a
+     retry must not append them twice. The label auto-suffix would have hidden
+     it by renaming the copies to "Roof 1 (2)". */
+  assert.match(MERGE, /dstRoofIds/);
+  assert.match(MERGE, /srcRoofs\.filter/);
+});
+
+test("the deduper is not blinded by orderBy the way the picker was", () => {
+  /* findExistingBuildingId is the function whose whole job is preventing the
+     duplicates this branch cleans up. Firestore excludes docs lacking the
+     ordered field, so a legacy building was invisible to it. */
+  const block = between(coreSource, "async function findExistingBuildingId", "async function ensureCustomerAndBuilding");
+  assert.doesNotMatch(block, /\.orderBy\("updatedAt"/, "the call, not the comment explaining why it is gone");
+  assert.match(block, /collection\("buildings"\)\.limit\(/);
+});
+
+test("re-filing syncs the form to the destination building", () => {
+  /* Otherwise the next save writes the mis-filed order's jobName and location
+     onto the destination -- the same data loss the merge-redirect guard stops,
+     through a door that guard doesn't watch. */
+  const block = from(ccSource, "async function relinkModalPick");
+  assert.match(block, /setVal\("jobName", b\.name/);
+  assert.match(block, /setVal\("location", b\.location/);
+  assert.match(block, /setVal\("billTo", b\.customerName/);
+});
+
+test("an ordinary rename still renames its building in place", () => {
+  /* Load-bearing (audit FIX 1). The ownsBuilding guard keys on REDIRECTION,
+     not on whether the name still derives the id -- an earlier cut used the
+     name and silently broke rename. */
+  assert.match(coreSource, /var ownsBuilding = !redirectedByMerge;/);
+  assert.doesNotMatch(coreSource, /ownsBuilding = .*buildingIdFor\(o\.billTo/);
+});
