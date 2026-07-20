@@ -1552,6 +1552,14 @@ function buildSummaryDraftPayload(o){
   var labelByKey = {};
   INSPECTION_CHECKLIST_COMPONENTS.forEach(function(c){ labelByKey[c.key] = c.label; });
   return {
+    /* SEED (Mark, 2026-07-19): whatever the tech has already typed in the
+       Summary box. Until now this was read only to warn before overwriting --
+       the model never saw it, so a half-written summary was discarded and
+       regenerated from scratch. It is now the STARTING POINT: the prompt
+       refines and extends it rather than replacing it. Bounded at 4000 chars,
+       the same clamp discipline as every other field here (the server's
+       sanitizeReport() enforces the same bound independently). */
+    summary: s(o.summary, 4000),
     workOrderId: s(o.id, 80),
     woType: s(o.woType, 40),
     jobName: s(o.jobName, 200),
@@ -1622,14 +1630,31 @@ async function draftReportSummary(btn){
     finally{ if (btn) btn.disabled = false; }
   }
   if (!configured){ toast("✨ AI Draft Summary — coming soon"); return; }
+  /* Seed-and-expand: the tech's own text is now sent as the starting point,
+     so the confirm says what actually happens -- the draft BUILDS ON his
+     words rather than discarding them. Still confirmed rather than silent,
+     because the textarea is replaced by the result either way. */
   var existing = val("summary");
   if (existing && existing.trim() &&
-      !confirm("Replace the current Summary text with a generated draft?")) return;
+      !confirm("Draft from what you've written?\n\nYour text is used as the starting point — the AI will refine and expand it, then replace the box with the result.")) return;
   if (btn) btn.disabled = true;
   try{
+    var payload = buildSummaryDraftPayload(collect());
+    /* Downscaled photo bytes for the vision model, via the SHARED ~900px
+       helper in js/export.js (the same one the PDF uses). Sent from the
+       client because the downscale is a canvas operation the server can't
+       do without pulling in an image library. The server still enforces its
+       own per-image and count caps -- this is the cheap path, not the trust
+       boundary. Failure here degrades to text-only rather than blocking a
+       draft, matching how the server treats a Storage outage. */
+    try{
+      if (typeof aiVisionImageParts === "function"){
+        payload.visionImages = await aiVisionImageParts(photos, 8);
+      }
+    }catch(e){ /* text-only draft */ }
     var r = await fetch("/.netlify/functions/generate-summary", {
       method: "POST", headers: await authHeaders(),
-      body: JSON.stringify({ action: "draft_summary", report: buildSummaryDraftPayload(collect()) })
+      body: JSON.stringify({ action: "draft_summary", report: payload })
     });
     var out = null; try{ out = await r.json(); }catch(e){}
     if (!r.ok || !out || !out.ok || !out.draft){

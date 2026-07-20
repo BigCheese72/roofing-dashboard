@@ -216,6 +216,17 @@ function cleanWorkOrderId(v) {
 function sanitizeReport(raw) {
   if (!raw || typeof raw !== "object") return null;
   return {
+    // SEED: the technician's own partly-written summary, used as the starting
+    // point rather than being regenerated over. Clamped here independently of
+    // the client's own clamp -- this is the trust boundary, that one is a
+    // courtesy. 4000 chars is roughly 1000 tokens, a bounded prompt cost for
+    // a field a human actually types by hand.
+    summary: s(raw.summary, 4000),
+    // Downscaled (~900px) photo bytes sent by the client for the vision model.
+    // Validated through the SAME cleanInlineImage() gate as every other inline
+    // image path -- media type allow-list, base64 shape, size cap -- so a
+    // client cannot smuggle arbitrary bytes in by relabelling them.
+    visionImages: rows(raw.visionImages, MAX_VISION_PHOTOS, cleanInlineImage),
     workOrderId: cleanWorkOrderId(raw.workOrderId),
     woType: s(raw.woType, 40),
     jobName: s(raw.jobName, 200),
