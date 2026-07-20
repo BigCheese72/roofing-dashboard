@@ -559,9 +559,16 @@ async function unlinkCC(){
    buildingsLikelyDuplicate() (js/buildinghistory.js) requires the two records
    to share a customer name, and the "(unnamed project)" record had none. */
 var mergeModalSurvivorId = null, mergeModalCandidates = [], mergeModalSurvivor = null;
-async function openMergeBuildingModal(survivorId){
+var mergeModalPreselectId = null;
+/* preselectId (optional): the duplicate the caller ALREADY identified -- the
+   "Possible duplicate building" banner in js/history.js passes the twin it
+   found, so Mark lands on it preselected instead of hunting the list again.
+   That hunt is the clumsiness he reported; opening the modal was never the
+   hard part. Omitted (every pre-banner caller) behaves exactly as before. */
+async function openMergeBuildingModal(survivorId, preselectId){
   if (!fdb){ toast("Merging buildings needs cloud sync."); return; }
   mergeModalSurvivorId = survivorId;
+  mergeModalPreselectId = preselectId || null;
   var modal = document.getElementById("merge-bld-modal");
   if (!modal) return;
   modal.style.display = "";
@@ -576,7 +583,15 @@ async function openMergeBuildingModal(survivorId){
       keepEl.innerHTML = "Keeping <b>" + esc(ccBuildingDisplayName(mergeModalSurvivor)) + "</b>" +
         (mergeModalSurvivor.location ? ' <span class="hint">— ' + esc(mergeModalSurvivor.location) + "</span>" : "");
     }
-    var qs = await fdb.collection("buildings").orderBy("updatedAt", "desc").limit(500).get();
+    /* NOT orderBy("updatedAt"): Firestore excludes documents that LACK the
+       ordered field, so every building written before updatedAt existed was
+       invisible here -- and a legacy record is exactly the kind of building
+       you are most likely to be merging away. The same defect was fixed in
+       findExistingBuildingId() (js/core.js) and left behind in this picker,
+       which meant the duplicate could be undisplayable in the very dialog for
+       merging it. Scan unordered; mergeRankDuplicateBuildings() below does the
+       ordering that actually matters. */
+    var qs = await fdb.collection("buildings").limit(1000).get();
     var all = [];
     qs.forEach(function(d){
       var v = d.data() || {};
@@ -618,6 +633,13 @@ function mergeModalRender(){
     return;
   }
   host.className = "";
+  /* mergeModalPick() indexes into mergeModalCandidates, so hoisting the
+     preselected twin has to reorder the ARRAY, not just the markup -- sorting
+     only the HTML would wire every button to the wrong building. */
+  if (mergeModalPreselectId){
+    var pi = mergeModalCandidates.findIndex(function(r){ return r.building && r.building.id === mergeModalPreselectId; });
+    if (pi > 0) mergeModalCandidates.unshift(mergeModalCandidates.splice(pi, 1)[0]);
+  }
   host.innerHTML = mergeModalCandidates.map(function(r, i){
     var b = r.building;
     var roofs = Array.isArray(b.roofs) ? b.roofs.length : 0;
@@ -625,8 +647,11 @@ function mergeModalRender(){
     var bits = [roofs + (roofs === 1 ? " roof" : " roofs")];
     if (hasMap) bits.push("has base map");
     if (b.companyCamProjectId) bits.push("CompanyCam linked");
-    return '<div class="bld-item"><div class="info">' +
-      '<div class="name">' + esc(ccBuildingDisplayName(b)) + '</div>' +
+    var isPre = mergeModalPreselectId && b.id === mergeModalPreselectId;
+    return '<div class="bld-item"' + (isPre ? ' style="border-left:4px solid #B4501E;background:#FFF6F0"' : '') + '>' +
+      '<div class="info">' +
+      '<div class="name">' + esc(ccBuildingDisplayName(b)) +
+        (isPre ? ' <span class="hint" style="margin:0">· the one flagged</span>' : '') + '</div>' +
       '<div class="meta">' + (b.location ? esc(b.location) + " · " : "") +
         esc(bits.join(" · ")) + ' · <b>' + esc(r.why) + '</b></div></div>' +
       '<button class="btn danger" onclick="mergeModalPick(' + i + ')">Merge into this building</button>' +
@@ -638,6 +663,7 @@ function closeMergeBuildingModal(){
   if (modal) modal.style.display = "none";
   unlockBodyScroll();
   mergeModalSurvivorId = null;
+  mergeModalPreselectId = null;
   mergeModalCandidates = [];
 }
 async function mergeModalPick(i){
