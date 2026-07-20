@@ -399,6 +399,40 @@ function rmDistanceToRingMeters(lat, lng, ring){
    than silently trusted, even when it's technically inside exactly one
    polygon. */
 var RM_GPS_AMBIGUITY_METERS = 6;
+/* Hole-aware containment: a point inside the outer ring but inside one of the
+   holes is NOT on this roof. Which roof it IS on depends on the hole's kind,
+   and the caller doesn't need to special-case that -- it falls out naturally:
+
+     penthouse (kind "roof") -- the nested roof's own outline contains the
+       point, so that roof matches on its own and wins cleanly.
+     courtyard (kind "void") -- nothing contains the point. It's open air, a
+       wall, or a drain at grade. Correctly ends up unassigned rather than
+       silently credited to the surrounding roof, which would put courtyard
+       leak photos on the wrong roof's record.
+
+   Holes are one level deep by design, so this never recurses. */
+function rmOutlineContainsPoint(lat, lng, outline){
+  if (!outline || !Array.isArray(outline.ring) || outline.ring.length < 3) return false;
+  if (!rmPointInRing(lat, lng, outline.ring)) return false;
+  return !rmOutlineHoleRings(outline).some(function(ring){
+    return rmPointInRing(lat, lng, ring);
+  });
+}
+/* True when one of these two roofs is cut out of the other. Their shared edge
+   is shared BY CONSTRUCTION (the hole ring is a copy of the nested roof's own
+   ring), so the distance between them is ~0 everywhere along it. That is a
+   permanent, intended fact about the geometry -- not the "phone GPS might have
+   put this on the wrong side of a line" situation RM_GPS_AMBIGUITY_METERS
+   exists to catch. Without this, every photo within 6m of a penthouse wall
+   would be flagged for review forever. */
+function rmRoofsShareNestedBoundary(a, b){
+  function cutsOut(x, y){
+    return (((x.outline && x.outline.holes) || [])).some(function(h){
+      return h && h.sourceRoofId && h.sourceRoofId === y.roofId;
+    });
+  }
+  return cutsOut(a, b) || cutsOut(b, a);
+}
 /* Best-effort roof assignment for one lat/lng against a building's roofs
    (each with roof_outlines[] -- uses the latest one, same "newest is
    current" convention as everywhere else). Returns null if no roof has a
@@ -414,8 +448,8 @@ function rmAssignPointToRoof(lat, lng, roofs){
     var outline = outlines[outlines.length - 1];
     if (!outline || !outline.ring || outline.ring.length < 3) return;
     candidates.push({
-      roofId: roof.id, label: roof.label || "Roof",
-      inside: rmPointInRing(lat, lng, outline.ring),
+      roofId: roof.id, label: roof.label || "Roof", outline: outline,
+      inside: rmOutlineContainsPoint(lat, lng, outline),
       dist: rmDistanceToRingMeters(lat, lng, outline.ring)
     });
   });
@@ -425,11 +459,17 @@ function rmAssignPointToRoof(lat, lng, roofs){
     /* Exactly one match is the normal, confident case. More than one
        (overlapping polygons -- shouldn't happen once vertex/edge snapping
        ships, but handled gracefully in the meantime) picks the closest-
-       to-center and flags it, rather than picking arbitrarily. */
+       to-center and flags it, rather than picking arbitrarily.
+
+       Nested roofs no longer land here: rmOutlineContainsPoint() excludes
+       the donut for points inside its cutout, so a penthouse point matches
+       the penthouse alone. Overlap that reaches this branch is still the
+       unintended kind worth flagging. */
     insideOnes.sort(function(a, b){ return a.dist - b.dist; });
     var best = insideOnes[0];
     var nearAnotherBoundary = candidates.some(function(c){
-      return c.roofId !== best.roofId && c.dist < RM_GPS_AMBIGUITY_METERS;
+      return c.roofId !== best.roofId && c.dist < RM_GPS_AMBIGUITY_METERS &&
+        !rmRoofsShareNestedBoundary(best, c);
     });
     return { roofId: best.roofId, label: best.label, ambiguous: insideOnes.length > 1 || nearAnotherBoundary, outsideAll: false };
   }
