@@ -42,8 +42,16 @@ function ensureInlineBuildingHistoryCard(){
   card.className = "card";
   card.id = "wo-inline-history-card";
   card.style.display = "none";
+  /* "Wrong building?" lives on the card that shows the building's history,
+     because that card is exactly where a mis-filed record announces itself --
+     Mark's KOMU inspection showed "no base map, no history, Roof 1" here.
+     Admin-gated like the other cross-record actions: re-filing moves a work
+     order between buildings, the same class of change as Move/Merge. */
   card.innerHTML =
     '<h2 class="cond">Building History</h2>' +
+    (isAdmin ? '<div class="btnrow" style="margin:0 0 8px">' +
+      '<button class="btn" onclick="openRelinkBuildingModal()">🏢 Wrong building? Re-file this work order</button>' +
+      '</div>' : '') +
     '<div id="wo-inline-history-body"><p class="hint">Loading building history...</p></div>';
   var ref = document.getElementById("wo-inspection-card") || document.getElementById("wo-findings-card");
   editView.insertBefore(card, ref || editView.children[1] || null);

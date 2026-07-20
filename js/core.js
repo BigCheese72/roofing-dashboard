@@ -1182,6 +1182,46 @@ function buildingIdFor(billTo, jobName){
 
    Returns a building id to write into, or null to fall back. Never throws: a
    dedup lookup failing offline must not block a save. */
+/* ---- follow a merged-away building to its survivor ----
+   Mark, KOMU 2026-07-19. merge_buildings archives the loser and stamps it with
+   mergedIntoBuildingId. Any record still STORING the loser's id -- a work order
+   saved before the merge, a DPR, anything a future collection forgets to
+   re-point -- would otherwise resolve to that archived husk, which the merge
+   has emptied (roofs: []), so getBuildingRoofs() synthesises a phantom
+   "Roof 1" with no base map and no history. The record looks broken; it is
+   orphaned.
+
+   The merge now re-points work orders and DPRs directly (admin.js), which
+   fixes it at the source. This is the SECOND line of defence, and the one that
+   heals rows already written before that fix existed -- including the KOMU
+   inspection -- with no backfill script and no migration.
+
+   Deliberately bounded: it follows at most MAX_MERGE_HOPS pointers and stops.
+   A cycle (A merged into B, B merged into A -- only reachable through a bug or
+   a hand-edit) must degrade to "use what you were given" rather than spin.
+   Returns the original id on any failure: a resolver that throws would break
+   every read path that calls it, which is far worse than one stale pointer. */
+var MAX_MERGE_HOPS = 3;
+async function resolveMergedBuildingId(buildingId){
+  if (!fdb || !buildingId) return buildingId;
+  var current = buildingId;
+  var seen = {};
+  try{
+    for (var hop = 0; hop < MAX_MERGE_HOPS; hop++){
+      if (seen[current]) return buildingId; /* cycle -- keep the original */
+      seen[current] = true;
+      var snap = await fdb.collection("buildings").doc(current).get();
+      if (!snap.exists) return current;
+      var v = snap.data() || {};
+      /* Only follow a pointer on a record that was ACTUALLY merged away. An
+         archived-but-not-merged building is a deliberate act (someone filed it
+         out of the way) and its records should keep pointing at it. */
+      if (!v.archived || !v.mergedIntoBuildingId) return current;
+      current = String(v.mergedIntoBuildingId);
+    }
+  }catch(e){ return buildingId; }
+  return current;
+}
 async function findExistingBuildingId(o){
   if (!fdb) return null;
   var wanted = [];
@@ -1223,7 +1263,11 @@ async function ensureCustomerAndBuilding(o){
      base map, and CompanyCam link. Names only derive ids for legacy docs
      and first saves. */
   var custId = o.customerId || customerIdFor(o.billTo);
-  var bldId = o.buildingId || (await findExistingBuildingId(o)) || buildingIdFor(o.billTo, o.jobName);
+  /* A STORED id still wins -- but follow it through a merge first, so a work
+     order saved before its building was merged away re-homes itself onto the
+     survivor instead of rewriting the emptied husk. */
+  var bldId = (o.buildingId ? await resolveMergedBuildingId(o.buildingId) : null) ||
+    (await findExistingBuildingId(o)) || buildingIdFor(o.billTo, o.jobName);
   /* No job name: nothing safe to write (a stored-id order must not get its
      building name blanked either) — but still hand back whatever identity
      the order already carries so callers never "lose" a stored id. */

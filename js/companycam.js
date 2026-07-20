@@ -906,3 +906,158 @@ async function ccLinkModalPick(i){
   closeCcProjectPicker();
   if (typeof openBuildingHistory === "function" && currentViewName === "history") openBuildingHistory(buildingId);
 }
+
+/* ================= re-link THIS record to a different building =============
+   Mark, KOMU 2026-07-19. The merge now re-points work orders and DPRs, and
+   resolveMergedBuildingId() follows a merged-away pointer -- between them,
+   every orphan a merge created heals itself.
+
+   This is for the case neither covers: a record on the WRONG building for a
+   reason no merge explains. A work order saved under a mistyped job name that
+   spun its own building; an inspection started from the wrong picker result.
+   Without this the only remedies were merging two buildings that are NOT
+   duplicates (destructive and wrong) or editing Firestore by hand.
+
+   Scope is deliberately ONE record. It re-points the work order in front of
+   you; it does not touch the building, its roofs, or anyone else's records.
+   That makes it safe to reach for and unhelpful to reach for by accident. */
+var relinkModalCandidates = [];
+
+async function openRelinkBuildingModal(){
+  if (!fdb){ toast("Re-linking needs cloud sync."); return; }
+  var o = (typeof collect === "function") ? collect() : {};
+  if (!o.id){ toast("Save this work order first, then re-link it."); return; }
+  var modal = document.getElementById("relink-bld-modal");
+  if (!modal) return;
+  modal.style.display = "";
+  lockBodyScroll();
+  var cur = document.getElementById("relink-bld-current");
+  var host = document.getElementById("relink-bld-list");
+  if (host){ host.className = "hint"; host.textContent = "Loading buildings…"; }
+  try{
+    var currentId = o.buildingId || null;
+    var currentName = "";
+    if (currentId){
+      var cs = await fdb.collection("buildings").doc(currentId).get();
+      var cv = cs.exists ? cs.data() : {};
+      currentName = (typeof ccBuildingDisplayName === "function") ? ccBuildingDisplayName(cv) : (cv.name || currentId);
+      /* Say it plainly when the current target is a merged-away husk -- that
+         IS the diagnosis, and it tells the user this record will self-heal on
+         next save rather than needing a manual pick. */
+      if (cv.archived && cv.mergedIntoBuildingId) currentName += " (merged away — will re-home itself on save)";
+      else if (cv.archived) currentName += " (archived)";
+    }
+    if (cur){
+      cur.innerHTML = currentId
+        ? "This work order is filed under <b>" + esc(currentName) + "</b>."
+        : "This work order isn't filed under any building yet.";
+    }
+    var qs = await fdb.collection("buildings").orderBy("updatedAt", "desc").limit(500).get();
+    var list = [];
+    qs.forEach(function(d){
+      var v = d.data() || {};
+      if (v.archived) return;               /* never offer a husk as a destination */
+      if (d.id === currentId) return;
+      list.push(Object.assign({ id: d.id }, v));
+    });
+    /* Ranked by the same identity ladder the dedup and merge tools use --
+       CompanyCam project, Foundation job, address -- so the building this
+       record almost certainly belongs to floats to the top instead of being
+       hunted for in 500 rows. */
+    relinkModalCandidates = relinkRankBuildings(list, o);
+    relinkModalRender();
+  }catch(e){
+    if (host){ host.className = "hint"; host.textContent = "Couldn't load buildings."; }
+  }
+}
+function relinkRankBuildings(list, o){
+  var addrKey = (typeof fdnAddressMatchKey === "function") ? fdnAddressMatchKey(o.location || "") : "";
+  return (list || []).map(function(b){
+    var rank = 9, why = "";
+    if (o.companyCamProjectId && b.companyCamProjectId === o.companyCamProjectId){
+      rank = 0; why = "same CompanyCam project";
+    } else if (o.foundationJobNo && b.foundationJobNo === o.foundationJobNo){
+      rank = 1; why = "same Foundation job";
+    } else if (addrKey && typeof fdnAddressMatchKey === "function" &&
+               fdnAddressMatchKey(b.location || "") === addrKey){
+      rank = 2; why = "same address";
+    }
+    return { building: b, rank: rank, why: why };
+  }).sort(function(a, b){
+    if (a.rank !== b.rank) return a.rank - b.rank;
+    return String(a.building.name || "").localeCompare(String(b.building.name || ""));
+  });
+}
+function relinkModalRender(){
+  var host = document.getElementById("relink-bld-list");
+  if (!host) return;
+  if (!relinkModalCandidates.length){
+    host.className = "hint";
+    host.textContent = "No other buildings found.";
+    return;
+  }
+  /* Ranked matches first; the rest are still reachable, because "no identity
+     matched" is exactly the situation a manual re-link exists for. */
+  var shown = relinkModalCandidates.slice(0, 40);
+  host.className = "";
+  host.innerHTML = shown.map(function(r, i){
+    var b = r.building;
+    var roofs = Array.isArray(b.roofs) ? b.roofs.length : 0;
+    var hasMap = (b.roofs || []).some(function(x){ return x && x.roof_base_map_url; }) || !!b.roof_base_map_url;
+    var bits = [];
+    if (roofs) bits.push(roofs + (roofs === 1 ? " roof" : " roofs"));
+    if (hasMap) bits.push("has base map");
+    var name = (typeof ccBuildingDisplayName === "function") ? ccBuildingDisplayName(b) : (b.name || b.id);
+    return '<div class="bld-item"><div class="info">' +
+      '<div class="name">' + esc(name) + '</div>' +
+      '<div class="meta">' + (b.location ? esc(b.location) + " · " : "") + esc(bits.join(" · ")) +
+        (r.why ? ' · <b>' + esc(r.why) + '</b>' : "") + '</div></div>' +
+      '<button class="btn primary" onclick="relinkModalPick(' + i + ')">File under this building</button>' +
+      '</div>';
+  }).join("") +
+    (relinkModalCandidates.length > shown.length
+      ? '<p class="hint" style="margin:6px 0 0">Showing the 40 closest of ' + relinkModalCandidates.length + '.</p>' : "");
+}
+function closeRelinkBuildingModal(){
+  var modal = document.getElementById("relink-bld-modal");
+  if (modal) modal.style.display = "none";
+  unlockBodyScroll();
+  relinkModalCandidates = [];
+}
+async function relinkModalPick(i){
+  var r = relinkModalCandidates[i];
+  if (!r) return;
+  var b = r.building;
+  var name = (typeof ccBuildingDisplayName === "function") ? ccBuildingDisplayName(b) : (b.name || b.id);
+  var o = (typeof collect === "function") ? collect() : {};
+  if (!o.id){ toast("Save this work order first."); return; }
+  if (!confirm("File this work order under \"" + name + "\"?\n\n" +
+    "Its history entry and report move with it. Only THIS record changes — no building, roof, or other work order is touched.")) return;
+  toast("Re-filing…");
+  try{
+    /* The work order, its history event and its report all carry buildingId
+       and the denormalised building name. Updating only the work order would
+       leave the timeline pointing at the old building -- the same split that
+       caused this bug in the first place. */
+    var patch = {
+      buildingId: b.id,
+      buildingName: name,
+      customerId: b.customerId || null,
+      customerName: b.customerName || ""
+    };
+    await fdb.collection("workorders").doc(o.id).set({ buildingId: b.id }, { merge: true });
+    await Promise.all([
+      fdb.collection("building_history_events").doc(o.id).set(patch, { merge: true }).catch(function(){}),
+      fdb.collection("reports").doc(o.id).set(patch, { merge: true }).catch(function(){})
+    ]);
+    /* Keep the open form in step so a save right after this doesn't write the
+       old id straight back. */
+    if (typeof currentBuildingId !== "undefined") currentBuildingId = b.id;
+    var f = document.getElementById("buildingId");
+    if (f) f.value = b.id;
+    closeRelinkBuildingModal();
+    toast("Filed under " + name + " ✓ — reopen it to see its history.");
+  }catch(e){
+    toast("Couldn't re-file: " + ((e && e.message) || "unknown"));
+  }
+}

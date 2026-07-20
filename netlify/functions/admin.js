@@ -461,9 +461,22 @@ exports.handler = async function (event) {
       // written before roofs[] existed, which carry no roofId at all. Filtering
       // by roof would strand exactly the oldest history a merge is meant to
       // rescue.
-      const [evtSnap, repSnap] = await Promise.all([
+      // Mark, KOMU 2026-07-19: this list used to be events + reports ONLY, so a
+      // merge left every saved WORK ORDER still pointing at the loser. The
+      // inspection he was running resolved to the archived record -- which the
+      // merge had just emptied (roofs: []), so getBuildingRoofs() synthesised a
+      // single phantom "Roof 1" with no base map and no history. The record
+      // looked broken; it was orphaned.
+      //
+      // Every collection that stores a buildingId belongs here. Archived/voided
+      // work orders are re-pointed too (Mark: keep it all consistent) -- an
+      // archived WO still aimed at an emptied building is a landmine the day
+      // someone restores it.
+      const [evtSnap, repSnap, woSnap, dprSnap] = await Promise.all([
         db.collection("building_history_events").where("buildingId", "==", sourceBuildingId).get(),
-        db.collection("reports").where("buildingId", "==", sourceBuildingId).get()
+        db.collection("reports").where("buildingId", "==", sourceBuildingId).get(),
+        db.collection("workorders").where("buildingId", "==", sourceBuildingId).get(),
+        db.collection("daily_progress_reports").where("buildingId", "==", sourceBuildingId).get()
       ]);
       const reassign = {
         buildingId: destBuildingId, buildingName: chosenName || dstBld.name || "",
@@ -477,6 +490,11 @@ exports.handler = async function (event) {
       writes.push({ ref: db.collection("buildings").doc(sourceBuildingId), data: sourcePatch });
       evtSnap.forEach(d => writes.push({ ref: d.ref, data: reassign }));
       repSnap.forEach(d => writes.push({ ref: d.ref, data: reassign }));
+      // Work orders and DPRs carry buildingId AND the denormalised name, same
+      // as the history docs -- re-point both so a reopened record resolves to
+      // the survivor and reads with the survivor's name.
+      woSnap.forEach(d => writes.push({ ref: d.ref, data: reassign }));
+      dprSnap.forEach(d => writes.push({ ref: d.ref, data: reassign }));
       for (let i = 0; i < writes.length; i += 400) {
         const batch = db.batch();
         writes.slice(i, i + 400).forEach(w => batch.set(w.ref, w.data, { merge: true }));
@@ -487,9 +505,12 @@ exports.handler = async function (event) {
         { collection: "buildings", id: sourceBuildingId },
         { sourceBuildingId, sourceName: srcBld.name || null, sourceRoofs: srcRoofs.length },
         { destBuildingId, destName: chosenName || dstBld.name || null,
-          movedRoofs: movedRoofs.length, movedEvents: evtSnap.size, movedReports: repSnap.size });
+          movedRoofs: movedRoofs.length, movedEvents: evtSnap.size, movedReports: repSnap.size,
+          movedWorkOrders: woSnap.size, movedDprs: dprSnap.size });
       return resp(200, { ok: true, movedRoofs: movedRoofs.length,
-        movedEvents: evtSnap.size, movedReports: repSnap.size, survivingName: chosenName });
+        movedEvents: evtSnap.size, movedReports: repSnap.size,
+        movedWorkOrders: woSnap.size, movedDprs: dprSnap.size,
+        survivingName: chosenName });
     }
 
     if (body.action === "move_roof") {
