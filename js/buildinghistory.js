@@ -802,7 +802,29 @@ function pinPopupHtml(p, opts){
     (p.condition ? esc(p.condition) + "<br>" : "") +
     "<span style='color:" + warrantyColor(p.warranty) + ";font-weight:600'>" + esc(p.warranty || "") + "</span><br>" +
     (photoNote ? photoNote + "<br>" : "");
-  if (opts.readOnly) return html + "<span style='color:var(--muted);font-size:12px'>Read-only history pin</span>";
+  /* READ-ONLY means "you can't EDIT this pin", not "you can't NAVIGATE from
+     it" -- navigation is read-only by definition. Mark, KOMU leak 2026-07-19:
+     a history pin showed the finding text and the right job number, he tapped
+     it expecting to reach the work order it came from, and nothing happened.
+     The button below already existed; this branch simply returned before it,
+     with p.work_order_id sitting unused right beside the job number he could
+     see.
+
+     "Adjust Pin" stays withheld -- that one mutates. This is the same
+     distinction the timeline entries already draw (tappable to open the WO,
+     not editable in place).
+
+     Safe to navigate from the inline card even though it sits INSIDE an open
+     work order: loadOrder is wrapped in js/workorders.js with
+     confirmLeaveUnclouded("Open the other work order anyway?"), so an
+     in-progress leak report can't be silently discarded by a stray tap. */
+  if (opts.readOnly){
+    return html + (p.work_order_id ?
+      "<div style=\"margin-top:6px\">" +
+      "<button class=\"btn\" onclick=\"loadOrder('" + p.work_order_id + "')\">View Work Order</button>" +
+      "</div>" : "") +
+      "<span style='color:var(--muted);font-size:12px'>Read-only history pin</span>";
+  }
   return html +
     "<div style=\"display:flex;gap:6px;margin-top:6px;flex-wrap:wrap\">" +
     "<button class=\"btn\" onclick=\"loadOrder('" + p.work_order_id + "')\">View Work Order</button>" +
