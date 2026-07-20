@@ -349,6 +349,142 @@ exports.handler = async function (event) {
       return resp(200, { ok: true });
     }
 
+    if (body.action === "merge_buildings") {
+      // Mark, 106 Orr St, 2026-07-19: one real building ended up as TWO
+      // records -- "(unnamed project)" holding the base map and all 4 roofs,
+      // and "Orr St Studios - Roof Eval" holding the correct name and nothing
+      // else. Neither record is usable on its own, and there was no way to
+      // combine them.
+      //
+      // This is move_roof generalised from one roof to a whole building: same
+      // multi-collection re-pointing, same settings.company tier, same audit
+      // discipline. It moves EVERY roof (each carrying its own base map,
+      // assets and outlines), re-points EVERY history event and report --
+      // unfiltered by roofId, since events predating roofs[] carry none -- and
+      // carries the CompanyCam/Foundation links forward before archiving the
+      // source. Archive rather than delete, matching archive_building: a merge
+      // that turns out wrong must be inspectable afterwards.
+      let caller;
+      try { caller = await requirePermission(event, "settings.company"); }
+      catch (e) { return resp(e.statusCode || 401, { error: e.message }); }
+
+      const sourceBuildingId = String(body.sourceBuildingId || "");
+      const destBuildingId = String(body.destBuildingId || "");
+      if (!sourceBuildingId || !destBuildingId) {
+        return resp(400, { error: "Missing sourceBuildingId or destBuildingId" });
+      }
+      if (sourceBuildingId === destBuildingId) return resp(400, { error: "Source and destination are the same building" });
+
+      const [srcSnap, dstSnap] = await Promise.all([
+        db.collection("buildings").doc(sourceBuildingId).get(),
+        db.collection("buildings").doc(destBuildingId).get()
+      ]);
+      if (!srcSnap.exists) return resp(404, { error: "Source building not found" });
+      if (!dstSnap.exists) return resp(404, { error: "Destination building not found" });
+      const srcBld = srcSnap.data();
+      const dstBld = dstSnap.data();
+
+      // Only move roofs that were really stored. getBuildingRoofsServer()
+      // synthesises a default roof for a building that never had roofs[], and
+      // merging that phantom would plant an empty "Roof 1" on the survivor.
+      const srcRoofs = Array.isArray(srcBld.roofs) ? srcBld.roofs.slice() : [];
+      const dstRoofs = Array.isArray(dstBld.roofs) ? dstBld.roofs.slice() : getBuildingRoofsServer(dstBld).slice();
+
+      // Same auto-suffix rule move_roof uses, applied across the whole batch so
+      // two roofs both called "Roof 1" cannot collide on the survivor.
+      const taken = dstRoofs.map(r => String(r.label || "").trim().toLowerCase());
+      const movedRoofs = srcRoofs.map(r => {
+        let label = r.label || "Roof";
+        if (taken.indexOf(label.trim().toLowerCase()) !== -1) {
+          let n = 2, candidate;
+          do { candidate = label + " (" + n + ")"; n++; }
+          while (taken.indexOf(candidate.trim().toLowerCase()) !== -1);
+          label = candidate;
+        }
+        taken.push(label.trim().toLowerCase());
+        return Object.assign({}, r, { label: label, updatedAt: Date.now() });
+      });
+      const newDestRoofs = dstRoofs.concat(movedRoofs);
+
+      // Best name wins. The survivor is chosen by the caller, but its name may
+      // still be the placeholder -- so prefer, in order: an explicit name the
+      // caller passed, the survivor's own real name, the source's real name,
+      // then whatever is left. "(unnamed project)" is mapProject()'s display
+      // fallback for a nameless CompanyCam project and must never win.
+      const PLACEHOLDER = "(unnamed project)";
+      const realName = (n) => (n && String(n).trim() && String(n).trim() !== PLACEHOLDER) ? String(n).trim() : "";
+      const chosenName = realName(body.survivingName) || realName(dstBld.name) ||
+        realName(srcBld.name) || String(dstBld.name || srcBld.name || "").trim();
+
+      const destPatch = { roofs: newDestRoofs, updatedAt: Date.now() };
+      if (chosenName) destPatch.name = chosenName;
+      // Carry links forward ONLY where the survivor has none -- a merge must
+      // never silently re-point a building that already has its own link.
+      if (!dstBld.companyCamProjectId && srcBld.companyCamProjectId) {
+        destPatch.companyCamProjectId = srcBld.companyCamProjectId;
+        destPatch.companyCamProjectName = srcBld.companyCamProjectName || "";
+      }
+      if (!dstBld.foundationJobNo && srcBld.foundationJobNo) {
+        destPatch.foundationJobNo = srcBld.foundationJobNo;
+        destPatch.foundationCustomerNo = srcBld.foundationCustomerNo || null;
+        destPatch.foundationAddress = srcBld.foundationAddress || "";
+      }
+      if (!dstBld.location && srcBld.location) destPatch.location = srcBld.location;
+      // Legacy single-roof mirror fields, same convention as move_roof.
+      if (newDestRoofs.length === 1) {
+        const only = newDestRoofs[0];
+        destPatch.roofSystem = only.roofSystem || "";
+        destPatch.roof_base_map_type = only.roof_base_map_type || null;
+        destPatch.roof_base_map_url = only.roof_base_map_url || null;
+        destPatch.roof_base_map_bounds = only.roof_base_map_bounds || null;
+        destPatch.roof_base_map_synthetic = only.roof_base_map_synthetic || false;
+        destPatch.roof_assets = only.roof_assets || [];
+        destPatch.roof_outlines = only.roof_outlines || [];
+      }
+
+      const sourcePatch = {
+        roofs: [], archived: true, archivedAt: Date.now(),
+        mergedIntoBuildingId: destBuildingId, updatedAt: Date.now(),
+        roofSystem: "", roof_base_map_type: null, roof_base_map_url: null,
+        roof_base_map_bounds: null, roof_base_map_synthetic: false,
+        roof_assets: [], roof_outlines: []
+      };
+
+      // Unfiltered by roofId on purpose: a building's history includes events
+      // written before roofs[] existed, which carry no roofId at all. Filtering
+      // by roof would strand exactly the oldest history a merge is meant to
+      // rescue.
+      const [evtSnap, repSnap] = await Promise.all([
+        db.collection("building_history_events").where("buildingId", "==", sourceBuildingId).get(),
+        db.collection("reports").where("buildingId", "==", sourceBuildingId).get()
+      ]);
+      const reassign = {
+        buildingId: destBuildingId, buildingName: chosenName || dstBld.name || "",
+        customerId: dstBld.customerId || srcBld.customerId || null,
+        customerName: dstBld.customerName || srcBld.customerName || ""
+      };
+      // Firestore caps a batch at 500 writes; chunk so a building with a long
+      // history merges rather than failing at the limit.
+      const writes = [];
+      writes.push({ ref: db.collection("buildings").doc(destBuildingId), data: destPatch });
+      writes.push({ ref: db.collection("buildings").doc(sourceBuildingId), data: sourcePatch });
+      evtSnap.forEach(d => writes.push({ ref: d.ref, data: reassign }));
+      repSnap.forEach(d => writes.push({ ref: d.ref, data: reassign }));
+      for (let i = 0; i < writes.length; i += 400) {
+        const batch = db.batch();
+        writes.slice(i, i + 400).forEach(w => batch.set(w.ref, w.data, { merge: true }));
+        await batch.commit();
+      }
+
+      await writeAuditLog(db, caller, "merge_buildings",
+        { collection: "buildings", id: sourceBuildingId },
+        { sourceBuildingId, sourceName: srcBld.name || null, sourceRoofs: srcRoofs.length },
+        { destBuildingId, destName: chosenName || dstBld.name || null,
+          movedRoofs: movedRoofs.length, movedEvents: evtSnap.size, movedReports: repSnap.size });
+      return resp(200, { ok: true, movedRoofs: movedRoofs.length,
+        movedEvents: evtSnap.size, movedReports: repSnap.size, survivingName: chosenName });
+    }
+
     if (body.action === "move_roof") {
       // Cross-cutting, multi-collection structural change -- same
       // settings.company tier as the other building-admin actions above.

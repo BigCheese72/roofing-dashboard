@@ -524,3 +524,212 @@ async function unlinkCC(){
     toast("Building-level CompanyCam link cleared");
   }catch(e){ console.warn("building-level CompanyCam unlink failed", e); }
 }
+
+/* ================= merge two building records into one =================
+   Mark, 106 Orr St, 2026-07-19: one real building became TWO records --
+   "(unnamed project)" holding the base map and all 4 roofs, and "Orr St
+   Studios - Roof Eval" holding the correct name and nothing else.
+
+   The building you open is the SURVIVOR; you pick the duplicate to absorb.
+   That direction is deliberate: you navigate to the record you want to keep,
+   which is far harder to get backwards than picking two from a list.
+
+   Candidates are ranked by the identities that actually prove two records are
+   the same site -- CompanyCam project, Foundation job, address -- rather than
+   by name similarity. Name matching is precisely what MISSED this pair:
+   buildingsLikelyDuplicate() (js/buildinghistory.js) requires the two records
+   to share a customer name, and the "(unnamed project)" record had none. */
+var mergeModalSurvivorId = null, mergeModalCandidates = [], mergeModalSurvivor = null;
+async function openMergeBuildingModal(survivorId){
+  if (!fdb){ toast("Merging buildings needs cloud sync."); return; }
+  mergeModalSurvivorId = survivorId;
+  var modal = document.getElementById("merge-bld-modal");
+  if (!modal) return;
+  modal.style.display = "";
+  lockBodyScroll();
+  var host = document.getElementById("merge-bld-list");
+  if (host){ host.className = "hint"; host.textContent = "Finding possible duplicates…"; }
+  try{
+    var snap = await fdb.collection("buildings").doc(survivorId).get();
+    mergeModalSurvivor = snap.exists ? snap.data() : {};
+    var keepEl = document.getElementById("merge-bld-keep");
+    if (keepEl){
+      keepEl.innerHTML = "Keeping <b>" + esc(ccBuildingDisplayName(mergeModalSurvivor)) + "</b>" +
+        (mergeModalSurvivor.location ? ' <span class="hint">— ' + esc(mergeModalSurvivor.location) + "</span>" : "");
+    }
+    var qs = await fdb.collection("buildings").orderBy("updatedAt", "desc").limit(500).get();
+    var all = [];
+    qs.forEach(function(d){
+      var v = d.data() || {};
+      if (d.id === survivorId || v.archived) return;
+      all.push(Object.assign({ id: d.id }, v));
+    });
+    mergeModalCandidates = mergeRankDuplicateBuildings(all, mergeModalSurvivor);
+    mergeModalRender();
+  }catch(e){
+    if (host){ host.className = "hint"; host.textContent = "Couldn't load buildings."; }
+  }
+}
+/* Same identity ladder as findExistingBuildingId() in js/core.js -- one rule
+   for "these are the same site", used both to PREVENT duplicates on save and
+   to FIND them afterwards. */
+function mergeRankDuplicateBuildings(list, survivor){
+  survivor = survivor || {};
+  var addrKey = (typeof fdnAddressMatchKey === "function") ? fdnAddressMatchKey(survivor.location || "") : "";
+  return (list || []).map(function(b){
+    var rank = 9, why = "";
+    if (survivor.companyCamProjectId && b.companyCamProjectId === survivor.companyCamProjectId){
+      rank = 0; why = "same CompanyCam project";
+    } else if (survivor.foundationJobNo && b.foundationJobNo === survivor.foundationJobNo){
+      rank = 1; why = "same Foundation job";
+    } else if (addrKey && typeof fdnAddressMatchKey === "function" &&
+               fdnAddressMatchKey(b.location || "") === addrKey){
+      rank = 2; why = "same address";
+    }
+    return { building: b, rank: rank, why: why };
+  }).filter(function(r){ return r.rank < 9; })
+    .sort(function(a, b){ return a.rank - b.rank; });
+}
+function mergeModalRender(){
+  var host = document.getElementById("merge-bld-list");
+  if (!host) return;
+  if (!mergeModalCandidates.length){
+    host.className = "hint";
+    host.textContent = "No other building shares this one's CompanyCam project, Foundation job, or address.";
+    return;
+  }
+  host.className = "";
+  host.innerHTML = mergeModalCandidates.map(function(r, i){
+    var b = r.building;
+    var roofs = Array.isArray(b.roofs) ? b.roofs.length : 0;
+    var hasMap = (b.roofs || []).some(function(x){ return x && x.roof_base_map_url; }) || !!b.roof_base_map_url;
+    var bits = [roofs + (roofs === 1 ? " roof" : " roofs")];
+    if (hasMap) bits.push("has base map");
+    if (b.companyCamProjectId) bits.push("CompanyCam linked");
+    return '<div class="bld-item"><div class="info">' +
+      '<div class="name">' + esc(ccBuildingDisplayName(b)) + '</div>' +
+      '<div class="meta">' + (b.location ? esc(b.location) + " · " : "") +
+        esc(bits.join(" · ")) + ' · <b>' + esc(r.why) + '</b></div></div>' +
+      '<button class="btn danger" onclick="mergeModalPick(' + i + ')">Merge into this building</button>' +
+      '</div>';
+  }).join("");
+}
+function closeMergeBuildingModal(){
+  var modal = document.getElementById("merge-bld-modal");
+  if (modal) modal.style.display = "none";
+  unlockBodyScroll();
+  mergeModalSurvivorId = null;
+  mergeModalCandidates = [];
+}
+async function mergeModalPick(i){
+  var r = mergeModalCandidates[i];
+  if (!r || !mergeModalSurvivorId) return;
+  var src = r.building;
+  var roofs = Array.isArray(src.roofs) ? src.roofs.length : 0;
+  var survivorName = ccBuildingDisplayName(mergeModalSurvivor);
+  /* Spell out exactly what moves. A merge re-points every timeline entry and
+     report and archives a record -- move_roof already warns its single-roof
+     version "isn't instant to reverse", and this is that several times over. */
+  var msg = "Merge \"" + ccBuildingDisplayName(src) + "\" INTO \"" + survivorName + "\"?\n\n" +
+    "Moves onto " + survivorName + ":\n" +
+    "  • " + roofs + " roof" + (roofs === 1 ? "" : "s") + " (with their base maps, outlines and features)\n" +
+    "  • every timeline entry and report\n" +
+    "  • its CompanyCam / Foundation link, if this building has none\n\n" +
+    "\"" + ccBuildingDisplayName(src) + "\" is then ARCHIVED (not deleted).\n\n" +
+    "This is not instant to reverse — check the names above are the right way round.";
+  if (!confirm(msg)) return;
+  toast("Merging buildings…");
+  try{
+    var out = await callAdminApi({ action: "merge_buildings",
+      sourceBuildingId: src.id, destBuildingId: mergeModalSurvivorId,
+      survivingName: survivorName });
+    closeMergeBuildingModal();
+    toast("Merged ✓ " + out.movedRoofs + " roof(s), " + out.movedEvents +
+      " history entries, " + out.movedReports + " report(s) moved");
+    if (typeof openBuildingHistory === "function") openBuildingHistory(mergeModalSurvivorId);
+  }catch(e){ toast("Couldn't merge: " + e.message); }
+}
+
+/* ---- live CompanyCam name resolution for Building History ----
+   Mark, 106 Orr St: RoofMapper showed the renamed project ("Orr Street
+   Studios") while Building History still showed "(unnamed project)". Same
+   building, two different name sources -- RoofMapper resolves LIVE by project
+   id (applyCompanyCamProjectDetail above), Building History rendered the
+   frozen buildings.name string, so a CompanyCam rename never reached it.
+
+   This gives Building History the same live resolution, and writes the result
+   back so the stored name self-heals for offline views and every other reader.
+
+   Cached per project id for the session: openBuildingHistory() re-runs on every
+   roof switch and timeline refresh, and re-fetching the same project each time
+   would put a network round-trip in front of a view Mark opens constantly. */
+var ccProjectNameCache = {};
+function ccBuildingDisplayName(bld){
+  /* Precedence, reconciling the Building History header's "auto-named from Job
+     Name/Bill To" promise with the CompanyCam name source:
+       stored real name -> live CompanyCam name -> Foundation job name -> ""
+     "(unnamed project)" is mapProject()'s DISPLAY fallback for a nameless
+     project and is treated as no-name at every step, never as a name. */
+  bld = bld || {};
+  var stored = String(bld.name || "").trim();
+  if (stored && stored !== "(unnamed project)") return stored;
+  var live = bld.companyCamProjectId ? ccProjectNameCache[bld.companyCamProjectId] : "";
+  if (live && live !== "(unnamed project)") return live;
+  var fdn = String(bld.foundationJobName || "").trim();
+  if (fdn) return fdn;
+  return stored || "Unnamed building";
+}
+/* Resolves the linked project's CURRENT name and, when it is better than what
+   is stored, writes it onto the building so the fix persists. Returns the name
+   it resolved, or "" if it could not. Never throws -- Building History must
+   still render when CompanyCam is unreachable. */
+async function ccResolveBuildingProjectName(buildingId, bld, opts){
+  opts = opts || {};
+  bld = bld || {};
+  var projectId = bld.companyCamProjectId;
+  if (!projectId) return "";
+  if (!opts.force && ccProjectNameCache[projectId] !== undefined) return ccProjectNameCache[projectId];
+  var name = "";
+  try{
+    var out = await ccApi({ action: "project_detail", project_id: projectId });
+    name = ((out && out.project && out.project.name) || "").trim();
+  }catch(e){ return ""; }
+  ccProjectNameCache[projectId] = name;
+  if (!name || name === "(unnamed project)") return name;
+  var stored = String(bld.name || "").trim();
+  /* Only overwrite a stored name that is absent or the placeholder. A tech's
+     deliberate building name must never be clobbered by a CompanyCam rename --
+     same restraint applyCompanyCamProjectDetail() shows on the Job Name field. */
+  if (fdb && buildingId && (!stored || stored === "(unnamed project)")){
+    try{
+      await fdb.collection("buildings").doc(buildingId).set(
+        { name: name, companyCamProjectName: name, updatedAt: Date.now() }, { merge: true });
+    }catch(e){ /* display still improves this session even if the write fails */ }
+  } else if (fdb && buildingId && (bld.companyCamProjectName || "") !== name){
+    try{
+      await fdb.collection("buildings").doc(buildingId).set(
+        { companyCamProjectName: name, updatedAt: Date.now() }, { merge: true });
+    }catch(e){}
+  }
+  return name;
+}
+/* Manual backup for the automatic resolution above -- Mark asked for one
+   explicitly, and it is also the escape hatch when the cache is holding a name
+   from before a rename. */
+async function ccRefreshBuildingProjectName(buildingId){
+  if (!fdb) return;
+  toast("Refreshing from CompanyCam…");
+  try{
+    var snap = await fdb.collection("buildings").doc(buildingId).get();
+    var bld = snap.exists ? snap.data() : {};
+    if (!bld.companyCamProjectId){ toast("This building has no CompanyCam project linked."); return; }
+    var name = await ccResolveBuildingProjectName(buildingId, bld, { force: true });
+    if (!name){ toast("Couldn't reach CompanyCam — try again in a moment."); return; }
+    if (name === "(unnamed project)"){
+      toast("That CompanyCam project still has no name — rename it in CompanyCam.");
+    } else {
+      toast("Updated to " + name + " ✓");
+    }
+    if (typeof openBuildingHistory === "function") openBuildingHistory(buildingId);
+  }catch(e){ toast("Couldn't refresh from CompanyCam."); }
+}

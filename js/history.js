@@ -219,6 +219,22 @@ async function openBuildingHistory(buildingId){
   try{
     var bldSnap = await fdb.collection("buildings").doc(buildingId).get();
     var bld = bldSnap.exists ? bldSnap.data() : {};
+    /* Resolve the linked CompanyCam project's CURRENT name before rendering.
+       RoofMapper has always done this; Building History rendered the frozen
+       stored string, which is why a CompanyCam rename showed in one view and
+       not the other (Mark, 106 Orr St). Awaited rather than fired-and-forgotten
+       so the first paint is already right -- and it self-heals the stored name,
+       making it a one-time cost per project per session. */
+    if (bld.companyCamProjectId && typeof ccResolveBuildingProjectName === "function"){
+      try{
+        var liveName = await ccResolveBuildingProjectName(buildingId, bld);
+        if (liveName && liveName !== "(unnamed project)"){
+          var storedName = String(bld.name || "").trim();
+          if (!storedName || storedName === "(unnamed project)") bld.name = liveName;
+          bld.companyCamProjectName = liveName;
+        }
+      }catch(e){}
+    }
     var warrantyReportsSnap = await fdb.collection("buildings").doc(buildingId)
       .collection("warranty_reports").orderBy("uploadedAt", "desc").limit(50).get();
     var warrantyReports = []; warrantyReportsSnap.forEach(function(d){ warrantyReports.push(d.data()); });
@@ -304,6 +320,17 @@ async function openBuildingHistory(buildingId){
     var moveBtnHtml = isAdmin ? ('<button class="btn" style="margin-left:6px" onclick="openMoveRoofModal(\'' +
       buildingId + '\', \'' + historySelectedRoofId + '\', \'' + esc(roof.label || "Roof") +
       '\')">↔️ Move to Different Building</button>') : '';
+    /* Manual backup to the automatic live resolution above -- covers a rename
+       made after this session cached the name. */
+    var ccRefreshBtnHtml = (isAdmin && bld.companyCamProjectId) ?
+      ('<button class="btn" style="margin-left:6px" onclick="ccRefreshBuildingProjectName(\'' +
+      buildingId + '\')">🔄 Refresh from CompanyCam</button>') : '';
+    /* Mark, 106 Orr St: one real building split across TWO records -- base map
+       and roofs on one, correct name on the other. Same admin tier as Move,
+       and for the same reason: it re-points every timeline entry and report,
+       not just a label. */
+    var mergeBtnHtml = isAdmin ? ('<button class="btn" style="margin-left:6px" onclick="openMergeBuildingModal(\'' +
+      buildingId + '\')">🔗 Merge Duplicate Building</button>') : '';
     var roofPickerHtml = roofs.length > 1 ?
       '<div class="fld" style="max-width:320px;margin-bottom:8px">' +
         '<label>Roof</label><div class="btnrow" style="margin:0;align-items:center">' +
@@ -313,8 +340,9 @@ async function openBuildingHistory(buildingId){
           return '<option value="' + esc(r.id) + '"' + (r.id === historySelectedRoofId ? ' selected' : '') + '>' +
             esc(r.label || "Roof") + (cond ? " — " + esc(cond) : "") + '</option>';
         }).join('') +
-        '</select>' + renameBtnHtml + openInMapperBtnHtml + moveBtnHtml + '</div></div>' :
-      '<p class="hint" style="margin:0 0 8px">Roof: <b>' + esc(roof.label || "Roof") + '</b>' + renameBtnHtml + openInMapperBtnHtml + moveBtnHtml + '</p>';
+
+        '</select>' + renameBtnHtml + openInMapperBtnHtml + moveBtnHtml + ccRefreshBtnHtml + mergeBtnHtml + '</div></div>' :
+      '<p class="hint" style="margin:0 0 8px">Roof: <b>' + esc(roof.label || "Roof") + '</b>' + renameBtnHtml + openInMapperBtnHtml + moveBtnHtml + ccRefreshBtnHtml + mergeBtnHtml + '</p>';
     var addRoofBtnHtml = '<button class="btn" onclick="promptAddRoof(\'' + buildingId + '\')">+ Add Roof</button>';
     var addFeatureBtnHtml = '<button class="btn" onclick="openAssetModal(\'' + buildingId + '\', null, \'' + historySelectedRoofId + '\')">+ Add Roof Feature</button>';
     var addActivityBtnHtml = '<button class="btn" onclick="openActivityModal(\'' + buildingId + '\')">+ Log Activity</button>';
