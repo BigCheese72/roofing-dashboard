@@ -1154,6 +1154,64 @@ function buildingIdFor(billTo, jobName){
   if (!bldName) return null;
   return "bld_" + slugify((customerIdFor(billTo) || "nocust") + "_" + bldName);
 }
+/* ---- save-time building dedup (Mark, 106 Orr St, 2026-07-19) ----
+   The bug this fixes: buildingIdFor() derives a building's document id FROM
+   ITS NAME. A building created by the RoofMapper/CompanyCam link as
+   "(unnamed project)" therefore has a different id than the same real building
+   saved later as "Orr St Studios - Roof Eval" -- so the save did not rename the
+   existing record, it created a SECOND one. Mark ended up with the base map and
+   all four roofs on one record and the correct name on the other, neither
+   usable alone.
+
+   ensureCustomerAndBuilding() never matched; it only ever computed an id and
+   upserted. Yet the order carries three durable, name-independent identities --
+   the CompanyCam project, the Foundation job, and the address. This consults
+   them, in that order of trust, BEFORE falling back to the name-derived id:
+
+     1. companyCamProjectId -- exact, and the link that made the duplicate
+     2. foundationJobNo     -- the accounting system of record's per-site id
+     3. address key         -- fdnAddressMatchKey(), the same normaliser
+                               fdnFindMatchingBuilding() already trusts
+
+   Deliberately conservative in two ways. An AMBIGUOUS match (more than one
+   building shares the identity) returns null and lets the old name-derived path
+   run -- guessing which of several buildings to write into would be worse than
+   the duplicate this prevents. And archived buildings are skipped, so a record
+   deliberately archived (including one already merged away) is never resurrected
+   by the next save.
+
+   Returns a building id to write into, or null to fall back. Never throws: a
+   dedup lookup failing offline must not block a save. */
+async function findExistingBuildingId(o){
+  if (!fdb) return null;
+  var wanted = [];
+  if (o.companyCamProjectId) wanted.push(["companyCamProjectId", o.companyCamProjectId]);
+  if (o.foundationJobNo) wanted.push(["foundationJobNo", o.foundationJobNo]);
+  for (var i = 0; i < wanted.length; i++){
+    try{
+      var qs = await fdb.collection("buildings").where(wanted[i][0], "==", wanted[i][1]).limit(5).get();
+      var hits = [];
+      qs.forEach(function(d){ var v = d.data() || {}; if (!v.archived) hits.push(d.id); });
+      if (hits.length === 1) return hits[0];
+      if (hits.length > 1) return null; /* ambiguous -- do not guess */
+    }catch(e){ /* index missing or offline: fall through to the next identity */ }
+  }
+  /* Address is the weakest of the three and needs a client-side scan, so it
+     runs last and only when the stronger identities found nothing. */
+  var addrKey = (typeof fdnAddressMatchKey === "function") ? fdnAddressMatchKey(o.location || "") : "";
+  if (!addrKey) return null;
+  try{
+    var scan = await fdb.collection("buildings").orderBy("updatedAt", "desc").limit(500).get();
+    var matches = [];
+    scan.forEach(function(d){
+      var v = d.data() || {};
+      if (v.archived) return;
+      if (fdnAddressMatchKey(v.location || "") === addrKey) matches.push(d.id);
+    });
+    if (matches.length === 1) return matches[0];
+  }catch(e){}
+  return null;
+}
 async function ensureCustomerAndBuilding(o){
   if (!fdb) return { customerId: (o.customerId || null), buildingId: (o.buildingId || null) };
   var custName = (o.billTo || "").trim();
@@ -1165,7 +1223,7 @@ async function ensureCustomerAndBuilding(o){
      base map, and CompanyCam link. Names only derive ids for legacy docs
      and first saves. */
   var custId = o.customerId || customerIdFor(o.billTo);
-  var bldId = o.buildingId || buildingIdFor(o.billTo, o.jobName);
+  var bldId = o.buildingId || (await findExistingBuildingId(o)) || buildingIdFor(o.billTo, o.jobName);
   /* No job name: nothing safe to write (a stored-id order must not get its
      building name blanked either) — but still hand back whatever identity
      the order already carries so callers never "lose" a stored id. */
