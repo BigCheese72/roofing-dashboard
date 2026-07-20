@@ -7,12 +7,17 @@
 //                   identifyIssue() via netlify/functions/ai-service.js)
 //
 // DESIGN RULES (decided up front, do not relitigate here):
-//   * NO API KEY IS PROVISIONED YET. Mark provisions ANTHROPIC_API_KEY (or
-//     OPENAI_API_KEY) as a Netlify env var later. Until a key exists in env,
-//     every call below resolves to the deterministic STUB provider -- same
-//     input, same output, zero network calls. The whole flow stays testable
-//     without a key, and nothing in this file may gain a default key, an
-//     embedded key, or a new fallback provider without Mark's sign-off.
+//   * KEYED ON BOTH DEV AND PRODUCTION (prod confirmed live 2026-07-20).
+//     This file used to say no key was provisioned anywhere; that is no
+//     longer true and the stale comment is precisely what made an earlier
+//     change get reasoned about as dev-only. Assume every code path here
+//     BILLS on prod. The key is the only gate -- there is no separate
+//     feature flag, so keyed context == live for the crew.
+//     Until a key exists in env, every call below resolves to the
+//     deterministic STUB provider -- same input, same output, zero network
+//     calls -- so the flow stays testable without one. Nothing in this file
+//     may gain a default key, an embedded key, or a new fallback provider
+//     without Mark's sign-off.
 //   * Provider-agnostic on purpose: the switch reads env and can talk to
 //     Anthropic (ANTHROPIC_API_KEY) or OpenAI (OPENAI_API_KEY) over plain
 //     fetch -- no SDK dependency for a code path that can't run yet.

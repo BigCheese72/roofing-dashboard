@@ -8357,11 +8357,23 @@ check on refs.
 
 **Phase 1 (WIRED 2026-07-16)**: the handler routes through the shared
 provider seam (`lib/aiProvider.js`, PR #122) — `resolveProvider(process.env)`
-decides stub vs live per deploy context. **Mark provisioned
-`ANTHROPIC_API_KEY` on the DEV (Branch deploys) context only; the Production
-context deliberately has no key**, so prod keeps answering with the
-deterministic template until a promotion Mark chooses arms it (mint a
-separate `roofops-prod` key then — never reuse the dev key). On the live
+decides stub vs live per deploy context. **`ANTHROPIC_API_KEY` is provisioned
+on BOTH the dev (Branch deploys) and PRODUCTION contexts.** Production was
+confirmed live on **2026-07-20**, when Mark drafted a summary on a leak order
+from the production app.
+
+> ⚠️ This paragraph previously said production deliberately had no key, and
+> that prod "keeps answering with the deterministic template." That was stale
+> and it actively misled — a model-tier change got reasoned about as a dev-only
+> cost question when it was really a live prod one. **The key is the ONLY gate:
+> `configured: resolveProvider(process.env).name !== "stub"` is the whole
+> check, there is no separate feature flag, and the client shows or hides the
+> AI buttons purely off that probe. A keyed context means the feature is live
+> for the crew and every tap bills.** If you are reasoning about AI cost or
+> exposure, assume prod is billing unless you have just verified otherwise.
+
+Still worth confirming: prod should be running its own `roofops-prod` key, not
+a copy of the dev key — otherwise rotating dev silently kills prod's AI. On the live
 path the photos attach as image blocks via the signed urls (aiProvider caps
 8/call) and the feature-tuned system prompt rides as `opts.system`: length
 tuned by the single `SUMMARY_TARGET_WORDS` constant (Mark's verdict on his
