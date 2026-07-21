@@ -117,6 +117,24 @@ function renumberRoofLabels(roofs) {
   return { roofs: out, changes: changes };
 }
 
+// Server-side mirror of genId() in js/workorders.js. Same shape as every roof
+// id the app has ever minted (roof_<base36 time><5 random base36>).
+function genRoofId() {
+  return "roof_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+}
+// Which array positions share an id with an earlier entry. This is the defect
+// the re-id action exists to break: two roofs answering to one id.
+function duplicateRoofIdIndexes(roofs) {
+  const seen = Object.create(null), dupes = [];
+  (Array.isArray(roofs) ? roofs : []).forEach((r, i) => {
+    const id = r && r.id ? String(r.id) : "";
+    if (!id) return;
+    if (seen[id] !== undefined) dupes.push({ index: i, id: id, firstIndex: seen[id] });
+    else seen[id] = i;
+  });
+  return dupes;
+}
+
 exports.handler = async function (event) {
   if (event.httpMethod !== "POST") {
     return resp(405, { error: "Method not allowed" });
@@ -617,6 +635,212 @@ exports.handler = async function (event) {
         survivingName: chosenName });
     }
 
+    if (body.action === "remove_building_roof_by_index") {
+      let caller;
+      try { caller = await requirePermission(event, "settings.company"); }
+      catch (e) { return resp(e.statusCode || 401, { error: e.message }); }
+
+      /* Removes an EMPTY DUPLICATE roofs[] entry -- the phantom left by the Orr
+         St merge, where two entries both answered to "roof_default" and the
+         second carried nothing. Deleting it resolves the collision outright:
+         one roof_default remains, ids are unambiguous again, and Rename / Move
+         / RoofMapper stop silently targeting index 0.
+
+         This is the only destructive roof operation in the codebase, so it is
+         fenced on three sides:
+           1. addressed strictly BY ARRAY INDEX (the id is ambiguous by
+              definition -- that is the whole defect),
+           2. the target must be a DUPLICATE OCCURRENCE of an id, never the
+              first one,
+           3. the target must be EMPTY.
+         Any of the three failing is a hard refusal, not a warning. */
+      const buildingId = String(body.buildingId || "");
+      if (!buildingId) return resp(400, { error: "Missing buildingId" });
+      if (!Number.isInteger(body.roofIndex) || body.roofIndex < 0) {
+        return resp(400, { error: "roofIndex must be a non-negative integer (roofs[] position)" });
+      }
+      const roofIndex = body.roofIndex;
+      const apply = body.apply === true;   // DRY RUN unless explicitly true
+
+      const db = getDb();
+      const ref = db.collection("buildings").doc(buildingId);
+      const snap = await ref.get();
+      if (!snap.exists) return resp(404, { error: "Building not found" });
+      const bld = snap.data() || {};
+
+      // Never synthesise -- a phantom default roof must not be materialised
+      // and then "removed".
+      const stored = Array.isArray(bld.roofs) ? bld.roofs : [];
+      if (roofIndex >= stored.length) {
+        return resp(400, { error: "roofIndex " + roofIndex + " is out of range (building has " + stored.length + " roofs)" });
+      }
+      const target = stored[roofIndex] || {};
+      const dupes = duplicateRoofIdIndexes(stored);
+
+      /* GUARD 1 -- must be a LATER occurrence of a colliding id.
+         duplicateRoofIdIndexes() reports the first occurrence as `firstIndex`
+         and only subsequent ones as `index`, so the roof that every by-id
+         lookup already resolves to CANNOT be selected here: index 0 of the Orr
+         St building appears as firstIndex, never as index. That also means the
+         entry being removed is one nothing can currently reach by id, so no
+         reference changes meaning when it goes. */
+      const isRemovableDuplicate = dupes.some(d => d.index === roofIndex);
+      if (!isRemovableDuplicate) {
+        return resp(409, {
+          error: "Refusing: roofs[" + roofIndex + "] is not a later duplicate of another roof's id. " +
+                 "Only a redundant duplicate entry can be removed, never the roof that by-id lookups resolve to.",
+          duplicateIndexes: dupes,
+          roofs: stored.map((r, i) => ({ index: i, id: (r && r.id) || null, label: (r && r.label) || "" }))
+        });
+      }
+
+      /* GUARD 2 -- must carry no work. Anything here means a real roof. */
+      const carries = {
+        outlines: Array.isArray(target.roof_outlines) ? target.roof_outlines.length : 0,
+        assets: Array.isArray(target.roof_assets) ? target.roof_assets.length : 0,
+        markup: Array.isArray(target.roof_markup) ? target.roof_markup.length : 0,
+        baseMapType: target.roof_base_map_type || null,
+        baseMapUrl: target.roof_base_map_url || null
+      };
+      const isEmpty = carries.outlines === 0 && carries.assets === 0 && carries.markup === 0 &&
+                      !carries.baseMapType && !carries.baseMapUrl;
+      if (!isEmpty) {
+        return resp(409, {
+          error: "Refusing: roofs[" + roofIndex + "] carries work (outlines/assets/markup/base map) and is a real roof, " +
+                 "not an empty duplicate. Use reid_building_roof to give it its own id instead.",
+          carries: carries
+        });
+      }
+
+      const removed = Object.assign({}, target);
+      const next = stored.filter((r, i) => i !== roofIndex);
+      const payload = {
+        ok: true, buildingId, dryRun: !apply,
+        removing: { index: roofIndex, id: target.id || null, label: target.label || "", carries: carries },
+        /* Surfaced deliberately: emptiness is judged on WORK (outlines, assets,
+           markup, base map), not on descriptive metadata. A phantom can still
+           carry a roofSystem or profile someone typed, and deleting it loses
+           that. Small, but it should be a seen decision rather than a silent
+           one -- which is also why the audit entry below stores the whole roof. */
+        alsoLosesMetadata: {
+          roofSystem: target.roofSystem || null,
+          areaSqFt: target.areaSqFt != null ? target.areaSqFt : null,
+          ageYears: target.ageYears != null ? target.ageYears : null
+        },
+        resultingRoofs: next.map((r, i) => ({ index: i, id: (r && r.id) || null, label: (r && r.label) || "" })),
+        remainingDuplicates: duplicateRoofIdIndexes(next)
+      };
+      if (!apply) return resp(200, payload);
+
+      await ref.set({ roofs: next, updatedAt: Date.now() }, { merge: true });
+      /* The ENTIRE removed roof goes in the audit `before`, so this destructive
+         action is reversible from the audit trail alone. */
+      await writeAuditLog(db, caller, "remove_building_roof_by_index", buildingId,
+        { roofIndex, removedRoof: removed, duplicateIndexes: dupes },
+        { resultingRoofs: payload.resultingRoofs, remainingDuplicates: payload.remainingDuplicates });
+      return resp(200, payload);
+    }
+
+    if (body.action === "reid_building_roof") {
+      // Same settings.company tier as every other building-structure action.
+      let caller;
+      try { caller = await requirePermission(event, "settings.company"); }
+      catch (e) { return resp(e.statusCode || 401, { error: e.message }); }
+
+      /* Breaks a roofId COLLISION: two entries in roofs[] carrying the same id
+         (Orr St, 2026-07-20 -- two roofs both answering to "roof_default").
+         While that holds, the building is not safely operable: every roof
+         mutation in the app resolves by id and takes the FIRST match, so
+         Rename/Move/RoofMapper all target index 0 no matter which roof the
+         user clicked, and a delete-by-id would destroy the wrong roof.
+
+         ADDRESSED BY ARRAY INDEX, deliberately. The id is ambiguous by
+         definition here -- index is the only unambiguous handle, and no other
+         action in this file takes one. */
+      const buildingId = String(body.buildingId || "");
+      if (!buildingId) return resp(400, { error: "Missing buildingId" });
+      if (!Number.isInteger(body.roofIndex) || body.roofIndex < 0) {
+        return resp(400, { error: "roofIndex must be a non-negative integer (roofs[] position)" });
+      }
+      const roofIndex = body.roofIndex;
+      const apply = body.apply === true;   // DRY RUN unless explicitly true
+
+      const db = getDb();
+      const ref = db.collection("buildings").doc(buildingId);
+      const snap = await ref.get();
+      if (!snap.exists) return resp(404, { error: "Building not found" });
+      const bld = snap.data() || {};
+
+      // Never synthesise: getBuildingRoofsServer() invents a default roof for a
+      // building with no roofs[], and re-iding a phantom would materialise it.
+      const stored = Array.isArray(bld.roofs) ? bld.roofs : [];
+      if (roofIndex >= stored.length) {
+        return resp(400, { error: "roofIndex " + roofIndex + " is out of range (building has " + stored.length + " roofs)" });
+      }
+      const target = stored[roofIndex] || {};
+      const oldId = target.id ? String(target.id) : "";
+
+      /* GUARD: only ever break a real collision. This action re-keys a roof
+         WITHOUT re-pointing the records that reference it, which is only
+         defensible when the id was ambiguous to begin with. Re-iding a roof
+         with a unique id would orphan every one of its records deliberately. */
+      const dupes = duplicateRoofIdIndexes(stored);
+      const involved = dupes.some(d => d.id === oldId);
+      if (!oldId || !involved) {
+        return resp(400, {
+          error: "Roof at index " + roofIndex + " (id " + (oldId || "<none>") +
+            ") does not share its id with another roof. This action only breaks id collisions.",
+          duplicateIndexes: dupes
+        });
+      }
+
+      const newId = genRoofId();
+      if (stored.some(r => r && r.id === newId)) {
+        return resp(500, { error: "Generated id collided with an existing roof; retry." });
+      }
+
+      /* The records still pointing at the OLD id. They are NOT re-pointed here
+         -- deciding which physical roof each one describes needs a human and
+         the photo GPS, and guessing would bake a wrong answer into the record.
+         Counting them is the point: after the split, every one of these
+         resolves to the FIRST entry still holding the old id, so the caller
+         must see the size of what they are about to make unambiguous. */
+      const [evtSnap, repSnap] = await Promise.all([
+        db.collection("building_history_events").where("buildingId", "==", buildingId).where("roofId", "==", oldId).get(),
+        db.collection("reports").where("buildingId", "==", buildingId).where("roofId", "==", oldId).get()
+      ]);
+      const stillOnOldId = stored.filter((r, i) => i !== roofIndex && r && r.id === oldId).length;
+
+      const payload = {
+        ok: true, buildingId, dryRun: !apply,
+        roofIndex, oldId, newId,
+        roofLabel: target.label || "",
+        carries: {
+          outlines: Array.isArray(target.roof_outlines) ? target.roof_outlines.length : 0,
+          assets: Array.isArray(target.roof_assets) ? target.roof_assets.length : 0,
+          baseMap: target.roof_base_map_type || null,
+          roofSystem: target.roofSystem || null
+        },
+        referencesToOldId: {
+          historyEvents: evtSnap.size, reports: repSnap.size,
+          note: "These are NOT re-pointed. After the split they all resolve to the remaining roof(s) holding " +
+                oldId + " (" + stillOnOldId + " left). Attribution is a separate, human step."
+        },
+        duplicateIndexes: dupes
+      };
+      if (!apply) return resp(200, payload);
+
+      const next = stored.slice();
+      // Only the id changes -- geometry, base map, assets, outlines, profile
+      // all ride through untouched.
+      next[roofIndex] = Object.assign({}, target, { id: newId, updatedAt: Date.now() });
+      await ref.set({ roofs: next, updatedAt: Date.now() }, { merge: true });
+      await writeAuditLog(db, caller, "reid_building_roof", buildingId,
+        { roofIndex, oldId, label: target.label || "", duplicateIndexes: dupes },
+        { roofIndex, newId, referencesLeftOnOldId: payload.referencesToOldId });
+      return resp(200, payload);
+    }
+
     if (body.action === "renumber_building_roofs") {
       // Same settings.company tier as every other building-structure action.
       let caller;
@@ -648,6 +872,24 @@ exports.handler = async function (event) {
           note: "Building has no stored roofs[] — nothing to renumber." });
       }
 
+      /* REFUSE ON AN ID COLLISION (Orr St, 2026-07-20). Renumbering is a
+         LABEL operation whose whole safety argument is "identity is the id, so
+         renaming disturbs nothing". That argument collapses when two roofs
+         share an id: the tool cannot tell them apart, it would swap which
+         physical roof carries which name, and -- worst -- a clean "Roof 1..N"
+         makes the building LOOK healthy while the collision remains. The
+         visible "(2)" is currently the only symptom; erasing it without
+         fixing the cause is strictly worse than leaving it alone.
+         Break the collision with reid_building_roof first, then renumber. */
+      const collisions = duplicateRoofIdIndexes(stored);
+      if (collisions.length) {
+        return resp(409, {
+          error: "Refusing to renumber: two or more roofs share a roofId, so labels cannot be " +
+                 "safely reassigned. Break the collision with reid_building_roof first.",
+          duplicateIndexes: collisions,
+          roofs: stored.map((r, i) => ({ index: i, id: (r && r.id) || null, label: (r && r.label) || "" }))
+        });
+      }
       const result = renumberRoofLabels(stored);
       const payload = {
         ok: true, buildingId, dryRun: !apply,
