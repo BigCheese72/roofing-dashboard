@@ -597,6 +597,14 @@ function promptProjection(report) {
   if (!report || typeof report !== "object") return report;
   const out = Object.assign({}, report);
   delete out.workOrderId;
+  /* visionImages ride as real image BLOCKS (callAnthropic turns each into an
+     image content part). Leaving them on the JSON projection sent them a
+     SECOND time as base64 TEXT -- the model gets the same photo twice, once
+     usefully and once as a wall of characters it cannot decode, and we pay for
+     both. That is the exact cost the ~900px downscale (cfc070f) existed to
+     save, handed straight back. One line, and it is live spend now that the
+     key is on production. */
+  delete out.visionImages;
   if (Array.isArray(report.photos)) {
     out.photoCaptions = report.photos.map(function (p) { return p && p.caption; }).filter(Boolean);
     delete out.photos;

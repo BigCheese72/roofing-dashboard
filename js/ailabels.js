@@ -193,8 +193,21 @@ function aiLabelNormalizePhotoRef(photo){
   }
   if (kind === "storage" || kind === "workorder_embedded"){
     if (typeof photo.workOrderId !== "string" || !photo.workOrderId) return null;
-    if (!Number.isInteger(photo.photoIndex) || photo.photoIndex < 0) return null;
-    return { kind: kind, workOrderId: photo.workOrderId, photoIndex: photo.photoIndex };
+    /* IDENTITY IS photoLocalId, NOT THE INDEX. photos[] is spliced on every
+       delete and re-ordered freely, so a stored position silently starts
+       pointing at a DIFFERENT photo the moment one before it is removed --
+       and a training row that names the wrong photo is worse than no row,
+       because nothing about it looks wrong afterwards.
+       photoIndex is still recorded when present, but only as a positional
+       SNAPSHOT for forensics; never resolve a photo by it. Accepting either
+       keeps rows writable for a photo that predates localId. */
+    var localId = (typeof photo.photoLocalId === "string" && photo.photoLocalId) ? photo.photoLocalId : null;
+    var idx = (Number.isInteger(photo.photoIndex) && photo.photoIndex >= 0) ? photo.photoIndex : null;
+    if (!localId && idx === null) return null;
+    var ref = { kind: kind, workOrderId: photo.workOrderId };
+    if (localId) ref.photoLocalId = localId;
+    if (idx !== null) ref.photoIndexSnapshot = idx;
+    return ref;
   }
   return null;
 }
@@ -501,7 +514,10 @@ async function aiConfirmPhotoIssue(gi, corrected){
     predictedCause: predicted.likelyCause || null,
     predictedConfidence: predicted.confidence || null,
     modelId: predicted.model || null,
-    photo: { kind: "workorder_embedded", workOrderId: o.id, photoIndex: gi },
+    /* photoLocalId is the durable reference; gi is this render's position and
+       is kept only as a snapshot (see aiLabelCleanPhotoRef). */
+    photo: { kind: "workorder_embedded", workOrderId: o.id,
+             photoLocalId: (p && p.localId) || null, photoIndex: gi },
     pin: p.gps || null,
     buildingId: buildingId,
     customerId: o.customerId || null,

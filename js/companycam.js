@@ -696,13 +696,22 @@ async function mergeModalPick(i){
   if (!confirm(msg)) return;
   toast("Merging buildings…");
   try{
+    /* Capture BEFORE closing: closeMergeBuildingModal() nulls
+       mergeModalSurvivorId, so reading it afterwards handed openBuildingHistory
+       a null and every SUCCESSFUL merge ended on "Couldn't load timeline" --
+       the happy path looking like a failure right after a confirm that says
+       "this is not instant to reverse". */
+    var survivorId = mergeModalSurvivorId;
     var out = await callAdminApi({ action: "merge_buildings",
-      sourceBuildingId: src.id, destBuildingId: mergeModalSurvivorId,
+      sourceBuildingId: src.id, destBuildingId: survivorId,
       survivingName: survivorName });
     closeMergeBuildingModal();
     toast("Merged ✓ " + out.movedRoofs + " roof(s), " + out.movedEvents +
       " history entries, " + out.movedReports + " report(s) moved");
-    if (typeof openBuildingHistory === "function") openBuildingHistory(mergeModalSurvivorId);
+    /* The merge renamed/renumbered roofs and re-pointed records, so the cached
+       duplicate scan for this building is now stale. */
+    if (typeof clearDuplicateBuildingCache === "function") clearDuplicateBuildingCache();
+    if (typeof openBuildingHistory === "function") openBuildingHistory(survivorId);
   }catch(e){ toast("Couldn't merge: " + e.message); }
 }
 

@@ -546,6 +546,34 @@ exports.handler = async function (event) {
         customerId: dstBld.customerId || srcBld.customerId || null,
         customerName: dstBld.customerName || srcBld.customerName || ""
       };
+      /* WORK ORDERS NEED MORE THAN THE POINTER -- this was live data loss.
+         A work order carries the building's identity a SECOND time, in its own
+         editable fields: jobName, location, billTo. Re-pointing buildingId
+         while leaving those holding the LOSER's values sets a trap that springs
+         on the next ordinary save:
+             ensureCustomerAndBuilding() resolves the stored buildingId, sees
+             the SURVIVOR (which was not itself merged away, so
+             redirectedByMerge is false), concludes ownsBuilding === true, and
+             writes patch.name = o.jobName / patch.location = o.location /
+             patch.customerName from o.billTo straight onto the survivor.
+         The survivor is then renamed to the loser -- "Orr Street Studios"
+         becomes "KOMU" -- and its address is overwritten. Nothing warns; it
+         looks like a normal save.
+         So the work-order patch also carries the SURVIVOR's identity, which is
+         what relinkModalPick() already does when a user re-links by hand. Same
+         three fields, same source of truth.
+         Deliberately NOT applied to history events / reports / DPRs: they do
+         not carry these editable identity fields, and adding them would write
+         stray keys onto documents that never had them.
+         NOT roofSystem: a work order's roofSystem describes the roof being
+         worked, which legitimately differs per order -- copying it would be a
+         different bug, not a fix. (That the save path also writes roofSystem
+         onto the building is a separate pre-existing concern.) */
+      const woReassign = Object.assign({}, reassign, {
+        jobName: chosenName || dstBld.name || "",
+        location: dstBld.location || "",
+        billTo: dstBld.customerName || srcBld.customerName || ""
+      });
       // Firestore caps a batch at 500 writes; chunk so a building with a long
       // history merges rather than failing at the limit.
       const writes = [];
@@ -555,7 +583,7 @@ exports.handler = async function (event) {
       // Work orders and DPRs carry buildingId AND the denormalised name, same
       // as the history docs -- re-point both so a reopened record resolves to
       // the survivor and reads with the survivor's name.
-      woSnap.forEach(d => writes.push({ ref: d.ref, data: reassign }));
+      woSnap.forEach(d => writes.push({ ref: d.ref, data: woReassign }));
       dprSnap.forEach(d => writes.push({ ref: d.ref, data: reassign }));
       // The DESTRUCTIVE patch goes LAST, deliberately. Chunks commit
       // sequentially and are not atomic across chunk boundaries, and adding
