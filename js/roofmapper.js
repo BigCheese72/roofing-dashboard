@@ -3831,7 +3831,7 @@ function rmRenderCutoutPanel(){
   var list = holes.map(function(h, i){
     var name = h.kind === "void" ? "Open area" : (h.sourceRoofLabel || "Nested roof");
     var sqft = Math.round(rmGeomPolygonAreaSqMeters(h.ring) * 10.7639).toLocaleString();
-    return '<div class="row" style="align-items:center;gap:8px;margin:0 0 6px">' +
+    return '<div style="display:flex;align-items:center;gap:8px;margin:0 0 6px">' +
       '<span style="flex:1">' + (h.kind === "void" ? "◻️ " : "✂️ ") + esc(name) +
       ' <span class="hint">− ' + sqft + ' sq ft</span></span>' +
       '<button class="btn" onclick="rmRemoveCutout(' + i + ')">Undo</button></div>';
