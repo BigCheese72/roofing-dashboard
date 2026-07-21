@@ -464,6 +464,23 @@ function rmDescribeOutlineHoles(outline){
   if (voidCuts.length) parts.push(voidCuts.length + " open area" + (voidCuts.length > 1 ? "s" : ""));
   return parts.join(" · ");
 }
+/* Hole subpaths for an SVG roof shape, projected through the SAME
+   origin + toSvg pipeline as the outer ring so they land registered on it.
+   Appended to the outer ring's path data; the path must then be rendered
+   with fill-rule="evenodd" (see the three call sites) or the cutout fills
+   in solid and the donut reads as an ordinary roof.
+
+   evenodd rather than nonzero deliberately: nonzero would only punch a hole
+   if the inner ring wound OPPOSITE the outer one, and nothing upstream
+   guarantees winding direction -- rings come from OSM, hand traces, walked
+   corners, and copies of other roofs' rings. evenodd is winding-agnostic,
+   so it holds no matter where the ring came from. */
+function rmOutlineHolesSvgPath(outline, origin, toSvg){
+  return rmOutlineHoleRings(outline).map(function(ring){
+    var pts = ring.map(function(p){ return toSvg(rmExportProjectPoint(p, origin)); });
+    return " M " + pts.map(function(p){ return p.x.toFixed(1) + "," + p.y.toFixed(1); }).join(" L ") + " Z";
+  }).join("");
+}
 function rmRoofsShareNestedBoundary(a, b){
   function cutsOut(x, y){
     return (((x.outline && x.outline.holes) || [])).some(function(h){
@@ -1773,7 +1790,8 @@ function rmBuildOutlineSvg(outline, overlay){
       '" width="' + Math.abs(bmSe.x - bmNw.x).toFixed(1) + '" height="' + Math.abs(bmSe.y - bmNw.y).toFixed(1) + '" preserveAspectRatio="none"/>';
   }
   var pathPts = pts.map(toSvg);
-  var pathD = "M " + pathPts.map(function(p){ return p.x.toFixed(1) + "," + p.y.toFixed(1); }).join(" L ") + " Z";
+  var pathD = "M " + pathPts.map(function(p){ return p.x.toFixed(1) + "," + p.y.toFixed(1); }).join(" L ") + " Z" +
+    rmOutlineHolesSvgPath(outline, origin, toSvg);
   var title = (overlay && overlay.buildingName) || rmOutlineTitle(outline);
   if (overlay && overlay.roofLabel) title += " — " + overlay.roofLabel;
   var scaleBarFt = 20, scaleBarPx = scaleBarFt * scale;
@@ -1862,14 +1880,14 @@ function rmBuildOutlineSvg(outline, overlay){
       rmEscXml(overlay.buildingAddress) + '</text>';
   }
   headerSvg += '<text x="16" y="' + statsY + '" font-family="Arial, sans-serif" font-size="13" fill="#5B6770">Area: ' +
-    outline.areaSqFt.toFixed(0) + ' sq ft &#183; Perimeter: ' + outline.perimeterFt.toFixed(0) + ' ft &#183; Generated ' +
+    rmEscXml(rmFormatOutlineArea(outline)) + ' &#183; Perimeter: ' + outline.perimeterFt.toFixed(0) + ' ft &#183; Generated ' +
     rmEscXml(new Date(outline.createdAt || Date.now()).toLocaleDateString()) + '</text>';
   headerSvg += '<text x="16" y="' + (statsY + 18) + '" font-family="Arial, sans-serif" font-size="12" fill="#5B6770">' +
     rmEscXml(rmOutlineMeasurementMethod(outline).label) + '</text>';
   var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + svgW + '" height="' + svgH + '" viewBox="0 0 ' + svgW + ' ' + svgH + '">' +
     '<rect width="100%" height="100%" fill="#ffffff"/>' +
     headerSvg + basemapSvg +
-    '<path d="' + pathD + '" fill="rgba(232,96,10,0.15)" stroke="#E8600A" stroke-width="2.5" stroke-linejoin="round"/>' +
+    '<path d="' + pathD + '" fill="rgba(232,96,10,0.15)" fill-rule="evenodd" stroke="#E8600A" stroke-width="2.5" stroke-linejoin="round"/>' +
     dimSvg + markersSvg + legendSvg +
     '<g transform="translate(16,' + (svgH - 18) + ')">' +
       '<line x1="0" y1="0" x2="' + scaleBarPx + '" y2="0" stroke="#263238" stroke-width="2"/>' +
@@ -2000,8 +2018,9 @@ function rmBuildMultiRoofOutlineSvg(data){
   var roofLabelItems = [], assetLabelItems = [], markerObstacles = [];
   roofsProjected.forEach(function(r, i){
     var pathPts = r.pts.map(toSvg);
-    var pathD = "M " + pathPts.map(function(p){ return p.x.toFixed(1) + "," + p.y.toFixed(1); }).join(" L ") + " Z";
-    shapeSvg += '<path d="' + pathD + '" fill="rgba(232,96,10,0.15)" stroke="#E8600A" stroke-width="2.5" stroke-linejoin="round"/>';
+    var pathD = "M " + pathPts.map(function(p){ return p.x.toFixed(1) + "," + p.y.toFixed(1); }).join(" L ") + " Z" +
+      rmOutlineHolesSvgPath(r.outline, origin, toSvg);
+    shapeSvg += '<path d="' + pathD + '" fill="rgba(232,96,10,0.15)" fill-rule="evenodd" stroke="#E8600A" stroke-width="2.5" stroke-linejoin="round"/>';
     /* Edge dimensions, same real-world haversine lengths the single-roof
        export/live map both use. */
     for (var e = 0; e < r.outline.ring.length - 1; e++){
@@ -2045,7 +2064,10 @@ function rmBuildMultiRoofOutlineSvg(data){
        wherever Mark dragged it) -- "each selected roof drawn, labeled,
        with its area/dimensions" per Mark's exact ask. */
     var lp = toSvg(r.labelPt);
-    var areaText = Math.round(r.outline.areaSqFt || 0) + ' sq ft';
+    /* Net on the map label -- it's the number you'd order material against.
+       The gross stays available in the stats panel and the report header. */
+    var areaText = Math.round(r.outline.areaSqFt || 0) + ' sq ft' +
+      (rmOutlineHoleRings(r.outline).length ? ' net' : '');
     var labelBoxW = Math.max(r.label.length * 17 * 0.6, areaText.length * 13 * 0.55) + 6;
     roofLabelItems.push({
       id: "roof-" + i, kind: "roof", name: r.label, areaText: areaText,
@@ -2972,10 +2994,19 @@ function rmRenderOutlineStats(outline){
     scaleNote += '<p class="hint" style="margin:0 0 8px">Scale inherited from this building&rsquo;s earlier ' +
       'calibration. Tap any edge&rsquo;s length to override it for just this roof.</p>';
   }
+  /* Cut-out roofs get a second stat and a caption naming what was removed,
+     so a net figure never appears without saying why it's lower than the
+     footprint someone might be comparing it against. */
+  var holeNote = rmDescribeOutlineHoles(outline);
+  var grossStat = holeNote ?
+    '<div class="stat"><b>' + Math.round(outline.grossAreaSqFt || 0) + '</b><span>Gross Sq Ft</span></div>' : '';
   document.getElementById("rm-outline-stats").innerHTML = scaleNote +
-    '<div class="stat"><b>' + outline.areaSqFt.toFixed(0) + '</b><span>Sq Ft</span></div>' +
+    '<div class="stat"><b>' + outline.areaSqFt.toFixed(0) + '</b><span>' + (holeNote ? 'Net Sq Ft' : 'Sq Ft') + '</span></div>' +
+    grossStat +
     '<div class="stat"><b>' + outline.perimeterFt.toFixed(0) + '</b><span>Perimeter Ft</span></div>' +
     '<div class="stat"><b>' + outline.ring.length + '</b><span>Points</span></div>' +
+    (holeNote ? '<p class="hint" style="margin:8px 0 0">✂️ ' + esc(holeNote) +
+      ' — perimeter includes the inner edge.</p>' : '') +
     rmMeasurementHistoryHtml(outline);
   document.getElementById("rm-outline-panel").style.display = "";
 }
