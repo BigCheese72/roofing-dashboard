@@ -1271,6 +1271,63 @@ async function findExistingBuildingId(o){
   }catch(e){}
   return null;
 }
+/* Surfaces the duplicate signal findExistingBuildingId() already computes and
+   throws away.
+
+   Mark, 2026-07-20: "I gotta check it open... clumsy way to merge." Finding a
+   duplicate meant suspecting one, opening a record and hunting for the merge
+   button. But the dedup matcher above ALREADY detects the condition -- when two
+   buildings share an address it correctly refuses to guess and returns null,
+   and that finding is discarded. This returns it instead.
+
+   Deliberately a SEPARATE function rather than a refactor of the matcher: that
+   one sits in the save path, is well covered, and its "never guess" contract is
+   load-bearing. Detection is read-only and must not be able to change what a
+   save writes.
+
+   Returns [{ id, name, why }] -- OTHER buildings that look like this one. */
+var __dupBuildingCache = {};
+function clearDuplicateBuildingCache(){ __dupBuildingCache = {}; }
+async function findDuplicateBuildingCandidates(buildingId, bld){
+  if (!fdb || !buildingId || !bld) return [];
+  if (__dupBuildingCache[buildingId]) return __dupBuildingCache[buildingId];
+  var found = {}, out = [];
+  function add(id, name, why){
+    if (id === buildingId || found[id]) return;
+    found[id] = true;
+    out.push({ id: id, name: name || "(unnamed building)", why: why });
+  }
+  /* Indexed identities first -- one cheap query each. */
+  var wanted = [];
+  if (bld.companyCamProjectId) wanted.push(["companyCamProjectId", bld.companyCamProjectId, "same CompanyCam project"]);
+  if (bld.foundationJobNo) wanted.push(["foundationJobNo", bld.foundationJobNo, "same Foundation job"]);
+  for (var i = 0; i < wanted.length; i++){
+    try{
+      var qs = await fdb.collection("buildings").where(wanted[i][0], "==", wanted[i][1]).limit(5).get();
+      qs.forEach(function(d){
+        var v = d.data() || {};
+        if (!v.archived) add(d.id, v.name, wanted[i][2]);
+      });
+    }catch(e){ /* index missing or offline -- a missing banner, never an error */ }
+  }
+  /* Address needs a client-side scan, so it runs last. Same no-orderBy rule as
+     the matcher: orderBy("updatedAt") silently excludes every building written
+     before that field existed -- the legacy records most likely to BE the
+     duplicate. */
+  var addrKey = (typeof fdnAddressMatchKey === "function") ? fdnAddressMatchKey(bld.location || "") : "";
+  if (addrKey){
+    try{
+      var scan = await fdb.collection("buildings").limit(1000).get();
+      scan.forEach(function(d){
+        var v = d.data() || {};
+        if (v.archived) return;
+        if (fdnAddressMatchKey(v.location || "") === addrKey) add(d.id, v.name, "same address");
+      });
+    }catch(e){}
+  }
+  __dupBuildingCache[buildingId] = out;
+  return out;
+}
 async function ensureCustomerAndBuilding(o){
   if (!fdb) return { customerId: (o.customerId || null), buildingId: (o.buildingId || null) };
   var custName = (o.billTo || "").trim();

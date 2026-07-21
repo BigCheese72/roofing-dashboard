@@ -13,9 +13,10 @@
 // any AI is wired.
 //
 // PHASE 1 = LLM WITH PHOTO VISION -- NOW WIRED, through the shared provider
-// seam (lib/aiProvider.js, PR #122). Mark provisioned ANTHROPIC_API_KEY on
-// the DEV deploy context (2026-07-16); production's context deliberately has
-// no key, so prod resolves to the stub until a promotion Mark chooses.
+// seam (lib/aiProvider.js, PR #122). ANTHROPIC_API_KEY is provisioned on BOTH
+// the dev and PRODUCTION deploy contexts -- prod confirmed live 2026-07-20,
+// when Mark drafted a summary on a leak order from the production app. Treat
+// prod as billing on every tap; the key is the only gate.
 // Mark's requirement: the model actually LOOKS AT the photos, not just the
 // written findings. How a draft is produced:
 //   * resolveProvider(process.env) decides stub vs live -- purely from which
@@ -234,7 +235,24 @@ function buildLlmPrompt(r) {
       "photos.\n---\n" + STYLE_EXEMPLAR + "\n---\n"
     : "Write in a professional commercial-roofing service-report voice addressed to the building's " +
       "customer, in at most " + SUMMARY_MAX_PARAGRAPHS + " short paragraphs. ";
+  // SEED-AND-EXPAND (Mark, 2026-07-19). When the technician has already written
+  // something, his text is the STARTING POINT, not competition for the model's
+  // own draft. He is the one who stood on the roof: his facts outrank anything
+  // inferred from a photo, so the instruction is explicit that his content is
+  // kept and never contradicted. Without this the model treats the seed as
+  // just more context and happily rewrites past it.
+  var seed = (r.summary || "").trim();
+  var seedRule = !seed ? "" :
+    "The technician has already started this summary. His text is between the " +
+    "<technician_draft> tags below. BUILD ON IT: keep his observations, his " +
+    "specifics, and his wording where it already works, then refine the prose " +
+    "and add what the report data and photos support. Never contradict, drop, " +
+    "or water down a fact he stated -- he was on the roof and you were not. If " +
+    "a photo appears to disagree with him, prefer his account and simply do not " +
+    "raise the conflict. Return the COMPLETE summary, not just your additions.\n" +
+    "<technician_draft>\n" + seed + "\n</technician_draft>\n";
   return "You draft the Summary section of a commercial roofing report. " +
+    seedRule +
     "Use ONLY the report data and the attached photos -- never invent conditions, causes, " +
     "measurements, or recommendations that they do not support. Where a photo shows a condition, " +
     "ground the description in what is visible. " + style +
@@ -348,13 +366,22 @@ exports.handler = async function (event) {
     if (!report) return resp(400, { error: "Missing report" });
 
     // Stub vs live is decided by which env vars exist on THIS deploy context
-    // (dev holds ANTHROPIC_API_KEY; production deliberately doesn't yet).
+    // (dev AND production both hold ANTHROPIC_API_KEY as of 2026-07-20).
     // Signed photo URLs are minted ONLY when a live model will consume them
     // -- the stub path must never create a live URL with no purpose.
     const provider = resolveProvider(process.env);
     let photoUrls = [];
     let photoImages = [];
+    // Client-downscaled (~900px) images come FIRST and are preferred over both
+    // the signed-URL and full-res inline paths below: same photos, roughly a
+    // third of the image tokens, and no Storage round-trip. sanitizeReport()
+    // has already validated and capped them. The two legacy paths remain as
+    // the fallback for an older client, or a photo whose bytes never reached
+    // this request.
     if (provider.name !== "stub") {
+      photoImages = (report.visionImages || []).slice(0, MAX_VISION_PHOTOS);
+    }
+    if (provider.name !== "stub" && photoImages.length < MAX_VISION_PHOTOS) {
       if ((report.photos || []).some(function (p) { return p.storageRef; })) {
         try {
           const bucket = getAdmin(hostnameFromEvent(event)).storage().bucket();
@@ -362,17 +389,25 @@ exports.handler = async function (event) {
           // most MAX_VISION_PHOTOS images per call, so refs past the budget
           // are never signed (post-#119 cross-review fix -- signing all 60
           // minted up to 52 live URLs with no consumer).
-          const signable = report.photos.filter(function (p) { return p.storageRef; }).slice(0, MAX_VISION_PHOTOS);
+          // Budget is shared with the client-downscaled images above -- sign only
+          // what is still unfilled, or a report with 8 client images would mint
+          // 8 more signed URLs the provider seam then discards.
+          const signable = report.photos.filter(function (p) { return p.storageRef; })
+            .slice(0, MAX_VISION_PHOTOS - photoImages.length);
           photoUrls = (await collectSignedPhotoUrls(bucket, signable)).map(function (p) { return p.url; });
         } catch (e) { /* vision degrades to text-only; a draft must never dead-end on Storage */ }
       }
       // Inline photos (Phase 1.5) fill whatever vision budget the signed
       // URLs left. On dev this is ALL the photos (no Storage bucket to
       // sign against); on prod it covers a photo saved before migration.
-      if (report.workOrderId && photoUrls.length < MAX_VISION_PHOTOS) {
+      if (report.workOrderId && (photoUrls.length + photoImages.length) < MAX_VISION_PHOTOS) {
         try {
           const db = getAdmin(hostnameFromEvent(event)).firestore();
-          photoImages = await collectInlinePhotoImages(db, report.workOrderId, MAX_VISION_PHOTOS - photoUrls.length);
+          // APPEND -- assigning here would discard the client-downscaled images
+          // gathered above and silently fall back to full-res bytes.
+          const inline = await collectInlinePhotoImages(
+            db, report.workOrderId, MAX_VISION_PHOTOS - photoUrls.length - photoImages.length);
+          photoImages = photoImages.concat(inline);
         } catch (e) { /* same rule: degrade, never dead-end */ }
       }
     }

@@ -189,11 +189,17 @@ test("buildDoc: exact schema, unknown caller keys dropped, no URL can survive", 
   const sb = makeSandbox();
   const entry = validEntry({ secretUiState: { html: "<div>" }, img: "data:image/jpeg;base64,AAA" });
   const doc = sb.aiLabelBuildDoc(entry, "uid_test_1");
-  assert.strictEqual(doc.schemaVersion, 1);
+  assert.strictEqual(doc.schemaVersion, 2); // v2: prediction capture + controlled cause
   assert.strictEqual(doc.label, "ponding_water");
   assert.strictEqual(doc.buildingId, "bld_stable_doc_id_1");
   assert.strictEqual(doc.confirmedByUid, "uid_test_1");
-  assert.deepStrictEqual(plain(doc.photo), { kind: "storage", workOrderId: "wo_123", photoIndex: 2 });
+  /* photoIndex was RENAMED to photoIndexSnapshot (review REQUIRED #3b): a
+     stored position is not an identity, because photos[] is spliced on every
+     delete -- a row keyed by position silently starts naming a different
+     photo. photoLocalId is the identity now; the position is kept only as a
+     forensic snapshot, and the name says so. This assertion is what forced
+     that change to be deliberate rather than incidental. */
+  assert.deepStrictEqual(plain(doc.photo), { kind: "storage", workOrderId: "wo_123", photoIndexSnapshot: 2 });
   assert.deepStrictEqual(plain(doc.pin), { lat: 35.1, lng: -80.8, x: null, y: null });
   assert.strictEqual(doc.roofSystem, "TPO");
   assert.strictEqual(doc.roofAgeYears, 12);

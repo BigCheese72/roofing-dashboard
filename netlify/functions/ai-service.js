@@ -15,8 +15,10 @@
 //     vocabulary only. The future leak-photo UI builds against this.
 //
 // Whether a real model answers is decided per deploy context by which env
-// vars exist (dev holds ANTHROPIC_API_KEY as of 2026-07-16; production
-// deliberately has no key). With no key this runs as a deterministic stub --
+// vars exist. BOTH dev and PRODUCTION hold ANTHROPIC_API_KEY (prod confirmed
+// live 2026-07-20). The key is the ONLY gate -- there is no separate feature
+// flag -- so on a keyed context this is live for the crew and every call
+// bills. With no key this runs as a deterministic stub --
 // clearly marked via provider:"stub" / llm:false -- and makes ZERO external
 // network calls. See aiProvider.js for provider-selection and cost-control
 // rules.
@@ -106,11 +108,17 @@ exports.handler = async function (event) {
     catch (e) { return resp(400, { error: "Bad request" }); }
 
     if (body.action === "issue_id") {
-      if (!ai.isSignedPhotoUrl(body.photoUrl)) {
-        return resp(400, { error: "photoUrl must be a signed https URL" });
+      // A caller supplies EITHER a signed Storage URL (production) or an
+      // inline ~900px downscale (dev, which has no Storage bucket to sign
+      // against). cleanInlineImage() in lib/aiProvider.js is the gate on the
+      // inline path -- media-type allow-list, base64 shape, size cap -- so an
+      // arbitrary blob cannot ride in by being relabelled as a photo.
+      const hasInline = !!ai.cleanInlineImage(body.photoImage);
+      if (!hasInline && !ai.isSignedPhotoUrl(body.photoUrl)) {
+        return resp(400, { error: "photoUrl must be a signed https URL, or send an inline photoImage" });
       }
       const out = await ai.identifyIssue(
-        { photoUrl: body.photoUrl, context: body.context },
+        { photoUrl: body.photoUrl, photoImage: body.photoImage, context: body.context },
         { env: process.env }
       );
       const r = {

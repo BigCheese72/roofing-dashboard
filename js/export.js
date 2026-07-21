@@ -1350,6 +1350,38 @@ function buildPdfPhotoMap(photos){
     return pdfPhotoDataUrl(p.img).then(function(u){ map.set(p, u); });
   })).then(function(){ return map; });
 }
+/* ---- SHARED ~900px downscaler for the AI vision features ----
+   The AI summary and the per-photo issue-ID chip both send photos to a vision
+   model, and both want the SAME small image the PDF path already produces:
+   900px/q0.72 (PDF_PHOTO_MAX_DIM above). Deliberately reuses pdfPhotoDataUrl()
+   rather than adding a second downscaler -- two independent resize paths would
+   drift, and this one is already proven on production.
+
+   Why it matters beyond payload size: Anthropic re-scales anything over
+   ~1568px on the long edge and bills the resized token count anyway, so
+   sending a 1600px capture costs roughly 3x a 900px one (~2,300 vs ~810
+   tokens per image) for no extra detail the model can use. At the global
+   `large` capture preset every photo is 1600px, so this is a real per-draft
+   saving, not a micro-optimisation.
+
+   Returns { mediaType, data } -- base64 WITHOUT the data: prefix, which is
+   exactly the shape lib/aiProvider.js's cleanInlineImage() validates -- or
+   null when the photo can't be read. Never throws: a photo that won't
+   downscale is simply one the model doesn't see, never a failed draft. */
+function aiVisionImagePart(dataUrl){
+  return pdfPhotoDataUrl(dataUrl).then(function(u){
+    var m = /^data:(image\/[a-z0-9.+-]+);base64,(.+)$/.exec(typeof u === "string" ? u : "");
+    return m ? { mediaType: m[1], data: m[2] } : null;
+  }).catch(function(){ return null; });
+}
+/* Downscaled vision parts for up to `max` photos that actually carry bytes,
+   in report order. Shared by draftReportSummary() (whole report) and the
+   per-photo issue-ID chip (one photo). */
+function aiVisionImageParts(photoList, max){
+  var withBytes = (photoList || []).filter(function(p){ return p && p.img; }).slice(0, max || 8);
+  return Promise.all(withBytes.map(function(p){ return aiVisionImagePart(p.img); }))
+    .then(function(parts){ return parts.filter(Boolean); });
+}
 function pdfFileName(){
   var o = collect();
   /* Stored "Repair" now DISPLAYS as "Work Order" everywhere, so its PDF

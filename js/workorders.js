@@ -532,6 +532,13 @@ function findingPhotoGalleryHtml(f){
       '<input type="text" placeholder="Caption" data-findingphoto="' + x.gi + '" value="' + esc(x.p.caption) + '" list="dl-photoCaption" onblur="rememberFieldValue(\'photoCaption\', this.value)">' +
       '<button class="btn danger" onclick="removePhoto(' + x.gi + ')">✕ Remove</button>' +
       photoGpsBadgeHtml(x.p, x.p.finding_id) +
+      /* AI issue-ID chip + confirm/correct (js/ailabels.js). Rendered on BOTH
+         the finding strip and the inspection-checklist strip: a checklist
+         photo is exactly as good a training row as a leak-finding one.
+         typeof-guarded because ailabels.js loads AFTER this file and is the
+         one module a deploy could legitimately ship without -- a missing
+         training-label module must cost one button, never the photo strip. */
+      ((typeof aiIssueChipHtml === "function") ? aiIssueChipHtml(x.gi) : "") +
       '</div>';
   }).join("");
   return '<div class="finding-photos">' +
@@ -570,12 +577,27 @@ function inspectionItemPhotoGalleryHtml(item){
       '<input type="text" placeholder="Caption" data-findingphoto="' + x.gi + '" value="' + esc(x.p.caption) + '" list="dl-photoCaption" onblur="rememberFieldValue(\'photoCaption\', this.value)">' +
       '<button class="btn danger" onclick="removePhoto(' + x.gi + ')">✕ Remove</button>' +
       photoGpsBadgeHtml(x.p, x.p.finding_id) +
+      /* AI issue-ID chip + confirm/correct (js/ailabels.js). Rendered on BOTH
+         the finding strip and the inspection-checklist strip: a checklist
+         photo is exactly as good a training row as a leak-finding one.
+         typeof-guarded because ailabels.js loads AFTER this file and is the
+         one module a deploy could legitimately ship without -- a missing
+         training-label module must cost one button, never the photo strip. */
+      ((typeof aiIssueChipHtml === "function") ? aiIssueChipHtml(x.gi) : "") +
       '</div>';
   }).join("");
   return '<div class="finding-photos">' +
     '<div class="btnrow" style="margin:0">' +
       '<button class="btn primary" onclick="document.getElementById(\'fcam-' + safeId + '\').click()">📷 Take Photo</button>' +
       '<button class="btn" onclick="document.getElementById(\'flib-' + safeId + '\').click()">+ Add Photos</button>' +
+      /* Mark, 2026-07-20: the crew routinely shoots a roof into CompanyCam
+         first and writes the inspection afterwards, so the photo for a
+         checklist section already exists and re-shooting it is busywork. The
+         leak-finding strip has had this since the beginning
+         (findingPhotoGalleryHtml); the checklist strip did not, for no reason
+         other than nobody adding it. openCC(itemId) targets this row exactly
+         as it targets a finding -- ccImport() attaches and auto-pins by id. */
+      '<button class="btn" onclick="openCC(\'' + safeId + '\')">Add from CompanyCam</button>' +
     '</div>' +
     '<input type="file" id="fcam-' + safeId + '" accept="image/*" capture="environment" style="display:none" ' +
       'onchange="addPhotosFromCamera(this.files, \'' + safeId + '\'); this.value=\'\';">' +
@@ -1552,6 +1574,14 @@ function buildSummaryDraftPayload(o){
   var labelByKey = {};
   INSPECTION_CHECKLIST_COMPONENTS.forEach(function(c){ labelByKey[c.key] = c.label; });
   return {
+    /* SEED (Mark, 2026-07-19): whatever the tech has already typed in the
+       Summary box. Until now this was read only to warn before overwriting --
+       the model never saw it, so a half-written summary was discarded and
+       regenerated from scratch. It is now the STARTING POINT: the prompt
+       refines and extends it rather than replacing it. Bounded at 4000 chars,
+       the same clamp discipline as every other field here (the server's
+       sanitizeReport() enforces the same bound independently). */
+    summary: s(o.summary, 4000),
     workOrderId: s(o.id, 80),
     woType: s(o.woType, 40),
     jobName: s(o.jobName, 200),
@@ -1622,14 +1652,31 @@ async function draftReportSummary(btn){
     finally{ if (btn) btn.disabled = false; }
   }
   if (!configured){ toast("✨ AI Draft Summary — coming soon"); return; }
+  /* Seed-and-expand: the tech's own text is now sent as the starting point,
+     so the confirm says what actually happens -- the draft BUILDS ON his
+     words rather than discarding them. Still confirmed rather than silent,
+     because the textarea is replaced by the result either way. */
   var existing = val("summary");
   if (existing && existing.trim() &&
-      !confirm("Replace the current Summary text with a generated draft?")) return;
+      !confirm("Draft from what you've written?\n\nYour text is used as the starting point — the AI will refine and expand it, then replace the box with the result.")) return;
   if (btn) btn.disabled = true;
   try{
+    var payload = buildSummaryDraftPayload(collect());
+    /* Downscaled photo bytes for the vision model, via the SHARED ~900px
+       helper in js/export.js (the same one the PDF uses). Sent from the
+       client because the downscale is a canvas operation the server can't
+       do without pulling in an image library. The server still enforces its
+       own per-image and count caps -- this is the cheap path, not the trust
+       boundary. Failure here degrades to text-only rather than blocking a
+       draft, matching how the server treats a Storage outage. */
+    try{
+      if (typeof aiVisionImageParts === "function"){
+        payload.visionImages = await aiVisionImageParts(photos, 8);
+      }
+    }catch(e){ /* text-only draft */ }
     var r = await fetch("/.netlify/functions/generate-summary", {
       method: "POST", headers: await authHeaders(),
-      body: JSON.stringify({ action: "draft_summary", report: buildSummaryDraftPayload(collect()) })
+      body: JSON.stringify({ action: "draft_summary", report: payload })
     });
     var out = null; try{ out = await r.json(); }catch(e){}
     if (!r.ok || !out || !out.ok || !out.draft){

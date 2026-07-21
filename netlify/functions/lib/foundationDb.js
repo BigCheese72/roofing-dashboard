@@ -200,7 +200,13 @@ function mapHoursRow(row) {
     employee_no: trimField(row.employee_no),
     hours: toNumberOrNull(row.hours),
     phase_no: trimField(row.phase_no),
-    cost_code_no: trimField(row.cost_code_no)
+    cost_code_no: trimField(row.cost_code_no),
+    // Mark, 2026-07-19: he needs to see WHICH Foundation job each punch was
+    // logged against, to confirm labor landed on the right job. Both hours
+    // queries already SELECT job_no -- this mapper was simply dropping it
+    // before it reached the client, so the data round-trip was one field
+    // short, not missing.
+    job_no: trimField(row.job_no)
   };
 }
 

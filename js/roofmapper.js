@@ -5253,19 +5253,36 @@ function rmSetLinkedJobState(job, building){
 function rmRenderLinkedJobInfo(){
   var el = document.getElementById("rm-job-link-info");
   if (!el) return;
-  if (!rmState.linkedJobNo && !rmState.linkedJobName){
+  var hasJob = !!(rmState.linkedJobNo || rmState.linkedJobName);
+  /* Mark, field 2026-07-19: this panel used to appear ONLY for a linked
+     Foundation job. It now also appears once a roof is saved to a building,
+     because that is the point at which "which CompanyCam project does this
+     push to?" becomes answerable -- and, until now, unfixable if wrong. */
+  var hasBuilding = !!rmState.linkedBuildingId;
+  if (!hasJob && !hasBuilding){
     el.style.display = "none";
     el.innerHTML = "";
     return;
   }
   el.style.display = "";
-  var bits = [];
-  if (rmState.linkedJobNo) bits.push("#" + esc(rmState.linkedJobNo));
-  if (rmState.linkedJobAddress) bits.push(esc(rmState.linkedJobAddress));
-  if (rmState.linkedJobBuildingName) bits.push("matched to " + esc(rmState.linkedJobBuildingName));
-  el.innerHTML = "Linked job: <b>" + esc(rmState.linkedJobName || rmState.linkedJobNo) + "</b>" +
-    (bits.length ? " (" + bits.join(" &middot; ") + ")" : "") +
-    ' - <a href="#" onclick="rmClearLinkedJob();return false;">clear</a>';
+  var html = "";
+  if (hasJob){
+    var bits = [];
+    if (rmState.linkedJobNo) bits.push("#" + esc(rmState.linkedJobNo));
+    if (rmState.linkedJobAddress) bits.push(esc(rmState.linkedJobAddress));
+    if (rmState.linkedJobBuildingName) bits.push("matched to " + esc(rmState.linkedJobBuildingName));
+    html += "Linked job: <b>" + esc(rmState.linkedJobName || rmState.linkedJobNo) + "</b>" +
+      (bits.length ? " (" + bits.join(" &middot; ") + ")" : "") +
+      ' - <a href="#" onclick="rmClearLinkedJob();return false;">clear</a>';
+  }
+  if (hasBuilding && isAdmin){
+    /* Same admin tier as Building History's copy of this control: re-pointing
+       the building decides where its photos and signed PDFs land. */
+    html += (html ? "<br>" : "") +
+      '<button class="btn" style="margin-top:4px" onclick="openCcProjectPicker(\'' +
+      rmState.linkedBuildingId + '\')">📷 Link / Change CompanyCam Project</button>';
+  }
+  el.innerHTML = html;
 }
 function rmClearLinkedJob(){
   rmSetLinkedJobState({}, null);
