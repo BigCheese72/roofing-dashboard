@@ -635,6 +635,112 @@ exports.handler = async function (event) {
         survivingName: chosenName });
     }
 
+    if (body.action === "remove_building_roof_by_index") {
+      let caller;
+      try { caller = await requirePermission(event, "settings.company"); }
+      catch (e) { return resp(e.statusCode || 401, { error: e.message }); }
+
+      /* Removes an EMPTY DUPLICATE roofs[] entry -- the phantom left by the Orr
+         St merge, where two entries both answered to "roof_default" and the
+         second carried nothing. Deleting it resolves the collision outright:
+         one roof_default remains, ids are unambiguous again, and Rename / Move
+         / RoofMapper stop silently targeting index 0.
+
+         This is the only destructive roof operation in the codebase, so it is
+         fenced on three sides:
+           1. addressed strictly BY ARRAY INDEX (the id is ambiguous by
+              definition -- that is the whole defect),
+           2. the target must be a DUPLICATE OCCURRENCE of an id, never the
+              first one,
+           3. the target must be EMPTY.
+         Any of the three failing is a hard refusal, not a warning. */
+      const buildingId = String(body.buildingId || "");
+      if (!buildingId) return resp(400, { error: "Missing buildingId" });
+      if (!Number.isInteger(body.roofIndex) || body.roofIndex < 0) {
+        return resp(400, { error: "roofIndex must be a non-negative integer (roofs[] position)" });
+      }
+      const roofIndex = body.roofIndex;
+      const apply = body.apply === true;   // DRY RUN unless explicitly true
+
+      const db = getDb();
+      const ref = db.collection("buildings").doc(buildingId);
+      const snap = await ref.get();
+      if (!snap.exists) return resp(404, { error: "Building not found" });
+      const bld = snap.data() || {};
+
+      // Never synthesise -- a phantom default roof must not be materialised
+      // and then "removed".
+      const stored = Array.isArray(bld.roofs) ? bld.roofs : [];
+      if (roofIndex >= stored.length) {
+        return resp(400, { error: "roofIndex " + roofIndex + " is out of range (building has " + stored.length + " roofs)" });
+      }
+      const target = stored[roofIndex] || {};
+      const dupes = duplicateRoofIdIndexes(stored);
+
+      /* GUARD 1 -- must be a LATER occurrence of a colliding id.
+         duplicateRoofIdIndexes() reports the first occurrence as `firstIndex`
+         and only subsequent ones as `index`, so the roof that every by-id
+         lookup already resolves to CANNOT be selected here: index 0 of the Orr
+         St building appears as firstIndex, never as index. That also means the
+         entry being removed is one nothing can currently reach by id, so no
+         reference changes meaning when it goes. */
+      const isRemovableDuplicate = dupes.some(d => d.index === roofIndex);
+      if (!isRemovableDuplicate) {
+        return resp(409, {
+          error: "Refusing: roofs[" + roofIndex + "] is not a later duplicate of another roof's id. " +
+                 "Only a redundant duplicate entry can be removed, never the roof that by-id lookups resolve to.",
+          duplicateIndexes: dupes,
+          roofs: stored.map((r, i) => ({ index: i, id: (r && r.id) || null, label: (r && r.label) || "" }))
+        });
+      }
+
+      /* GUARD 2 -- must carry no work. Anything here means a real roof. */
+      const carries = {
+        outlines: Array.isArray(target.roof_outlines) ? target.roof_outlines.length : 0,
+        assets: Array.isArray(target.roof_assets) ? target.roof_assets.length : 0,
+        markup: Array.isArray(target.roof_markup) ? target.roof_markup.length : 0,
+        baseMapType: target.roof_base_map_type || null,
+        baseMapUrl: target.roof_base_map_url || null
+      };
+      const isEmpty = carries.outlines === 0 && carries.assets === 0 && carries.markup === 0 &&
+                      !carries.baseMapType && !carries.baseMapUrl;
+      if (!isEmpty) {
+        return resp(409, {
+          error: "Refusing: roofs[" + roofIndex + "] carries work (outlines/assets/markup/base map) and is a real roof, " +
+                 "not an empty duplicate. Use reid_building_roof to give it its own id instead.",
+          carries: carries
+        });
+      }
+
+      const removed = Object.assign({}, target);
+      const next = stored.filter((r, i) => i !== roofIndex);
+      const payload = {
+        ok: true, buildingId, dryRun: !apply,
+        removing: { index: roofIndex, id: target.id || null, label: target.label || "", carries: carries },
+        /* Surfaced deliberately: emptiness is judged on WORK (outlines, assets,
+           markup, base map), not on descriptive metadata. A phantom can still
+           carry a roofSystem or profile someone typed, and deleting it loses
+           that. Small, but it should be a seen decision rather than a silent
+           one -- which is also why the audit entry below stores the whole roof. */
+        alsoLosesMetadata: {
+          roofSystem: target.roofSystem || null,
+          areaSqFt: target.areaSqFt != null ? target.areaSqFt : null,
+          ageYears: target.ageYears != null ? target.ageYears : null
+        },
+        resultingRoofs: next.map((r, i) => ({ index: i, id: (r && r.id) || null, label: (r && r.label) || "" })),
+        remainingDuplicates: duplicateRoofIdIndexes(next)
+      };
+      if (!apply) return resp(200, payload);
+
+      await ref.set({ roofs: next, updatedAt: Date.now() }, { merge: true });
+      /* The ENTIRE removed roof goes in the audit `before`, so this destructive
+         action is reversible from the audit trail alone. */
+      await writeAuditLog(db, caller, "remove_building_roof_by_index", buildingId,
+        { roofIndex, removedRoof: removed, duplicateIndexes: dupes },
+        { resultingRoofs: payload.resultingRoofs, remainingDuplicates: payload.remainingDuplicates });
+      return resp(200, payload);
+    }
+
     if (body.action === "reid_building_roof") {
       // Same settings.company tier as every other building-structure action.
       let caller;
