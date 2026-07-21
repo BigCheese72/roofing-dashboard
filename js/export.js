@@ -789,6 +789,27 @@ function rmDeconflictLabels(items, svgW, svgH, obstacles){
    provenance-aware edge dimensions (rmReportEdgeMeta), a method line per
    roof, and a legend. Returns null when there's nothing to draw (no
    linked roof outline -- the report renders exactly as it always did). */
+/* PDF roof-plan sizing. Height budget in points on a letter page.
+   MIN: below this the drawing is too small to read a dimension label on, so
+   page-break instead of squeezing into the gap.
+   MAX: leaves room for the measurements table that follows the plan. */
+var RM_PDF_PLAN_MIN_H = 220;
+var RM_PDF_PLAN_MAX_H = 520;
+
+/* The HTML report's copy of the plan, made responsive.
+   The SVG is emitted at natural size (hard width/height attributes) because
+   rmRasterizeSvgToCanvas() needs those exact pixel dimensions for the PDF. So
+   the scaling is added HERE, at the HTML embed, rather than in the builder --
+   putting max-width on the shared SVG would risk constraining the offscreen
+   raster the PDF path depends on.
+   Safe because the builder always emits a viewBox: the drawing scales as a
+   unit, so every edge and dimension label shrinks with it and nothing is
+   cropped. */
+function rmRoofPlanResponsiveSvg(plan){
+  var svg = (plan && plan.svg) || "";
+  if (svg.indexOf("<svg ") !== 0) return svg; /* unexpected shape: embed as-is */
+  return '<svg style="max-width:100%;height:auto;display:inline-block" ' + svg.slice("<svg ".length);
+}
 function rmBuildReportRoofPlanSvg(roofEntries){
   if (!roofEntries || !roofEntries.length) return null;
   /* Only roofs with a real world-coordinate ring can be projected to scale.
@@ -995,7 +1016,16 @@ function renderLeakReportDoc(o){
     var planUnavailableRoofs = roofPlanEntries.filter(function(r){ return r.planUnavailable; });
     if (plan || planUnavailableRoofs.length){
       h += "<h3 class='cond'>Roof Plan</h3>";
-      if (plan) h += "<div style='border:1px solid #CFD8DC;border-radius:6px;overflow:hidden'>" + plan.svg + "</div>";
+      /* SCALE-TO-FIT, not crop. rmBuildReportRoofPlanSvg() emits the SVG at its
+         natural size -- for a 52ft roof at the 20px/ft ceiling that is ~1440px
+         wide -- and the wrapper used to be overflow:hidden, so on any narrower
+         page the right-hand edges and their dimension labels were simply cut
+         off. The SVG already carries a viewBox, so it was always scalable;
+         nothing was telling it to scale. overflow:auto rather than hidden so
+         that if anything ever does exceed the box it scrolls instead of
+         silently losing content. */
+      if (plan) h += "<div style='border:1px solid #CFD8DC;border-radius:6px;overflow:auto;text-align:center'>" +
+        rmRoofPlanResponsiveSvg(plan) + "</div>";
       /* A roof that can't be drawn to scale (traced on a non-georeferenced
          image, issue #44) is NAMED here rather than silently omitted -- the
          report still quotes its measurements below. */
@@ -1698,12 +1728,26 @@ async function generateLeakReportPdf(o, roofPlanData){
         try{
           var planCanvas = await rmRasterizeSvgToCanvas(plan.svg, plan.width, plan.height);
           var planDataUrl = planCanvas.toDataURL("image/png");
+          /* Fit the plan to BOTH axes of the content box, then centre it.
+             The old math fitted width first and clamped height to a flat 380pt,
+             which never overflowed but wasted the page: a tall narrow roof
+             (40 x 200ft) came out 97pt wide -- 18% of the column -- and every
+             plan was pinned to the left margin because x was hardcoded to M.
+             One ratio applied to both dimensions preserves aspect and cannot
+             exceed either bound. */
           var availW = W - M * 2;
-          var planW = availW, planH = availW * plan.height / plan.width;
-          var maxPlanH = 380;
-          if (planH > maxPlanH){ planH = maxPlanH; planW = maxPlanH * plan.width / plan.height; }
-          if (y + planH > H - M){ doc.addPage(); y = M; }
-          doc.addImage(planDataUrl, "PNG", M, y, planW, planH);
+          /* Height budget is what is actually left on this page. If that is too
+             cramped to be legible, start a fresh page and use the full column
+             rather than shrinking the drawing to fit a gap. */
+          var budgetH = (H - M) - y;
+          if (budgetH < RM_PDF_PLAN_MIN_H){ doc.addPage(); y = M; budgetH = (H - M) - y; }
+          /* Cap so the plan never swallows a whole page on its own -- the
+             measurements table that follows should still get room. */
+          var maxPlanH = Math.min(budgetH, RM_PDF_PLAN_MAX_H);
+          var fit = Math.min(availW / plan.width, maxPlanH / plan.height);
+          var planW = plan.width * fit, planH = plan.height * fit;
+          var planX = M + (availW - planW) / 2;
+          doc.addImage(planDataUrl, "PNG", planX, y, planW, planH);
           y += planH + 18;
         }catch(e){ console.warn("Couldn't rasterize roof plan for PDF:", e); }
       }
