@@ -475,6 +475,14 @@ function rmDescribeOutlineHoles(outline){
    guarantees winding direction -- rings come from OSM, hand traces, walked
    corners, and copies of other roofs' rings. evenodd is winding-agnostic,
    so it holds no matter where the ring came from. */
+/* Leaflet ring form: [outerRing, ...holeRings] as [lat,lng] pairs. A roof
+   with no cutouts yields a single ring, which is exactly what L.polygon()
+   already received before cutouts existed. */
+function rmOutlineLatLngRings(outline){
+  function toPairs(ring){ return ring.map(function(p){ return [p.lat, p.lng]; }); }
+  if (!outline || !Array.isArray(outline.ring)) return [];
+  return [toPairs(outline.ring)].concat(rmOutlineHoleRings(outline).map(toPairs));
+}
 function rmOutlineHolesSvgPath(outline, origin, toSvg){
   return rmOutlineHoleRings(outline).map(function(ring){
     var pts = ring.map(function(p){ return toSvg(rmExportProjectPoint(p, origin)); });
@@ -3009,6 +3017,7 @@ function rmRenderOutlineStats(outline){
       ' — perimeter includes the inner edge.</p>' : '') +
     rmMeasurementHistoryHtml(outline);
   document.getElementById("rm-outline-panel").style.display = "";
+  rmRenderCutoutPanel();
 }
 /* Shared by rmGenerateOutline() (OSM footprint) and rmFinishTrace() (Phase
    3 manual trace) -- draws whatever outline object was built, zooms to it,
@@ -3244,7 +3253,11 @@ function rmDrawFinalOutline(outline){
   if (rmState.vertexEditActive) rmExitVertexEdit(false); /* a fresh outline replaces whatever was being hand-edited */
   var map = rmEnsureMap();
   if (rmState.outlineLayer) map.removeLayer(rmState.outlineLayer);
-  rmState.outlineLayer = L.polygon(outline.ring.map(function(p){ return [p.lat, p.lng]; }), {
+  /* Leaflet reads [outer, hole, hole...] natively, so a cut-out roof draws
+     as an actual donut on the live map -- same shape the exports and the
+     report produce, rather than a filled blob that only reads correctly
+     once it's printed. */
+  rmState.outlineLayer = L.polygon(rmOutlineLatLngRings(outline), {
     color: "#E8600A", weight: 3, dashArray: outline.isSiteBoundary ? "6,6" : null, fillColor: "#E8600A", fillOpacity: 0.15
   }).addTo(map);
   rmDrawEdgeDimensions(outline);
@@ -3639,6 +3652,198 @@ async function rmPersistOutlineGeometryEdit(){
     roofs[roofIdx] = roof;
     await saveBuildingRoofs(rmState.linkedBuildingId, roofs);
   }catch(e){ toast("Updated on screen, but couldn't save: " + e.message); }
+}
+
+/* ================= Nested-roof cutouts (UI) =================
+   Mark's Roof 7-around-Roof 8 case. Two ways in, because there are two
+   real-world things this has to model (see rmRecomputeOutlineMetrics()):
+
+     "Cut Out a Roof"       -- a penthouse. Pick the roof that sits inside
+                               this one; its ring BECOMES the hole, so the
+                               shared boundary is exact by construction and
+                               nobody re-traces anything.
+     "Cut Out an Open Area" -- a courtyard/atrium/lightwell. There's no roof
+                               to pick, so it gets traced directly, reusing
+                               the normal trace machinery via mode "hole".
+
+   Everything downstream keys off hole.kind, not off which button was used. */
+
+/* The cutout controls have no home in index.html, so the panel mounts itself
+   into the outline card the first time it renders. */
+function rmCutoutPanelEl(){
+  var existing = document.getElementById("rm-cutout-panel");
+  if (existing) return existing;
+  var host = document.getElementById("rm-outline-panel");
+  if (!host) return null;
+  var el = document.createElement("div");
+  el.id = "rm-cutout-panel";
+  host.appendChild(el);
+  return el;
+}
+/* A ring is a valid cutout only if it sits wholly inside the outer ring.
+   Checking every point (not just the centroid) is deliberate: a C-shaped
+   overlap can have its centroid inside while half the ring hangs out, and
+   subtracting that area would quietly understate the roof. */
+function rmRingFitsInsideOutline(ring, outline){
+  if (!outline || !Array.isArray(outline.ring) || !Array.isArray(ring) || ring.length < 3) return false;
+  return ring.every(function(p){ return rmPointInRing(p.lat, p.lng, outline.ring); });
+}
+function rmAddCutoutToOutline(outline, hole){
+  if (!outline) return false;
+  outline.holes = (outline.holes || []).concat([hole]);
+  rmRecomputeOutlineMetrics(outline);
+  return true;
+}
+/* Roofs on this building that could be cut out of the one on screen:
+   anything with a usable ring that isn't this roof and isn't already cut
+   out. Fetched on demand rather than cached -- this is a rare, deliberate
+   action, and a stale roof list here would offer a roof that no longer
+   exists. */
+async function rmCutoutCandidateRoofs(){
+  if (!rmState.linkedBuildingId || !fdb) return [];
+  var snap = await fdb.collection("buildings").doc(rmState.linkedBuildingId).get();
+  var roofs = getBuildingRoofs(snap.exists ? snap.data() : {});
+  var already = ((rmState.outline && rmState.outline.holes) || []).map(function(h){ return h.sourceRoofId; });
+  return roofs.filter(function(r){
+    if (r.id === rmState.linkedRoofId) return false;
+    if (already.indexOf(r.id) !== -1) return false;
+    var o = (r.roof_outlines || [])[(r.roof_outlines || []).length - 1];
+    return !!(o && Array.isArray(o.ring) && o.ring.length >= 3);
+  }).map(function(r){
+    var o = r.roof_outlines[r.roof_outlines.length - 1];
+    return { id: r.id, label: r.label || "Roof", ring: o.ring };
+  });
+}
+async function rmShowCutoutRoofPicker(){
+  var panel = rmCutoutPanelEl();
+  if (!panel || !rmState.outline) return;
+  if (!rmState.linkedBuildingId){
+    toast("Save this roof to the building first — cutting out another roof needs both roofs on the same building.");
+    return;
+  }
+  panel.innerHTML = '<div class="card" style="margin-top:10px"><p class="hint" style="margin:0">Loading roofs…</p></div>';
+  try{
+    var candidates = await rmCutoutCandidateRoofs();
+    /* Only offer roofs that actually sit inside this one. Offering the rest
+       and rejecting the tap afterwards would be a worse way to learn the
+       same fact. */
+    var fits = candidates.filter(function(c){ return rmRingFitsInsideOutline(c.ring, rmState.outline); });
+    if (!fits.length){
+      panel.innerHTML = '<div class="card" style="margin-top:10px">' +
+        '<p class="hint" style="margin:0 0 8px">No roof on this building sits inside this one. ' +
+        (candidates.length ? 'A roof has to be fully within this outline to be cut out of it.' :
+          'Trace the inner roof first, then come back and cut it out.') + '</p>' +
+        '<div class="btnrow" style="margin:0"><button class="btn" onclick="rmRenderCutoutPanel()">✕ Close</button></div></div>';
+      return;
+    }
+    panel.innerHTML = '<div class="card" style="margin-top:10px">' +
+      '<h2 class="cond" style="font-size:15px;margin:0 0 8px">Cut Out a Roof</h2>' +
+      '<p class="hint" style="margin:0 0 8px">Its outline becomes this roof&rsquo;s hole — no re-tracing, and the shared edge matches exactly.</p>' +
+      fits.map(function(c){
+        return '<button class="btn" style="width:100%;margin:0 0 6px" onclick="rmCutOutExistingRoof(\'' +
+          esc(c.id) + '\')">✂️ ' + esc(c.label) + '</button>';
+      }).join("") +
+      '<div class="btnrow" style="margin:0"><button class="btn" onclick="rmRenderCutoutPanel()">✕ Cancel</button></div></div>';
+  }catch(e){
+    panel.innerHTML = '<div class="card" style="margin-top:10px"><p class="hint" style="margin:0">' +
+      'Couldn&rsquo;t load this building&rsquo;s roofs: ' + esc(e.message) + '</p></div>';
+  }
+}
+async function rmCutOutExistingRoof(roofId){
+  var outline = rmState.outline;
+  if (!outline) return;
+  try{
+    var candidates = await rmCutoutCandidateRoofs();
+    var target = candidates.find(function(c){ return c.id === roofId; });
+    if (!target){ toast("That roof is no longer available to cut out."); return; }
+    if (!rmRingFitsInsideOutline(target.ring, outline)){
+      toast(target.label + " isn't fully inside this roof, so it can't be cut out of it.");
+      return;
+    }
+    /* Materialized copy, not a live reference: this roof's numbers must not
+       shift because someone edited the nested roof later. sourceRoofId keeps
+       the provenance for when that happens. */
+    rmAddCutoutToOutline(outline, {
+      ring: rmGeomCleanRing(target.ring.map(function(p){ return { lat: p.lat, lng: p.lng }; })),
+      kind: "roof",
+      sourceRoofId: target.id,
+      sourceRoofLabel: target.label,
+      createdAt: Date.now()
+    });
+    rmRedrawOutlineAfterCutout();
+    await rmPersistOutlineGeometryEdit();
+    toast(target.label + " cut out ✓ — area is now net, perimeter includes the inner edge.");
+  }catch(e){ toast("Couldn't cut out that roof: " + e.message); }
+}
+/* Courtyard path -- reuses the normal trace flow (taps, preview, undo,
+   insert-point) by running it in mode "hole"; rmFinishTrace() branches to
+   rmFinishCutoutTrace() below rather than building a new outline. */
+function rmStartCutoutTrace(){
+  if (!rmState.outline){ toast("Trace or open a roof first."); return; }
+  rmTraceState.active = true;
+  rmTraceState.mode = "hole";
+  rmTraceState.points = [];
+  rmTraceState.insertLayers = [];
+  rmSetStatus("Tracing an open area — tap around the courtyard/atrium inside this roof, then Finish.");
+  rmShowTracePanel();
+}
+async function rmFinishCutoutTrace(){
+  var outline = rmState.outline;
+  if (!outline) return;
+  if (rmTraceState.points.length < 3){ toast("Tap at least 3 points to outline the open area."); return; }
+  var ring = rmGeomCleanRing(rmTraceState.points.concat([rmTraceState.points[0]]));
+  if (ring.length < 4){ toast("Those points are too close together — trace a wider shape."); return; }
+  if (!rmRingFitsInsideOutline(ring, outline)){
+    toast("That shape isn't fully inside this roof — an open area has to sit within the outline.");
+    return;
+  }
+  rmAddCutoutToOutline(outline, {
+    ring: ring, kind: "void", sourceRoofId: null, sourceRoofLabel: null, createdAt: Date.now()
+  });
+  rmCancelTrace();
+  rmRedrawOutlineAfterCutout();
+  await rmPersistOutlineGeometryEdit();
+  toast("Open area cut out ✓ — that area is no longer counted as roof.");
+}
+async function rmRemoveCutout(index){
+  var outline = rmState.outline;
+  if (!outline || !Array.isArray(outline.holes)) return;
+  var hole = outline.holes[index];
+  if (!hole) return;
+  outline.holes = outline.holes.filter(function(_, i){ return i !== index; });
+  rmRecomputeOutlineMetrics(outline);
+  rmRedrawOutlineAfterCutout();
+  await rmPersistOutlineGeometryEdit();
+  toast((hole.sourceRoofLabel || "Open area") + " put back ✓");
+}
+/* One redraw path for every cutout change, so the map, the stats, and the
+   panel can never disagree about what's currently cut out. */
+function rmRedrawOutlineAfterCutout(){
+  if (rmState.outline) rmDrawFinalOutline(rmState.outline);
+  rmRenderCutoutPanel();
+}
+function rmRenderCutoutPanel(){
+  var panel = rmCutoutPanelEl();
+  if (!panel) return;
+  var outline = rmState.outline;
+  if (!outline || !Array.isArray(outline.ring) || outline.ring.length < 3){ panel.innerHTML = ""; return; }
+  var holes = outline.holes || [];
+  var list = holes.map(function(h, i){
+    var name = h.kind === "void" ? "Open area" : (h.sourceRoofLabel || "Nested roof");
+    var sqft = Math.round(rmGeomPolygonAreaSqMeters(h.ring) * 10.7639).toLocaleString();
+    return '<div class="row" style="align-items:center;gap:8px;margin:0 0 6px">' +
+      '<span style="flex:1">' + (h.kind === "void" ? "◻️ " : "✂️ ") + esc(name) +
+      ' <span class="hint">− ' + sqft + ' sq ft</span></span>' +
+      '<button class="btn" onclick="rmRemoveCutout(' + i + ')">Undo</button></div>';
+  }).join("");
+  panel.innerHTML = '<div class="card" style="margin-top:10px">' +
+    '<h2 class="cond" style="font-size:15px;margin:0 0 8px">Cutouts' + (holes.length ? ' (' + holes.length + ')' : '') + '</h2>' +
+    (holes.length ? list :
+      '<p class="hint" style="margin:0 0 8px">Nothing cut out. Use these when a roof surrounds something that isn&rsquo;t part of it.</p>') +
+    '<div class="btnrow" style="margin:0">' +
+    '<button class="btn" onclick="rmShowCutoutRoofPicker()">✂️ Cut Out a Roof</button>' +
+    '<button class="btn" onclick="rmStartCutoutTrace()">◻️ Cut Out an Open Area</button>' +
+    '</div></div>';
 }
 /* Mark's "can an EXISTING badly-traced roof be cleaned up in place?" ask
    (11 roofs at Tri-Delta with sliver gaps/overlaps between adjoining
@@ -5323,6 +5528,9 @@ function rmCancelTrace(){
   rmUpdateControlVisibility(); /* hides #rm-trace-panel (rmTraceState.active is already false here), restores search buttons if still relevant */
 }
 function rmFinishTrace(){
+  /* Cutout traces run through this same flow (taps, preview, undo) but end
+     as a hole on the current roof, not as a new outline of their own. */
+  if (rmTraceState.mode === "hole") return rmFinishCutoutTrace();
   var isWalk = rmTraceState.mode === "walk";
   if (rmTraceState.points.length < 3){
     toast((isWalk ? "Record" : "Tap") + " at least 3 " + (isWalk ? "corners" : "points") + " to form a roof outline.");
