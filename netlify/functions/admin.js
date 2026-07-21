@@ -71,6 +71,52 @@ function getBuildingRoofsServer(bld) {
   }];
 }
 
+// ---- Roof label renumbering ------------------------------------------------
+// Mark, 2026-07-20: after the Orr Street merge his roofs read "Roof 1 (2)".
+// That suffix is the merge's collision guard working correctly -- two buildings
+// each had a "Roof 1" and one had to give -- but it is ugly and it reads like a
+// duplicate. Renumber to a clean sequence instead.
+//
+// SAFE BY CONSTRUCTION: a roof's identity is its `id`. Every pin, base map,
+// outline, asset, checklist row (keyed by roofId+key) and history event points
+// at the id; NOTHING anywhere keys off the label. So this rewrites a display
+// string and moves no data. It renames -- it must never delete, because each of
+// these is a real roof carrying real geometry.
+//
+// CUSTOM NAMES ARE PRESERVED. A generic label is exactly "Roof <n>", optionally
+// with the merge's " (<m>)" suffix. Anything a human typed -- "North Wing",
+// "Boiler Room Roof" -- is left alone. Blindly renumbering everything to
+// Roof 1..N would destroy those, which is worse than the suffix it fixes.
+const GENERIC_ROOF_LABEL = /^\s*roof\s+\d+\s*(\(\s*\d+\s*\))?\s*$/i;
+function renumberRoofLabels(roofs) {
+  const list = Array.isArray(roofs) ? roofs : [];
+  // Exact custom labels are reserved so a renumber can never collide with one
+  // (belt-and-braces: a label matching GENERIC_ROOF_LABEL is by definition not
+  // custom, so this set cannot contain "Roof 2" -- but if the pattern is ever
+  // loosened, this keeps the invariant "no two roofs share a label").
+  const reserved = new Set();
+  list.forEach(r => {
+    const label = String((r && r.label) || "");
+    if (label && !GENERIC_ROOF_LABEL.test(label)) reserved.add(label.trim().toLowerCase());
+  });
+
+  const changes = [];
+  let next = 1;
+  const out = list.map(r => {
+    const from = String((r && r.label) || "");
+    if (!GENERIC_ROOF_LABEL.test(from)) return r; // custom name: untouched
+    let to;
+    do { to = "Roof " + next; next++; } while (reserved.has(to.trim().toLowerCase()));
+    reserved.add(to.trim().toLowerCase());
+    if (to === from) return r; // already correct: no write, no audit noise
+    changes.push({ roofId: (r && r.id) || null, from: from, to: to });
+    // Object.assign preserves geometry, pins, base map, assets, outlines --
+    // only the display label changes.
+    return Object.assign({}, r, { label: to, updatedAt: Date.now() });
+  });
+  return { roofs: out, changes: changes };
+}
+
 exports.handler = async function (event) {
   if (event.httpMethod !== "POST") {
     return resp(405, { error: "Method not allowed" });
@@ -421,7 +467,14 @@ exports.handler = async function (event) {
         taken.push(label.trim().toLowerCase());
         return Object.assign({}, r, { label: label, updatedAt: Date.now() });
       });
-      const newDestRoofs = dstRoofs.concat(movedRoofs);
+      // The suffix above is the COLLISION GUARD -- it guarantees two roofs
+      // never share a label mid-merge. Renumbering then turns the result into
+      // a clean sequence so the survivor reads "Roof 1..N" rather than
+      // "Roof 1 (2)" (Mark, after Orr Street). Order matters: de-collide
+      // first, renumber second. Custom names survive both steps.
+      const merged = renumberRoofLabels(dstRoofs.concat(movedRoofs));
+      const newDestRoofs = merged.roofs;
+      const roofRenumbering = merged.changes;
 
       // Best name wins. The survivor is chosen by the caller, but its name may
       // still be the placeholder -- so prefer, in order: an explicit name the
@@ -525,11 +578,68 @@ exports.handler = async function (event) {
         { sourceBuildingId, sourceName: srcBld.name || null, sourceRoofs: srcRoofs.length },
         { destBuildingId, destName: chosenName || dstBld.name || null,
           movedRoofs: movedRoofs.length, movedEvents: evtSnap.size, movedReports: repSnap.size,
-          movedWorkOrders: woSnap.size, movedDprs: dprSnap.size });
+          movedWorkOrders: woSnap.size, movedDprs: dprSnap.size,
+          // old->new roof labels: a report printed before the merge names the
+          // pre-renumber label, so the mapping has to be recoverable.
+          roofRenumbering: roofRenumbering });
       return resp(200, { ok: true, movedRoofs: movedRoofs.length,
         movedEvents: evtSnap.size, movedReports: repSnap.size,
         movedWorkOrders: woSnap.size, movedDprs: dprSnap.size,
+        roofRenumbering: roofRenumbering,
         survivingName: chosenName });
+    }
+
+    if (body.action === "renumber_building_roofs") {
+      // Same settings.company tier as every other building-structure action.
+      let caller;
+      try { caller = await requirePermission(event, "settings.company"); }
+      catch (e) { return resp(e.statusCode || 401, { error: e.message }); }
+
+      // DRY RUN BY DEFAULT. The whole anxiety here is losing a roof, so the
+      // caller sees the exact old->new mapping BEFORE anything is written;
+      // `apply: true` is a separate, deliberate second call. Also makes the
+      // Orr Street backfill (which mutates production data) reviewable.
+      const buildingId = String(body.buildingId || "");
+      if (!buildingId) return resp(400, { error: "Missing buildingId" });
+      const apply = body.apply === true;
+
+      const db = getDb();
+      const ref = db.collection("buildings").doc(buildingId);
+      const snap = await ref.get();
+      if (!snap.exists) return resp(404, { error: "Building not found" });
+      const bld = snap.data() || {};
+
+      // NOT getBuildingRoofsServer(): that synthesises a default roof for a
+      // building which never stored roofs[], and writing that back would
+      // materialise a phantom roofs[] on a building that legitimately has
+      // none. Only ever renumber roofs that were really stored. (Same rule the
+      // merge follows for srcRoofs.)
+      const stored = Array.isArray(bld.roofs) ? bld.roofs : [];
+      if (!stored.length) {
+        return resp(200, { ok: true, buildingId, dryRun: !apply, changes: [], roofCount: 0,
+          note: "Building has no stored roofs[] — nothing to renumber." });
+      }
+
+      const result = renumberRoofLabels(stored);
+      const payload = {
+        ok: true, buildingId, dryRun: !apply,
+        roofCount: stored.length,
+        changes: result.changes,
+        labels: result.roofs.map(r => ({ roofId: (r && r.id) || null, label: (r && r.label) || "" }))
+      };
+      if (!apply || !result.changes.length) {
+        if (!result.changes.length) payload.note = "Labels are already a clean sequence — nothing to change.";
+        return resp(200, payload);
+      }
+
+      await ref.set({ roofs: result.roofs, updatedAt: Date.now() }, { merge: true });
+      // Records old->new so a report printed under an old roof name stays
+      // traceable: renumbering changes what a roof is CALLED, and paper issued
+      // before the rename still carries the old label.
+      await writeAuditLog(db, caller, "renumber_building_roofs", buildingId,
+        { labels: stored.map(r => (r && r.label) || "") },
+        { labels: result.roofs.map(r => (r && r.label) || ""), changes: result.changes });
+      return resp(200, payload);
     }
 
     if (body.action === "move_roof") {

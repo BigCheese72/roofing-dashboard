@@ -180,6 +180,49 @@ function syncInspectionFinding(item){
   }
   renderFindings();
 }
+/* Which roof's form is on screen. Mark, 2026-07-20: stacking every roof's five
+   sections made a 4-5 roof building "a mile long", so ONE roof's form shows at
+   a time and a tab strip switches between them.
+
+   THIS MUST LIVE IN A MODULE VARIABLE, NOT THE DOM. renderInspectionChecklist()
+   rebuilds innerHTML wholesale and is called from ten places -- including on
+   every rating change (below) and on every photo add/remove/caption edit in
+   js/photos.js. Reading the active tab back out of the DOM would reset it to
+   the first roof the instant a condition is set, which is the single most
+   common action on this screen. */
+var inspectionActiveRoofId = null;
+function onInspectionRoofTab(roofId){
+  inspectionActiveRoofId = roofId;
+  renderInspectionChecklist();
+}
+/* What a tab can HONESTLY say about a roof at a glance.
+
+   Deliberately not a "% complete": items are seeded with rating "N/A", and N/A
+   is also a legitimate answer (the component isn't on this roof). Treating N/A
+   as unfinished would brand a correctly-completed roof incomplete forever.
+
+   So only two claims, both defensible:
+     flagged   -- how many components are Fair/Poor/Critical. A real signal,
+                  the same test renderInspectionChecklistRow() uses to shade a
+                  row, and the reason you'd revisit a roof.
+     untouched -- literally NOTHING recorded: every rating still the seeded
+                  N/A, no notes, no pin, no linked finding. Answers "have I
+                  started this roof?" without claiming to know if it's done. */
+function inspectionRoofTabStatus(items){
+  items = items || [];
+  var flagged = 0, touched = false;
+  items.forEach(function(it){
+    if (["Fair", "Poor", "Critical"].indexOf(it.rating) > -1) flagged++;
+    if (it.rating !== "N/A" || (it.notes && it.notes.trim()) || it.pin || it.linkedFindingId) touched = true;
+  });
+  return { flagged: flagged, untouched: !touched };
+}
+function inspectionRoofTabBadge(st){
+  if (st.flagged) return '<span style="margin-left:6px;padding:0 6px;border-radius:8px;' +
+    'background:#B4501E;color:#fff;font-size:11px;font-weight:700">' + st.flagged + '</span>';
+  if (st.untouched) return '<span style="margin-left:6px;color:var(--muted);font-size:11px">not started</span>';
+  return '<span style="margin-left:6px;color:#1B7F4B;font-size:12px">&#10003;</span>';
+}
 function renderInspectionChecklist(){
   var host = document.getElementById("inspection-checklist-list");
   if (!host) return;
@@ -188,21 +231,54 @@ function renderInspectionChecklist(){
      inspectionChecklist[]. data-ci carries the real array index. */
   var groups = inspectionChecklistByRoof(inspectionChecklist, inspectionRoofLabelCache);
   var multiRoof = groups.length > 1;
-  host.innerHTML = groups.map(function(g){
-    /* Only banner the roof when there IS more than one -- a single-roof
-       inspection looks exactly as it always has, no new chrome for the common
-       case (field-first). */
-    var summary = inspectionRoofProfileSummary(g.roofId);
-    var head = !multiRoof ? "" :
-      '<div class="rowhead" style="margin:14px 0 6px;padding:6px 10px;background:#EAF4FF;' +
-      'border-left:4px solid #0d3c61;border-radius:4px">' +
-      '<b>' + esc(g.label) + '</b>' +
-      (summary ? ' <span class="hint" style="margin:0">· ' + esc(summary) + '</span>' : "") +
-      '</div>';
-    return head + g.items.map(function(item){
-      var i = inspectionChecklist.indexOf(item);
-      return renderInspectionChecklistRow(item, i);
+
+  /* Single roof looks exactly as it always has -- no tabs, no banner, no new
+     chrome for the common case (field-first). */
+  if (!multiRoof){
+    host.innerHTML = groups.map(function(g){
+      return g.items.map(function(item){
+        return renderInspectionChecklistRow(item, inspectionChecklist.indexOf(item));
+      }).join("");
     }).join("");
+    bindInspectionChecklistInputs(host);
+    return;
+  }
+
+  /* Resolve the active tab against the roofs actually on screen. Deselecting
+     the active roof in the picker (or loading a different order) must land on
+     a real roof rather than render an empty form. */
+  var active = null;
+  for (var i = 0; i < groups.length; i++){
+    if (groups[i].roofId === inspectionActiveRoofId){ active = groups[i]; break; }
+  }
+  if (!active) active = groups[0];
+  inspectionActiveRoofId = active.roofId;
+
+  var tabs = '<div class="btnrow" style="margin:0 0 10px;flex-wrap:wrap;gap:6px">' +
+    groups.map(function(g){
+      var on = g.roofId === active.roofId;
+      var st = inspectionRoofTabStatus(g.items);
+      return '<button type="button" class="btn" onclick="onInspectionRoofTab(\'' + esc(g.roofId) + '\')" ' +
+        'style="padding:6px 10px;' +
+        (on ? "background:#0d3c61;color:#fff;border-color:#0d3c61" : "background:#fff") + '">' +
+        esc(g.label) + inspectionRoofTabBadge(st) + '</button>';
+    }).join("") + '</div>';
+
+  var summary = inspectionRoofProfileSummary(active.roofId);
+  var head = '<div class="rowhead" style="margin:0 0 6px;padding:6px 10px;background:#EAF4FF;' +
+    'border-left:4px solid #0d3c61;border-radius:4px">' +
+    '<b>' + esc(active.label) + '</b>' +
+    (summary ? ' <span class="hint" style="margin:0">· ' + esc(summary) + '</span>' : "") +
+    '</div>';
+
+  /* Only the active roof's rows are rendered. The other roofs' answers are NOT
+     lost: bindInspectionChecklistInputs() writes straight into
+     inspectionChecklist[] on every keystroke, so switching tabs re-renders from
+     saved data. The printed report is unaffected either way -- js/export.js
+     builds from inspectionChecklist[] via inspectionChecklistByRoof(), not from
+     what happens to be on screen, so every roof still prints. */
+  host.innerHTML = tabs + head + active.items.map(function(item){
+    return renderInspectionChecklistRow(item, inspectionChecklist.indexOf(item));
   }).join("");
   bindInspectionChecklistInputs(host);
 }

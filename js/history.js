@@ -430,7 +430,11 @@ async function openBuildingHistory(buildingId){
         'No pins placed yet — they’ll show up here as findings get pinned on future reports.') + '</p>' +
       '<div id="building-map" style="height:min(50vh,420px);border-radius:6px;overflow:hidden;margin-bottom:10px"></div>' +
       addFeatureBtnHtml + ' ' + addRoofBtnHtml + ' ' + autoAssignBtnHtml + ' ' + bulkReassignBtnHtml + '</div>';
-    detail.innerHTML = baseMapCardHtml + profileCardHtml + warrantyCardHtmlStr + mapCardHtml +
+    /* Duplicate-merge suggestion. Empty at render time and filled in by
+       fillDuplicateBuildingBanner() below, so the address scan never delays
+       the page -- no banner is strictly better than a slow one. */
+    var dupBuildingBannerHtml = isAdmin ? '<div id="dup-building-banner"></div>' : '';
+    detail.innerHTML = dupBuildingBannerHtml + baseMapCardHtml + profileCardHtml + warrantyCardHtmlStr + mapCardHtml +
       '<div class="card"><h2 class="cond">Timeline (' + events.length + ')</h2>' +
       '<div class="btnrow" style="margin:0 0 10px">' + addActivityBtnHtml + ' ' + recoverBtnHtml + '</div>' +
       (dupCount ? '<p class="hint">\u26a0 ' + dupCount + ' possible duplicate' + (dupCount === 1 ? "" : "s") +
@@ -440,9 +444,42 @@ async function openBuildingHistory(buildingId){
     populateTimelineFilterOptions();
     renderTimelineList();
     renderBuildingMap(mapPins, hasCustomBaseMap ? roof : null, bld.location, orthoOverlay, roofAssets, buildingId, allRoofOutlinesForMap);
+    if (isAdmin) fillDuplicateBuildingBanner(buildingId, bld);
   }catch(e){
     detail.innerHTML = '<div class="card"><div class="empty">Couldn\u2019t load timeline: ' + esc(e.message) + '</div></div>';
   }
+}
+/* Fills the duplicate-merge suggestion. Runs AFTER the detail card is on
+   screen and never blocks it: a building with no twin (the overwhelming
+   majority) sees nothing at all, and a slow or failed lookup costs a banner,
+   never the page.
+
+   Mark's ask was to stop having to suspect a duplicate, open the record and
+   hunt for the merge button. This does not auto-merge -- a merge re-points four
+   collections and empties the loser, which is exactly where the KOMU orphan bug
+   came from. The fix is removing the HUNT, not the confirmation. */
+async function fillDuplicateBuildingBanner(buildingId, bld){
+  var host = document.getElementById("dup-building-banner");
+  if (!host || typeof findDuplicateBuildingCandidates !== "function") return;
+  var dups = [];
+  try{ dups = await findDuplicateBuildingCandidates(buildingId, bld); }
+  catch(e){ return; }
+  if (!dups.length || !document.getElementById("dup-building-banner")) return;
+  host.innerHTML =
+    '<div class="card" style="border-left:4px solid #B4501E">' +
+    '<h2 class="cond">⚠ Possible duplicate building</h2>' +
+    '<p class="hint" style="margin:0 0 8px">' +
+    (dups.length === 1 ? 'Another building looks like this one' : dups.length + ' other buildings look like this one') +
+    '. If it is the same site, merging moves its roofs, reports, work orders and daily reports onto this record.</p>' +
+    dups.map(function(d){
+      return '<div class="rowcard" style="margin-bottom:6px"><div class="rowhead">' +
+        '<b>' + esc(d.name) + '</b> <span class="hint" style="margin:0">· ' + esc(d.why) + '</span></div>' +
+        '<div class="btnrow" style="margin:6px 0 0">' +
+        '<button class="btn" onclick="openBuildingHistory(\'' + esc(d.id) + '\')">View</button>' +
+        '<button class="btn" onclick="openMergeBuildingModal(\'' + esc(buildingId) + '\', \'' + esc(d.id) + '\')">🔗 Merge into this building</button>' +
+        '</div></div>';
+    }).join("") +
+    '</div>';
 }
 function historySelectRoof(buildingId, roofId){
   historySelectedRoofId = roofId;

@@ -42,10 +42,22 @@ jobs:
       - name: Poll for new inspection reports
         env:
           POLLER_SHARED_SECRET: ${{ secrets.POLLER_SHARED_SECRET }}
-          # Scheduled runs poll dev. Promote to production deliberately, by
-          # running this workflow manually with target=production -- an
-          # automated cron should not be the thing that first touches prod.
-          TARGET: ${{ github.event.inputs.target || 'dev' }}
+          # Scheduled runs poll PRODUCTION -- Mark's live environment, and the
+          # only one whose inspection reports matter operationally.
+          #
+          # This fallback was 'dev' deliberately: an automated cron should not
+          # be the thing that FIRST touches prod. That guard did its job and is
+          # now cleared -- a manual production poll (workflow_dispatch with
+          # target=production) returned 200, so the path is verified end to end
+          # and the cron is no longer the first caller.
+          #
+          # WHERE THIS TAKES EFFECT: GitHub runs `schedule` triggers ONLY from
+          # the workflow file on the repo's DEFAULT branch (main). Editing this
+          # on dev changes nothing about the cron until the dev->main promotion
+          # carries it across. The manual workflow_dispatch input still defaults
+          # to dev (see `inputs.target` above), so a hand-run stays opt-in to
+          # prod -- only the unattended schedule targets production.
+          TARGET: ${{ github.event.inputs.target || 'production' }}
         run: |
           set -euo pipefail
 
