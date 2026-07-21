@@ -8465,3 +8465,102 @@ with `fallback: true` and still 200. `tests/aiService.test.js` adds the
 `cleanInlineImage` gate contract, both providers' base64 wire shapes, and
 the shared-budget cap. A `global.fetch` trap still fails the suite if the
 NO-KEY path ever reaches the network.
+
+## Nested-roof cutouts (shipped 2026-07-21, dev only)
+
+Mark's Roof 7-around-Roof 8 case: a roof can enclose something that isn't
+part of its own field. An outline may carry `holes[]`, each a materialized
+ring plus provenance. ONE level of nesting only — a hole never carries its
+own holes, and nothing recurses.
+
+**Two kinds, and the difference is accounting, not geometry.** This is the
+part worth remembering:
+
+- `kind: "roof"` — a penthouse/nested roof, `sourceRoofId` set. The hole area
+  is still roof; it just belongs to the nested roof instead. Building total
+  roof area is UNCHANGED by the cutout.
+- `kind: "void"` — a courtyard/atrium/lightwell, `sourceRoofId: null`. The
+  hole area is not roof at all and nobody owns it. Building total genuinely
+  DROPS.
+
+Conflating them silently corrupts building-level totals in one direction or
+the other, which is why `kind` is stored rather than inferred from whether
+`sourceRoofId` happens to be set. Totals come out right on their own because
+`areaSqFt` is already net: voids drop out, and a penthouse is counted once,
+on its own roof.
+
+**Area/perimeter.** `areaSqFt` is NET (outer minus holes) — the roof you walk,
+buy material for, and bill. `grossAreaSqFt` is retained alongside it and both
+are shown once anything is cut out (`rmFormatOutlineArea()`), so a lower
+number never appears without saying why. `perimeterFt` sums the outer ring AND
+every hole ring: the inner edge is real edge-metal termination. Per Mark, a
+penthouse counts the donut's inner edge ONLY — the nested roof's own perimeter
+stays on that roof's own record, so nothing is double-counted.
+
+**`rmRecomputeOutlineMetrics()` is the single source of those numbers.** The
+formula was previously copy-pasted at 14 sites, each recomputing from the
+outer ring alone. Teaching only the save path about holes would have meant the
+next vertex drag / calibrate / square-up / re-snap silently reverted
+`areaSqFt` to gross — the donut healing itself into a solid roof, invisible
+until someone reconciled a takeoff. **Add ring math there, not at callers.**
+`rmCalibrateEdge()` additionally scales hole rings about the same centroid as
+the outer ring (`rmScaleOutlineHoles()`); miss that and the penthouse stays
+its old size while the roof around it grows.
+
+**Point assignment.** `rmOutlineContainsPoint()` = inside the outer ring AND
+outside every hole. Both hole kinds fall out of that one rule with no special
+casing: a penthouse point matches the nested roof's own outline, and a
+courtyard point matches nothing and stays unassigned rather than being
+credited to the surrounding roof (which is what would put courtyard leak
+photos on the wrong roof's record). Separately,
+`rmRoofsShareNestedBoundary()` exempts a donut/nested pair from the 6m
+`RM_GPS_AMBIGUITY_METERS` check — their shared edge is shared by construction,
+so without the exemption every photo near a penthouse wall was flagged
+forever. Unrelated polygon overlap is still flagged.
+
+**Rendering.** There are THREE roof-shape SVG builders, not one:
+`rmBuildOutlineSvg()`, the multi-roof export beside it, and the report plan in
+`js/export.js`. All three append `rmOutlineHolesSvgPath()` and render
+`fill-rule="evenodd"`. evenodd rather than nonzero deliberately: nonzero only
+punches a hole when the inner ring winds opposite the outer, and nothing
+upstream guarantees winding (rings come from OSM, hand traces, walked corners,
+and copies of other roofs' rings). The live Leaflet map gets
+`[outer, ...holes]` via `rmOutlineLatLngRings()`, so a donut looks like one on
+screen too, not only once printed.
+
+**UX — "cut out an existing roof".** Two entry points, both writing `holes[]`:
+"Cut Out a Roof" picks a sibling roof and copies its ring (shared boundary
+exact by construction, no re-tracing; the picker only offers roofs that
+actually fit inside), and "Cut Out an Open Area" traces the courtyard directly,
+reusing the normal trace flow via `rmTraceState.mode = "hole"` —
+`rmFinishTrace()` branches at the top. Both validate EVERY point of the
+candidate ring against the outer ring, not the centroid: a C-shaped overlap
+can have its centroid inside while half the ring hangs out, and subtracting
+that would quietly understate the roof. The cutout panel mounts itself into
+the outline card at runtime (no `index.html` anchor).
+
+**Storage.** `holes` rides `rmOutlineStorageFields()`, so all three
+`roof_outlines[]` rewrite paths carry it. Rings are normalized through
+`rmGeomCleanRing()` (closed, deduped) because
+`rmGeomPolygonPerimeterMeters()` walks `i < length-1` and would drop the
+closing segment of an open ring — an inner perimeter short by one edge with
+nothing on screen to explain it. Stored as array > map > array; Firestore
+rejects bare arrays of arrays.
+
+Hole rings are MATERIALIZED copies, never live references, so a roof's numbers
+can't shift because someone edited the nested roof later; `sourceRoofId` keeps
+the provenance for when that happens.
+
+**Still open.** If the nested roof is later deleted or re-traced smaller, the
+materialized hole stays authoritative (area stays stable) and the provenance
+goes stale — the intended follow-up is a "nested roof changed — re-cut?"
+prompt rather than a silent re-sync, which would change Roof 7's area with no
+visible cause. Not built yet. Building History renders roof polygons through
+its own path in `js/history.js`; if a donut needs to read as a donut there, it
+needs the same `[outer, ...holes]` treatment.
+
+Tests: `tests/roofmapperNestedCutout.test.js` — 17, mutation-checked (stubbing
+`rmOutlineHoleRings()` to `[]` fails 9; removing the boundary exemption fails
+exactly its own test). Covers both kinds, net-vs-gross, the recompute
+regression, inner-edge perimeter, holes scaling with calibration, both
+assignment fixes, and the cases where a cutout must change nothing.

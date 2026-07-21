@@ -842,8 +842,9 @@ function rmBuildReportRoofPlanSvg(roofEntries){
   var shapeSvg = "", roofLabelItems = [];
   projected.forEach(function(r, i){
     var pathPts = r.pts.map(toSvg);
-    var pathD = "M " + pathPts.map(function(p){ return p.x.toFixed(1) + "," + p.y.toFixed(1); }).join(" L ") + " Z";
-    shapeSvg += '<path d="' + pathD + '" fill="rgba(232,96,10,0.12)" stroke="#E8600A" stroke-width="2" stroke-linejoin="round"/>';
+    var pathD = "M " + pathPts.map(function(p){ return p.x.toFixed(1) + "," + p.y.toFixed(1); }).join(" L ") + " Z" +
+      rmOutlineHolesSvgPath(r.outline, origin, toSvg);
+    shapeSvg += '<path d="' + pathD + '" fill="rgba(232,96,10,0.12)" fill-rule="evenodd" stroke="#E8600A" stroke-width="2" stroke-linejoin="round"/>';
     for (var e = 0; e < r.outline.ring.length - 1; e++){
       var ea = r.outline.ring[e], eb = r.outline.ring[e + 1];
       var distFt = rmGeomHaversineMeters(ea, eb) * 3.28084;
