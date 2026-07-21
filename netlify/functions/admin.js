@@ -117,6 +117,39 @@ function renumberRoofLabels(roofs) {
   return { roofs: out, changes: changes };
 }
 
+// Server-side mirror of resolveMergedBuildingId() in js/core.js. Must follow
+// the SAME chain the save path follows, or the audit below would judge a work
+// order against a different building than the one a save would actually write
+// to. Keep the two in sync by hand -- browser/CommonJS split, same discipline
+// as getBuildingRoofsServer().
+//
+// The `hop <= MAX` bound is deliberate and was a bug once: `hop <` followed 3
+// pointers but never inspected the 3rd target, so a chain of exactly 3
+// exhausted the budget and returned the archived husk -- worse than no guard.
+const MAX_MERGE_HOPS_SERVER = 3;
+async function resolveMergedBuildingIdServer(db, buildingId, cache) {
+  if (!buildingId) return buildingId;
+  let current = String(buildingId);
+  const seen = Object.create(null);
+  try {
+    for (let hop = 0; hop <= MAX_MERGE_HOPS_SERVER; hop++) {
+      if (seen[current]) return buildingId;           // cycle: keep the original
+      seen[current] = true;
+      let v = cache ? cache.get(current) : undefined;
+      if (v === undefined) {
+        const snap = await db.collection("buildings").doc(current).get();
+        v = snap.exists ? (snap.data() || {}) : null;
+        if (cache) cache.set(current, v);
+      }
+      if (!v) return current;                          // dangling: leave visible
+      // Only follow a pointer on a building that was ACTUALLY merged away.
+      if (!v.archived || !v.mergedIntoBuildingId) return current;
+      current = String(v.mergedIntoBuildingId);
+    }
+  } catch (e) { return buildingId; }
+  return buildingId;                                   // budget blown: original
+}
+
 // Server-side mirror of genId() in js/workorders.js. Same shape as every roof
 // id the app has ever minted (roof_<base36 time><5 random base36>).
 function genRoofId() {
@@ -634,6 +667,141 @@ exports.handler = async function (event) {
         roofRenumbering: roofRenumbering,
         survivingName: chosenName });
     }
+
+    if (body.action === "audit_stale_workorder_identity") {
+      let caller;
+      try { caller = await requirePermission(event, "settings.company"); }
+      catch (e) { return resp(e.statusCode || 401, { error: e.message }); }
+
+      /* READ-ONLY. Finds work orders that would RENAME OR OVERWRITE their
+         building on an ordinary save -- the Orr St near-miss, generalised.
+
+         A work order carries the building's identity a second time, in its own
+         editable jobName / location / billTo. Merges before the woReassign fix
+         re-pointed buildingId but left those three holding the merged-away
+         building's values, so the next save wrote them back onto the survivor.
+
+         WHY A PLAIN MISMATCH IS NOT ENOUGH. ensureCustomerAndBuilding() only
+         writes those fields when ownsBuilding is true, and ownsBuilding is
+         false whenever the stored buildingId RESOLVES to a different building
+         (redirectedByMerge). So a work order still pointing at the loser is
+         already protected -- the redirect guard stops it. The dangerous set is
+         narrower: stored id === resolved id AND the fields disagree. Flagging
+         plain mismatches would over-report and send someone rewriting records
+         that are in no danger.
+
+         WRITES NOTHING. There is no apply path on this action at all -- not a
+         guarded one, none. The backfill is a separate, still-unbuilt action
+         (see the design note below) that needs Mark's sign-off. */
+      const db = getDb();
+      // Bounded: Netlify functions cap around 26s. Page with `startAfter`.
+      const limit = Math.min(Math.max(Number(body.limit) || 500, 1), 2000);
+      const startAfter = body.startAfter ? String(body.startAfter) : null;
+      const includeRows = body.includeRows !== false;
+
+      let q = db.collection("workorders").orderBy("__name__").limit(limit);
+      if (startAfter) q = q.startAfter(startAfter);
+      const woSnap = await q.get();
+
+      const bldCache = new Map();   // one read per building, not per work order
+      const rows = [], byBuilding = Object.create(null);
+      let scanned = 0, noBuilding = 0, missingBuilding = 0, redirected = 0, stale = 0, ok = 0;
+
+      for (const d of woSnap.docs) {
+        scanned++;
+        const wo = d.data() || {};
+        const storedId = wo.buildingId ? String(wo.buildingId) : "";
+        if (!storedId) { noBuilding++; continue; }
+
+        const resolvedId = await resolveMergedBuildingIdServer(db, storedId, bldCache);
+        /* redirectedByMerge -> ownsBuilding false -> the save writes NOTHING to
+           the building. Not at risk, however stale the fields look. */
+        if (resolvedId !== storedId) { redirected++; continue; }
+
+        let bld = bldCache.get(resolvedId);
+        if (bld === undefined) {
+          const bs = await db.collection("buildings").doc(resolvedId).get();
+          bld = bs.exists ? (bs.data() || {}) : null;
+          bldCache.set(resolvedId, bld);
+        }
+        if (!bld) { missingBuilding++; continue; }
+
+        // Compared exactly as the save path writes them (js/core.js):
+        //   patch.name = (o.jobName||"").trim()
+        //   patch.location = o.location || ""
+        //   patch.customerName = custName from o.billTo
+        const woName = String(wo.jobName || "").trim();
+        const woLoc  = String(wo.location || "");
+        const woBill = String(wo.billTo || "");
+        const bName  = String(bld.name || "").trim();
+        const bLoc   = String(bld.location || "");
+        const bCust  = String(bld.customerName || "");
+
+        const nameMismatch = woName !== bName;
+        const locMismatch  = woLoc !== bLoc;
+        const billMismatch = woBill !== bCust;
+        const safeToSave = !(nameMismatch || locMismatch || billMismatch);
+        if (safeToSave) { ok++; continue; }
+
+        stale++;
+        byBuilding[resolvedId] = (byBuilding[resolvedId] || 0) + 1;
+        if (includeRows && rows.length < 200) {
+          rows.push({
+            workOrderId: d.id, buildingId: resolvedId,
+            buildingName: bName, buildingLocation: bLoc, buildingCustomer: bCust,
+            woJobName: woName, woLocation: woLoc, woBillTo: woBill,
+            wouldOverwrite: [nameMismatch && "name", locMismatch && "location",
+                             billMismatch && "customerName"].filter(Boolean),
+            SAFE_TO_SAVE: false
+          });
+        }
+      }
+
+      const lastId = woSnap.docs.length ? woSnap.docs[woSnap.docs.length - 1].id : null;
+      return resp(200, {
+        ok: true, readOnly: true, buildingId: null,
+        scanned, limit,
+        counts: {
+          staleWorkOrders: stale,
+          buildingsAffected: Object.keys(byBuilding).length,
+          safe: ok,
+          skippedRedirected: redirected,
+          skippedNoBuildingId: noBuilding,
+          skippedMissingBuilding: missingBuilding
+        },
+        perBuilding: byBuilding,
+        rows: includeRows ? rows : undefined,
+        rowsTruncated: includeRows && stale > rows.length,
+        nextStartAfter: woSnap.docs.length === limit ? lastId : null,
+        note: woSnap.docs.length === limit
+          ? "More work orders remain -- call again with startAfter set to nextStartAfter and add the counts up."
+          : "Scan complete for this collection."
+      });
+    }
+
+    /* ---- DESIGN NOTE: the backfill this audit feeds (NOT BUILT) --------------
+       Deliberately not implemented until Mark signs off, because unlike the
+       roof tools it rewrites FIELDS A HUMAN TYPED.
+
+       Shape it would take, matching the guardrail discipline already here:
+         action: "backfill_stale_workorder_identity"
+         * DRY RUN unless apply === true, same as every other action here.
+         * Operates on ONE buildingId at a time, never the whole collection --
+           the blast radius of a bad run should be one site, not the database.
+         * Re-uses this audit's exact predicate (stored === resolved AND a
+           field disagrees) so it can only ever touch rows the audit flagged.
+         * Writes ONLY jobName / location / billTo, from the SURVIVOR building.
+           Never roofSystem (legitimately per-order), never buildingId (already
+           correct by the predicate).
+         * Audit-logs the full before/after per work order, so it is reversible.
+
+       THE JUDGEMENT CALL FOR MARK, which is why this stays unbuilt: a work
+       order's jobName is not always meant to equal the building name. A tech
+       may have typed a job-specific label ("Orr St - north wing tear-off").
+       Overwriting that with the building name is data loss of a different
+       kind. The audit's rows[] let him see real examples before deciding
+       whether to rewrite all three fields, only location/billTo, or to fix
+       them case by case. -------------------------------------------------- */
 
     if (body.action === "remove_building_roof_by_index") {
       let caller;
