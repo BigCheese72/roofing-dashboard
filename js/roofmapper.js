@@ -425,6 +425,45 @@ function rmOutlineContainsPoint(lat, lng, outline){
    put this on the wrong side of a line" situation RM_GPS_AMBIGUITY_METERS
    exists to catch. Without this, every photo within 6m of a penthouse wall
    would be flagged for review forever. */
+/* Scales every hole ring about the same origin/factor as its parent outline.
+   Holes never nest, so this is one flat pass. */
+function rmScaleOutlineHoles(outline, origin, factor){
+  if (!outline || !Array.isArray(outline.holes) || !outline.holes.length) return outline;
+  outline.holes = outline.holes.map(function(h){
+    if (!h || !Array.isArray(h.ring)) return h;
+    return Object.assign({}, h, {
+      ring: h.ring.map(function(p){ return rmGeomScalePoint(p, origin, factor); })
+    });
+  });
+  return outline;
+}
+/* Area for display. A roof with no cutouts reads exactly as it always has --
+   one number -- so nothing changes for the overwhelming majority of roofs.
+   Once something is cut out, BOTH numbers show, because Mark needs the net
+   for material and the gross to sanity-check against a footprint or an
+   old measurement that predates the cutout. */
+function rmFormatOutlineArea(outline){
+  if (!outline) return "0 sq ft";
+  var net = Math.round(outline.areaSqFt || 0);
+  if (!rmOutlineHoleRings(outline).length) return net.toLocaleString() + " sq ft";
+  var gross = Math.round(outline.grossAreaSqFt || outline.areaSqFt || 0);
+  return net.toLocaleString() + " sq ft net (" + gross.toLocaleString() + " gross)";
+}
+/* Plain-language summary of what's cut out, for panels and reports. */
+function rmDescribeOutlineHoles(outline){
+  var holes = (outline && outline.holes) || [];
+  if (!holes.length) return "";
+  var roofCuts = holes.filter(function(h){ return h && h.kind !== "void"; });
+  var voidCuts = holes.filter(function(h){ return h && h.kind === "void"; });
+  var parts = [];
+  if (roofCuts.length){
+    var names = roofCuts.map(function(h){ return h.sourceRoofLabel; }).filter(Boolean);
+    parts.push(names.length ? names.join(", ") + " cut out" :
+      roofCuts.length + " nested roof" + (roofCuts.length > 1 ? "s" : "") + " cut out");
+  }
+  if (voidCuts.length) parts.push(voidCuts.length + " open area" + (voidCuts.length > 1 ? "s" : ""));
+  return parts.join(" · ");
+}
 function rmRoofsShareNestedBoundary(a, b){
   function cutsOut(x, y){
     return (((x.outline && x.outline.holes) || [])).some(function(h){
@@ -3135,7 +3174,9 @@ async function rmPersistVertexEdit(){
         imageFrame: storageFields.imageFrame, imageFrameUrl: storageFields.imageFrameUrl,
         tracedOnOrtho: storageFields.tracedOnOrtho,
         georeferencedSource: storageFields.georeferencedSource,
-        areaSqFt: outline.areaSqFt, perimeterFt: outline.perimeterFt,
+        holes: storageFields.holes,
+        areaSqFt: outline.areaSqFt, grossAreaSqFt: outline.grossAreaSqFt || null,
+        perimeterFt: outline.perimeterFt,
         calibration: outline.calibration || null, squared: null,
         edgeMeasurements: measurementFields.edgeMeasurements, inheritedScale: measurementFields.inheritedScale,
         captureSource: measurementFields.captureSource, scaleSource: measurementFields.scaleSource,
@@ -3375,6 +3416,11 @@ async function rmCalibrateEdge(edgeIndex){
   var centroid = rmGeomRingCentroid(ring);
   var newRing = ring.map(function(p){ return rmGeomScalePoint(p, centroid, appliedFactor); });
   outline.ring = newRing;
+  /* Cutouts scale with the roof they're cut from, about the SAME centroid.
+     Miss this and calibrating a donut leaves the hole at its old size and
+     position -- the penthouse drifting off its own footprint, and the net
+     area wrong by the difference. Scaled BEFORE metrics recompute below. */
+  rmScaleOutlineHoles(outline, centroid, appliedFactor);
   rmRecomputeOutlineMetrics(outline);
   outline.center = rmGeomRingCentroid(newRing);
   delete outline.calibration;
@@ -3443,7 +3489,9 @@ async function rmPersistCalibration(rescaledAssets){
         imageFrame: storageFields.imageFrame, imageFrameUrl: storageFields.imageFrameUrl,
         tracedOnOrtho: storageFields.tracedOnOrtho,
         georeferencedSource: storageFields.georeferencedSource,
-        areaSqFt: outline.areaSqFt, perimeterFt: outline.perimeterFt, calibration: outline.calibration || null,
+        holes: storageFields.holes,
+        areaSqFt: outline.areaSqFt, grossAreaSqFt: outline.grossAreaSqFt || null,
+        perimeterFt: outline.perimeterFt, calibration: outline.calibration || null,
         edgeMeasurements: measurementFields.edgeMeasurements, inheritedScale: measurementFields.inheritedScale,
         captureSource: measurementFields.captureSource, scaleSource: measurementFields.scaleSource,
         measurementMethod: measurementFields.measurementMethod
@@ -3547,7 +3595,9 @@ async function rmPersistOutlineGeometryEdit(){
         imageFrame: storageFields.imageFrame, imageFrameUrl: storageFields.imageFrameUrl,
         tracedOnOrtho: storageFields.tracedOnOrtho,
         georeferencedSource: storageFields.georeferencedSource,
-        areaSqFt: outline.areaSqFt, perimeterFt: outline.perimeterFt,
+        holes: storageFields.holes,
+        areaSqFt: outline.areaSqFt, grossAreaSqFt: outline.grossAreaSqFt || null,
+        perimeterFt: outline.perimeterFt,
         calibration: outline.calibration || null, squared: outline.squared || null,
         edgeMeasurements: measurementFields.edgeMeasurements, inheritedScale: measurementFields.inheritedScale,
         captureSource: measurementFields.captureSource, scaleSource: measurementFields.scaleSource,
@@ -4759,11 +4809,34 @@ function rmOutlinePersistenceFields(outline){
     center: outline.center
   };
 }
+/* Cutouts, normalized for Firestore. Each hole is a map holding its own ring,
+   so this stays array > map > array -- never a bare array of arrays, which
+   Firestore rejects outright.
+
+   Rings are stored CLOSED (last point repeats the first), matching
+   outline.ring, because rmGeomPolygonPerimeterMeters() walks i < length-1 and
+   would quietly drop the closing segment of an open ring -- an inner
+   perimeter short by one edge, with nothing to show for it on screen. */
+function rmHolesPersistenceFields(outline){
+  var holes = (outline && outline.holes) || [];
+  var clean = holes.map(function(h){
+    if (!h || !Array.isArray(h.ring) || h.ring.length < 3) return null;
+    return {
+      ring: rmGeomCleanRing(h.ring).map(function(p){ return { lat: p.lat, lng: p.lng }; }),
+      kind: h.kind === "void" ? "void" : "roof",
+      sourceRoofId: h.sourceRoofId || null,
+      sourceRoofLabel: h.sourceRoofLabel || null,
+      createdAt: h.createdAt || Date.now()
+    };
+  }).filter(Boolean);
+  return clean.length ? clean : null;
+}
 function rmOutlineStorageFields(outline, existing){
   var geometryFields = rmOutlinePersistenceFields(outline);
   return {
     ring: geometryFields.ring || [],
     center: geometryFields.center || null,
+    holes: rmHolesPersistenceFields(outline),
     imageRing: geometryFields.imageRing || null,
     imageCenter: geometryFields.imageCenter || null,
     imageFrame: geometryFields.imageFrame || null,
