@@ -399,6 +399,104 @@ function rmDistanceToRingMeters(lat, lng, ring){
    than silently trusted, even when it's technically inside exactly one
    polygon. */
 var RM_GPS_AMBIGUITY_METERS = 6;
+/* Hole-aware containment: a point inside the outer ring but inside one of the
+   holes is NOT on this roof. Which roof it IS on depends on the hole's kind,
+   and the caller doesn't need to special-case that -- it falls out naturally:
+
+     penthouse (kind "roof") -- the nested roof's own outline contains the
+       point, so that roof matches on its own and wins cleanly.
+     courtyard (kind "void") -- nothing contains the point. It's open air, a
+       wall, or a drain at grade. Correctly ends up unassigned rather than
+       silently credited to the surrounding roof, which would put courtyard
+       leak photos on the wrong roof's record.
+
+   Holes are one level deep by design, so this never recurses. */
+function rmOutlineContainsPoint(lat, lng, outline){
+  if (!outline || !Array.isArray(outline.ring) || outline.ring.length < 3) return false;
+  if (!rmPointInRing(lat, lng, outline.ring)) return false;
+  return !rmOutlineHoleRings(outline).some(function(ring){
+    return rmPointInRing(lat, lng, ring);
+  });
+}
+/* True when one of these two roofs is cut out of the other. Their shared edge
+   is shared BY CONSTRUCTION (the hole ring is a copy of the nested roof's own
+   ring), so the distance between them is ~0 everywhere along it. That is a
+   permanent, intended fact about the geometry -- not the "phone GPS might have
+   put this on the wrong side of a line" situation RM_GPS_AMBIGUITY_METERS
+   exists to catch. Without this, every photo within 6m of a penthouse wall
+   would be flagged for review forever. */
+/* Scales every hole ring about the same origin/factor as its parent outline.
+   Holes never nest, so this is one flat pass. */
+function rmScaleOutlineHoles(outline, origin, factor){
+  if (!outline || !Array.isArray(outline.holes) || !outline.holes.length) return outline;
+  outline.holes = outline.holes.map(function(h){
+    if (!h || !Array.isArray(h.ring)) return h;
+    return Object.assign({}, h, {
+      ring: h.ring.map(function(p){ return rmGeomScalePoint(p, origin, factor); })
+    });
+  });
+  return outline;
+}
+/* Area for display. A roof with no cutouts reads exactly as it always has --
+   one number -- so nothing changes for the overwhelming majority of roofs.
+   Once something is cut out, BOTH numbers show, because Mark needs the net
+   for material and the gross to sanity-check against a footprint or an
+   old measurement that predates the cutout. */
+function rmFormatOutlineArea(outline){
+  if (!outline) return "0 sq ft";
+  var net = Math.round(outline.areaSqFt || 0);
+  if (!rmOutlineHoleRings(outline).length) return net.toLocaleString() + " sq ft";
+  var gross = Math.round(outline.grossAreaSqFt || outline.areaSqFt || 0);
+  return net.toLocaleString() + " sq ft net (" + gross.toLocaleString() + " gross)";
+}
+/* Plain-language summary of what's cut out, for panels and reports. */
+function rmDescribeOutlineHoles(outline){
+  var holes = (outline && outline.holes) || [];
+  if (!holes.length) return "";
+  var roofCuts = holes.filter(function(h){ return h && h.kind !== "void"; });
+  var voidCuts = holes.filter(function(h){ return h && h.kind === "void"; });
+  var parts = [];
+  if (roofCuts.length){
+    var names = roofCuts.map(function(h){ return h.sourceRoofLabel; }).filter(Boolean);
+    parts.push(names.length ? names.join(", ") + " cut out" :
+      roofCuts.length + " nested roof" + (roofCuts.length > 1 ? "s" : "") + " cut out");
+  }
+  if (voidCuts.length) parts.push(voidCuts.length + " open area" + (voidCuts.length > 1 ? "s" : ""));
+  return parts.join(" · ");
+}
+/* Hole subpaths for an SVG roof shape, projected through the SAME
+   origin + toSvg pipeline as the outer ring so they land registered on it.
+   Appended to the outer ring's path data; the path must then be rendered
+   with fill-rule="evenodd" (see the three call sites) or the cutout fills
+   in solid and the donut reads as an ordinary roof.
+
+   evenodd rather than nonzero deliberately: nonzero would only punch a hole
+   if the inner ring wound OPPOSITE the outer one, and nothing upstream
+   guarantees winding direction -- rings come from OSM, hand traces, walked
+   corners, and copies of other roofs' rings. evenodd is winding-agnostic,
+   so it holds no matter where the ring came from. */
+/* Leaflet ring form: [outerRing, ...holeRings] as [lat,lng] pairs. A roof
+   with no cutouts yields a single ring, which is exactly what L.polygon()
+   already received before cutouts existed. */
+function rmOutlineLatLngRings(outline){
+  function toPairs(ring){ return ring.map(function(p){ return [p.lat, p.lng]; }); }
+  if (!outline || !Array.isArray(outline.ring)) return [];
+  return [toPairs(outline.ring)].concat(rmOutlineHoleRings(outline).map(toPairs));
+}
+function rmOutlineHolesSvgPath(outline, origin, toSvg){
+  return rmOutlineHoleRings(outline).map(function(ring){
+    var pts = ring.map(function(p){ return toSvg(rmExportProjectPoint(p, origin)); });
+    return " M " + pts.map(function(p){ return p.x.toFixed(1) + "," + p.y.toFixed(1); }).join(" L ") + " Z";
+  }).join("");
+}
+function rmRoofsShareNestedBoundary(a, b){
+  function cutsOut(x, y){
+    return (((x.outline && x.outline.holes) || [])).some(function(h){
+      return h && h.sourceRoofId && h.sourceRoofId === y.roofId;
+    });
+  }
+  return cutsOut(a, b) || cutsOut(b, a);
+}
 /* Best-effort roof assignment for one lat/lng against a building's roofs
    (each with roof_outlines[] -- uses the latest one, same "newest is
    current" convention as everywhere else). Returns null if no roof has a
@@ -414,8 +512,8 @@ function rmAssignPointToRoof(lat, lng, roofs){
     var outline = outlines[outlines.length - 1];
     if (!outline || !outline.ring || outline.ring.length < 3) return;
     candidates.push({
-      roofId: roof.id, label: roof.label || "Roof",
-      inside: rmPointInRing(lat, lng, outline.ring),
+      roofId: roof.id, label: roof.label || "Roof", outline: outline,
+      inside: rmOutlineContainsPoint(lat, lng, outline),
       dist: rmDistanceToRingMeters(lat, lng, outline.ring)
     });
   });
@@ -425,11 +523,17 @@ function rmAssignPointToRoof(lat, lng, roofs){
     /* Exactly one match is the normal, confident case. More than one
        (overlapping polygons -- shouldn't happen once vertex/edge snapping
        ships, but handled gracefully in the meantime) picks the closest-
-       to-center and flags it, rather than picking arbitrarily. */
+       to-center and flags it, rather than picking arbitrarily.
+
+       Nested roofs no longer land here: rmOutlineContainsPoint() excludes
+       the donut for points inside its cutout, so a penthouse point matches
+       the penthouse alone. Overlap that reaches this branch is still the
+       unintended kind worth flagging. */
     insideOnes.sort(function(a, b){ return a.dist - b.dist; });
     var best = insideOnes[0];
     var nearAnotherBoundary = candidates.some(function(c){
-      return c.roofId !== best.roofId && c.dist < RM_GPS_AMBIGUITY_METERS;
+      return c.roofId !== best.roofId && c.dist < RM_GPS_AMBIGUITY_METERS &&
+        !rmRoofsShareNestedBoundary(best, c);
     });
     return { roofId: best.roofId, label: best.label, ambiguous: insideOnes.length > 1 || nearAnotherBoundary, outsideAll: false };
   }
@@ -496,6 +600,65 @@ function rmGeomPolygonPerimeterMeters(ring){
   var total = 0;
   for (var i = 0; i < ring.length - 1; i++) total += rmGeomHaversineMeters(ring[i], ring[i + 1]);
   return total;
+}
+/* ---- Nested-roof cutouts (holes) ----
+   Mark's Roof 7-around-Roof 8 case: a roof can enclose something that isn't
+   part of its own field. Two kinds, and the difference is accounting, not
+   geometry:
+
+     kind "roof"  -- a penthouse/nested roof (sourceRoofId set). The hole area
+                     is still roof, it just belongs to the nested roof instead.
+                     Building total is UNCHANGED by the cutout.
+     kind "void"  -- a courtyard/atrium/lightwell (sourceRoofId null). The hole
+                     area is not roof at all and nobody owns it. Building total
+                     genuinely DROPS.
+
+   Conflating the two silently corrupts building-level totals in one direction
+   or the other, which is why the kind is stored rather than inferred.
+
+   ONE level of nesting only -- a hole never carries its own holes, and nothing
+   here recurses. Each hole's ring is MATERIALIZED (a copy, closed the same way
+   outline.ring is) rather than resolved through sourceRoofId at read time, so
+   a roof's numbers never shift because some other roof was edited. See
+   "Nested-roof cutouts" in DEV_NOTES.md. */
+function rmOutlineHoleRings(outline){
+  return ((outline && outline.holes) || []).map(function(h){ return h && h.ring; })
+    .filter(function(r){ return Array.isArray(r) && r.length >= 3; });
+}
+/* THE single place that derives an outline's area/perimeter numbers.
+   Everything that changes a ring calls this rather than recomputing inline.
+
+   This exists because the formula used to be copy-pasted at 14 sites, every
+   one of them recomputing from the OUTER ring alone. Teaching only the save
+   path about holes would have meant the next vertex drag / calibrate / square
+   / re-snap silently reverted areaSqFt back to gross -- the donut quietly
+   healing itself into a solid roof, with nothing visibly wrong until someone
+   reconciled a takeoff. Keep it that way: add ring math here, not at callers.
+
+   areaSqFt is NET (outer minus holes) because that's the roof you actually
+   walk, buy material for, and bill. grossAreaSqFt is retained alongside it so
+   both can be shown -- see rmFormatOutlineArea().
+
+   perimeterFt sums the outer ring AND every hole ring: the inner edge is a
+   real edge-metal termination, not a notional boundary. Per Mark, a penthouse
+   counts the donut's inner edge only -- the nested roof's own perimeter stays
+   on that roof's own record, so nothing is double-counted here. */
+function rmRecomputeOutlineMetrics(outline){
+  if (!outline || !Array.isArray(outline.ring) || outline.ring.length < 3) return outline;
+  var holeRings = rmOutlineHoleRings(outline);
+  var grossSqFt = rmGeomPolygonAreaSqMeters(outline.ring) * 10.7639;
+  var holesSqFt = holeRings.reduce(function(sum, r){
+    return sum + rmGeomPolygonAreaSqMeters(r) * 10.7639;
+  }, 0);
+  var perimeterM = holeRings.reduce(function(sum, r){
+    return sum + rmGeomPolygonPerimeterMeters(r);
+  }, rmGeomPolygonPerimeterMeters(outline.ring));
+  outline.grossAreaSqFt = grossSqFt;
+  /* Clamped at 0: a malformed hole bigger than its parent should read as
+     "no roof left", never as negative square footage on a report. */
+  outline.areaSqFt = Math.max(0, grossSqFt - holesSqFt);
+  outline.perimeterFt = perimeterM * 3.28084;
+  return outline;
 }
 /* ---- Split a roof outline into multiple labeled sections ("blob-splitting")
    Mark: an auto-pulled OSM footprint (or a hand trace) is often really
@@ -598,12 +761,10 @@ function rmSplitRingByChord(ring, p1, p2){
    same area/perimeter math every saved outline uses, so the numbers shown
    in the split review panel match exactly what gets saved. */
 function rmMakeSplitSection(ring, label){
-  return {
+  return rmRecomputeOutlineMetrics({
     id: genId("split"), label: label, ring: ring,
-    areaSqFt: rmGeomPolygonAreaSqMeters(ring) * 10.7639,
-    perimeterFt: rmGeomPolygonPerimeterMeters(ring) * 3.28084,
     center: rmGeomRingCentroid(ring)
-  };
+  });
 }
 /* ---- Square Up (orthogonal snapping) ----
    Mark: roofs are mostly rectilinear, so a traced outline should "look
@@ -1637,7 +1798,8 @@ function rmBuildOutlineSvg(outline, overlay){
       '" width="' + Math.abs(bmSe.x - bmNw.x).toFixed(1) + '" height="' + Math.abs(bmSe.y - bmNw.y).toFixed(1) + '" preserveAspectRatio="none"/>';
   }
   var pathPts = pts.map(toSvg);
-  var pathD = "M " + pathPts.map(function(p){ return p.x.toFixed(1) + "," + p.y.toFixed(1); }).join(" L ") + " Z";
+  var pathD = "M " + pathPts.map(function(p){ return p.x.toFixed(1) + "," + p.y.toFixed(1); }).join(" L ") + " Z" +
+    rmOutlineHolesSvgPath(outline, origin, toSvg);
   var title = (overlay && overlay.buildingName) || rmOutlineTitle(outline);
   if (overlay && overlay.roofLabel) title += " — " + overlay.roofLabel;
   var scaleBarFt = 20, scaleBarPx = scaleBarFt * scale;
@@ -1726,14 +1888,14 @@ function rmBuildOutlineSvg(outline, overlay){
       rmEscXml(overlay.buildingAddress) + '</text>';
   }
   headerSvg += '<text x="16" y="' + statsY + '" font-family="Arial, sans-serif" font-size="13" fill="#5B6770">Area: ' +
-    outline.areaSqFt.toFixed(0) + ' sq ft &#183; Perimeter: ' + outline.perimeterFt.toFixed(0) + ' ft &#183; Generated ' +
+    rmEscXml(rmFormatOutlineArea(outline)) + ' &#183; Perimeter: ' + outline.perimeterFt.toFixed(0) + ' ft &#183; Generated ' +
     rmEscXml(new Date(outline.createdAt || Date.now()).toLocaleDateString()) + '</text>';
   headerSvg += '<text x="16" y="' + (statsY + 18) + '" font-family="Arial, sans-serif" font-size="12" fill="#5B6770">' +
     rmEscXml(rmOutlineMeasurementMethod(outline).label) + '</text>';
   var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + svgW + '" height="' + svgH + '" viewBox="0 0 ' + svgW + ' ' + svgH + '">' +
     '<rect width="100%" height="100%" fill="#ffffff"/>' +
     headerSvg + basemapSvg +
-    '<path d="' + pathD + '" fill="rgba(232,96,10,0.15)" stroke="#E8600A" stroke-width="2.5" stroke-linejoin="round"/>' +
+    '<path d="' + pathD + '" fill="rgba(232,96,10,0.15)" fill-rule="evenodd" stroke="#E8600A" stroke-width="2.5" stroke-linejoin="round"/>' +
     dimSvg + markersSvg + legendSvg +
     '<g transform="translate(16,' + (svgH - 18) + ')">' +
       '<line x1="0" y1="0" x2="' + scaleBarPx + '" y2="0" stroke="#263238" stroke-width="2"/>' +
@@ -1864,8 +2026,9 @@ function rmBuildMultiRoofOutlineSvg(data){
   var roofLabelItems = [], assetLabelItems = [], markerObstacles = [];
   roofsProjected.forEach(function(r, i){
     var pathPts = r.pts.map(toSvg);
-    var pathD = "M " + pathPts.map(function(p){ return p.x.toFixed(1) + "," + p.y.toFixed(1); }).join(" L ") + " Z";
-    shapeSvg += '<path d="' + pathD + '" fill="rgba(232,96,10,0.15)" stroke="#E8600A" stroke-width="2.5" stroke-linejoin="round"/>';
+    var pathD = "M " + pathPts.map(function(p){ return p.x.toFixed(1) + "," + p.y.toFixed(1); }).join(" L ") + " Z" +
+      rmOutlineHolesSvgPath(r.outline, origin, toSvg);
+    shapeSvg += '<path d="' + pathD + '" fill="rgba(232,96,10,0.15)" fill-rule="evenodd" stroke="#E8600A" stroke-width="2.5" stroke-linejoin="round"/>';
     /* Edge dimensions, same real-world haversine lengths the single-roof
        export/live map both use. */
     for (var e = 0; e < r.outline.ring.length - 1; e++){
@@ -1909,7 +2072,10 @@ function rmBuildMultiRoofOutlineSvg(data){
        wherever Mark dragged it) -- "each selected roof drawn, labeled,
        with its area/dimensions" per Mark's exact ask. */
     var lp = toSvg(r.labelPt);
-    var areaText = Math.round(r.outline.areaSqFt || 0) + ' sq ft';
+    /* Net on the map label -- it's the number you'd order material against.
+       The gross stays available in the stats panel and the report header. */
+    var areaText = Math.round(r.outline.areaSqFt || 0) + ' sq ft' +
+      (rmOutlineHoleRings(r.outline).length ? ' net' : '');
     var labelBoxW = Math.max(r.label.length * 17 * 0.6, areaText.length * 13 * 0.55) + 6;
     roofLabelItems.push({
       id: "roof-" + i, kind: "roof", name: r.label, areaText: areaText,
@@ -2836,12 +3002,22 @@ function rmRenderOutlineStats(outline){
     scaleNote += '<p class="hint" style="margin:0 0 8px">Scale inherited from this building&rsquo;s earlier ' +
       'calibration. Tap any edge&rsquo;s length to override it for just this roof.</p>';
   }
+  /* Cut-out roofs get a second stat and a caption naming what was removed,
+     so a net figure never appears without saying why it's lower than the
+     footprint someone might be comparing it against. */
+  var holeNote = rmDescribeOutlineHoles(outline);
+  var grossStat = holeNote ?
+    '<div class="stat"><b>' + Math.round(outline.grossAreaSqFt || 0) + '</b><span>Gross Sq Ft</span></div>' : '';
   document.getElementById("rm-outline-stats").innerHTML = scaleNote +
-    '<div class="stat"><b>' + outline.areaSqFt.toFixed(0) + '</b><span>Sq Ft</span></div>' +
+    '<div class="stat"><b>' + outline.areaSqFt.toFixed(0) + '</b><span>' + (holeNote ? 'Net Sq Ft' : 'Sq Ft') + '</span></div>' +
+    grossStat +
     '<div class="stat"><b>' + outline.perimeterFt.toFixed(0) + '</b><span>Perimeter Ft</span></div>' +
     '<div class="stat"><b>' + outline.ring.length + '</b><span>Points</span></div>' +
+    (holeNote ? '<p class="hint" style="margin:8px 0 0">✂️ ' + esc(holeNote) +
+      ' — perimeter includes the inner edge.</p>' : '') +
     rmMeasurementHistoryHtml(outline);
   document.getElementById("rm-outline-panel").style.display = "";
+  rmRenderCutoutPanel();
 }
 /* Shared by rmGenerateOutline() (OSM footprint) and rmFinishTrace() (Phase
    3 manual trace) -- draws whatever outline object was built, zooms to it,
@@ -2988,8 +3164,7 @@ function rmOnVertexDragEnd(vertexIndex, droppedLatLng, marker){
   } else {
     rmClearSnapIndicator();
   }
-  outline.areaSqFt = rmGeomPolygonAreaSqMeters(outline.ring) * 10.7639;
-  outline.perimeterFt = rmGeomPolygonPerimeterMeters(outline.ring) * 3.28084;
+  rmRecomputeOutlineMetrics(outline);
   outline.center = rmGeomRingCentroid(outline.ring);
   /* A manual point move invalidates any prior "this shape is square" /
      "this edge is calibrated" guarantee -- clearing both rather than
@@ -3039,7 +3214,9 @@ async function rmPersistVertexEdit(){
         imageFrame: storageFields.imageFrame, imageFrameUrl: storageFields.imageFrameUrl,
         tracedOnOrtho: storageFields.tracedOnOrtho,
         georeferencedSource: storageFields.georeferencedSource,
-        areaSqFt: outline.areaSqFt, perimeterFt: outline.perimeterFt,
+        holes: storageFields.holes,
+        areaSqFt: outline.areaSqFt, grossAreaSqFt: outline.grossAreaSqFt || null,
+        perimeterFt: outline.perimeterFt,
         calibration: outline.calibration || null, squared: null,
         edgeMeasurements: measurementFields.edgeMeasurements, inheritedScale: measurementFields.inheritedScale,
         captureSource: measurementFields.captureSource, scaleSource: measurementFields.scaleSource,
@@ -3076,7 +3253,11 @@ function rmDrawFinalOutline(outline){
   if (rmState.vertexEditActive) rmExitVertexEdit(false); /* a fresh outline replaces whatever was being hand-edited */
   var map = rmEnsureMap();
   if (rmState.outlineLayer) map.removeLayer(rmState.outlineLayer);
-  rmState.outlineLayer = L.polygon(outline.ring.map(function(p){ return [p.lat, p.lng]; }), {
+  /* Leaflet reads [outer, hole, hole...] natively, so a cut-out roof draws
+     as an actual donut on the live map -- same shape the exports and the
+     report produce, rather than a filled blob that only reads correctly
+     once it's printed. */
+  rmState.outlineLayer = L.polygon(rmOutlineLatLngRings(outline), {
     color: "#E8600A", weight: 3, dashArray: outline.isSiteBoundary ? "6,6" : null, fillColor: "#E8600A", fillOpacity: 0.15
   }).addTo(map);
   rmDrawEdgeDimensions(outline);
@@ -3279,8 +3460,12 @@ async function rmCalibrateEdge(edgeIndex){
   var centroid = rmGeomRingCentroid(ring);
   var newRing = ring.map(function(p){ return rmGeomScalePoint(p, centroid, appliedFactor); });
   outline.ring = newRing;
-  outline.areaSqFt = rmGeomPolygonAreaSqMeters(newRing) * 10.7639;
-  outline.perimeterFt = rmGeomPolygonPerimeterMeters(newRing) * 3.28084;
+  /* Cutouts scale with the roof they're cut from, about the SAME centroid.
+     Miss this and calibrating a donut leaves the hole at its old size and
+     position -- the penthouse drifting off its own footprint, and the net
+     area wrong by the difference. Scaled BEFORE metrics recompute below. */
+  rmScaleOutlineHoles(outline, centroid, appliedFactor);
+  rmRecomputeOutlineMetrics(outline);
   outline.center = rmGeomRingCentroid(newRing);
   delete outline.calibration;
   delete outline.inheritedScale;
@@ -3348,7 +3533,9 @@ async function rmPersistCalibration(rescaledAssets){
         imageFrame: storageFields.imageFrame, imageFrameUrl: storageFields.imageFrameUrl,
         tracedOnOrtho: storageFields.tracedOnOrtho,
         georeferencedSource: storageFields.georeferencedSource,
-        areaSqFt: outline.areaSqFt, perimeterFt: outline.perimeterFt, calibration: outline.calibration || null,
+        holes: storageFields.holes,
+        areaSqFt: outline.areaSqFt, grossAreaSqFt: outline.grossAreaSqFt || null,
+        perimeterFt: outline.perimeterFt, calibration: outline.calibration || null,
         edgeMeasurements: measurementFields.edgeMeasurements, inheritedScale: measurementFields.inheritedScale,
         captureSource: measurementFields.captureSource, scaleSource: measurementFields.scaleSource,
         measurementMethod: measurementFields.measurementMethod
@@ -3381,8 +3568,7 @@ function rmSquareUpOutline(){
   rmState.preSquareRing = outline.ring; /* for Undo -- one level, matches Calibrate's own no-history-stack simplicity */
   rmState.preSquareMeasurementState = rmSnapshotMeasurementState(outline);
   outline.ring = result.ring;
-  outline.areaSqFt = rmGeomPolygonAreaSqMeters(result.ring) * 10.7639;
-  outline.perimeterFt = rmGeomPolygonPerimeterMeters(result.ring) * 3.28084;
+  rmRecomputeOutlineMetrics(outline);
   outline.center = rmGeomRingCentroid(result.ring);
   outline.squared = { at: Date.now(), tolerance: RM_SQUARE_TOLERANCE_DEG, snappedEdges: result.snappedCount };
   rmInvalidateEdgeMeasurements(outline, "square_up");
@@ -3401,8 +3587,7 @@ function rmUndoSquareUp(){
   var outline = rmState.outline;
   if (!outline || !rmState.preSquareRing) return;
   outline.ring = rmState.preSquareRing;
-  outline.areaSqFt = rmGeomPolygonAreaSqMeters(outline.ring) * 10.7639;
-  outline.perimeterFt = rmGeomPolygonPerimeterMeters(outline.ring) * 3.28084;
+  rmRecomputeOutlineMetrics(outline);
   outline.center = rmGeomRingCentroid(outline.ring);
   delete outline.squared;
   rmRestoreMeasurementState(outline, rmState.preSquareMeasurementState);
@@ -3454,7 +3639,9 @@ async function rmPersistOutlineGeometryEdit(){
         imageFrame: storageFields.imageFrame, imageFrameUrl: storageFields.imageFrameUrl,
         tracedOnOrtho: storageFields.tracedOnOrtho,
         georeferencedSource: storageFields.georeferencedSource,
-        areaSqFt: outline.areaSqFt, perimeterFt: outline.perimeterFt,
+        holes: storageFields.holes,
+        areaSqFt: outline.areaSqFt, grossAreaSqFt: outline.grossAreaSqFt || null,
+        perimeterFt: outline.perimeterFt,
         calibration: outline.calibration || null, squared: outline.squared || null,
         edgeMeasurements: measurementFields.edgeMeasurements, inheritedScale: measurementFields.inheritedScale,
         captureSource: measurementFields.captureSource, scaleSource: measurementFields.scaleSource,
@@ -3465,6 +3652,198 @@ async function rmPersistOutlineGeometryEdit(){
     roofs[roofIdx] = roof;
     await saveBuildingRoofs(rmState.linkedBuildingId, roofs);
   }catch(e){ toast("Updated on screen, but couldn't save: " + e.message); }
+}
+
+/* ================= Nested-roof cutouts (UI) =================
+   Mark's Roof 7-around-Roof 8 case. Two ways in, because there are two
+   real-world things this has to model (see rmRecomputeOutlineMetrics()):
+
+     "Cut Out a Roof"       -- a penthouse. Pick the roof that sits inside
+                               this one; its ring BECOMES the hole, so the
+                               shared boundary is exact by construction and
+                               nobody re-traces anything.
+     "Cut Out an Open Area" -- a courtyard/atrium/lightwell. There's no roof
+                               to pick, so it gets traced directly, reusing
+                               the normal trace machinery via mode "hole".
+
+   Everything downstream keys off hole.kind, not off which button was used. */
+
+/* The cutout controls have no home in index.html, so the panel mounts itself
+   into the outline card the first time it renders. */
+function rmCutoutPanelEl(){
+  var existing = document.getElementById("rm-cutout-panel");
+  if (existing) return existing;
+  var host = document.getElementById("rm-outline-panel");
+  if (!host) return null;
+  var el = document.createElement("div");
+  el.id = "rm-cutout-panel";
+  host.appendChild(el);
+  return el;
+}
+/* A ring is a valid cutout only if it sits wholly inside the outer ring.
+   Checking every point (not just the centroid) is deliberate: a C-shaped
+   overlap can have its centroid inside while half the ring hangs out, and
+   subtracting that area would quietly understate the roof. */
+function rmRingFitsInsideOutline(ring, outline){
+  if (!outline || !Array.isArray(outline.ring) || !Array.isArray(ring) || ring.length < 3) return false;
+  return ring.every(function(p){ return rmPointInRing(p.lat, p.lng, outline.ring); });
+}
+function rmAddCutoutToOutline(outline, hole){
+  if (!outline) return false;
+  outline.holes = (outline.holes || []).concat([hole]);
+  rmRecomputeOutlineMetrics(outline);
+  return true;
+}
+/* Roofs on this building that could be cut out of the one on screen:
+   anything with a usable ring that isn't this roof and isn't already cut
+   out. Fetched on demand rather than cached -- this is a rare, deliberate
+   action, and a stale roof list here would offer a roof that no longer
+   exists. */
+async function rmCutoutCandidateRoofs(){
+  if (!rmState.linkedBuildingId || !fdb) return [];
+  var snap = await fdb.collection("buildings").doc(rmState.linkedBuildingId).get();
+  var roofs = getBuildingRoofs(snap.exists ? snap.data() : {});
+  var already = ((rmState.outline && rmState.outline.holes) || []).map(function(h){ return h.sourceRoofId; });
+  return roofs.filter(function(r){
+    if (r.id === rmState.linkedRoofId) return false;
+    if (already.indexOf(r.id) !== -1) return false;
+    var o = (r.roof_outlines || [])[(r.roof_outlines || []).length - 1];
+    return !!(o && Array.isArray(o.ring) && o.ring.length >= 3);
+  }).map(function(r){
+    var o = r.roof_outlines[r.roof_outlines.length - 1];
+    return { id: r.id, label: r.label || "Roof", ring: o.ring };
+  });
+}
+async function rmShowCutoutRoofPicker(){
+  var panel = rmCutoutPanelEl();
+  if (!panel || !rmState.outline) return;
+  if (!rmState.linkedBuildingId){
+    toast("Save this roof to the building first — cutting out another roof needs both roofs on the same building.");
+    return;
+  }
+  panel.innerHTML = '<div class="card" style="margin-top:10px"><p class="hint" style="margin:0">Loading roofs…</p></div>';
+  try{
+    var candidates = await rmCutoutCandidateRoofs();
+    /* Only offer roofs that actually sit inside this one. Offering the rest
+       and rejecting the tap afterwards would be a worse way to learn the
+       same fact. */
+    var fits = candidates.filter(function(c){ return rmRingFitsInsideOutline(c.ring, rmState.outline); });
+    if (!fits.length){
+      panel.innerHTML = '<div class="card" style="margin-top:10px">' +
+        '<p class="hint" style="margin:0 0 8px">No roof on this building sits inside this one. ' +
+        (candidates.length ? 'A roof has to be fully within this outline to be cut out of it.' :
+          'Trace the inner roof first, then come back and cut it out.') + '</p>' +
+        '<div class="btnrow" style="margin:0"><button class="btn" onclick="rmRenderCutoutPanel()">✕ Close</button></div></div>';
+      return;
+    }
+    panel.innerHTML = '<div class="card" style="margin-top:10px">' +
+      '<h2 class="cond" style="font-size:15px;margin:0 0 8px">Cut Out a Roof</h2>' +
+      '<p class="hint" style="margin:0 0 8px">Its outline becomes this roof&rsquo;s hole — no re-tracing, and the shared edge matches exactly.</p>' +
+      fits.map(function(c){
+        return '<button class="btn" style="width:100%;margin:0 0 6px" onclick="rmCutOutExistingRoof(\'' +
+          esc(c.id) + '\')">✂️ ' + esc(c.label) + '</button>';
+      }).join("") +
+      '<div class="btnrow" style="margin:0"><button class="btn" onclick="rmRenderCutoutPanel()">✕ Cancel</button></div></div>';
+  }catch(e){
+    panel.innerHTML = '<div class="card" style="margin-top:10px"><p class="hint" style="margin:0">' +
+      'Couldn&rsquo;t load this building&rsquo;s roofs: ' + esc(e.message) + '</p></div>';
+  }
+}
+async function rmCutOutExistingRoof(roofId){
+  var outline = rmState.outline;
+  if (!outline) return;
+  try{
+    var candidates = await rmCutoutCandidateRoofs();
+    var target = candidates.find(function(c){ return c.id === roofId; });
+    if (!target){ toast("That roof is no longer available to cut out."); return; }
+    if (!rmRingFitsInsideOutline(target.ring, outline)){
+      toast(target.label + " isn't fully inside this roof, so it can't be cut out of it.");
+      return;
+    }
+    /* Materialized copy, not a live reference: this roof's numbers must not
+       shift because someone edited the nested roof later. sourceRoofId keeps
+       the provenance for when that happens. */
+    rmAddCutoutToOutline(outline, {
+      ring: rmGeomCleanRing(target.ring.map(function(p){ return { lat: p.lat, lng: p.lng }; })),
+      kind: "roof",
+      sourceRoofId: target.id,
+      sourceRoofLabel: target.label,
+      createdAt: Date.now()
+    });
+    rmRedrawOutlineAfterCutout();
+    await rmPersistOutlineGeometryEdit();
+    toast(target.label + " cut out ✓ — area is now net, perimeter includes the inner edge.");
+  }catch(e){ toast("Couldn't cut out that roof: " + e.message); }
+}
+/* Courtyard path -- reuses the normal trace flow (taps, preview, undo,
+   insert-point) by running it in mode "hole"; rmFinishTrace() branches to
+   rmFinishCutoutTrace() below rather than building a new outline. */
+function rmStartCutoutTrace(){
+  if (!rmState.outline){ toast("Trace or open a roof first."); return; }
+  rmTraceState.active = true;
+  rmTraceState.mode = "hole";
+  rmTraceState.points = [];
+  rmTraceState.insertLayers = [];
+  rmSetStatus("Tracing an open area — tap around the courtyard/atrium inside this roof, then Finish.");
+  rmShowTracePanel();
+}
+async function rmFinishCutoutTrace(){
+  var outline = rmState.outline;
+  if (!outline) return;
+  if (rmTraceState.points.length < 3){ toast("Tap at least 3 points to outline the open area."); return; }
+  var ring = rmGeomCleanRing(rmTraceState.points.concat([rmTraceState.points[0]]));
+  if (ring.length < 4){ toast("Those points are too close together — trace a wider shape."); return; }
+  if (!rmRingFitsInsideOutline(ring, outline)){
+    toast("That shape isn't fully inside this roof — an open area has to sit within the outline.");
+    return;
+  }
+  rmAddCutoutToOutline(outline, {
+    ring: ring, kind: "void", sourceRoofId: null, sourceRoofLabel: null, createdAt: Date.now()
+  });
+  rmCancelTrace();
+  rmRedrawOutlineAfterCutout();
+  await rmPersistOutlineGeometryEdit();
+  toast("Open area cut out ✓ — that area is no longer counted as roof.");
+}
+async function rmRemoveCutout(index){
+  var outline = rmState.outline;
+  if (!outline || !Array.isArray(outline.holes)) return;
+  var hole = outline.holes[index];
+  if (!hole) return;
+  outline.holes = outline.holes.filter(function(_, i){ return i !== index; });
+  rmRecomputeOutlineMetrics(outline);
+  rmRedrawOutlineAfterCutout();
+  await rmPersistOutlineGeometryEdit();
+  toast((hole.sourceRoofLabel || "Open area") + " put back ✓");
+}
+/* One redraw path for every cutout change, so the map, the stats, and the
+   panel can never disagree about what's currently cut out. */
+function rmRedrawOutlineAfterCutout(){
+  if (rmState.outline) rmDrawFinalOutline(rmState.outline);
+  rmRenderCutoutPanel();
+}
+function rmRenderCutoutPanel(){
+  var panel = rmCutoutPanelEl();
+  if (!panel) return;
+  var outline = rmState.outline;
+  if (!outline || !Array.isArray(outline.ring) || outline.ring.length < 3){ panel.innerHTML = ""; return; }
+  var holes = outline.holes || [];
+  var list = holes.map(function(h, i){
+    var name = h.kind === "void" ? "Open area" : (h.sourceRoofLabel || "Nested roof");
+    var sqft = Math.round(rmGeomPolygonAreaSqMeters(h.ring) * 10.7639).toLocaleString();
+    return '<div style="display:flex;align-items:center;gap:8px;margin:0 0 6px">' +
+      '<span style="flex:1">' + (h.kind === "void" ? "◻️ " : "✂️ ") + esc(name) +
+      ' <span class="hint">− ' + sqft + ' sq ft</span></span>' +
+      '<button class="btn" onclick="rmRemoveCutout(' + i + ')">Undo</button></div>';
+  }).join("");
+  panel.innerHTML = '<div class="card" style="margin-top:10px">' +
+    '<h2 class="cond" style="font-size:15px;margin:0 0 8px">Cutouts' + (holes.length ? ' (' + holes.length + ')' : '') + '</h2>' +
+    (holes.length ? list :
+      '<p class="hint" style="margin:0 0 8px">Nothing cut out. Use these when a roof surrounds something that isn&rsquo;t part of it.</p>') +
+    '<div class="btnrow" style="margin:0">' +
+    '<button class="btn" onclick="rmShowCutoutRoofPicker()">✂️ Cut Out a Roof</button>' +
+    '<button class="btn" onclick="rmStartCutoutTrace()">◻️ Cut Out an Open Area</button>' +
+    '</div></div>';
 }
 /* Mark's "can an EXISTING badly-traced roof be cleaned up in place?" ask
    (11 roofs at Tri-Delta with sliver gaps/overlaps between adjoining
@@ -3530,8 +3909,7 @@ function rmSnapExistingOutlineToNeighbors(){
   rmState.preResnapRing = ring; /* one-level Undo, same simplicity as Square Up/Calibrate */
   rmState.preResnapMeasurementState = rmSnapshotMeasurementState(outline);
   outline.ring = newRing;
-  outline.areaSqFt = rmGeomPolygonAreaSqMeters(newRing) * 10.7639;
-  outline.perimeterFt = rmGeomPolygonPerimeterMeters(newRing) * 3.28084;
+  rmRecomputeOutlineMetrics(outline);
   outline.center = rmGeomRingCentroid(newRing);
   rmInvalidateEdgeMeasurements(outline, "resnap_neighbors");
   if (rmState.outlineLayer) rmState.outlineLayer.setLatLngs(newRing.map(function(p){ return [p.lat, p.lng]; }));
@@ -3548,8 +3926,7 @@ function rmUndoResnapToNeighbors(){
   var outline = rmState.outline;
   if (!outline || !rmState.preResnapRing) return;
   outline.ring = rmState.preResnapRing;
-  outline.areaSqFt = rmGeomPolygonAreaSqMeters(outline.ring) * 10.7639;
-  outline.perimeterFt = rmGeomPolygonPerimeterMeters(outline.ring) * 3.28084;
+  rmRecomputeOutlineMetrics(outline);
   outline.center = rmGeomRingCentroid(outline.ring);
   rmRestoreMeasurementState(outline, rmState.preResnapMeasurementState);
   rmState.preResnapRing = null;
@@ -3724,8 +4101,7 @@ function rmApplyAlignFromScale(newLatLng){
 function rmFinalizeAlignTransform(){
   var outline = rmState.outline;
   if (!outline) return;
-  outline.areaSqFt = rmGeomPolygonAreaSqMeters(outline.ring) * 10.7639;
-  outline.perimeterFt = rmGeomPolygonPerimeterMeters(outline.ring) * 3.28084;
+  rmRecomputeOutlineMetrics(outline);
   outline.center = rmGeomRingCentroid(outline.ring);
   rmDrawEdgeDimensions(outline);
   rmRenderOutlineStats(outline);
@@ -3779,8 +4155,7 @@ function rmExitAlignMode(persist){
        persist=false) -- discard whatever was mid-drag, restore exactly
        what was there before align mode started. */
     outline.ring = rmAlignState.originalRing;
-    outline.areaSqFt = rmGeomPolygonAreaSqMeters(outline.ring) * 10.7639;
-    outline.perimeterFt = rmGeomPolygonPerimeterMeters(outline.ring) * 3.28084;
+    rmRecomputeOutlineMetrics(outline);
     outline.center = rmGeomRingCentroid(outline.ring);
     if (rmState.outlineLayer) rmState.outlineLayer.setLatLngs(outline.ring.map(function(p){ return [p.lat, p.lng]; }));
     rmDrawEdgeDimensions(outline);
@@ -3793,8 +4168,7 @@ function rmUndoAlign(){
   var outline = rmState.outline;
   if (!outline || !rmState.preAlignRing) return;
   outline.ring = rmState.preAlignRing;
-  outline.areaSqFt = rmGeomPolygonAreaSqMeters(outline.ring) * 10.7639;
-  outline.perimeterFt = rmGeomPolygonPerimeterMeters(outline.ring) * 3.28084;
+  rmRecomputeOutlineMetrics(outline);
   outline.center = rmGeomRingCentroid(outline.ring);
   rmRestoreMeasurementState(outline, rmState.preAlignMeasurementState);
   rmState.preAlignRing = null;
@@ -3821,18 +4195,16 @@ function rmGenerateOutline(){
   var fp = rmState.footprints.find(function(f){ return f.id === rmState.selectedId; });
   if (!fp) return;
   var ring = rmGeomCleanRing(fp.ring);
-  var outline = {
+  var outline = rmRecomputeOutlineMetrics({
     ring: ring,
     center: fp.center,
-    areaSqFt: rmGeomPolygonAreaSqMeters(ring) * 10.7639,
-    perimeterFt: rmGeomPolygonPerimeterMeters(ring) * 3.28084,
     source: "osm",
     osmId: fp.id,
     osmType: fp.osmType,
     tags: fp.tags || {},
     isSiteBoundary: !!fp.isSite,
     createdAt: Date.now()
-  };
+  });
   rmDrawFinalOutline(outline);
   toast(outline.isSiteBoundary ? "Site boundary captured — not a single roof, see warning below ⚠️" : "Roof outline generated ✓");
 }
@@ -4673,11 +5045,34 @@ function rmOutlinePersistenceFields(outline){
     center: outline.center
   };
 }
+/* Cutouts, normalized for Firestore. Each hole is a map holding its own ring,
+   so this stays array > map > array -- never a bare array of arrays, which
+   Firestore rejects outright.
+
+   Rings are stored CLOSED (last point repeats the first), matching
+   outline.ring, because rmGeomPolygonPerimeterMeters() walks i < length-1 and
+   would quietly drop the closing segment of an open ring -- an inner
+   perimeter short by one edge, with nothing to show for it on screen. */
+function rmHolesPersistenceFields(outline){
+  var holes = (outline && outline.holes) || [];
+  var clean = holes.map(function(h){
+    if (!h || !Array.isArray(h.ring) || h.ring.length < 3) return null;
+    return {
+      ring: rmGeomCleanRing(h.ring).map(function(p){ return { lat: p.lat, lng: p.lng }; }),
+      kind: h.kind === "void" ? "void" : "roof",
+      sourceRoofId: h.sourceRoofId || null,
+      sourceRoofLabel: h.sourceRoofLabel || null,
+      createdAt: h.createdAt || Date.now()
+    };
+  }).filter(Boolean);
+  return clean.length ? clean : null;
+}
 function rmOutlineStorageFields(outline, existing){
   var geometryFields = rmOutlinePersistenceFields(outline);
   return {
     ring: geometryFields.ring || [],
     center: geometryFields.center || null,
+    holes: rmHolesPersistenceFields(outline),
     imageRing: geometryFields.imageRing || null,
     imageCenter: geometryFields.imageCenter || null,
     imageFrame: geometryFields.imageFrame || null,
@@ -5133,6 +5528,9 @@ function rmCancelTrace(){
   rmUpdateControlVisibility(); /* hides #rm-trace-panel (rmTraceState.active is already false here), restores search buttons if still relevant */
 }
 function rmFinishTrace(){
+  /* Cutout traces run through this same flow (taps, preview, undo) but end
+     as a hole on the current roof, not as a new outline of their own. */
+  if (rmTraceState.mode === "hole") return rmFinishCutoutTrace();
   var isWalk = rmTraceState.mode === "walk";
   if (rmTraceState.points.length < 3){
     toast((isWalk ? "Record" : "Tap") + " at least 3 " + (isWalk ? "corners" : "points") + " to form a roof outline.");
@@ -5143,16 +5541,14 @@ function rmFinishTrace(){
   var tracedOnOrtho = rmState.orthoActive;
   var tracedOnGeoTiff = rmState.geoTiffActive;
   var tracedOnKmlOverlay = rmState.kmlOverlayActive;
-  var outline = {
+  var outline = rmRecomputeOutlineMetrics({
     ring: ring,
     center: rmGeomRingCentroid(ring),
-    areaSqFt: rmGeomPolygonAreaSqMeters(ring) * 10.7639,
-    perimeterFt: rmGeomPolygonPerimeterMeters(ring) * 3.28084,
     source: isWalk ? "walk_corners" : (tracedOnKmlOverlay ? "kml_groundoverlay_trace" : (tracedOnGeoTiff ? "geotiff_trace" : (tracedOnOrtho ? "ortho_trace" : "manual_trace"))),
     osmId: null, osmType: null, tags: {},
     isSiteBoundary: false,
     createdAt: Date.now()
-  };
+  });
   /* geotiff_trace is the OPPOSITE of tracedOnOrtho below -- real GPS
      geodata means the ring is already an accurate, real-world position,
      not a placeholder. Flagged explicitly so future code (and Mark) can
@@ -5195,8 +5591,7 @@ function rmFinishTrace(){
     var scaledRing = ring.map(function(p){ return rmGeomScalePoint(p, centroid, rmState.inheritedScaleFactor); });
     outline.ring = scaledRing;
     outline.center = centroid;
-    outline.areaSqFt = rmGeomPolygonAreaSqMeters(scaledRing) * 10.7639;
-    outline.perimeterFt = rmGeomPolygonPerimeterMeters(scaledRing) * 3.28084;
+    rmRecomputeOutlineMetrics(outline);
     outline.inheritedScale = {
       fromOutlineId: rmState.inheritedScaleFromOutlineId || null,
       factor: rmState.inheritedScaleFactor,

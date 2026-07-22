@@ -3327,6 +3327,7 @@ function saveOrder(opts){
            copy stays queued and WILL reach the cloud, so sent == saved,
            eventually -- not data loss. */
         markSynced(o.id);
+        lastSaveFailMsg = e.message;
         toast(e.message);
         renderSaved();
         return false;
@@ -3342,7 +3343,12 @@ function saveOrder(opts){
          the tech does NOT have to remember to come back and tap Save
          again once he has signal. */
       markSyncFailed(o.id, e);
-      toast(cloudErrMsg(e) + (navigator.onLine ? "" : " Will retry automatically once you're back online."));
+      var _cloudFailMsg = cloudErrMsg(e) + (navigator.onLine ? "" : " Will retry automatically once you're back online.");
+      /* Only surfaced by the abort toast when the LOCAL write also failed (so
+         saveOrder returns false and blocks the send); a durable-local, queued
+         cloud failure still proceeds. Capturing it here is harmless either way. */
+      if (!localOk) lastSaveFailMsg = _cloudFailMsg;
+      toast(_cloudFailMsg);
       return localOk;
     });
   } else if (localOk){
@@ -3382,7 +3388,17 @@ document.addEventListener("DOMContentLoaded", function(){
   editView.addEventListener("input", scheduleLocalAutosave);
   editView.addEventListener("change", scheduleLocalAutosave);
 });
+/* Captured by saveOrder()'s failure branches so the abort toast below can be
+   SELF-CONTAINED. Before this, saveOrder() showed the real reason in a toast
+   and autoSaveBeforeReport() then immediately showed a SECOND toast in the same
+   single #toast element (toast() resets one shared node + timer) — the reason
+   was clobbered before the tech could read it. Mark, 2026-07: emailing an
+   inspection, a toast that read like "inspection not emailed" flashed and
+   vanished before he could see WHY. The why lived in the toast right before it,
+   already overwritten. Now the reason rides inside the one abort toast. */
+var lastSaveFailMsg = "";
 async function autoSaveBeforeReport(actionLabel){
+  lastSaveFailMsg = "";
   var ok = await saveOrder({ quiet: true });
   if (!ok){
     /* Blocks the report action outright — never email/share a PDF whose
@@ -3391,7 +3407,8 @@ async function autoSaveBeforeReport(actionLabel){
        resolves false on a multi-device conflict (edits refused + un-queued)
        and on a failed local write; a merely-queued transient cloud failure
        still proceeds because that copy is durable and will sync. */
-    toast("⚠️ NOT " + actionLabel + " — this work order isn't safely saved (see the message above). Your edits are still on this screen; resolve the save first so what you send matches what's stored.");
+    var why = lastSaveFailMsg ? (" Reason: " + lastSaveFailMsg) : "";
+    toast("⚠️ NOT " + actionLabel + " — this work order isn't safely saved." + why + " Your edits are still on this screen; resolve the save first so what you send matches what's stored.");
     return false;
   }
   return true;
