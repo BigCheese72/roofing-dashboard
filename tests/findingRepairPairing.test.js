@@ -118,6 +118,7 @@ function makeRowSandbox(opts){
     repairs: opts.repairs ? opts.repairs.slice() : [],
     findings: opts.findings ? opts.findings.slice() : [],
     materials: [],
+    amendments: [],
     __fields: { woType: "Inspection" },
     __renderedFindings: 0,
     val(id){ return sandbox.__fields[id] || ""; },
@@ -133,6 +134,8 @@ function makeRowSandbox(opts){
     repairFindingLinkOptionsHtml(){ return "<option></option>"; },
     renderFindings(){ sandbox.__renderedFindings++; },
     renderMaterials(){},
+    renderAmendments(){},
+    renderAmendmentForm(){},
     openBaseMapPinPicker(){},
     document: {
       getElementById(id){

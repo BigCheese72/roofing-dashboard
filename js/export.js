@@ -46,6 +46,122 @@ function repairResolvesLabel(findingId){
   return "";
 }
 function filledPhotos(){ return photos.filter(function(p){ return p.img || (p.caption||"").trim(); }); }
+/* ================= return visits (amendments) in the report =================
+   An amended work order has to SAY it was amended and print what was
+   completed on each return visit (see the amendments block in
+   js/workorders.js). Reads o.amendments -- the record being rendered --
+   rather than the module global, so a report built from a passed-in order is
+   never quietly rendered from whatever is currently on the edit form.
+
+   An entry prints if it has ANY content. Photos are NOT re-embedded here: a
+   return visit's photos are ordinary photos[] entries tagged amendment_id, so
+   they already print once in Photo Documentation (through the thumbnail grid
+   that keeps a photo-heavy preview from freezing the tab -- ece2568). This
+   section only cross-references their numbers, exactly like the findings
+   table's Photos column. */
+function filledAmendments(o){
+  return ((o && o.amendments) || []).filter(function(a){
+    return a && ((a.workCompleted || "").trim() || (a.hours || "").trim() || (a.crew || "").trim() ||
+      amendmentPhotoNos(o, a.id).length);
+  });
+}
+/* Photo numbers (1-based, filledPhotos() order — the same numbering the
+   report's Photo Documentation section prints) for one amendment. */
+function amendmentPhotoNos(o, amendmentId){
+  if (!amendmentId) return [];
+  var nos = [];
+  filledPhotos().forEach(function(p, i){ if (p && p.amendment_id === amendmentId) nos.push(i + 1); });
+  return nos;
+}
+/* "Visit N" for a photo taken on a return visit, matching this section's own
+   numbering (Visit 1 is the original work order, so amendment i is Visit i+2).
+   "" for an ordinary first-visit photo. */
+function amendmentVisitLabelForPhoto(o, p){
+  if (!p || !p.amendment_id) return "";
+  var fa = filledAmendments(o);
+  for (var i = 0; i < fa.length; i++){
+    if (fa[i].id === p.amendment_id) return "Visit " + (i + 2);
+  }
+  return "";
+}
+/* The one-line "this work order has been amended" statement for the Job
+   Information block. "" when there are no return visits, so an ordinary
+   report is byte-for-byte what it always was. */
+function amendmentSummaryLine(o){
+  var fa = filledAmendments(o);
+  if (!fa.length) return "";
+  var latest = fa[fa.length - 1];
+  return fa.length + " return visit" + (fa.length === 1 ? "" : "s") +
+    (latest && latest.date ? " (latest " + latest.date + ")" : "");
+}
+/* One amendment as report table cells, shared by the HTML and PDF builders so
+   the two can never drift: [Visit, Date, Work Completed, Hours, Crew, Photos]. */
+function amendmentReportRow(o, a, i){
+  var nos = amendmentPhotoNos(o, a.id);
+  return ["Visit " + (i + 2), a.date || "", a.workCompleted || "", a.hours || "", a.crew || "",
+    nos.length ? nos.map(function(n){ return "#" + n; }).join(", ") : "—"];
+}
+/* The whole Return Visits section as plain-text lines. "" (no lines) when the
+   work order has none, so an unamended report is byte-for-byte unchanged.
+   Shared by the leak/work-order and Change Order text builders. */
+function amendmentReportTextLines(o){
+  var famd = filledAmendments(o);
+  if (!famd.length) return [];
+  var L = ["RETURN VISITS (AMENDMENTS)",
+    "Visit 1 — " + (o.serviceDate || "") + " — original work order (above)"];
+  famd.forEach(function(a, i){
+    var meta = [];
+    if (a.hours) meta.push("Hours: " + a.hours);
+    if (a.crew) meta.push("Crew: " + a.crew);
+    var nos = amendmentPhotoNos(o, a.id);
+    if (nos.length) meta.push("Photos: " + nos.map(function(n){ return "#" + n; }).join(", "));
+    L.push("Visit " + (i + 2) + " — " + (a.date || "") + (a.createdBy ? " — logged by " + a.createdBy : ""));
+    if (a.workCompleted) L.push("  " + a.workCompleted);
+    if (meta.length) L.push("  " + meta.join("  |  "));
+  });
+  L.push("");
+  return L;
+}
+/* The whole Return Visits section as report HTML. "" when there are none.
+   Visit 1 is the ORIGINAL work order, derived from o.serviceDate for context
+   — it is not stored in amendments[] and is never rewritten by one. Photos
+   are referenced by number only; the images print once in the report's photo
+   grid, as thumbnails (see ece2568) so an amended, photo-heavy report can't
+   freeze the Preview tab. */
+function amendmentReportTableHtml(o){
+  var famd = filledAmendments(o);
+  if (!famd.length) return "";
+  return "<h3 class='cond'>Return Visits (Amendments)</h3>" +
+    "<p style='font-size:13px'>This work order was returned to after the original service date. " +
+    "The original visit is unchanged; each return visit below records the work completed that day.</p>" +
+    "<table><thead><tr><th style='width:60px'>Visit</th><th style='width:80px'>Date</th>" +
+    "<th>Work Completed</th><th style='width:60px'>Hours</th><th style='width:110px'>Crew</th>" +
+    "<th style='width:80px'>Photos</th></tr></thead><tbody>" +
+    "<tr><td>Visit 1</td><td>" + esc(o.serviceDate || "") +
+      "</td><td><i>Original work order (see the sections above)</i></td><td>—</td><td>" +
+      esc(o.technician || "—") + "</td><td>—</td></tr>" +
+    famd.map(function(a, i){
+      var cells = amendmentReportRow(o, a, i);
+      return "<tr><td>" + esc(cells[0]) + "</td><td>" + esc(cells[1]) +
+        "</td><td style='white-space:pre-wrap'>" + esc(cells[2]) +
+        (a.createdBy ? "<div style='color:#5B6770;font-size:12px;margin-top:2px'>Logged by " + esc(a.createdBy) + "</div>" : "") +
+        "</td><td>" + (esc(cells[3]) || "—") + "</td><td>" + (esc(cells[4]) || "—") +
+        "</td><td>" + esc(cells[5]) + "</td></tr>";
+    }).join("") + "</tbody></table>";
+}
+/* autoTable body rows for the same section — Visit 1 first, then each
+   amendment. Shared by both PDF builders; head columns match
+   amendmentReportRow()'s order. */
+function amendmentReportPdfBody(o){
+  return [["Visit 1", o.serviceDate || "", "Original work order (see above)", "—", o.technician || "—", "—"]]
+    .concat(filledAmendments(o).map(function(a, i){
+      var cells = amendmentReportRow(o, a, i);
+      return [cells[0], cells[1], cells[2] + (a.createdBy ? "\n(logged by " + a.createdBy + ")" : ""),
+        cells[3] || "—", cells[4] || "—", cells[5]];
+    }));
+}
+var AMENDMENT_PDF_HEAD = [["Visit", "Date", "Work Completed", "Hours", "Crew", "Photos"]];
+var AMENDMENT_PDF_COLUMN_STYLES = { 0: { cellWidth: 44 }, 1: { cellWidth: 55 }, 3: { cellWidth: 40 }, 5: { cellWidth: 55 } };
 
 /* Routes by work order type — Change Order gets its own distinct
    document (buildChangeOrderText/renderChangeOrderDoc/
@@ -82,6 +198,11 @@ function buildLeakReportText(o){
   if (o.technician) L.push("Technician: " + o.technician);
   if (!isInspection) L.push("Reported Leak Area: " + o.reportedArea);
   L.push("Roof System: " + o.roofSystem);
+  /* States up front that this is an amended work order — the Date of Service
+     above is the ORIGINAL visit and stays that way, so without this line a
+     reader has no signal until the Return Visits section further down. */
+  var amdLine = amendmentSummaryLine(o);
+  if (amdLine) L.push("Return Visits: " + amdLine);
   L.push("");
   if (isRepair){
     L.push("REPAIR SCOPE");
@@ -127,6 +248,10 @@ function buildLeakReportText(o){
     });
     L.push("");
   }
+  /* Return visits, in the order they were logged — after the original visit's
+     work, before materials. Each is its own labeled entry; the original above
+     is never rewritten by one. */
+  amendmentReportTextLines(o).forEach(function(ln){ L.push(ln); });
   /* Print-if-present like WORK PERFORMED above — the Material List card is
      only OFFERED on the Repair form (see onWoTypeChange()), but any record
      that has rows prints them. */
@@ -198,6 +323,10 @@ function buildChangeOrderText(o){
     L.push(o.woMaterials);
   }
   L.push("");
+  /* Return visits print here too, for the same print-if-present reason
+     Materials does: a change order that was returned to must not silently
+     drop those records just because this is a different template. */
+  amendmentReportTextLines(o).forEach(function(ln){ L.push(ln); });
   L.push("MAN-HOURS: " + (o.woManHours || ""));
   L.push("COST: " + (o.woCost ? "$" + o.woCost : ""));
   L.push("TOTAL: " + (o.woCost ? "$" + o.woCost : ""));
@@ -1002,7 +1131,9 @@ function renderLeakReportDoc(o){
       var ids = reportDistinctRoofIds(o);
       return ids.length > 1 ? [["Roof(s) Covered", ids.map(function(id){ return (o.roofLabels && o.roofLabels[id]) || id; }).join(", ")]] : [];
     })())
-    .concat([["Roof System",o.roofSystem]]));
+    /* Amended-at-a-glance: kvTable() drops empty rows, so this is absent
+       entirely on a work order with no return visits. */
+    .concat([["Roof System",o.roofSystem],["Return Visits",amendmentSummaryLine(o)]]));
 
   /* Roof plan + capture/scale provenance -- rmReportRoofPlanEntriesFor()
      is populated by goToPreview() before this ever runs (see its own
@@ -1148,6 +1279,10 @@ function renderLeakReportDoc(o){
       }).join("") + "</tbody></table>";
   }
 
+  /* Return visits — printed for every work order that has any, right after
+     the original visit's work. */
+  h += amendmentReportTableHtml(o);
+
   /* Print-if-present like Work Performed above (the card is only OFFERED on
      the Repair form — see onWoTypeChange()). "For" ties a row back to the
      Work Performed numbering when the tech linked it to a repair area. */
@@ -1183,10 +1318,14 @@ function renderLeakReportDoc(o){
          PDF path has its own downscaler (buildPdfPhotoMap). */
       fp.map(function(p,i){
         var findingNo = p.finding_id ? refs.findingNoById[p.finding_id] : null;
+        /* A photo taken on a return visit says so, so a reader can tell
+           first-visit documentation from what was shot weeks later. */
+        var visit = amendmentVisitLabelForPhoto(o, p);
         return "<div class='photocell'>" +
           (p.img ? "<img loading='lazy' decoding='async' src='" + (p.thumb || p.img) + "'>" : "") +
           "<div class='cap'><b>Photo " + (i+1) + ":</b> " + esc(p.caption || "") +
-          (findingNo ? " <span style='color:#5B6770'>(Finding #" + findingNo + ")</span>" : "") + "</div></div>";
+          (findingNo ? " <span style='color:#5B6770'>(Finding #" + findingNo + ")</span>" : "") +
+          (visit ? " <span style='color:#B45309'>(" + esc(visit) + ")</span>" : "") + "</div></div>";
       }).join("") + "</div>";
   }
 
@@ -1232,6 +1371,12 @@ function renderChangeOrderDoc(o){
   }
   if (!coMat.length && !matLines.length) h += "<p class='co-empty'>(none entered)</p>";
 
+  /* Return visits — same shared section the leak/work-order document prints
+     (amendmentReportTableHtml()), for the same print-if-present reason
+     Materials has: a change order returned to on a later day must not lose
+     those records just because this is a different template. */
+  h += amendmentReportTableHtml(o);
+
   h += "<h3 class='cond'>Cost Summary</h3>" +
     "<table class='co-cost'><tbody>" +
     "<tr><td class='k'>Man-Hours</td><td>" + esc(o.woManHours || "") + "</td></tr>" +
@@ -1243,9 +1388,11 @@ function renderChangeOrderDoc(o){
   if (fp.length){
     h += "<h3 class='cond'>Photos</h3><div class='photogrid'>" +
       fp.map(function(p,i){
+        var coVisit = amendmentVisitLabelForPhoto(o, p); /* "" unless shot on a return visit */
         return "<div class='photocell'>" +
           (p.img ? "<img loading='lazy' decoding='async' src='" + (p.thumb || p.img) + "'>" : "") +
-          "<div class='cap'><b>Photo " + (i+1) + ":</b> " + esc(p.caption || "") + "</div></div>";
+          "<div class='cap'><b>Photo " + (i+1) + ":</b> " + esc(p.caption || "") +
+          (coVisit ? " <span style='color:#B45309'>(" + esc(coVisit) + ")</span>" : "") + "</div></div>";
       }).join("") + "</div>";
   }
 
@@ -1719,7 +1866,10 @@ async function generateLeakReportPdf(o, roofPlanData){
     ["Job Name", o.jobName], ["Location", o.location], ["Suite", o.suite], ["Date of Service", o.serviceDate],
     ["Job No.", o.jobNo], ["Bill To", o.billTo], ["Billing Contact", o.billContact],
     ["Contact Phone", o.billPhone], ["Site Contact", o.siteContact], ["Technician", o.technician]
-  ].concat(isInspection ? [] : [["Reported Leak Area", o.reportedArea]]).concat([["Roof System", o.roofSystem]]));
+  ].concat(isInspection ? [] : [["Reported Leak Area", o.reportedArea]])
+   /* kvTablePdf() drops empty rows, so this is absent on a work order with no
+      return visits — same as the HTML builder's row. */
+   .concat([["Roof System", o.roofSystem], ["Return Visits", amendmentSummaryLine(o)]]));
 
   /* Roof plan + capture/scale provenance -- see the "roof plan + capture/
      scale provenance" section above reportDistinctRoofIds() for the full
@@ -1879,6 +2029,25 @@ async function generateLeakReportPdf(o, roofPlanData){
     y = doc.lastAutoTable.finalY + 18;
   }
 
+  /* Return visits — same content and column order as the HTML builder's
+     table (both go through amendmentReportRow()), with Visit 1 as the
+     original work order. Photos are cross-referenced by number; the images
+     print once in Photo Documentation below. */
+  if (filledAmendments(o).length){
+    heading("Return Visits (Amendments)");
+    doc.autoTable({
+      startY: y,
+      head: AMENDMENT_PDF_HEAD,
+      body: amendmentReportPdfBody(o),
+      theme: "grid",
+      headStyles: { fillColor: [38, 50, 56], fontSize: 8 },
+      styles: { fontSize: 9, cellPadding: 4, textColor: [30, 39, 46], lineColor: [154, 165, 172], lineWidth: 0.5 },
+      columnStyles: AMENDMENT_PDF_COLUMN_STYLES,
+      margin: { left: M, right: M }
+    });
+    y = doc.lastAutoTable.finalY + 18;
+  }
+
   /* Print-if-present like Work Performed above — see the HTML builder's
      Material List block for the reasoning; identical content here. */
   var fmat = filledMaterials();
@@ -1953,7 +2122,11 @@ async function generateLeakReportPdf(o, roofPlanData){
            every later number out of sync with that cross-reference. */
         var num = refs.fp.indexOf(c.p) + 1;
         var findingNo = c.p.finding_id ? refs.findingNoById[c.p.finding_id] : null;
-        var capText = "Photo " + num + ": " + (c.p.caption || "") + (findingNo ? "  (Finding #" + findingNo + ")" : "");
+        /* Same return-visit tag the HTML builder prints — "" for an ordinary
+           first-visit photo, so unamended reports are unchanged. */
+        var visitLabel = amendmentVisitLabelForPhoto(o, c.p);
+        var capText = "Photo " + num + ": " + (c.p.caption || "") + (findingNo ? "  (Finding #" + findingNo + ")" : "") +
+          (visitLabel ? "  (" + visitLabel + ")" : "");
         var cap = doc.splitTextToSize(capText, cw);
         doc.text(cap.slice(0, 2), x, y + c.ih + 11);
       });
@@ -2082,6 +2255,23 @@ async function generateChangeOrderPdf(o){
   }
   if (!coMat.length && !matLines.length) wrappedTextPdf("(none entered)");
 
+  /* Return visits — the shared section (same head/body/columns as the leak
+     work-order PDF), printed whenever a change order carries any. */
+  if (filledAmendments(o).length){
+    heading("Return Visits (Amendments)");
+    doc.autoTable({
+      startY: y,
+      head: AMENDMENT_PDF_HEAD,
+      body: amendmentReportPdfBody(o),
+      theme: "grid",
+      headStyles: { fillColor: [38, 50, 56], fontSize: 8 },
+      styles: { fontSize: 9, cellPadding: 4, textColor: [30, 39, 46], lineColor: [154, 165, 172], lineWidth: 0.5 },
+      columnStyles: AMENDMENT_PDF_COLUMN_STYLES,
+      margin: { left: M, right: M }
+    });
+    y = doc.lastAutoTable.finalY + 18;
+  }
+
   heading("Cost Summary");
   var costRows = [["Man-Hours", o.woManHours || ""], ["Cost", o.woCost ? "$" + o.woCost : ""]];
   doc.autoTable({
@@ -2135,7 +2325,9 @@ async function generateChangeOrderPdf(o){
         doc.setFontSize(8);
         doc.setTextColor(60, 70, 77);
         var num = fp.indexOf(c.p) + 1;
-        var cap = doc.splitTextToSize("Photo " + num + ": " + (c.p.caption || ""), cw);
+        var coVisit = amendmentVisitLabelForPhoto(o, c.p); /* "" unless shot on a return visit */
+        var cap = doc.splitTextToSize("Photo " + num + ": " + (c.p.caption || "") +
+          (coVisit ? "  (" + coVisit + ")" : ""), cw);
         doc.text(cap.slice(0, 2), x, y + c.ih + 11);
       });
       y += rowH + 8;

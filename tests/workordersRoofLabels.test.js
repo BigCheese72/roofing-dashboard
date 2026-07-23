@@ -28,6 +28,7 @@ function makeSandbox(fields){
     repairs: [],
     repairItems: [],
     materials: [],
+    amendments: [],
     inspectionChecklist: [],
     photos: [],
     bpCache: [],
@@ -72,6 +73,8 @@ function makeSandbox(fields){
     renderRepairs(){},
     renderRepairItems(){},
     renderMaterials(){},
+    renderAmendments(){},
+    renderAmendmentForm(){},
     renderPhotos(){},
     renderCCLinkInfo(){},
     fdnSetLinkedJob(jobNo, jobName, customerNo, address){

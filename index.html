@@ -277,6 +277,29 @@
         <textarea id="reportedArea" rows="3"></textarea></div>
     </div>
 
+    <!-- ================= RETURN VISITS / AMENDMENTS =================
+         Mark, 2026-07-23: reopening an existing work order and going back to
+         the same job days or weeks later keeps it the SAME work order, but it
+         has to show that it's been AMENDED and record what was completed on
+         each return visit. Near the top on purpose: a tech reopening a job
+         weeks later should see the visit history before scrolling through the
+         original scope. Hidden until the order has actually reached the cloud
+         (a first-visit draft has nothing to amend yet) — see
+         renderAmendments() in js/workorders.js. The original visit is Visit 1
+         and is never stored here; amendments are append-only. -->
+    <div class="card" id="wo-amendments-card" style="display:none">
+      <h2 class="cond" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">🔁 Return Visits
+        <span id="wo-amended-badge" style="display:none;background:#E8A33D;color:#3B2B0B;border-radius:999px;padding:2px 10px;font-size:13px;font-weight:700;letter-spacing:0">Amended (0)</span>
+      </h2>
+      <p class="hint">Went back to this job on another day? Log it here instead of starting a new work order.
+        The original work order stays exactly as it is — each return visit is added on as its own record of what was completed.</p>
+      <div id="amendments-list"></div>
+      <div class="btnrow" id="wo-amendment-add-row">
+        <button class="btn primary" onclick="openAmendmentForm()">+ Add Amendment</button>
+      </div>
+      <div id="amendment-form" style="display:none"></div>
+    </div>
+
     <!-- Foundation labor hours (admin-grade). Hidden by default; populated only
          when the linked Foundation job's hours come back authorized from the
          server (foundation.read) — see js/foundation.js fdnRefreshLaborCard().
