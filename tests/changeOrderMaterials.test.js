@@ -24,7 +24,12 @@ function between(source, start, end){
    builders. */
 function runTextMaterialsBlock(materials, woMaterials){
   const L = [];
-  const sandbox = { L, materials, o: { woMaterials } };
+  /* amendmentReportTextLines() is the Return Visits section, which prints
+     between Materials and Man-Hours (see the amendments block in
+     js/export.js). Stubbed empty here — this test is about materials, and a
+     Change Order with no return visits emits no lines at all. Its own
+     behavior is covered by tests/workOrderAmendments.test.js. */
+  const sandbox = { L, materials, o: { woMaterials }, amendmentReportTextLines(){ return []; } };
   vm.createContext(sandbox);
   /* the two shared helpers + the CO text builder's Materials block */
   vm.runInContext(

@@ -191,6 +191,25 @@ The Lead reconciles, sequences, and assigns. Do not self-serve across lanes.
 
 ### Open
 
+**WO-2 — Work-order AMENDMENTS / return visits landed on `dev`** *(Lead, 2026-07-23)*
+Mark asked for this directly: reopening WO **#17456** weeks later stays the SAME work order,
+shows it is **amended**, and records what was completed each return visit. Built and merged to
+`dev` under Mark's standing dev-autonomy rule; **held for prod pending his sign-off.**
+
+Shared surfaces touched, so everyone should know: `js/workorders.js` (the new amendments
+block + `collect()`/`fill()`), `index.html` (`#wo-amendments-card`), `js/core.js` (two lines —
+`amendment_id` in the photo doc write/read, one `renderAmendments()` call in `saveOrder()`),
+`js/photos.js` (optional third `amendmentId` arg on both capture paths), `js/export.js` (the
+Return Visits section in all five report builders), `css/app.css`. Six existing sandbox tests
+gained `amendments: []` + `renderAmendments/renderAmendmentForm` stubs — if you are adding a
+work-order global, that is now the pattern. Full suite green (1262). Design + rationale:
+**"Work-order amendments (return visits)" in `DEV_NOTES.md`**.
+
+⚠️ Note for the board: the 2026-07-18 FULL HOLD banner at the top says stay off `js/core.js`
+and `index.html` for the Codex estimator. There is **no `js/estimator.js` on `dev`** and both
+files have been edited since (`70e5ae0` core.js 2026-07-22, `a97d11a` index.html), so the hold
+has lapsed in practice. Proceeding on Mark's direct instruction; flagging rather than assuming.
+
 **LEAD-1 — SPLIT MANDATE: `js/workorders.js` → per-section modules** *(raised by Lead, 2026-07-18)*
 *(Was H-5, then H-8 — collided twice in one afternoon with Warranty and Building History.
 That is the third data point behind ratifying DPR's per-agent prefix scheme above; this item

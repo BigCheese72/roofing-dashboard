@@ -51,7 +51,10 @@ function makeSandbox(opts){
     genId(prefix){ return prefix + "_t" + (sandbox.__genIdCounter++); },
     openBaseMapPinPicker(){},
     materials: [],
+    amendments: [],
     renderMaterials(){},
+    renderAmendments(){},
+    renderAmendmentForm(){},
     document: {
       getElementById(id){
         if (id === "repairs-list") return host;

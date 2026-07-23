@@ -1069,7 +1069,14 @@ function dataUrlExifGps(dataUrl){
     return parseExifGps(bytes.buffer);
   }catch(e){ return null; }
 }
-function addPhotosFromFiles(files, findingId){
+/* amendmentId (optional, third arg) tags a photo to a RETURN VISIT
+   (photo.amendment_id — see the amendments block in js/workorders.js).
+   Deliberately a separate field from findingId rather than reusing it: a
+   return-visit photo can also belong to a finding, and finding_id already
+   carries three different meanings (finding, checklist item, "repair:<n>"
+   tag). Everything downstream — Storage upload, thumbs, the save-time
+   data-loss guard, the PDF downscaler — treats it as an ordinary photo. */
+function addPhotosFromFiles(files, findingId, amendmentId){
   var list = Array.prototype.slice.call(files || []);
   if (!list.length) return;
   var results = new Array(list.length);
@@ -1095,6 +1102,7 @@ function addPhotosFromFiles(files, findingId){
         if (findingById(findingId)) renderFindings();
         if (inspectionChecklistItemById(findingId)) renderInspectionChecklist();
       }
+      if (amendmentId && typeof renderAmendmentForm === "function") renderAmendmentForm();
     }
   }
   list.forEach(function(file, idx){
@@ -1116,7 +1124,7 @@ function addPhotosFromFiles(files, findingId){
         c.width = w; c.height = h;
         c.getContext("2d").drawImage(img, 0, 0, w, h);
         results[idx] = { caption:"", img: c.toDataURL("image/jpeg", preset.q), thumb: makeThumbDataUrl(img), w: w, h: h,
-          finding_id: findingId || null, gps: exifGps, localId: makeLocalPhotoId() };
+          finding_id: findingId || null, amendment_id: amendmentId || null, gps: exifGps, localId: makeLocalPhotoId() };
         done();
       };
       img.onerror = function(){ toast("Couldn't read one of the photos"); done(); };
@@ -1189,7 +1197,11 @@ async function captureDeviceGps(){
    When present, auto-pin fires immediately (the photo already belongs to
    the finding the moment it's captured), instead of only once a tech
    later picks the finding from the global section's dropdown. */
-function addPhotosFromCamera(files, findingId){
+/* amendmentId (optional, third arg) -- same meaning as on
+   addPhotosFromFiles() above: tags this photo to a return visit. A live
+   capture on a return visit still gets the device's current GPS and, on a
+   Change Order, its own pin, exactly as before. */
+function addPhotosFromCamera(files, findingId, amendmentId){
   var list = Array.prototype.slice.call(files || []);
   if (!list.length) return;
   captureDeviceGps().then(function(result){
@@ -1248,6 +1260,7 @@ function addPhotosFromCamera(files, findingId){
           if (findingById(findingId)) renderFindings();
           if (inspectionChecklistItemById(findingId)) renderInspectionChecklist();
         }
+        if (amendmentId && typeof renderAmendmentForm === "function") renderAmendmentForm();
       }
     }
     list.forEach(function(file, idx){
@@ -1265,7 +1278,8 @@ function addPhotosFromCamera(files, findingId){
           c.width = w; c.height = h;
           c.getContext("2d").drawImage(img, 0, 0, w, h);
           results[idx] = { caption:"", img: c.toDataURL("image/jpeg", preset.q), thumb: makeThumbDataUrl(img), w: w, h: h,
-            finding_id: findingId || null, gps: gps, gpsFailReason: gpsFailReason, localId: makeLocalPhotoId() };
+            finding_id: findingId || null, amendment_id: amendmentId || null,
+            gps: gps, gpsFailReason: gpsFailReason, localId: makeLocalPhotoId() };
           done();
         };
         img.onerror = function(){ toast("Couldn't read the photo"); done(); };
@@ -1417,12 +1431,16 @@ function processReplacementPhoto(i, file){
       var c = document.createElement("canvas");
       c.width = w; c.height = h;
       c.getContext("2d").drawImage(img, 0, 0, w, h);
-      /* Keep the slot's caption + finding assignment; the new image supplies
-         everything else. A brand-new localId so it can't collide with the
-         dead slot's orphaned IndexedDB key. */
+      /* Keep the slot's caption + finding assignment + return-visit tag; the
+         new image supplies everything else. Carrying amendment_id matters for
+         the same reason finding_id does: replacing a bad shot of a return
+         visit's repair must not quietly move the photo back to the original
+         visit. A brand-new localId so it can't collide with the dead slot's
+         orphaned IndexedDB key. */
       photos[i] = { caption: old.caption || "", img: c.toDataURL("image/jpeg", preset.q),
         thumb: makeThumbDataUrl(img), w: w, h: h,
-        finding_id: old.finding_id || null, gps: exifGps, localId: makeLocalPhotoId() };
+        finding_id: old.finding_id || null, amendment_id: old.amendment_id || null,
+        gps: exifGps, localId: makeLocalPhotoId() };
       idbPutPhoto(photos[i].localId, photos[i].img);
       renderPhotos();
       if (photos[i].finding_id){

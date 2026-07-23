@@ -8564,3 +8564,96 @@ Tests: `tests/roofmapperNestedCutout.test.js` — 17, mutation-checked (stubbing
 exactly its own test). Covers both kinds, net-vs-gross, the recompute
 regression, inner-edge perimeter, holes scaling with calibration, both
 assignment fixes, and the cases where a cutout must change nothing.
+
+## Work-order amendments (return visits)
+
+Mark, 2026-07-23: he reopens an existing work order (his example: **#17456**)
+and goes back to the same job days or weeks later. It has to stay the **same
+work order** — not a second one, not a Change Order — but it must **show that
+it has been amended** and record what was actually completed on each return
+visit. The original first-visit record is never edited.
+
+**Shape.** `amendments[]` is a plain array field on the `workorders/{id}` doc
+(no new collection, no `firestore.rules` change — the doc is already
+client-writable). One entry per visit:
+
+```js
+{ id: "amd_…", date: "7/23/26", workCompleted: "…", hours: "6",
+  crew: "Dave, Jim", createdAt: 1690…, createdBy: "Mark Sheppard",
+  createdByUid: "…" }
+```
+
+**Append-only.** `saveAmendment()` (js/workorders.js) is the only writer and it
+only ever pushes; there is no edit or delete entry point, and nothing in the
+block touches the original work order's own fields. **Visit 1 is DERIVED**
+from `o.serviceDate` for display and is never copied into `amendments[]`, so
+the original record stays byte-for-byte what it was. `serviceDate` keeps
+meaning the *original* visit date.
+
+**Photos are not nested in the amendment.** They stay in the one `photos[]`
+array, tagged `photo.amendment_id` — the exact precedent `finding_id` already
+sets. That is what lets a return visit's photos reuse the entire existing
+pipeline unchanged: Storage upload, thumbnails, the save-time data-loss guard,
+reference-aware cleanup, IndexedDB backup, the PDF downscaler. It is also why
+an amended report can't reintroduce the Preview freeze (`ece2568`) — amendment
+photos render through the same thumbnail grid every other photo does, and the
+Return Visits table only cross-references their *numbers*.
+
+`amendment_id` has to be written in `cloudSaveOrder()`'s `photoDoc` and
+hydrated in `cloudFetchOrder()` for the same reason `ccFeedPhotoId` does: that
+`.set()` is a full overwrite, not a merge, so omitting it would silently strip
+a return visit's photos of their visit on the very next save. Both photo
+capture paths and `processReplacementPhoto()` carry the tag.
+
+**Round-trip safety.** `cloudSaveOrder()` does a full `ref.set()` of the
+collected order, so a field missing from `collect()` is erased from the cloud
+on the next save. `amendments` is carried by `collect()`/`fill()` exactly like
+`findings`/`repairs`/`materials`. That is the regression the tests exist to
+catch first.
+
+**Guards it deliberately doesn't disturb.** An amendment changes no identity
+field (`jobName`/`billTo`/`roofId`), so it can't trip the building-rename path
+or the stale-re-pointed-WO audit. A stale device still loses to the normal
+`_cloudBaseSavedAt` clobber guard rather than merging silently — the amendment
+save is a plain `saveOrder()`, non-quiet on purpose so that function owns every
+outcome toast (saved / conflict / offline-and-queued). An "amendment logged ✓"
+of our own would land in the same single shared toast node and could overwrite
+the real reason a save was refused — the exact failure fixed in `70e5ae0`.
+
+**UI.** `#wo-amendments-card`, near the top of the edit form (a tech reopening
+a job weeks later should see the visit history before scrolling through the
+original scope). "Amended (N)" badge, the visit list, and a separate
+`#amendment-form` host — separate on purpose, because `renderAmendments()` is
+re-run by every save *including the 4s local autosave*, and blowing away a
+half-typed amendment form would be exactly the kind of silent work loss this
+app keeps fixing. The card stays hidden until the order has actually reached
+the cloud (`_cloudBaseSavedAt > 0`) — a first-visit draft has nothing to amend
+— and is always shown once it carries any amendment.
+
+**Report.** A `Return Visits: N (latest <date>)` row in Job Information (the
+Date of Service above it is still the original), plus a Return Visits
+(Amendments) table with Visit 1 as the original. All five builders print it —
+text / HTML / PDF for the leak-work-order template, and the Change Order
+template too, on the same print-if-present rule Materials follows: a CO
+returned to on a later day must not lose those records because it uses a
+different template. HTML and PDF share `amendmentReportRow()` so they can't
+drift. A photo shot on a return visit is captioned "(Visit N)".
+
+**Open for Mark** (shipped choices first): amendments record completed work
+only, not a roof/scope change; no edit/delete after logging; no Building
+History event per return visit yet; "Amended (N)" doesn't show in the Saved
+list or the building timeline yet.
+
+**Future full audit trail.** `createdBy`/`createdAt` on each amendment is a
+partial audit — it answers "who logged this visit and when," at visit
+granularity. A field-level trail (who changed *which field* from what to what)
+layers on top without changing this shape: an `audit[]` subcollection under the
+work order written by a diff at save time in `saveOrder()`, with the amendment
+append recorded as one entry of kind `amendment_added`. The amendment feature
+does not need it and does not block on it.
+
+Tests: `tests/workOrderAmendments.test.js` — 28. The append-only contract, the
+`collect()`/`fill()` round trip (the data-loss regression), `amendment_id`
+through the full-overwrite save and back, card visibility/badge, the form
+surviving an autosave re-render, and every report builder including "prints
+nothing at all when there are no return visits."

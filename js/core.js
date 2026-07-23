@@ -977,9 +977,15 @@ async function cloudSaveOrder(o){
        push record on the very next save of the work order, and the next
        send would re-push every photo and duplicate the whole set into the
        project feed. The flag IS the idempotency. */
+    /* amendment_id: which RETURN VISIT this photo was taken on (see the
+       amendments block in js/workorders.js). Must be written here for the
+       same reason ccFeedPhotoId must: this is a full overwrite, not a merge,
+       so omitting it would silently strip a return visit's photos of their
+       visit on the next save of the work order. */
     var photoDoc = {
       caption: p.caption || "", w: p.w || 0, h: p.h || 0, i: i,
-      finding_id: p.finding_id || null, ccPhotoId: p.ccPhotoId || null, gps: p.gps || null,
+      finding_id: p.finding_id || null, amendment_id: p.amendment_id || null,
+      ccPhotoId: p.ccPhotoId || null, gps: p.gps || null,
       ccFeedPhotoId: p.ccFeedPhotoId || null,
       storageRef: storageRef, thumb: p.thumb || null
     };
@@ -1096,7 +1102,8 @@ async function cloudFetchOrder(id){
          would push every photo a second time -- see pushPhotosToCompanyCamFeed()
          in js/history.js. */
       photosArr[v.i] = { caption: v.caption || "", img: v.storageRef ? null : (v.img || null), w: v.w || 0, h: v.h || 0,
-        finding_id: v.finding_id || null, ccPhotoId: v.ccPhotoId || null, gps: v.gps || null,
+        finding_id: v.finding_id || null, amendment_id: v.amendment_id || null,
+        ccPhotoId: v.ccPhotoId || null, gps: v.gps || null,
         ccFeedPhotoId: v.ccFeedPhotoId || null,
         storageRef: v.storageRef || null, thumb: v.thumb || null,
         imgFallback: (!v.thumb && v.storageRef) ? (v.img || null) : null };
@@ -3252,6 +3259,11 @@ function saveOrder(opts){
   pruneCachedPhotoDrafts(db);
   var localOk = saveDb(db);
   if (localOk) drawSaved();
+  /* Return visits card (js/workorders.js): it stays hidden until the order is
+     established, and shows an "Amended (N)" badge -- both read from the just-
+     saved state, so refresh them here rather than only on load. Deliberately
+     touches only the list + badge, never the open amendment form. */
+  if (typeof renderAmendments === "function") renderAmendments();
   /* Offload any not-yet-flagged cached bytes into IndexedDB so localStorage
      stays lean (Phase 1). Fire-and-forget: never delays the save, and it
      re-persists a leaner db itself only if it moved anything. */

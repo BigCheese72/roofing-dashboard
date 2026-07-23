@@ -1116,6 +1116,252 @@ var WARRANTY_GUIDELINES = {
     "Cosmetic issues that do not affect watertightness"
   ]
 };
+/* ================= amendments / return visits =================
+   Mark, 2026-07-23: he reopens an existing work order (his example: #17456)
+   and goes back to the same job days or weeks later. It has to stay the SAME
+   work order -- not a second one, not a change order -- but it must SHOW that
+   it's been amended, and record what was actually completed on each return
+   visit.
+
+   Shape: amendments[] is a plain array field on the work order doc. Each entry
+   is one visit: { id, date, workCompleted, hours, crew, createdAt, createdBy,
+   createdByUid }. APPEND-ONLY -- saveAmendment() below is the only thing that
+   ever writes to it, and it only ever pushes. Nothing in this file edits or
+   removes an existing entry, and nothing here touches the original work
+   order's own fields. Visit 1 (the original) is DERIVED for display from
+   o.serviceDate; it is never copied into amendments[], so the original record
+   stays exactly what it always was.
+
+   Photos deliberately do NOT live inside the amendment. They stay in the one
+   photos[] array, tagged photo.amendment_id -- the exact precedent
+   photo.finding_id already sets. That's what lets a return visit's photos
+   reuse the whole existing pipeline unchanged: Storage upload, thumbnails,
+   the save-time data-loss guard, reference-aware cleanup, IndexedDB backup,
+   and the PDF downscaler. It is also why an amended report can't reintroduce
+   the Preview freeze (ece2568) -- amendment photos render through the same
+   thumbnail grid every other photo does; the amendment table in the report
+   only cross-references their numbers.
+
+   Round-trip safety: cloudSaveOrder() does a full ref.set() of the collected
+   order, so anything not in collect() is erased on the next save. amendments
+   is carried by collect()/fill() exactly like findings/repairs/materials.
+   Multi-device: an amendment changes no identity field (jobName/billTo/roofId),
+   so it can't trip the building-rename path; a stale copy still loses to the
+   normal _cloudBaseSavedAt clobber guard rather than merging silently. */
+var amendments = [];
+/* Set while the Add-Amendment form is open. Generated UP FRONT so photos
+   captured in the form can be tagged to the amendment before it's saved.
+   Cancelling un-tags those photos (they stay on the work order -- they're
+   real photos of the job) rather than deleting them. */
+var amendmentDraftId = null;
+/* _cloudBaseSavedAt of the order fill() loaded, i.e. "this order already
+   exists in the cloud." A first-visit draft that has never synced has nothing
+   to amend yet, so the card stays hidden. */
+var amendmentLoadedCloudBase = 0;
+
+/* Who logged this visit. The signed-in Firebase user is the truth
+   (currentAuthUser, js/core.js); the Technician field is a fallback for a
+   shared device signed in as nobody in particular, and "Unknown" rather than
+   blank so an entry always says something. */
+function amendmentAuthor(){
+  var u = (typeof currentAuthUser !== "undefined") ? currentAuthUser : null;
+  var name = (u && (u.displayName || u.email)) || "";
+  if (!name){ try{ name = val("technician") || ""; }catch(e){} }
+  return { uid: (u && u.uid) || null, name: name || "Unknown" };
+}
+/* True once this work order genuinely exists in the cloud. Read live from the
+   stored record (stamped by cloudSaveOrder) rather than only from load time,
+   so the card appears the moment a brand-new order's first Save lands --
+   see the renderAmendments() call in saveOrder(). */
+function amendmentOrderIsEstablished(){
+  var base = amendmentLoadedCloudBase;
+  try{
+    var rec = loadDb().orders[currentId];
+    if (rec && rec._cloudBaseSavedAt) base = Math.max(base, rec._cloudBaseSavedAt);
+  }catch(e){}
+  return base > 0;
+}
+/* { photo, globalIndex } for every photo tagged to this amendment, in photos[]
+   order -- the same {p, gi} shape findingPhotoGalleryHtml() uses, so the
+   thumbnails can call the existing openPhotoLightbox(gi)/removePhoto(gi) by
+   real global index (one source of truth, no parallel photo list). */
+function amendmentPhotoItems(amendmentId){
+  if (!amendmentId) return [];
+  return photos.map(function(p, gi){ return { p: p, gi: gi }; })
+    .filter(function(x){ return x.p && x.p.amendment_id === amendmentId; });
+}
+function amendmentVisitLabel(i){ return "Visit " + (i + 2); } /* +2: Visit 1 is the original */
+function amendmentDateLabel(a){ return (a && a.date) || ""; }
+/* Read-only thumbnail strip for an already-logged visit. Tap to enlarge uses
+   the shared lightbox; no caption/remove controls here -- a logged visit is a
+   record, and photo management stays in the Photo Documentation card. */
+function amendmentPhotoStripHtml(amendmentId){
+  var items = amendmentPhotoItems(amendmentId);
+  if (!items.length) return "";
+  return '<div class="finding-photo-strip">' + items.map(function(x){
+    var src = x.p.thumb || x.p.imgFallback || x.p.img;
+    return '<div class="finding-photo-item">' +
+      (src ? '<img class="thumb" src="' + src + '" onclick="openPhotoLightbox(' + x.gi + ')" title="Tap to enlarge">' : '') +
+      '<div class="hint" style="margin:2px 0 0">Photo ' + (x.gi + 1) + (x.p.caption ? ": " + esc(x.p.caption) : "") + '</div>' +
+      '</div>';
+  }).join("") + '</div>';
+}
+/* The list + the Amended (N) badge + card visibility. Deliberately does NOT
+   touch #amendment-form: this is re-rendered by every save (including the 4s
+   local autosave), and blowing away a half-typed amendment form would be the
+   exact kind of silent work loss this app keeps fixing. */
+function renderAmendments(){
+  var card = document.getElementById("wo-amendments-card");
+  if (!card) return;
+  var show = amendments.length > 0 || amendmentOrderIsEstablished();
+  card.style.display = show ? "" : "none";
+  var badge = document.getElementById("wo-amended-badge");
+  if (badge){
+    badge.style.display = amendments.length ? "" : "none";
+    badge.textContent = "Amended (" + amendments.length + ")";
+  }
+  var host = document.getElementById("amendments-list");
+  if (!host) return;
+  var originalDate = "";
+  try{ originalDate = val("serviceDate") || ""; }catch(e){}
+  var rows = ['<div class="amd-visit amd-visit-original">' +
+    '<div class="amd-visit-head"><b>Visit 1 — Original</b>' +
+    (originalDate ? '<span class="amd-visit-when">' + esc(originalDate) + '</span>' : '') + '</div>' +
+    '<div class="hint" style="margin:2px 0 0">The original work order above — findings, work performed and photos from the first visit. Never changed by an amendment.</div>' +
+    '</div>'];
+  amendments.forEach(function(a, i){
+    var meta = [];
+    if (a.hours) meta.push("Hours: " + a.hours);
+    if (a.crew) meta.push("Crew: " + a.crew);
+    rows.push('<div class="amd-visit">' +
+      '<div class="amd-visit-head"><b>' + esc(amendmentVisitLabel(i)) + '</b>' +
+      (a.date ? '<span class="amd-visit-when">' + esc(a.date) + '</span>' : '') +
+      '<span class="amd-visit-by">logged by ' + esc(a.createdBy || "Unknown") + '</span></div>' +
+      (a.workCompleted ? '<div style="white-space:pre-wrap;margin:6px 0 0">' + esc(a.workCompleted) + '</div>' : '') +
+      (meta.length ? '<div class="hint" style="margin:4px 0 0">' + esc(meta.join("  ·  ")) + '</div>' : '') +
+      amendmentPhotoStripHtml(a.id) +
+      '</div>');
+  });
+  host.innerHTML = rows.join("");
+}
+/* The Add-Amendment form, in its own host so renderAmendments() above can
+   re-render the list underneath it without disturbing what's being typed. */
+function renderAmendmentForm(){
+  var host = document.getElementById("amendment-form");
+  if (!host) return;
+  var addRow = document.getElementById("wo-amendment-add-row");
+  if (!amendmentDraftId){
+    host.innerHTML = "";
+    host.style.display = "none";
+    if (addRow) addRow.style.display = "";
+    return;
+  }
+  if (addRow) addRow.style.display = "none";
+  host.style.display = "";
+  /* Preserve anything already typed across a re-render (a photo capture
+     re-renders this form to show the new thumbnail). */
+  function keep(id, fallback){
+    var el = document.getElementById(id);
+    return el ? el.value : fallback;
+  }
+  var dDate = keep("amd-date", todayStr());
+  var dHours = keep("amd-hours", "");
+  var dCrew = keep("amd-crew", "");
+  var dWork = keep("amd-work", "");
+  var did = esc(amendmentDraftId);
+  var items = amendmentPhotoItems(amendmentDraftId);
+  var strip = items.length ? '<div class="finding-photo-strip">' + items.map(function(x){
+    var src = x.p.thumb || x.p.imgFallback || x.p.img;
+    return '<div class="finding-photo-item">' +
+      (src ? '<img class="thumb" src="' + src + '" onclick="openPhotoLightbox(' + x.gi + ')" title="Tap to enlarge">' : '') +
+      '<input type="text" placeholder="Caption" data-amdphoto="' + x.gi + '" value="' + esc(x.p.caption) + '" list="dl-photoCaption">' +
+      '<button class="btn danger" onclick="removePhoto(' + x.gi + ')">✕ Remove</button>' +
+      '</div>';
+  }).join("") + '</div>' : "";
+  host.innerHTML =
+    '<div class="card" style="background:#F3F8FC;border:1px solid #90C2F0;margin:10px 0 0">' +
+      '<h3 class="cond" style="margin:0 0 10px">Log a return visit</h3>' +
+      '<div class="grid">' +
+        '<div class="fld"><label>Visit Date</label><input type="text" id="amd-date" value="' + esc(dDate) + '"></div>' +
+        '<div class="fld"><label>Hours (optional)</label><input type="text" id="amd-hours" value="' + esc(dHours) + '"></div>' +
+        '<div class="fld"><label>Crew (optional)</label><input type="text" id="amd-crew" list="dl-technician" value="' + esc(dCrew) + '"></div>' +
+      '</div>' +
+      '<div class="fld"><label>Work Completed This Visit</label>' +
+        '<textarea id="amd-work" rows="4" placeholder="What was actually done on this return visit">' + esc(dWork) + '</textarea></div>' +
+      '<div class="btnrow" style="margin:0 0 8px">' +
+        '<button class="btn primary" onclick="document.getElementById(\'amdcam-' + did + '\').click()">📷 Take Photo</button>' +
+        '<button class="btn" onclick="document.getElementById(\'amdlib-' + did + '\').click()">+ Add Photos</button>' +
+      '</div>' +
+      '<input type="file" id="amdcam-' + did + '" accept="image/*" capture="environment" style="display:none" ' +
+        'onchange="addPhotosFromCamera(this.files, null, \'' + did + '\'); this.value=\'\';">' +
+      '<input type="file" id="amdlib-' + did + '" accept="image/*" multiple style="display:none" ' +
+        'onchange="addPhotosFromFiles(this.files, null, \'' + did + '\'); this.value=\'\';">' +
+      strip +
+      '<div class="btnrow" style="margin:10px 0 0">' +
+        '<button class="btn primary" onclick="saveAmendment()">Save Amendment</button>' +
+        '<button class="btn" onclick="cancelAmendmentForm()">Cancel</button>' +
+      '</div>' +
+    '</div>';
+  host.querySelectorAll("input[data-amdphoto]").forEach(function(el){
+    el.addEventListener("input", function(){ photos[+el.dataset.amdphoto].caption = el.value; });
+  });
+}
+function openAmendmentForm(){
+  if (!amendmentDraftId) amendmentDraftId = genId("amd");
+  renderAmendmentForm();
+  var el = document.getElementById("amd-work");
+  if (el) el.focus();
+}
+/* Cancel keeps any photos already captured -- they're real photos of this job
+   and the bytes may be the only copy -- but un-tags them so they aren't
+   attributed to a visit that was never logged. */
+function cancelAmendmentForm(){
+  var draftId = amendmentDraftId;
+  amendmentDraftId = null;
+  var untagged = 0;
+  if (draftId){
+    photos.forEach(function(p){ if (p && p.amendment_id === draftId){ p.amendment_id = null; untagged++; } });
+  }
+  renderAmendmentForm();
+  renderAmendments();
+  if (untagged) toast(untagged + " photo" + (untagged === 1 ? "" : "s") + " kept on the work order (no longer tied to a return visit).");
+}
+function saveAmendment(){
+  if (!amendmentDraftId) return;
+  function fieldVal(id){
+    var el = document.getElementById(id);
+    return el ? String(el.value || "").trim() : "";
+  }
+  var work = fieldVal("amd-work");
+  var photoCount = amendmentPhotoItems(amendmentDraftId).length;
+  if (!work && !photoCount){
+    toast("Add what work was completed on this visit (or attach a photo) before saving the amendment.");
+    return;
+  }
+  var who = amendmentAuthor();
+  /* APPEND ONLY. Nothing above this line is touched -- not the original work
+     order's fields, not a previously logged amendment. */
+  amendments.push({
+    id: amendmentDraftId,
+    date: fieldVal("amd-date") || todayStr(),
+    workCompleted: work,
+    hours: fieldVal("amd-hours"),
+    crew: fieldVal("amd-crew"),
+    createdAt: Date.now(),
+    createdBy: who.name,
+    createdByUid: who.uid
+  });
+  amendmentDraftId = null;
+  renderAmendmentForm();
+  renderAmendments();
+  /* Non-quiet on purpose: saveOrder() owns every outcome toast from here
+     (saved / multi-device conflict / offline-and-queued). An "amendment
+     logged ✓" of our own would land in the same single shared toast node and
+     could overwrite the real reason a save was refused -- the exact failure
+     mode fixed in 70e5ae0. The new entry appearing in the list above IS the
+     confirmation. */
+  saveOrder();
+}
 function populateWarrantyGuidelines(){
   var host = document.getElementById("warranty-guidelines-body");
   if (!host || host.childElementCount) return; /* static reference text — no data-driven content to refresh */
@@ -1488,6 +1734,10 @@ function collect(){
   o.repairs = repairs.slice();
   o.repairItems = repairItems.slice();
   o.materials = materials.slice();
+  /* Return visits (see the amendments block above). MUST be collected here:
+     cloudSaveOrder() does a full ref.set() of this object, so a field missing
+     from collect() is erased from the cloud doc on the very next save. */
+  o.amendments = amendments.slice();
   o.inspectionChecklist = inspectionChecklist.slice();
   o.photos = photos.slice();
   o.companyCamProjectId = ccLinkedProjectId || null;
@@ -1768,7 +2018,21 @@ function fill(o){
     if (m.repair_id === undefined) m.repair_id = null;
   });
   photos = (o.photos || []).slice();
-  photos.forEach(function(p){ if (p.finding_id === undefined) p.finding_id = null; });
+  photos.forEach(function(p){
+    if (p.finding_id === undefined) p.finding_id = null;
+    /* Same plumbing self-heal as finding_id: every photo carries the field
+       explicitly so a photo saved before return visits existed is simply
+       "not tied to a visit," never undefined. */
+    if (p.amendment_id === undefined) p.amendment_id = null;
+  });
+  /* Return visits. Restored into the module global BEFORE any render below so
+     collect() carries them straight back out again (see the amendments block).
+     A draft form from a previously open order is dropped -- its id belonged to
+     that order, not this one. */
+  amendments = (o.amendments || []).slice();
+  amendments.forEach(function(a){ if (a && !a.id) a.id = genId("amd"); });
+  amendmentLoadedCloudBase = o._cloudBaseSavedAt || 0;
+  amendmentDraftId = null;
   ccLinkedProjectId = o.companyCamProjectId || null;
   ccLinkedProjectName = o.companyCamProjectName || "";
   /* Audit FIX 3: ANY work-order type on a linked building inherits the
@@ -1793,6 +2057,7 @@ function fill(o){
   smSetDispatchState(o);
   clearStaleLookupRoofInfoForCurrentOrder();
   renderFindings(); renderRepairs(); renderRepairItems(); renderMaterials(); renderPhotos(); renderCCLinkInfo(); renderChangeOrderSignature();
+  renderAmendments(); renderAmendmentForm();
   /* Re-render the checklist now that photos[]/findings[] are the truly
      loaded values, not whatever onWoTypeChange() saw mid-load above --
      otherwise a checklist item's photo gallery could briefly reflect the

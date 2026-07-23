@@ -173,6 +173,17 @@
   .finding-photo-item input[type=text]{width:104px;font-size:12px;padding:4px 6px;margin-top:4px}
   .finding-photo-item .btn.danger{width:104px;margin-top:4px;padding:2px 0;font-size:12px}
 
+  /* Return visits / amendments (#wo-amendments-card). One block per visit,
+     newest last, so the card reads top-to-bottom as the job's actual
+     timeline. The original visit gets the muted treatment — it's context for
+     the amendments, not itself an amendment. */
+  .amd-visit{border:1px solid var(--card-line);border-left:4px solid var(--orange);border-radius:6px;
+    padding:10px 12px;margin:0 0 8px;background:#fff}
+  .amd-visit-original{border-left-color:var(--line);background:#F7F9FA}
+  .amd-visit-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+  .amd-visit-when{font-weight:600}
+  .amd-visit-by{color:#5B6770;font-size:13px}
+
   /* CompanyCam picker */
   .cc-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:8px;margin-top:10px}
   .cc-ph{position:relative;border:3px solid transparent;border-radius:6px;cursor:pointer;overflow:hidden;background:#ECEFF1}
