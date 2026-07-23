@@ -1174,10 +1174,17 @@ function renderLeakReportDoc(o){
     h += "<h3 class='cond'>Photo Documentation</h3>" +
       "<p style='font-size:13px'>The following photographs document the reported leak investigation, observed roof conditions, and completed repairs.</p>" +
       "<div class='photogrid'>" +
+      /* On-screen Preview embeds the small p.thumb (not full-res p.img): a
+         photo-heavy report otherwise decoded dozens of multi-MB base64 images
+         into the DOM at once, pinning the main thread so the tab couldn't even
+         scroll or reload (Mark, 2026-07). lazy/async decode covers the img
+         fallback for older photos with no thumb. The emailed body + attached
+         PDF are unaffected -- email inlines no images (see emailDoc()), and the
+         PDF path has its own downscaler (buildPdfPhotoMap). */
       fp.map(function(p,i){
         var findingNo = p.finding_id ? refs.findingNoById[p.finding_id] : null;
         return "<div class='photocell'>" +
-          (p.img ? "<img src='" + p.img + "'>" : "") +
+          (p.img ? "<img loading='lazy' decoding='async' src='" + (p.thumb || p.img) + "'>" : "") +
           "<div class='cap'><b>Photo " + (i+1) + ":</b> " + esc(p.caption || "") +
           (findingNo ? " <span style='color:#5B6770'>(Finding #" + findingNo + ")</span>" : "") + "</div></div>";
       }).join("") + "</div>";
@@ -1237,7 +1244,7 @@ function renderChangeOrderDoc(o){
     h += "<h3 class='cond'>Photos</h3><div class='photogrid'>" +
       fp.map(function(p,i){
         return "<div class='photocell'>" +
-          (p.img ? "<img src='" + p.img + "'>" : "") +
+          (p.img ? "<img loading='lazy' decoding='async' src='" + (p.thumb || p.img) + "'>" : "") +
           "<div class='cap'><b>Photo " + (i+1) + ":</b> " + esc(p.caption || "") + "</div></div>";
       }).join("") + "</div>";
   }
