@@ -19,7 +19,7 @@
 <meta name="apple-mobile-web-app-title" content="RoofOps DEV">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#000000">
-<link rel="stylesheet" href="css/app.css">
+<link rel="stylesheet" href="css/app.css?v=20260724b">
 <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-auth-compat.js"></script>
@@ -1931,37 +1931,37 @@
      inline <script> at the very end of this file (init bootstrap): that
      one DOES run immediately at parse time and calls into several of
      these modules, so it must load dead last, after all seven. -->
-<script src="js/core.js"></script>
-<script src="js/companycam.js"></script>
-<script src="js/foundation.js"></script>
-<script src="js/export.js"></script>
-<script src="js/photos.js"></script>
-<script src="js/inspections.js"></script>
+<script src="js/core.js?v=20260724b"></script>
+<script src="js/companycam.js?v=20260724b"></script>
+<script src="js/foundation.js?v=20260724b"></script>
+<script src="js/export.js?v=20260724b"></script>
+<script src="js/photos.js?v=20260724b"></script>
+<script src="js/inspections.js?v=20260724b"></script>
 <!-- buildinghistory.js loads BEFORE history.js on purpose: history.js calls
      renderBuildingMap(), which lives here. It used to live in workorders.js,
      which loads after history.js -- worked only because the call is at
      runtime. See docs/agents/WORKORDERS_SPLIT_PLAN.md Phase 1. -->
-<script src="js/buildinghistory.js"></script>
-<script src="js/history.js"></script>
-<script src="js/workorders.js"></script>
-<script src="js/roofmapper.js"></script>
-<script src="js/dpr.js"></script>
+<script src="js/buildinghistory.js?v=20260724b"></script>
+<script src="js/history.js?v=20260724b"></script>
+<script src="js/workorders.js?v=20260724b"></script>
+<script src="js/roofmapper.js?v=20260724b"></script>
+<script src="js/dpr.js?v=20260724b"></script>
 <!-- Service Manager workspace: proposals inbox, Foundation cross-ref, pre-create
      work order, crew/day assignment, live dispatch board. Loaded after dpr.js
      (reuses DPR_FOREMEN as the crew roster) and workorders.js (dispatch fields
      live in collect()/fill()). See js/servicemanager.js header. -->
-<script src="js/servicemanager.js"></script>
-<script src="js/roles-admin.js"></script>
+<script src="js/servicemanager.js?v=20260724b"></script>
+<script src="js/roles-admin.js?v=20260724b"></script>
 <!-- AI training-label write path (see js/ailabels.js). Pure data plumbing,
      no UI of its own and deliberately no callers yet — loaded so the flows
      that confirm/correct an issue label (work orders, photos, inspections)
      can call recordConfirmedLabel() as they wire up. -->
-<script src="js/ailabels.js"></script>
+<script src="js/ailabels.js?v=20260724b"></script>
 <!-- Help Center / tooltips / first-run walkthrough (see js/help.js). Loaded
      last among the modules since it wraps showView() from the outside and
      needs that + every other global already defined; builds its own DOM at
      runtime, so no other markup in this file belongs to it. -->
-<script src="js/help.js"></script>
+<script src="js/help.js?v=20260724b"></script>
 <script>
 "use strict";
 /* ================= init ================= */
