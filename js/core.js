@@ -864,6 +864,23 @@ async function cloudSaveOrder(o){
     }
   }
   await ref.set(main);
+  /* BASE ADVANCE — do it the INSTANT the work-order doc's savedAt is committed,
+     BEFORE the photo ops below. Once ref.set(main) lands, this device's copy
+     descends from exactly main.savedAt, so the clobber-guard base must match it
+     now. The photo ops that follow (photo-doc writes + reference-aware Storage
+     deletes in Promise.all) can REJECT on a flaky connection — common on a phone
+     mid-send — and that rejection throws straight out of this function. When the
+     base advance lived only AFTER those ops (its old placement), such a partial
+     save left savedAt committed in the cloud while _cloudBaseSavedAt stayed
+     behind: the SAME device's very next Save/Send then saw cloud > base and
+     false-fired "updated on another device," and reopening reloaded the same
+     stranded local copy so it re-fired every time (Mark's prod block, 2026-07).
+     Real protection is intact: base only ever advances to a savedAt THIS device
+     just wrote past the pre-write conflict check above, so a genuine newer
+     other-device write is still caught on the next save. See "Multi-device
+     clobber guard" in DEV_NOTES.md. */
+  o._cloudBaseSavedAt = main.savedAt;
+  try{ var sdb0 = loadDb(); if (sdb0.orders[o.id]){ sdb0.orders[o.id]._cloudBaseSavedAt = main.savedAt; saveDb(sdb0); } }catch(e){}
   /* Photos off base64/localStorage onto Storage (Mark's "photos gone in
      PDFs" bug, and the storage-is-full/pruning mess it grew out of -- see
      "Photo storage migration" in DEV_NOTES.md): a photo already carrying
@@ -1013,10 +1030,12 @@ async function cloudSaveOrder(o){
     });
   }catch(e){ console.warn("photo cleanup enumeration failed (proceeding — nothing overwritten)", e); }
   await Promise.all(ops);
-  /* This device is now in sync with the cloud at main.savedAt -- advance the
-     local base so its OWN subsequent saves don't false-conflict against the
-     version it just wrote. Runs before the throws below so a partial-upload
-     retry still starts from the right base. */
+  /* Base was already advanced immediately after ref.set(main) above — the doc's
+     savedAt (the only thing the clobber guard compares) is committed there, not
+     here, so a rejection in the photo ops above can no longer strand
+     _cloudBaseSavedAt behind the cloud copy. Reassert it here too: idempotent
+     (same value), and it keeps the base correct if ref.set and the ops are ever
+     reordered. */
   o._cloudBaseSavedAt = main.savedAt;
   try{ var sdb = loadDb(); if (sdb.orders[o.id]){ sdb.orders[o.id]._cloudBaseSavedAt = main.savedAt; saveDb(sdb); } }catch(e){}
   if (uploadFailures > 0){
