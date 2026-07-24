@@ -12,19 +12,19 @@
 // content while online. This avoids the classic "stuck on an old service-
 // worker cache after a new deploy" trap without needing a build step to
 // generate hashed filenames (this app has none).
-const CACHE_NAME = "roofops-shell-v1";
+const CACHE_NAME = "roofops-shell-v2";
 const SHELL_PATHS = [
   "/",
   "/index.html",
   "/manifest.json",
-  "/css/app.css",
-  "/js/core.js",
-  "/js/companycam.js",
-  "/js/export.js",
-  "/js/history.js",
-  "/js/photos.js",
-  "/js/roofmapper.js",
-  "/js/workorders.js"
+  "/css/app.css?v=20260724b",
+  "/js/core.js?v=20260724b",
+  "/js/companycam.js?v=20260724b",
+  "/js/export.js?v=20260724b",
+  "/js/history.js?v=20260724b",
+  "/js/photos.js?v=20260724b",
+  "/js/roofmapper.js?v=20260724b",
+  "/js/workorders.js?v=20260724b"
 ];
 
 self.addEventListener("install", (event) => {

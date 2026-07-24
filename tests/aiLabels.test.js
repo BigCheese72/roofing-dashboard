@@ -336,6 +336,11 @@ test("cascade: admin.js's delete_building purges labels before deleting the buil
 
 /* ================= wiring ================= */
 
+/* The ?v= is optional on purpose: local css/js tags carry a cache-busting
+   version query (see the cache-buster block in index.html and SHELL_PATHS in
+   sw.js), and that token is bumped whenever a shipped asset changes. This
+   assertion is about the tag being WIRED UP, not about which version is
+   stamped on it — pinning the exact string would break on every bump. */
 test("index.html loads js/ailabels.js so future confirm flows can call it", () => {
-  assert.match(indexSource, /<script src="js\/ailabels\.js"><\/script>/);
+  assert.match(indexSource, /<script src="js\/ailabels\.js(\?v=[^"]*)?"><\/script>/);
 });
