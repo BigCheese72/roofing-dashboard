@@ -28,7 +28,12 @@
 // caller, or logged. On a DB error the caller gets a generic 502; the real
 // error goes to the function logs (console.error) with no password in it.
 const { requirePermission } = require("./lib/authGuard");
+const { asilKeyAllows } = require("./lib/asilKey");
 const foundationDb = require("./lib/foundationDb");
+
+// Read actions ASIL's bridge key may reach here (see lib/asilKey.js): job and
+// labor reads only. day_crew/day_hours and any unknown action stay human-gated.
+const ASIL_ALLOWED = ["jobs", "job_hours", "employees"];
 
 function resp(code, obj) {
   return { statusCode: code, headers: { "Content-Type": "application/json" }, body: JSON.stringify(obj) };
@@ -48,7 +53,13 @@ exports.handler = async function (event) {
   // unknown-action branch stays behind foundation.read, and there is still
   // no unauthenticated path anywhere.
   try {
-    await requirePermission(event, action === "day_crew" ? "dpr.create" : "foundation.read");
+    // Two ways in: a human holding the permission, or ASIL's bridge key — which
+    // authorizes ONLY the ASIL_ALLOWED read actions above. Any other action
+    // falls through to requirePermission and, carrying no bearer token, is
+    // refused, so the key can never reach day_crew, day_hours, or an unknown.
+    if (!asilKeyAllows(event, action, ASIL_ALLOWED)) {
+      await requirePermission(event, action === "day_crew" ? "dpr.create" : "foundation.read");
+    }
   } catch (e) {
     // Mirror outlook.js: surface the guard's own status code (401 missing/
     // invalid token, 403 missing permission) with its message. A thrown

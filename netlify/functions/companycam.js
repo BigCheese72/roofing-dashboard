@@ -29,6 +29,11 @@
 const { uploadDocumentToCompanyCam, verifyDocumentOnCompanyCam, createCompanyCamProject } = require("./lib/companyCamDocuments");
 const { uploadPhotoToCompanyCam, deletePushedPhotoFromCompanyCam } = require("./lib/companyCamPhotos");
 const { verifyCaller, requirePermission, getDb } = require("./lib/authGuard");
+const { asilKeyAllows } = require("./lib/asilKey");
+
+// Read-only GET actions ASIL's bridge key may reach here (see lib/asilKey.js).
+// Every write is POST and stays fully human-gated.
+const ASIL_ALLOWED = ["projects", "project_detail", "photos"];
 
 function resp(code, obj) {
   return { statusCode: code, headers: { "Content-Type": "application/json" }, body: JSON.stringify(obj) };
@@ -86,8 +91,18 @@ exports.handler = async function (event) {
   // reachable by anyone), and the endpoint must never depend on being
   // correctly configured in order to be safe. Same ordering discipline as the
   // outlook.js fix.
-  const gate = await requireAuth(event);
-  if (gate.errorResponse) return gate.errorResponse;
+  //
+  // One carve-out: ASIL's bridge key authorizes the read-only GET actions in
+  // ASIL_ALLOWED (see lib/asilKey.js). Those reads never use the verified
+  // caller, so skipping requireAuth for them is safe; every POST (all writes)
+  // and every non-allowlisted action still goes through requireAuth unchanged.
+  const asilRead =
+    event.httpMethod === "GET" &&
+    asilKeyAllows(event, (event.queryStringParameters || {}).action, ASIL_ALLOWED);
+  if (!asilRead) {
+    const gate = await requireAuth(event);
+    if (gate.errorResponse) return gate.errorResponse;
+  }
 
   // Two possible tokens: COMPANYCAM_TOKEN is the read-only token used for
   // search/list/photo actions. COMPANYCAM_WRITE_TOKEN is an optional,
