@@ -418,6 +418,10 @@ Remaining known follow-up gap:
             // "test_cut" | "safety_hazard" | "other"
   label,    // optional free text, e.g. "RTU-2"
   notes,    // optional free text
+  referenceDistances, // optional, drain-only: { point1Label, point1DistanceFt,
+                      // point2Label, point2DistanceFt, unit:"ft" }. Additive
+                      // field measurements from two site reference points,
+                      // entered when placing/editing a drain.
   lat, lng, x, y, // exactly one of {lat,lng} or {x,y}, same convention as finding pins
   createdAt, updatedAt
 }

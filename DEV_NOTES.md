@@ -361,6 +361,16 @@ blueprint of the building" — the roof's own inventory, not its repair history.
   already findings with pins, tracked per-report on purpose. Adding them here would
   create two competing representations of the same kind of location.
 
+- **Drain reference distances (shipped 2026-07-25, dev only)**: drain assets can now
+  carry two field-measured references in `asset.referenceDistances`:
+  `{point1Label, point1DistanceFt, point2Label, point2DistanceFt, unit:"ft"}`.
+  The fields are shown only when the selected roof feature type is `drain`, in both
+  the Building History modal and RoofMapper's inline feature form. Saved references
+  render as a small non-interactive label next to the drain marker on Building
+  History/RoofMapper maps, and also in the asset popup. This is additive to the
+  existing marker position (`lat/lng` or `x/y`) so older assets and non-drain feature
+  types are unchanged.
+
 ### RoofMapper: GPS + Overpass roof outline capture (Phase 1, shipped)
 
 A new top-level tab (`showView('roofmapper')`, `#view-roofmapper`) letting a tech stand
