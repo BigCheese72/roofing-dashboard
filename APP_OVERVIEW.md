@@ -693,7 +693,10 @@ reveals:
   submission, newest first, filterable by type, showing the comment, screen, tech,
   work order, and screenshot if one was attached. (Feedback is also emailed to Mark
   the moment it's submitted, so the backlog is a reviewable record, not the only way
-  to see it.)
+  to see it.) Admins can also run **Auto-triage visible** or triage one submission at
+  a time, which produces issue-ready draft titles/bodies with likely area, severity,
+  suggested files, duplicate hints, and safety notes for review before anything is
+  filed in GitHub.
 
 The timeline also auto-flags **possible duplicate entries** — same work order + same
 report type logged within 5 minutes of each other, almost always a double-click or a

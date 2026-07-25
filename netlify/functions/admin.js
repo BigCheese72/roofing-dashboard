@@ -15,6 +15,7 @@
 const { getDb, requirePermission, hostnameFromEvent } = require("./lib/authGuard");
 const { PERMISSION_KEYS, PERMISSION_SCOPES, isValidPermissionValue } = require("./lib/permissions");
 const { purgeLabelsForBuilding } = require("./lib/aiLabels");
+const { triageFeedbackItems } = require("./lib/feedbackTriage");
 
 function resp(code, obj) {
   return { statusCode: code, headers: { "Content-Type": "application/json" }, body: JSON.stringify(obj) };
@@ -392,6 +393,30 @@ exports.handler = async function (event) {
       const snap = await db.collection("feedback").orderBy("createdAt", "desc").limit(200).get();
       const items = snap.docs.map(d => Object.assign({ id: d.id }, d.data()));
       return resp(200, { ok: true, items });
+    }
+
+    if (body.action === "triage_feedback") {
+      // Issue-draft triage for the same internal feedback backlog as
+      // list_feedback above. The browser still has no direct read access to
+      // `feedback`, and screenshots/customer context stay inside RoofOps
+      // unless Mark manually shares them.
+      let caller;
+      try { caller = await requirePermission(event, "audit.view"); }
+      catch (e) { return resp(e.statusCode || 401, { error: e.message }); }
+
+      const requestedIds = Array.isArray(body.feedbackIds) ? body.feedbackIds
+        .map(id => String(id || "").trim())
+        .filter(Boolean)
+        .slice(0, 50) : [];
+      let items = [];
+      if (requestedIds.length) {
+        const snaps = await Promise.all(requestedIds.map(id => db.collection("feedback").doc(id).get()));
+        items = snaps.filter(s => s.exists).map(s => Object.assign({ id: s.id }, s.data()));
+      } else {
+        const snap = await db.collection("feedback").orderBy("createdAt", "desc").limit(50).get();
+        items = snap.docs.map(d => Object.assign({ id: d.id }, d.data()));
+      }
+      return resp(200, { ok: true, triage: triageFeedbackItems(items) });
     }
 
     if (body.action === "list_audit_log") {
