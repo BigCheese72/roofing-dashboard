@@ -2,41 +2,46 @@
 
 RoofOps Field is a lightweight commercial roofing field work order app for Watkins Roofing service work. Field users can create leak work orders, document roof investigation findings and repairs, attach or import job photos, generate PDF reports, email finished reports, and keep a growing building/site history.
 
-The current app is intentionally simple: it is a single static page with Netlify Functions for server-side API calls. Do not rebuild or replace working behavior without a clear migration plan.
+The current app is intentionally simple: it is a static Netlify app with plain JavaScript modules and Netlify Functions for server-side API calls. Do not rebuild or replace working behavior without a clear migration plan.
 
 ## Start Here If You're an AI Coding Assistant
 
-This repo is developed across multiple AI coding sessions (Claude and Codex, so far) —
-you are picking up where the other left off, not starting fresh. Before making any
-change:
+This repo is developed across multiple AI coding sessions. You are picking up where the
+last agent left off, not starting fresh. Before making any change, read these files in
+order:
 
-1. Read, in order: this file, [`APP_OVERVIEW.md`](APP_OVERVIEW.md) (user-facing
-   workflow), [`DEV_NOTES.md`](DEV_NOTES.md) (implementation details, gotchas, API
-   quirks), [`ROADMAP.md`](ROADMAP.md) (what's shipped vs. planned), and
-   [`DATA_MODEL.md`](DATA_MODEL.md) (Firestore schema).
-2. Confirm your understanding of current state before proposing changes.
+1. [`AGENTS.md`](AGENTS.md) - shared instructions for every coding assistant.
+2. [`PROJECT_VISION.md`](PROJECT_VISION.md) - what RoofOps is trying to become.
+3. [`APP_OVERVIEW.md`](APP_OVERVIEW.md) - user-facing workflow and current behavior.
+4. [`ARCHITECTURE.md`](ARCHITECTURE.md) - app structure, modules, functions, and deployment.
+5. [`SECURITY_MODEL.md`](SECURITY_MODEL.md) - auth, permissions, rules, and secret handling.
+6. [`DATABASE_SCHEMA.md`](DATABASE_SCHEMA.md) - concise current Firestore schema reference.
+7. [`DEVELOPMENT_WORKFLOW.md`](DEVELOPMENT_WORKFLOW.md) - branch, PR, testing, and review rules.
+8. [`DEV_NOTES.md`](DEV_NOTES.md) - implementation details, gotchas, API quirks, and history.
+9. [`ROADMAP.md`](ROADMAP.md) - shipped work and planned product direction.
+10. [`DATA_MODEL.md`](DATA_MODEL.md) - detailed current/future Firestore model.
+
+Confirm your understanding of the current state before proposing or making changes.
 
 Ground rules while working here:
 
 - This is a working field app in daily use. Preserve the existing work order
   workflow (job info → findings → repairs → warranty → photos → PDF →
   email/share) — never rebuild or redesign it wholesale.
-- Extend the existing single-file architecture (`index.html` + `netlify/functions/`)
-  rather than introducing a framework, build step, or new architecture, unless
-  explicitly asked.
-- Field techs should not have access to destructive actions (unlink, delete). Admin
-  mode gates these — PIN verified server-side in `netlify/functions/admin.js`, actual
-  deletes enforced by `firestore.rules` blocking client-side deletes (see
-  `DEV_NOTES.md`) — this is the current pattern for that; don't bypass it, don't add
-  a new client-side-only check, and don't add new destructive Firestore operations
-  without routing them through `admin.js` the same way.
-- Firebase Storage is intentionally not used for PDFs — CompanyCam is the system of
+- Extend the existing static app architecture (`index.html` + `js/` modules +
+  `netlify/functions/`) rather than introducing a framework, build step, or new
+  architecture, unless explicitly asked.
+- Field techs should not have access to privileged or destructive actions. Sensitive
+  work must be enforced through Firebase Auth claims, Firestore rules, and/or
+  Netlify Functions, not only hidden in the UI. See `SECURITY_MODEL.md` and
+  `docs/AUTH_DESIGN.md`.
+- Firebase Storage is intentionally not used for PDFs - CompanyCam is the system of
   record. Don't reintroduce Storage without checking with the user first.
 - Test against production Firebase/CompanyCam carefully: use clearly-labeled test
   data (e.g. "DELETE ME" in job/customer names) and clean it up after verifying,
   since there's no separate staging environment.
 - After any change that shifts behavior, update the relevant doc(s) above in the
-  same session — these docs are the shared handoff mechanism between tools, and
+  same session - these docs are the shared handoff mechanism between tools, and
   they go stale fast if only code changes.
 
 ## Current Structure
@@ -44,20 +49,59 @@ Ground rules while working here:
 ```text
 index.html
 README.md
+AGENTS.md
+PROJECT_VISION.md
+ARCHITECTURE.md
+DATABASE_SCHEMA.md
+SECURITY_MODEL.md
+DEVELOPMENT_WORKFLOW.md
 APP_OVERVIEW.md
 DEV_NOTES.md
 ROADMAP.md
 DATA_MODEL.md
-package.json         # firebase-admin, for admin.js
-firestore.rules       # reference only — apply manually in Firebase Console
+package.json
+firebase.json
+firestore.rules
+firestore.indexes.json
 netlify.toml
+css/
+  app.css
+js/
+  core.js
+  companycam.js
+  foundation.js
+  export.js
+  photos.js
+  inspections.js
+  buildinghistory.js
+  history.js
+  workorders.js
+  roofmapper.js
+  dpr.js
+  servicemanager.js
+  roles-admin.js
+  ailabels.js
+  help.js
 netlify/
   functions/
+    admin.js
+    auth.js
     companycam.js
     send-workorder.js
-    admin.js
+    photos.js
+    generate-summary.js
+    generate-scope.js
+    foundation.js
+    foundation-sync.js
+    outlook.js
+    inspection-reports.js
+    lib/
+docs/
+  AUTH_DESIGN.md
+  agents/
+tests/
 tools/
-  geotiff_to_webmap.py    # standalone — NOT part of the deployed app
+  geotiff_to_webmap.py    # standalone - NOT part of the deployed app
   update_roof_base_map.py # interactive wrapper around --upload, also standalone
   Update Roof Base Map.bat # double-click launcher for the above
 ```
