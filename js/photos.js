@@ -521,6 +521,57 @@ function assetIcon(type){
       'box-shadow:0 1px 3px rgba(0,0,0,.4)">' + t.emoji + '</div>'
   });
 }
+function roofAssetDistanceFt(raw){
+  if (raw === null || raw === undefined || String(raw).trim() === "") return null;
+  var n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? Math.round(n * 10) / 10 : null;
+}
+function roofAssetDrainReferenceFromFields(prefix, type){
+  if (type !== "drain") return null;
+  var p1 = document.getElementById(prefix + "-ref1-label");
+  var d1 = document.getElementById(prefix + "-ref1-distance");
+  var p2 = document.getElementById(prefix + "-ref2-label");
+  var d2 = document.getElementById(prefix + "-ref2-distance");
+  var ref = {
+    point1Label: p1 ? p1.value.trim() : "",
+    point1DistanceFt: d1 ? roofAssetDistanceFt(d1.value) : null,
+    point2Label: p2 ? p2.value.trim() : "",
+    point2DistanceFt: d2 ? roofAssetDistanceFt(d2.value) : null,
+    unit: "ft"
+  };
+  return (ref.point1Label || ref.point1DistanceFt !== null || ref.point2Label || ref.point2DistanceFt !== null) ? ref : null;
+}
+function setRoofAssetDrainReferenceFields(prefix, asset){
+  var ref = (asset && asset.referenceDistances) || {};
+  var values = {
+    "ref1-label": ref.point1Label || "",
+    "ref1-distance": ref.point1DistanceFt === null || ref.point1DistanceFt === undefined ? "" : ref.point1DistanceFt,
+    "ref2-label": ref.point2Label || "",
+    "ref2-distance": ref.point2DistanceFt === null || ref.point2DistanceFt === undefined ? "" : ref.point2DistanceFt
+  };
+  Object.keys(values).forEach(function(k){
+    var el = document.getElementById(prefix + "-" + k);
+    if (el) el.value = values[k];
+  });
+  toggleRoofAssetDrainReferenceFields(prefix, asset ? asset.type : "drain");
+}
+function toggleRoofAssetDrainReferenceFields(prefix, type){
+  var row = document.getElementById(prefix + "-drain-reference-fields");
+  if (row) row.style.display = type === "drain" ? "" : "none";
+}
+function roofAssetReferenceDistanceLine(label, distanceFt, fallback){
+  if (distanceFt === null || distanceFt === undefined) return label ? esc(label) : "";
+  return esc(label || fallback) + ": " + esc(distanceFt) + " ft";
+}
+function assetReferenceDistancesHtml(a){
+  var ref = a && a.referenceDistances;
+  if (!ref) return "";
+  var lines = [
+    roofAssetReferenceDistanceLine(ref.point1Label, ref.point1DistanceFt, "Point 1"),
+    roofAssetReferenceDistanceLine(ref.point2Label, ref.point2DistanceFt, "Point 2")
+  ].filter(Boolean);
+  return lines.length ? "<span style='color:var(--muted);font-size:12px'>Refs: " + lines.join(" | ") + "</span><br>" : "";
+}
 function assetPopupHtml(buildingId, a){
   var t = ROOF_ASSET_TYPES[a.type] || ROOF_ASSET_TYPES.other;
   /* This map only ever renders the currently-selected roof's assets (see
@@ -528,6 +579,7 @@ function assetPopupHtml(buildingId, a){
      roof for this marker's Edit button. */
   return "<b>" + t.emoji + " " + esc(t.label) + "</b>" + (a.label ? " — " + esc(a.label) : "") + "<br>" +
     (a.notes ? esc(a.notes) + "<br>" : "") +
+    assetReferenceDistancesHtml(a) +
     "<button class=\"btn\" style=\"margin-top:6px\" onclick=\"openAssetModal('" + buildingId + "','" + a.id + "','" + historySelectedRoofId + "')\">Edit</button>";
 }
 var assetMap = null, assetMarker = null, assetModalBuildingId = null, assetModalAssetId = null,
@@ -599,6 +651,7 @@ async function openAssetModal(buildingId, assetId, roofId){
   document.getElementById("asset-type").value = existing ? existing.type : "drain";
   document.getElementById("asset-label").value = existing ? (existing.label || "") : "";
   document.getElementById("asset-notes").value = existing ? (existing.notes || "") : "";
+  setRoofAssetDrainReferenceFields("asset", existing || { type: "drain" });
 
   var hasCustomBaseMap = !!((roof.roof_base_map_type === "roof_plan" || roof.roof_base_map_type === "sketch") && roof.roof_base_map_url);
   var orthoOverlay = (roof.roof_base_map_type === "drone_ortho" && roof.roof_base_map_url && roof.roof_base_map_bounds) ?
@@ -693,6 +746,7 @@ async function openAssetModalSatellite(bld, assets, existing, orthoOverlay, outl
 }
 document.getElementById("asset-type") && document.getElementById("asset-type").addEventListener("change", function(){
   if (assetMarker) assetMarker.setIcon(assetIcon(this.value));
+  toggleRoofAssetDrainReferenceFields("asset", this.value);
 });
 function closeAssetModal(){
   var buildingId = assetModalBuildingId;
@@ -722,6 +776,8 @@ async function saveAssetFromModal(){
     lat: null, lng: null, x: null, y: null,
     updatedAt: Date.now()
   };
+  var refs = roofAssetDrainReferenceFromFields("asset", asset.type);
+  if (refs) asset.referenceDistances = refs;
   if (assetMapMode === "xy" && assetXYSize){
     asset.x = ll.lng / assetXYSize.w;
     asset.y = ll.lat / assetXYSize.h;

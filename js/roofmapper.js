@@ -7356,6 +7356,7 @@ function rmPopulateFeatureTypeSelect(){
 }
 document.getElementById("rm-feature-type") && document.getElementById("rm-feature-type").addEventListener("change", function(){
   if (rmFeatureMarker) rmFeatureMarker.setIcon(assetIcon(this.value));
+  toggleRoofAssetDrainReferenceFields("rm-feature", this.value);
 });
 function rmOpenFeatureForm(existingAsset){
   if (!rmState.linkedBuildingId || !rmState.linkedRoofId){ toast("Save this outline to a building first."); return; }
@@ -7363,6 +7364,7 @@ function rmOpenFeatureForm(existingAsset){
   document.getElementById("rm-feature-type").value = existingAsset ? existingAsset.type : "drain";
   document.getElementById("rm-feature-label").value = existingAsset ? (existingAsset.label || "") : "";
   document.getElementById("rm-feature-notes").value = existingAsset ? (existingAsset.notes || "") : "";
+  setRoofAssetDrainReferenceFields("rm-feature", existingAsset || { type: "drain" });
   document.getElementById("rm-feature-delete-btn").style.display = existingAsset ? "" : "none";
   document.getElementById("rm-feature-dup-btn").style.display = existingAsset ? "" : "none";
   document.getElementById("rm-feature-form").style.display = "";
@@ -7441,6 +7443,8 @@ async function rmSaveFeature(){
     notes: document.getElementById("rm-feature-notes").value.trim(),
     updatedAt: Date.now()
   };
+  var refs = roofAssetDrainReferenceFromFields("rm-feature", asset.type);
+  if (refs) asset.referenceDistances = refs;
   Object.assign(asset, rmAssetPersistenceFields({ lat: ll.lat, lng: ll.lng }));
   try{
     await persistRoofAsset(rmState.linkedBuildingId, rmState.linkedRoofId, asset);

@@ -729,6 +729,27 @@
           <label>Notes (optional)</label>
           <textarea id="rm-feature-notes" rows="2"></textarea>
         </div>
+        <div id="rm-feature-drain-reference-fields" style="display:none">
+          <label style="font-size:12px;font-weight:600;display:block;margin:0 0 6px">Drain Reference Distances</label>
+          <div class="grid">
+            <div class="fld">
+              <label>Point 1</label>
+              <input type="text" id="rm-feature-ref1-label" placeholder="e.g. North parapet">
+            </div>
+            <div class="fld">
+              <label>Distance 1 (ft)</label>
+              <input type="number" step="0.1" min="0" id="rm-feature-ref1-distance" placeholder="0.0">
+            </div>
+            <div class="fld">
+              <label>Point 2</label>
+              <input type="text" id="rm-feature-ref2-label" placeholder="e.g. West wall">
+            </div>
+            <div class="fld">
+              <label>Distance 2 (ft)</label>
+              <input type="number" step="0.1" min="0" id="rm-feature-ref2-distance" placeholder="0.0">
+            </div>
+          </div>
+        </div>
         <div class="btnrow" style="margin:8px 0 0">
           <button class="btn primary" onclick="rmSaveFeature()">Save Feature</button>
           <button class="btn" id="rm-feature-dup-btn" onclick="rmDuplicateFeature(rmFeatureEditingId)" style="display:none">📋 Duplicate</button>
@@ -1474,6 +1495,27 @@
       <div class="fld">
         <label>Notes (optional)</label>
         <textarea id="asset-notes" rows="2"></textarea>
+      </div>
+      <div id="asset-drain-reference-fields" style="display:none">
+        <label style="font-size:12px;font-weight:600;display:block;margin:0 0 6px">Drain Reference Distances</label>
+        <div class="grid">
+          <div class="fld">
+            <label>Point 1</label>
+            <input type="text" id="asset-ref1-label" placeholder="e.g. North parapet">
+          </div>
+          <div class="fld">
+            <label>Distance 1 (ft)</label>
+            <input type="number" step="0.1" min="0" id="asset-ref1-distance" placeholder="0.0">
+          </div>
+          <div class="fld">
+            <label>Point 2</label>
+            <input type="text" id="asset-ref2-label" placeholder="e.g. West wall">
+          </div>
+          <div class="fld">
+            <label>Distance 2 (ft)</label>
+            <input type="number" step="0.1" min="0" id="asset-ref2-distance" placeholder="0.0">
+          </div>
+        </div>
       </div>
       <div class="btnrow" style="margin:0">
         <button class="btn primary" onclick="saveAssetFromModal()">Save Feature</button>
