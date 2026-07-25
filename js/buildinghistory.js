@@ -844,6 +844,7 @@ function assetPopupReadonlyHtml(a){
   return "<b>" + t.emoji + " " + esc(t.label) + "</b>" + (a.label ? " - " + esc(a.label) : "") + "<br>" +
     (a.notes ? esc(a.notes) + "<br>" : "") +
     assetReferenceDistancesHtml(a) +
+    assetCoreInfoHtml(a) +
     "<span style='color:var(--muted);font-size:12px'>Read-only roof feature</span>";
 }
 function outlinePopupHtml(o, roofLabel){

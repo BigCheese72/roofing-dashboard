@@ -939,6 +939,38 @@ function rmRoofPlanResponsiveSvg(plan){
   if (svg.indexOf("<svg ") !== 0) return svg; /* unexpected shape: embed as-is */
   return '<svg style="max-width:100%;height:auto;display:inline-block" ' + svg.slice("<svg ".length);
 }
+function rmReportAssetLabelLines(a){
+  if (typeof assetExportLabelLines === "function") return assetExportLabelLines(a);
+  var t = (typeof ROOF_ASSET_TYPES === "object" && ROOF_ASSET_TYPES[(a && a.type) || "other"]) ||
+    (typeof ROOF_ASSET_TYPES === "object" && ROOF_ASSET_TYPES.other) || { label: "Roof Feature" };
+  return [((a && a.label) || t.label)];
+}
+function rmReportAssetLabelMetrics(lines, fontSize){
+  lines = (lines && lines.length) ? lines : [""];
+  var longest = lines.reduce(function(max, line){ return Math.max(max, String(line || "").length); }, 0);
+  return { width: longest * fontSize * 0.58 + 12, height: lines.length * (fontSize + 3) + 6 };
+}
+function rmReportAssetLabelItem(id, a, svgP, fontSize){
+  var lines = rmReportAssetLabelLines(a);
+  var metrics = rmReportAssetLabelMetrics(lines, fontSize);
+  return {
+    id: id, kind: "asset", text: lines[0], lines: lines,
+    boxed: lines.length > 1 || (typeof roofAssetIsCoreLike === "function" && roofAssetIsCoreLike(a.type)),
+    anchorX: svgP.x, anchorY: svgP.y, dx: 11 + metrics.width / 2, dy: 0,
+    width: metrics.width, height: metrics.height
+  };
+}
+function rmReportSvgMultilineText(lines, x, y, fontSize, fontWeight, fill, strokeWidth){
+  lines = (lines && lines.length) ? lines : [""];
+  var lineH = fontSize + 3;
+  var firstY = y - ((lines.length - 1) * lineH / 2) + fontSize / 3;
+  return lines.map(function(line, i){
+    return '<text x="' + x.toFixed(1) + '" y="' + (firstY + i * lineH).toFixed(1) +
+      '" font-family="Arial, sans-serif" font-size="' + fontSize + '" font-weight="' + fontWeight +
+      '" fill="' + fill + '" text-anchor="middle" stroke="#ffffff" stroke-width="' + strokeWidth +
+      '" paint-order="stroke fill">' + rmEscXml(line) + '</text>';
+  }).join("");
+}
 function rmBuildReportRoofPlanSvg(roofEntries){
   if (!roofEntries || !roofEntries.length) return null;
   /* Only roofs with a real world-coordinate ring can be projected to scale.
@@ -952,7 +984,7 @@ function rmBuildReportRoofPlanSvg(roofEntries){
   var origin = rmGeomRingCentroid(allRingPts);
   var projected = roofEntries.map(function(r){
     var pts = r.outline.ring.map(function(p){ return rmExportProjectPoint(p, origin); });
-    var assetPts = (r.assets || []).map(function(a){ return Object.assign({}, rmExportProjectPoint(a, origin), { type: a.type, label: a.label }); });
+    var assetPts = (r.assets || []).map(function(a){ return Object.assign({}, a, rmExportProjectPoint(a, origin)); });
     var centroidPt = rmExportProjectPoint(r.outline.center || rmGeomRingCentroid(r.outline.ring), origin);
     return { roofLabel: r.roofLabel, outline: r.outline, pts: pts, assetPts: assetPts, centroidPt: centroidPt, methodInfo: rmReportMethodSentences(r.outline) };
   });
@@ -968,7 +1000,7 @@ function rmBuildReportRoofPlanSvg(roofEntries){
   function toSvg(p){
     return { x: (p.x - minX + padFt) * scale, y: headerH + (h * scale) - ((p.y - minY + padFt) * scale) };
   }
-  var shapeSvg = "", roofLabelItems = [];
+  var shapeSvg = "", roofLabelItems = [], assetLabelItems = [], markerObstacles = [];
   projected.forEach(function(r, i){
     var pathPts = r.pts.map(toSvg);
     var pathD = "M " + pathPts.map(function(p){ return p.x.toFixed(1) + "," + p.y.toFixed(1); }).join(" L ") + " Z" +
@@ -1015,9 +1047,11 @@ function rmBuildReportRoofPlanSvg(roofEntries){
         '" font-family="Arial, sans-serif" font-size="11.5" font-weight="700" fill="#fff" text-anchor="middle">' +
         rmEscXml(dimLabel) + '</text>';
     }
-    r.assetPts.forEach(function(a){
+    r.assetPts.forEach(function(a, ai){
       var svgP = toSvg(a);
       shapeSvg += '<circle cx="' + svgP.x.toFixed(1) + '" cy="' + svgP.y.toFixed(1) + '" r="6" fill="#455A64" stroke="#fff" stroke-width="1.5"/>';
+      markerObstacles.push({ x: svgP.x, y: svgP.y, r: 6 });
+      assetLabelItems.push(rmReportAssetLabelItem("asset-" + i + "-" + ai, a, svgP, 10.5));
     });
     if (roofEntries.length > 1){
       var lp = toSvg(r.centroidPt);
@@ -1026,7 +1060,7 @@ function rmBuildReportRoofPlanSvg(roofEntries){
   });
   var labelSvg = "";
   if (roofLabelItems.length){
-    rmDeconflictLabels(roofLabelItems, svgW, svgH).forEach(function(pl){
+    rmDeconflictLabels(roofLabelItems, svgW, svgH, markerObstacles).forEach(function(pl){
       if (pl.moved){
         labelSvg += '<line x1="' + pl.anchorX.toFixed(1) + '" y1="' + pl.anchorY.toFixed(1) + '" x2="' + pl.x.toFixed(1) + '" y2="' + pl.y.toFixed(1) +
           '" stroke="#8a8f93" stroke-width="1" stroke-dasharray="2,2"/><circle cx="' + pl.anchorX.toFixed(1) + '" cy="' + pl.anchorY.toFixed(1) + '" r="3" fill="#263238"/>';
@@ -1036,6 +1070,17 @@ function rmBuildReportRoofPlanSvg(roofEntries){
         'stroke="#ffffff" stroke-width="4" paint-order="stroke fill">' + rmEscXml(pl.name) + '</text>';
     });
   }
+  rmDeconflictLabels(assetLabelItems, svgW, svgH, markerObstacles).forEach(function(pl){
+    if (pl.moved){
+      labelSvg += '<line x1="' + pl.anchorX.toFixed(1) + '" y1="' + pl.anchorY.toFixed(1) + '" x2="' + pl.x.toFixed(1) + '" y2="' + pl.y.toFixed(1) +
+        '" stroke="#8a8f93" stroke-width="1" stroke-dasharray="2,2"/>';
+    }
+    if (pl.boxed){
+      labelSvg += '<rect x="' + (pl.x - pl.width / 2).toFixed(1) + '" y="' + (pl.y - pl.height / 2).toFixed(1) +
+        '" width="' + pl.width.toFixed(1) + '" height="' + pl.height.toFixed(1) + '" rx="4" fill="#ffffff" stroke="#CFD8DC" stroke-width="1"/>';
+    }
+    labelSvg += rmReportSvgMultilineText(pl.lines || [pl.text], pl.x, pl.y, 10.5, "600", "#263238", pl.boxed ? 0 : 2.5);
+  });
   var titleSvg = '<text x="14" y="24" font-family="Arial, sans-serif" font-size="15" font-weight="700" fill="#263238">' +
     rmEscXml(roofEntries.length > 1 ? "Roof Plan — " + roofEntries.length + " Roofs" : "Roof Plan — " + roofEntries[0].roofLabel) + '</text>';
   /* Method line(s), one per DISTINCT method text (a single-roof report --

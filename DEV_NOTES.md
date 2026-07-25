@@ -370,6 +370,14 @@ blueprint of the building" — the roof's own inventory, not its repair history.
   History/RoofMapper maps, and also in the asset popup. This is additive to the
   existing marker position (`lat/lng` or `x/y`) so older assets and non-drain feature
   types are unchanged.
+- **Exported asset callouts (shipped 2026-07-25, dev only)**: RoofMapper SVG/PNG/PDF
+  exports and the report PDF roof-plan SVG now carry the full asset object through
+  projection instead of reducing it to `{type,label}`. Drain exports therefore print
+  the saved reference distances next to the drain marker. Core Cut/Test Cut assets can
+  also carry `coreResult` and `corePhotoLink` from both feature entry points; exports
+  render those as a leader-line callout/text box next to the marker. `corePhotoLink`
+  is intentionally a URL/reference string, not uploaded/embedded image bytes, matching
+  the repo's "large binaries stay out of Firestore building docs" rule.
 
 ### RoofMapper: GPS + Overpass roof outline capture (Phase 1, shipped)
 

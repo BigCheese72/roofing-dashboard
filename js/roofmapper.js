@@ -1746,11 +1746,42 @@ function rmDropSplitMeasurementMetadata(outlineEntry, baseOutline){
   rmRefreshOutlineMeasurementModel(outlineEntry);
   return outlineEntry;
 }
+function rmAssetExportLabelLines(a){
+  if (typeof assetExportLabelLines === "function") return assetExportLabelLines(a);
+  var t = ROOF_ASSET_TYPES[(a && a.type) || "other"] || ROOF_ASSET_TYPES.other;
+  return [((a && a.label) || t.label)];
+}
+function rmAssetLabelMetrics(lines, fontSize){
+  lines = (lines && lines.length) ? lines : [""];
+  var longest = lines.reduce(function(max, line){ return Math.max(max, String(line || "").length); }, 0);
+  return { width: longest * fontSize * 0.58 + 12, height: lines.length * (fontSize + 3) + 6 };
+}
+function rmAssetLabelItem(id, a, svgP, fontSize){
+  var lines = rmAssetExportLabelLines(a);
+  var metrics = rmAssetLabelMetrics(lines, fontSize);
+  return {
+    id: id, kind: "asset", text: lines[0], lines: lines,
+    boxed: lines.length > 1 || (typeof roofAssetIsCoreLike === "function" && roofAssetIsCoreLike(a.type)),
+    anchorX: svgP.x, anchorY: svgP.y, dx: 15 + metrics.width / 2, dy: 0,
+    width: metrics.width, height: metrics.height
+  };
+}
+function rmSvgMultilineText(lines, x, y, fontSize, fontWeight, fill, strokeWidth){
+  lines = (lines && lines.length) ? lines : [""];
+  var lineH = fontSize + 3;
+  var firstY = y - ((lines.length - 1) * lineH / 2) + fontSize / 3;
+  return lines.map(function(line, i){
+    return '<text x="' + x.toFixed(1) + '" y="' + (firstY + i * lineH).toFixed(1) +
+      '" font-family="Arial, sans-serif" font-size="' + fontSize + '" font-weight="' + fontWeight +
+      '" fill="' + fill + '" text-anchor="middle" stroke="#ffffff" stroke-width="' + strokeWidth +
+      '" paint-order="stroke fill">' + rmEscXml(line) + '</text>';
+  }).join("");
+}
 function rmBuildOutlineSvg(outline, overlay){
   var origin = rmGeomRingCentroid(outline.ring);
   var pts = outline.ring.map(function(p){ return rmExportProjectPoint(p, origin); });
   var assetPts = ((overlay && overlay.assets) || []).map(function(a){
-    return Object.assign({}, rmExportProjectPoint(a, origin), { type: a.type, label: a.label });
+    return Object.assign({}, a, rmExportProjectPoint(a, origin));
   });
   var pinPts = ((overlay && overlay.pins) || []).map(function(p){
     return Object.assign({}, rmExportProjectPoint(p, origin), { warranty: p.warranty });
@@ -1837,16 +1868,11 @@ function rmBuildOutlineSvg(outline, overlay){
   assetPts.forEach(function(a, ai){
     var svgP = toSvg(a);
     var t = ROOF_ASSET_TYPES[a.type] || ROOF_ASSET_TYPES.other;
-    var labelText = a.label || t.label;
     markersSvg += '<circle cx="' + svgP.x.toFixed(1) + '" cy="' + svgP.y.toFixed(1) + '" r="9" fill="' + t.color +
       '" stroke="#fff" stroke-width="2"/><text x="' + svgP.x.toFixed(1) + '" y="' + (svgP.y + 4).toFixed(1) +
       '" font-family="Arial, sans-serif" font-size="11" text-anchor="middle">' + rmEscXml(t.emoji) + '</text>';
     markerObstacles.push({ x: svgP.x, y: svgP.y, r: 9 });
-    var labelW = labelText.length * 12 * 0.58 + 6;
-    assetLabelItems.push({
-      id: "asset-" + ai, text: labelText, anchorX: svgP.x, anchorY: svgP.y,
-      dx: 15 + labelW / 2, dy: 0, width: labelW, height: 17
-    });
+    assetLabelItems.push(rmAssetLabelItem("asset-" + ai, a, svgP, 12));
   });
   var placedAssetLabels = rmDeconflictLabels(assetLabelItems, svgW, svgH, markerObstacles);
   placedAssetLabels.forEach(function(pl){
@@ -1858,9 +1884,11 @@ function rmBuildOutlineSvg(outline, overlay){
        readable over the orange outline fill or any marker it crosses,
        without needing a separate background pill like the dimension
        labels get. */
-    markersSvg += '<text x="' + pl.x.toFixed(1) + '" y="' + (pl.y + 4).toFixed(1) +
-      '" font-family="Arial, sans-serif" font-size="12" font-weight="600" fill="#263238" text-anchor="middle" ' +
-      'stroke="#ffffff" stroke-width="3" paint-order="stroke fill">' + rmEscXml(pl.text) + '</text>';
+    if (pl.boxed){
+      markersSvg += '<rect x="' + (pl.x - pl.width / 2).toFixed(1) + '" y="' + (pl.y - pl.height / 2).toFixed(1) +
+        '" width="' + pl.width.toFixed(1) + '" height="' + pl.height.toFixed(1) + '" rx="4" fill="#ffffff" stroke="#CFD8DC" stroke-width="1"/>';
+    }
+    markersSvg += rmSvgMultilineText(pl.lines || [pl.text], pl.x, pl.y, 12, "600", "#263238", pl.boxed ? 0 : 3);
   });
   pinPts.forEach(function(p){
     var svgP = toSvg(p);
@@ -1975,7 +2003,7 @@ function rmBuildMultiRoofOutlineSvg(data){
   var origin = rmGeomRingCentroid(allRingPts);
   var roofsProjected = data.roofs.map(function(r, i){
     var pts = r.outline.ring.map(function(p){ return rmExportProjectPoint(p, origin); });
-    var assetPts = r.assets.map(function(a){ return Object.assign({}, rmExportProjectPoint(a, origin), { type: a.type, label: a.label }); });
+    var assetPts = r.assets.map(function(a){ return Object.assign({}, a, rmExportProjectPoint(a, origin)); });
     var pinPts = r.pins.map(function(p){ return Object.assign({}, rmExportProjectPoint(p, origin), { warranty: p.warranty }); });
     /* Mark: "the custom position must CARRY THROUGH TO THE EXPORT... not
        at a recomputed centroid." Same wherever-he-dragged-it position the
@@ -2051,16 +2079,11 @@ function rmBuildMultiRoofOutlineSvg(data){
       var svgP = toSvg(a);
       var t = ROOF_ASSET_TYPES[a.type] || ROOF_ASSET_TYPES.other;
       legendTypesPresent[a.type] = true;
-      var labelText = a.label || t.label;
       shapeSvg += '<circle cx="' + svgP.x.toFixed(1) + '" cy="' + svgP.y.toFixed(1) + '" r="9" fill="' + t.color +
         '" stroke="#fff" stroke-width="2"/><text x="' + svgP.x.toFixed(1) + '" y="' + (svgP.y + 4).toFixed(1) +
         '" font-family="Arial, sans-serif" font-size="11" text-anchor="middle">' + rmEscXml(t.emoji) + '</text>';
       markerObstacles.push({ x: svgP.x, y: svgP.y, r: 9 });
-      var labelW = labelText.length * 12 * 0.58 + 6;
-      assetLabelItems.push({
-        id: "asset-" + i + "-" + ai, kind: "asset", text: labelText,
-        anchorX: svgP.x, anchorY: svgP.y, dx: 15 + labelW / 2, dy: 0, width: labelW, height: 17
-      });
+      assetLabelItems.push(rmAssetLabelItem("asset-" + i + "-" + ai, a, svgP, 12));
     });
     r.pinPts.forEach(function(p){
       anyPins = true;
@@ -2107,9 +2130,11 @@ function rmBuildMultiRoofOutlineSvg(data){
         labelSvg += '<line x1="' + pl.anchorX.toFixed(1) + '" y1="' + pl.anchorY.toFixed(1) + '" x2="' + pl.x.toFixed(1) + '" y2="' + pl.y.toFixed(1) +
           '" stroke="#8a8f93" stroke-width="1" stroke-dasharray="2,2"/>';
       }
-      labelSvg += '<text x="' + pl.x.toFixed(1) + '" y="' + (pl.y + 4).toFixed(1) +
-        '" font-family="Arial, sans-serif" font-size="12" font-weight="600" fill="#263238" text-anchor="middle" ' +
-        'stroke="#ffffff" stroke-width="3" paint-order="stroke fill">' + rmEscXml(pl.text) + '</text>';
+      if (pl.boxed){
+        labelSvg += '<rect x="' + (pl.x - pl.width / 2).toFixed(1) + '" y="' + (pl.y - pl.height / 2).toFixed(1) +
+          '" width="' + pl.width.toFixed(1) + '" height="' + pl.height.toFixed(1) + '" rx="4" fill="#ffffff" stroke="#CFD8DC" stroke-width="1"/>';
+      }
+      labelSvg += rmSvgMultilineText(pl.lines || [pl.text], pl.x, pl.y, 12, "600", "#263238", pl.boxed ? 0 : 3);
     }
   });
   var bodySvg = shapeSvg + labelSvg;
@@ -7360,6 +7385,7 @@ function rmPopulateFeatureTypeSelect(){
 document.getElementById("rm-feature-type") && document.getElementById("rm-feature-type").addEventListener("change", function(){
   if (rmFeatureMarker) rmFeatureMarker.setIcon(assetIcon(this.value));
   toggleRoofAssetDrainReferenceFields("rm-feature", this.value);
+  toggleRoofAssetCoreInfoFields("rm-feature", this.value);
 });
 function rmOpenFeatureForm(existingAsset){
   if (!rmState.linkedBuildingId || !rmState.linkedRoofId){ toast("Save this outline to a building first."); return; }
@@ -7368,6 +7394,7 @@ function rmOpenFeatureForm(existingAsset){
   document.getElementById("rm-feature-label").value = existingAsset ? (existingAsset.label || "") : "";
   document.getElementById("rm-feature-notes").value = existingAsset ? (existingAsset.notes || "") : "";
   setRoofAssetDrainReferenceFields("rm-feature", existingAsset || { type: "drain" });
+  setRoofAssetCoreInfoFields("rm-feature", existingAsset || { type: "drain" });
   document.getElementById("rm-feature-delete-btn").style.display = existingAsset ? "" : "none";
   document.getElementById("rm-feature-dup-btn").style.display = existingAsset ? "" : "none";
   document.getElementById("rm-feature-form").style.display = "";
@@ -7448,6 +7475,8 @@ async function rmSaveFeature(){
   };
   var refs = roofAssetDrainReferenceFromFields("rm-feature", asset.type);
   if (refs) asset.referenceDistances = refs;
+  var coreInfo = roofAssetCoreInfoFromFields("rm-feature", asset.type);
+  if (coreInfo) Object.assign(asset, coreInfo);
   Object.assign(asset, rmAssetPersistenceFields({ lat: ll.lat, lng: ll.lng }));
   try{
     await persistRoofAsset(rmState.linkedBuildingId, rmState.linkedRoofId, asset);
