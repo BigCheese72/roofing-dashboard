@@ -563,14 +563,34 @@ function roofAssetReferenceDistanceLine(label, distanceFt, fallback){
   if (distanceFt === null || distanceFt === undefined) return label ? esc(label) : "";
   return esc(label || fallback) + ": " + esc(distanceFt) + " ft";
 }
-function assetReferenceDistancesHtml(a){
+function assetReferenceDistancesText(a){
   var ref = a && a.referenceDistances;
   if (!ref) return "";
   var lines = [
     roofAssetReferenceDistanceLine(ref.point1Label, ref.point1DistanceFt, "Point 1"),
     roofAssetReferenceDistanceLine(ref.point2Label, ref.point2DistanceFt, "Point 2")
   ].filter(Boolean);
-  return lines.length ? "<span style='color:var(--muted);font-size:12px'>Refs: " + lines.join(" | ") + "</span><br>" : "";
+  return lines.join(" | ");
+}
+function assetReferenceDistancesHtml(a){
+  var text = assetReferenceDistancesText(a);
+  return text ? "<span style='color:var(--muted);font-size:12px'>Refs: " + text + "</span><br>" : "";
+}
+function addAssetReferenceDistanceLabel(layer, latlng, a){
+  if (!layer || !latlng || !a || a.type !== "drain") return;
+  var text = assetReferenceDistancesText(a);
+  if (!text) return;
+  return L.marker(latlng, {
+    interactive: false,
+    keyboard: false,
+    icon: L.divIcon({
+      className: "",
+      iconAnchor: [-18, 28],
+      html: '<div style="background:#fff;color:#263238;border:1px solid var(--line);border-radius:4px;' +
+        'box-shadow:0 1px 3px rgba(0,0,0,.25);padding:2px 5px;font-size:11px;line-height:1.25;' +
+        'white-space:nowrap;max-width:240px;overflow:hidden;text-overflow:ellipsis">Refs: ' + text + '</div>'
+    })
+  }).addTo(layer);
 }
 function assetPopupHtml(buildingId, a){
   var t = ROOF_ASSET_TYPES[a.type] || ROOF_ASSET_TYPES.other;

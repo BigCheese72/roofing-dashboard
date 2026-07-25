@@ -7003,8 +7003,11 @@ function rmDrawLinkedAssets(assets){
        systems) -- just not inline on this screen. */
     var ll = rmAssetDisplayLatLng(a);
     if (!ll) return;
-    var m = L.marker([ll.lat, ll.lng], { icon: assetIcon(a.type) }).addTo(rmState.assetLayerGroup);
+    var assetLatLng = [ll.lat, ll.lng];
+    var m = L.marker(assetLatLng, { icon: assetIcon(a.type) }).addTo(rmState.assetLayerGroup);
     m._rmAssetId = a.id; /* so rmOpenFeatureForm can hide this exact marker while it's being edited */
+    var label = addAssetReferenceDistanceLabel(rmState.assetLayerGroup, assetLatLng, a);
+    if (label) label._rmAssetId = a.id;
     m.on("click", function(){ rmEditFeature(a.id); });
     /* Fast duplicate path (Mark: "point is speed when a roof has several of
        the same thing" -- multiple RTUs, a run of roof-fence sections,

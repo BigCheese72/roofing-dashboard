@@ -294,9 +294,10 @@ Tap **"+ Add Roof Feature"** on a building's Roof Map, pick a type, optionally a
 label and notes, and place it — no admin PIN needed, any tech can add, move, or remove
 one. When the feature is a **Drain**, the form also accepts two reference distances
 in feet (for example, from the north parapet and west wall) so the drain can be
-field-verified from known points instead of relying only on its map position. Each
-type gets its own icon/color so they're easy to tell apart from finding pins at a
-glance. Tap an existing feature's marker to edit or remove it.
+field-verified from known points instead of relying only on its map position; saved
+drain references show next to the marker on the roof map and in its popup. Each type
+gets its own icon/color so they're easy to tell apart from finding pins at a glance.
+Tap an existing feature's marker to edit or remove it.
 
 **Custom base maps** (admin-only): a building can use something other than satellite.
 Requires the building to already have a CompanyCam project linked. Set from the

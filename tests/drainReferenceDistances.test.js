@@ -60,6 +60,14 @@ test("drain reference fields build structured data only for drains", () => {
 
 test("saved drain reference distances render in asset popups", () => {
   const ctx = loadDrainHelpers();
+  ctx.L = {
+    divIcon: cfg => ({ kind: "icon", cfg }),
+    marker: (latlng, opts) => ({
+      latlng,
+      opts,
+      addTo(layer){ layer.added = { latlng, opts }; return this; }
+    })
+  };
   const html = ctx.assetReferenceDistancesHtml({
     type: "drain",
     referenceDistances: {
@@ -76,6 +84,15 @@ test("saved drain reference distances render in asset popups", () => {
   assert.doesNotMatch(ctx.assetReferenceDistancesHtml({
     referenceDistances: { point1Label: "North parapet", point1DistanceFt: 14 }
   }), /Point 2/);
+
+  const layer = {};
+  const marker = ctx.addAssetReferenceDistanceLabel(layer, [10, 20], {
+    type: "drain",
+    referenceDistances: { point1Label: "North parapet", point1DistanceFt: 14 }
+  });
+  assert.ok(marker);
+  assert.deepEqual(layer.added.latlng, [10, 20]);
+  assert.match(layer.added.opts.icon.cfg.html, /Refs: North parapet: 14 ft/);
 });
 
 test("building history and RoofMapper expose and save drain reference fields", () => {
@@ -89,5 +106,8 @@ test("building history and RoofMapper expose and save drain reference fields", (
   assert.match(photos, /roofAssetDrainReferenceFromFields\("asset", asset\.type\)/);
   assert.match(roofmapper, /roofAssetDrainReferenceFromFields\("rm-feature", asset\.type\)/);
   assert.match(photos, /assetReferenceDistancesHtml\(a\)/);
+  assert.match(photos, /function addAssetReferenceDistanceLabel/);
   assert.match(buildinghistory, /assetReferenceDistancesHtml\(a\)/);
+  assert.match(buildinghistory, /addAssetReferenceDistanceLabel\(map, assetLatLng, a\)/);
+  assert.match(roofmapper, /addAssetReferenceDistanceLabel\(rmState\.assetLayerGroup, assetLatLng, a\)/);
 });

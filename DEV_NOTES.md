@@ -365,9 +365,11 @@ blueprint of the building" — the roof's own inventory, not its repair history.
   carry two field-measured references in `asset.referenceDistances`:
   `{point1Label, point1DistanceFt, point2Label, point2DistanceFt, unit:"ft"}`.
   The fields are shown only when the selected roof feature type is `drain`, in both
-  the Building History modal and RoofMapper's inline feature form, and render back in
-  the asset popup. This is additive to the existing marker position (`lat/lng` or
-  `x/y`) so older assets and non-drain feature types are unchanged.
+  the Building History modal and RoofMapper's inline feature form. Saved references
+  render as a small non-interactive label next to the drain marker on Building
+  History/RoofMapper maps, and also in the asset popup. This is additive to the
+  existing marker position (`lat/lng` or `x/y`) so older assets and non-drain feature
+  types are unchanged.
 
 ### RoofMapper: GPS + Overpass roof outline capture (Phase 1, shipped)
 
