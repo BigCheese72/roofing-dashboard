@@ -559,9 +559,37 @@ function toggleRoofAssetDrainReferenceFields(prefix, type){
   var row = document.getElementById(prefix + "-drain-reference-fields");
   if (row) row.style.display = type === "drain" ? "" : "none";
 }
+function roofAssetIsCoreLike(type){
+  return type === "core_cut" || type === "test_cut";
+}
+function roofAssetCoreInfoFromFields(prefix, type){
+  if (!roofAssetIsCoreLike(type)) return null;
+  var resultEl = document.getElementById(prefix + "-core-result");
+  var photoEl = document.getElementById(prefix + "-core-photo-link");
+  var info = {
+    coreResult: resultEl ? resultEl.value.trim() : "",
+    corePhotoLink: photoEl ? photoEl.value.trim() : ""
+  };
+  return (info.coreResult || info.corePhotoLink) ? info : null;
+}
+function setRoofAssetCoreInfoFields(prefix, asset){
+  var values = {
+    "core-result": asset && asset.coreResult ? asset.coreResult : "",
+    "core-photo-link": asset && asset.corePhotoLink ? asset.corePhotoLink : ""
+  };
+  Object.keys(values).forEach(function(k){
+    var el = document.getElementById(prefix + "-" + k);
+    if (el) el.value = values[k];
+  });
+  toggleRoofAssetCoreInfoFields(prefix, asset ? asset.type : "drain");
+}
+function toggleRoofAssetCoreInfoFields(prefix, type){
+  var row = document.getElementById(prefix + "-core-fields");
+  if (row) row.style.display = roofAssetIsCoreLike(type) ? "" : "none";
+}
 function roofAssetReferenceDistanceLine(label, distanceFt, fallback){
-  if (distanceFt === null || distanceFt === undefined) return label ? esc(label) : "";
-  return esc(label || fallback) + ": " + esc(distanceFt) + " ft";
+  if (distanceFt === null || distanceFt === undefined) return label ? String(label) : "";
+  return String(label || fallback) + ": " + String(distanceFt) + " ft";
 }
 function assetReferenceDistancesText(a){
   var ref = a && a.referenceDistances;
@@ -574,7 +602,57 @@ function assetReferenceDistancesText(a){
 }
 function assetReferenceDistancesHtml(a){
   var text = assetReferenceDistancesText(a);
-  return text ? "<span style='color:var(--muted);font-size:12px'>Refs: " + text + "</span><br>" : "";
+  return text ? "<span style='color:var(--muted);font-size:12px'>Refs: " + esc(text) + "</span><br>" : "";
+}
+function assetCoreInfoText(a){
+  if (!a || !roofAssetIsCoreLike(a.type)) return "";
+  var lines = [];
+  if (a.coreResult) lines.push("Core results: " + a.coreResult);
+  if (a.corePhotoLink) lines.push("Photo: " + a.corePhotoLink);
+  return lines.join(" | ");
+}
+function assetCoreInfoHtml(a){
+  if (!a || !roofAssetIsCoreLike(a.type)) return "";
+  var html = "";
+  if (a.coreResult) html += "<span style='color:var(--muted);font-size:12px'>Core results: " + esc(a.coreResult) + "</span><br>";
+  if (a.corePhotoLink){
+    var safeLink = esc(a.corePhotoLink);
+    var href = /^https?:\/\/[^\s"'<>]+$/i.test(a.corePhotoLink) ? a.corePhotoLink : "";
+    if (href){
+      html += "<span style='color:var(--muted);font-size:12px'>Photo: <a href=\"" + href + "\" target=\"_blank\" rel=\"noopener\">Open photo</a></span><br>";
+    } else {
+      html += "<span style='color:var(--muted);font-size:12px'>Photo: " + safeLink + "</span><br>";
+    }
+  }
+  return html;
+}
+function roofAssetWrapText(text, maxLen){
+  text = String(text || "").replace(/\s+/g, " ").trim();
+  if (!text) return [];
+  maxLen = maxLen || 40;
+  var words = text.split(" "), lines = [], line = "";
+  words.forEach(function(word){
+    var next = line ? line + " " + word : word;
+    if (line && next.length > maxLen){
+      lines.push(line);
+      line = word;
+    } else {
+      line = next;
+    }
+  });
+  if (line) lines.push(line);
+  return lines;
+}
+function assetExportLabelLines(a){
+  var t = ROOF_ASSET_TYPES[(a && a.type) || "other"] || ROOF_ASSET_TYPES.other;
+  var lines = [((a && a.label) || t.label)];
+  var refs = assetReferenceDistancesText(a);
+  if (refs) lines = lines.concat(roofAssetWrapText("Refs: " + refs, 42));
+  if (a && roofAssetIsCoreLike(a.type)){
+    if (a.coreResult) lines = lines.concat(roofAssetWrapText("Core: " + a.coreResult, 42));
+    if (a.corePhotoLink) lines = lines.concat(roofAssetWrapText("Photo: " + a.corePhotoLink, 42));
+  }
+  return lines.filter(Boolean);
 }
 function addAssetReferenceDistanceLabel(layer, latlng, a){
   if (!layer || !latlng || !a || a.type !== "drain") return;
@@ -588,7 +666,7 @@ function addAssetReferenceDistanceLabel(layer, latlng, a){
       iconAnchor: [-18, 28],
       html: '<div style="background:#fff;color:#263238;border:1px solid var(--line);border-radius:4px;' +
         'box-shadow:0 1px 3px rgba(0,0,0,.25);padding:2px 5px;font-size:11px;line-height:1.25;' +
-        'white-space:nowrap;max-width:240px;overflow:hidden;text-overflow:ellipsis">Refs: ' + text + '</div>'
+        'white-space:nowrap;max-width:240px;overflow:hidden;text-overflow:ellipsis">Refs: ' + esc(text) + '</div>'
     })
   }).addTo(layer);
 }
@@ -600,6 +678,7 @@ function assetPopupHtml(buildingId, a){
   return "<b>" + t.emoji + " " + esc(t.label) + "</b>" + (a.label ? " — " + esc(a.label) : "") + "<br>" +
     (a.notes ? esc(a.notes) + "<br>" : "") +
     assetReferenceDistancesHtml(a) +
+    assetCoreInfoHtml(a) +
     "<button class=\"btn\" style=\"margin-top:6px\" onclick=\"openAssetModal('" + buildingId + "','" + a.id + "','" + historySelectedRoofId + "')\">Edit</button>";
 }
 var assetMap = null, assetMarker = null, assetModalBuildingId = null, assetModalAssetId = null,
@@ -672,6 +751,7 @@ async function openAssetModal(buildingId, assetId, roofId){
   document.getElementById("asset-label").value = existing ? (existing.label || "") : "";
   document.getElementById("asset-notes").value = existing ? (existing.notes || "") : "";
   setRoofAssetDrainReferenceFields("asset", existing || { type: "drain" });
+  setRoofAssetCoreInfoFields("asset", existing || { type: "drain" });
 
   var hasCustomBaseMap = !!((roof.roof_base_map_type === "roof_plan" || roof.roof_base_map_type === "sketch") && roof.roof_base_map_url);
   var orthoOverlay = (roof.roof_base_map_type === "drone_ortho" && roof.roof_base_map_url && roof.roof_base_map_bounds) ?
@@ -767,6 +847,7 @@ async function openAssetModalSatellite(bld, assets, existing, orthoOverlay, outl
 document.getElementById("asset-type") && document.getElementById("asset-type").addEventListener("change", function(){
   if (assetMarker) assetMarker.setIcon(assetIcon(this.value));
   toggleRoofAssetDrainReferenceFields("asset", this.value);
+  toggleRoofAssetCoreInfoFields("asset", this.value);
 });
 function closeAssetModal(){
   var buildingId = assetModalBuildingId;
@@ -798,6 +879,8 @@ async function saveAssetFromModal(){
   };
   var refs = roofAssetDrainReferenceFromFields("asset", asset.type);
   if (refs) asset.referenceDistances = refs;
+  var coreInfo = roofAssetCoreInfoFromFields("asset", asset.type);
+  if (coreInfo) Object.assign(asset, coreInfo);
   if (assetMapMode === "xy" && assetXYSize){
     asset.x = ll.lng / assetXYSize.w;
     asset.y = ll.lat / assetXYSize.h;

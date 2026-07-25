@@ -422,6 +422,11 @@ Remaining known follow-up gap:
                       // point2Label, point2DistanceFt, unit:"ft" }. Additive
                       // field measurements from two site reference points,
                       // entered when placing/editing a drain.
+  coreResult,         // optional, core_cut/test_cut only: free-text cut result.
+  corePhotoLink,      // optional, core_cut/test_cut only: URL or field reference
+                      // to the core/test-cut photo. Deliberately a reference,
+                      // not image bytes, so roof assets do not bloat the
+                      // building doc.
   lat, lng, x, y, // exactly one of {lat,lng} or {x,y}, same convention as finding pins
   createdAt, updatedAt
 }

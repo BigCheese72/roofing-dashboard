@@ -750,6 +750,17 @@
             </div>
           </div>
         </div>
+        <div id="rm-feature-core-fields" style="display:none">
+          <label style="font-size:12px;font-weight:600;display:block;margin:0 0 6px">Core/Test Cut Results</label>
+          <div class="fld">
+            <label>Results</label>
+            <textarea id="rm-feature-core-result" rows="2" placeholder="e.g. 60 mil TPO over 1/2 in HD cover board"></textarea>
+          </div>
+          <div class="fld">
+            <label>Photo Link / ID (optional)</label>
+            <input type="text" id="rm-feature-core-photo-link" placeholder="Paste CompanyCam/photo URL or reference">
+          </div>
+        </div>
         <div class="btnrow" style="margin:8px 0 0">
           <button class="btn primary" onclick="rmSaveFeature()">Save Feature</button>
           <button class="btn" id="rm-feature-dup-btn" onclick="rmDuplicateFeature(rmFeatureEditingId)" style="display:none">📋 Duplicate</button>
@@ -1515,6 +1526,17 @@
             <label>Distance 2 (ft)</label>
             <input type="number" step="0.1" min="0" id="asset-ref2-distance" placeholder="0.0">
           </div>
+        </div>
+      </div>
+      <div id="asset-core-fields" style="display:none">
+        <label style="font-size:12px;font-weight:600;display:block;margin:0 0 6px">Core/Test Cut Results</label>
+        <div class="fld">
+          <label>Results</label>
+          <textarea id="asset-core-result" rows="2" placeholder="e.g. 60 mil TPO over 1/2 in HD cover board"></textarea>
+        </div>
+        <div class="fld">
+          <label>Photo Link / ID (optional)</label>
+          <input type="text" id="asset-core-photo-link" placeholder="Paste CompanyCam/photo URL or reference">
         </div>
       </div>
       <div class="btnrow" style="margin:0">
