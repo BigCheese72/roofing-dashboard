@@ -49,7 +49,16 @@
 //     calendar actions NO-OP with a clear "calendar scope not granted yet"
 //     message (gated via hasCalendarScope()) rather than failing with a raw 403.
 const { requirePermission } = require("./lib/authGuard");
+const { asilKeyAllows } = require("./lib/asilKey");
 const { graphFetchDelegated, hasCalendarScope } = require("./lib/graphDelegatedAuth");
+
+// Actions ASIL's bridge key may reach here (see lib/asilKey.js): read actions
+// plus create_draft (writes to Drafts only). Everything else (upsert, move,
+// rules_create, folder_create, categorize, ...) stays human-gated.
+const ASIL_ALLOWED = [
+  "folders", "list_messages", "mail_read", "attachments_list",
+  "attachment_get", "calendar_list", "create_draft"
+];
 
 function resp(code, obj) {
   return { statusCode: code, headers: { "Content-Type": "application/json" }, body: JSON.stringify(obj) };
@@ -748,13 +757,9 @@ async function pageContacts(fetchJson, limit, maxPages) {
 // Handler
 // ---------------------------------------------------------------------------
 exports.handler = async function (event) {
-  // AUTH FIRST — before any Graph call, before any env read.
-  try {
-    await requirePermission(event, "warranty.manage_reports");
-  } catch (e) {
-    return resp(e.statusCode || 401, { error: e.message });
-  }
-
+  // Method + body first. Neither touches Graph or reads a secret; we just need
+  // to know which action is being requested before choosing how to authorize
+  // it, so the ASIL bridge key can be scoped to specific actions.
   if (event.httpMethod !== "POST") return resp(405, { error: "Method not allowed" });
 
   let body;
@@ -762,6 +767,18 @@ exports.handler = async function (event) {
   catch (e) { return resp(400, { error: "Bad JSON body" }); }
 
   const action = body.action;
+
+  // AUTH — still before any Graph call or env-secret read. Two ways in: a human
+  // holding warranty.manage_reports, or ASIL's bridge key, which authorizes ONLY
+  // the ASIL_ALLOWED actions above. Any other action falls through to
+  // requirePermission and, carrying no bearer token, is refused.
+  if (!asilKeyAllows(event, action, ASIL_ALLOWED)) {
+    try {
+      await requirePermission(event, "warranty.manage_reports");
+    } catch (e) {
+      return resp(e.statusCode || 401, { error: e.message });
+    }
+  }
 
   try {
     // ---- folders: resolve display names -> ids (so the caller can drive paging)
