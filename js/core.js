@@ -2177,7 +2177,7 @@ function appBuildId(){
    invite screen would copy a live credential into Firestore AND into the
    feedback email. Keys are redacted, not dropped, so the diagnosis still
    sees that the parameter was present. */
-var FEEDBACK_ROUTE_SECRET_KEYS = /^(invite|token|access_token|id_token|refresh_token|key|apikey|api_key|secret|sig|signature|password|passwd|pass|pin|auth|code)$/i;
+var FEEDBACK_ROUTE_SECRET_KEYS = /^(invite|invite_token|inviteToken|token|access_token|access-token|accessToken|id_token|id-token|idToken|refresh_token|refresh-token|refreshToken|firebase_token|firebase-token|firebaseToken|auth_token|auth-token|authToken|key|apikey|api_key|api-key|secret|sig|signature|password|passwd|pass|pin|auth|code|jwt|bearer|session|sessionid|session_id|session-token|sessionToken|credential|credentials|assertion|saml)$/i;
 function sanitizedFeedbackRoute(){
   var href = "";
   try{ href = String(window.location.href || ""); }catch(e){ return ""; }

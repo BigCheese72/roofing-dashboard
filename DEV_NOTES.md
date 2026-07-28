@@ -8813,3 +8813,30 @@ Tests: `tests/feedbackTriageStatus.test.js` (20 — the gate, the indexed query
 shape, param validation, merge semantics, the branchUrl allowlist, audit
 logging) and `tests/feedbackCapture.test.js` (16 — build id, invite-token
 redaction, payload shape, viewer rendering, client/server vocabulary parity).
+
+## Feedback auto-fix loop hardening addendum (dev only, 2026-07-28)
+
+Codex C-1 through C-4 tightened the foundation without changing the admin
+backlog's default behavior:
+
+- `firestore.rules` now validates feedback creates. It accepts the legacy
+  mid-deploy shape with no `triageStatus` and the new bundle shape with only
+  `triageStatus: "new"`, while rejecting forged server-owned lifecycle fields
+  (`agentDiagnosis`, `branchUrl`, `updatedAt`) and non-new statuses.
+- `list_feedback` still defaults to newest 200 full docs for the backlog card.
+  Watchers may now send `omitScreenshot: true` to keep base64 screenshots out of
+  polling payloads; invalid values are a 400, not a silently different query.
+- `update_feedback_status` is now gated by the dedicated `feedback.triage`
+  permission. `list_feedback` remains `audit.view` gated, so a watcher/admin
+  service account needs both read and triage grants.
+- The initial seed grid grants `feedback.triage` to the same roles that already
+  had broad feedback-loop write access via `audit.view`: owner/admin through the
+  all-permissions paths, plus service_manager and ops_manager explicitly.
+- Route redaction now also catches common session/JWT/camelCase token names such
+  as `session_id`, `jwt`, `firebaseToken`, `accessToken`, `credential`,
+  `assertion`, and `saml`.
+
+Additional coverage lives in Codex-owned test files:
+`tests/feedbackCreateRulesHardening.test.js`,
+`tests/feedbackAdminHardeningExtra.test.js`, and
+`tests/feedbackViewerSecurityExtra.test.js`.

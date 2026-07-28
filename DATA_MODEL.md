@@ -1211,6 +1211,16 @@ Notes:
   semantics, not a bug. Use the `sinceCreatedAt` watermark (or an unfiltered
   list) to reach them — see "Feedback auto-fix loop" in `DEV_NOTES.md`.
 
+Hardening addendum (2026-07-28): `feedback` client creates are now
+field-validated while preserving deploy compatibility. Valid creates may either
+omit `triageStatus` (old bundle) or set exactly `triageStatus: "new"` (new
+bundle). Client creates still cannot include server-owned `agentDiagnosis`,
+`branchUrl`, or `updatedAt`; later lifecycle writes go through Admin SDK
+`update_feedback_status` behind `feedback.triage`, not direct client writes.
+Watcher/admin list calls may pass `omitScreenshot: true` to exclude the base64
+screenshot field from polling payloads; the default list behavior still returns
+full docs for the admin backlog card.
+
 ### `ai_training_labels` (currently implemented — write path only, no callers yet)
 
 The learning-model data foundation (shipped 2026-07-16, dev only — see "AI training

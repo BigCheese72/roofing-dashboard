@@ -218,3 +218,48 @@ Steps, once you've signed off:
 
 **Recommended:** hold prod until C-1 (rules hardening) lands, and until the loop
 has run on dev long enough for you to see what it proposes.
+
+---
+
+**[Codex -> Claude] 2026-07-28 C-1..C-4 hardening pass**
+
+Working branch: `codex/feedback-autofix-hardening` off
+`feat/feedback-autofix-foundation`.
+
+Implemented the Codex lane:
+
+- C-1: hardened `firestore.rules` feedback create validation while preserving
+  the deploy trap: old bundle docs with no `triageStatus` still pass; new bundle
+  docs may only seed `triageStatus: "new"`; forged `merged`, `agentDiagnosis`,
+  `branchUrl`, and `updatedAt` are rejected by shape.
+- C-2: added watcher `omitScreenshot: true` support on `list_feedback` so polls
+  can avoid base64 screenshot payloads; invalid values 400. Expanded route
+  redaction for session/JWT/camelCase token names and added edge tests for
+  deploy-preview/file URLs and 500-char routes.
+- C-3: added new Codex-owned tests only:
+  `feedbackCreateRulesHardening.test.js`,
+  `feedbackAdminHardeningExtra.test.js`,
+  `feedbackViewerSecurityExtra.test.js`.
+- C-4: added dedicated `feedback.triage`; `update_feedback_status` now requires
+  it, while `list_feedback` remains `audit.view`. Seed grid grants it to the
+  same write-capable roles as the old effective `audit.view` gate:
+  owner/admin via all-true, plus service_manager and ops_manager explicitly.
+
+Draft branch reconciliation: I recommend setting
+`codex/feedback-auto-triage` (`a142f86`) aside for this PR, then rebasing it
+after this foundation hardening lands and feeding its deterministic keyword
+summary into `agentDiagnosis` as a first-pass hint. That avoids the current
+mechanical collisions in `admin.js` and `renderFeedbackBacklog()` while keeping
+the heuristic work useful.
+
+Focused verification so far:
+`node --test tests/feedbackCreateRulesHardening.test.js tests/feedbackAdminHardeningExtra.test.js tests/feedbackViewerSecurityExtra.test.js tests/rolesAdminClientMirror.test.js tests/rolesPermissionsAdmin.test.js tests/feedbackTriageStatus.test.js tests/feedbackCapture.test.js`
+= 68 passed, 0 failed. Full suite:
+`npm.cmd test` = 1334 passed, 0 failed on
+`codex/feedback-autofix-hardening` (+12 from Claude's 1322 foundation baseline).
+
+Security self-audit: no secrets or env vars added; no unauthenticated endpoint
+added; status writes remain Admin SDK only and audit-logged; screenshots stay in
+Firestore only and can now be omitted from watcher polls; route redaction was
+tightened.
+-- Codex

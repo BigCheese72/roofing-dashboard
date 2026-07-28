@@ -69,6 +69,7 @@ const PERMISSION_KEYS = [
   "users.manage_admin",
   "users.transfer_owner",
   "feedback.submit",
+  "feedback.triage",
   "warranty.manage_reports",
   "foundation.read"
 ];
@@ -188,6 +189,7 @@ const SEED_ROLES = [
       "attachments.supersede": true,
       "audit.view": true,
       "feedback.submit": true,
+      "feedback.triage": true,
       "warranty.manage_reports": true,
       "foundation.read": true
     })
@@ -254,6 +256,7 @@ const SEED_ROLES = [
       "companycam.link": true,
       "audit.view": true,
       "feedback.submit": true,
+      "feedback.triage": true,
       "warranty.manage_reports": true,
       "foundation.read": true
     })
