@@ -8724,9 +8724,10 @@ Pinned by `tests/feedbackCapture.test.js`.
 ### Endpoint contract for the Dispatch watcher
 
 Both halves are `POST /.netlify/functions/admin`, `Authorization: Bearer <Firebase
-ID token>`, gated on **`audit.view`** — the same permission the backlog card
-already uses, so the watcher needs one credential for read *and* write. It is an
-admin caller, not an open endpoint: no token is 401, a field tech is 403.
+ID token>`, but they are intentionally split by permission: `list_feedback` is
+gated on **`audit.view`** and `update_feedback_status` is gated on
+**`feedback.triage`**. The watcher credential needs both grants. It is an admin
+caller, not an open endpoint: no token is 401, a field tech is 403.
 
 **Which environment you hit decides which Firestore you get.** Since the
 2026-07-11 Firebase split, `dev--leak-work-orders.netlify.app` and
@@ -8741,15 +8742,18 @@ reports; prod feedback is only visible on the prod host.
   "type": "bug",            // optional: praise | confusing | bug | feature
   "triageStatus": "new",    // optional: new | triaging | fix_proposed | merged | wont_fix
   "sinceCreatedAt": 1753600000000,  // optional: epoch ms, strictly greater-than
-  "limit": 50 }             // optional: 1-200, default 200
+  "limit": 50,              // optional: 1-200, default 200
+  "omitScreenshot": true }  // optional: omit base64 screenshot payloads for watcher polls
 ```
 
 Returns `{ ok, items[], query, statuses[] }`, newest first. `items[]` are full
-docs including `id` and every field above. `query` echoes what was actually run;
-`statuses` is the live vocabulary so the watcher never hardcodes the enum. Any
-invalid param is a **400** — never a silently unfiltered query. Sending no params
-at all reproduces the original behaviour exactly (newest 200, unfiltered), which
-is what the admin card still sends.
+docs including `id` and every field above unless `omitScreenshot: true` was
+sent, in which case the base64 `screenshot` field is removed from the response.
+`query` echoes what was actually run; `statuses` is the live vocabulary so the
+watcher never hardcodes the enum. Any invalid param is a **400** — never a
+silently unfiltered query. Sending no params at all reproduces the original
+behaviour exactly (newest 200, unfiltered, screenshots included), which is what
+the admin card still sends.
 
 **2. Write the result back**
 
@@ -8813,6 +8817,17 @@ Tests: `tests/feedbackTriageStatus.test.js` (20 — the gate, the indexed query
 shape, param validation, merge semantics, the branchUrl allowlist, audit
 logging) and `tests/feedbackCapture.test.js` (16 — build id, invite-token
 redaction, payload shape, viewer rendering, client/server vocabulary parity).
+
+### Live role update for `feedback.triage`
+
+Adding `feedback.triage` to `SEED_ROLES` does **not** update already-seeded
+Firestore `roles/*` documents. Before pointing Dispatch at dev, grant
+`feedback.triage` in the Roles & Permissions grid to the watcher role and to any
+human roles expected to move reports through the loop. Do not use
+`auth.js seed_roles` as a shortcut unless Mark explicitly accepts overwriting
+the live roles grid; that action reseeds role docs from code and can wipe
+customized permission edits. The safe path is a targeted grid toggle for
+`feedback.triage`.
 
 ## Feedback auto-fix loop hardening addendum (dev only, 2026-07-28)
 

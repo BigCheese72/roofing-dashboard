@@ -12,6 +12,16 @@ const path = require("node:path");
 
 const rulesSource = fs.readFileSync(path.join(__dirname, "..", "firestore.rules"), "utf8");
 
+function listArg(block, methodName) {
+  const start = block.indexOf(methodName + "([");
+  assert.notStrictEqual(start, -1, "missing " + methodName + " list");
+  const open = block.indexOf("[", start);
+  const close = block.indexOf("]", open);
+  assert.notStrictEqual(open, -1, "missing " + methodName + " opening list");
+  assert.notStrictEqual(close, -1, "missing " + methodName + " closing list");
+  return block.slice(open, close + 1);
+}
+
 function feedbackBlock() {
   const start = rulesSource.indexOf("match /feedback/{feedbackId}");
   assert.notStrictEqual(start, -1, "missing feedback rules block");
@@ -31,6 +41,11 @@ test("feedback create is field-validated but still create-only", () => {
 
 test("feedback create accepts legacy no-status docs and only the new seed status", () => {
   const block = feedbackBlock();
+  const hasOnly = listArg(block, "hasOnly");
+  const hasAll = listArg(block, "hasAll");
+  assert.ok(hasOnly.includes("'triageStatus'"), "new bundle may send the seed field");
+  assert.ok(!hasAll.includes("'triageStatus'"),
+    "triageStatus must stay optional or old bundles lose feedback mid-deploy");
   assert.match(block, /!request\.resource\.data\.keys\(\)\.hasAny\(\['triageStatus'\]\)/,
     "legacy clients without triageStatus must still be accepted mid-deploy");
   assert.match(block, /request\.resource\.data\.triageStatus == 'new'/,
