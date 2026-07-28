@@ -1140,7 +1140,44 @@ In-app Send Feedback submissions — the 💬 button reachable from every screen
                    // photo as a fallback) — same resize-before-store discipline as
                    // work order photos, just capped smaller since these are
                    // debugging aids, not documentation. null if not attached.
-  createdAt        // Date.now() at submission
+  createdAt,       // Date.now() at submission
+
+  // ---- auto-diagnosis signal (feedback -> auto-fix loop, dev 2026-07-28) ----
+  // Written by the CLIENT at create time. Everything above says what the tester
+  // felt; these three say what they were actually running, which is what makes a
+  // report reproducible without asking them.
+  appVersion,      // build id — the `?v=...` cache-buster on index.html's
+                   // <script src="js/core.js?v=..."> tag, read at runtime by
+                   // appBuildId(). The app is static with no build step, so this
+                   // is the only value that provably moves on every deploy.
+                   // "unknown" if the tag is missing or unversioned.
+  route,           // window.location.href, SECRET-REDACTED and capped at 500 chars
+                   // (sanitizedFeedbackRoute()). Query keys matching
+                   // FEEDBACK_ROUTE_SECRET_KEYS (invite, token, key, secret, sig,
+                   // password, pin, auth, code, ...) have their VALUE replaced with
+                   // "REDACTED" — js/core.js reads a single-use invite token off
+                   // location.search, so a raw href would copy a live credential
+                   // into this doc and into the feedback email.
+  env,             // "dev" | "prod" — isDevEnvironment(). Since the 2026-07-11
+                   // Firebase split these are SEPARATE projects, so this is also
+                   // which Firestore the doc lives in. A fix can only be verified
+                   // against the environment the report came from.
+
+  // ---- triage lifecycle (server-owned except the seed) ----
+  triageStatus,    // "new" | "triaging" | "fix_proposed" | "merged" | "wont_fix"
+                   // — TRIAGE_STATUSES in netlify/functions/lib/feedbackStatus.js.
+                   // The client seeds "new" at create ONLY because Firestore
+                   // equality cannot match a missing field, so the watcher's
+                   // indexed query needs it to exist. Every later transition is
+                   // written server-side.
+  agentDiagnosis,  // free text from the triage agent, trimmed + capped at 4000
+                   // chars. Absent until first written — never client-written.
+  branchUrl,       // https://github.com/... link to the proposed fix. Allowlisted
+                   // to github.com server-side AND re-checked before the admin
+                   // viewer renders it into an <a href>. Absent until written.
+  updatedAt        // Date.now() of the last status write. Absent until the first
+                   // one — a doc with createdAt but no updatedAt has never been
+                   // touched by the loop.
 }
 ```
 
@@ -1159,6 +1196,20 @@ Notes:
   other. The email subject always starts with the stable `[RoofOps Feedback]` token
   (regardless of type) so a mail rule can file every one of these into one Outlook
   folder reliably.
+- **The triage fields do not loosen the rules.** `feedback` stays
+  `allow create: if true; allow read, update, delete: if false` — a browser can
+  submit a report but cannot forge a diagnosis, a branch link, or a status. The
+  only writer is `admin.js`'s `update_feedback_status` (Admin SDK, `audit.view`,
+  audit-logged). Known gap, deliberately not closed here: because `create` does
+  not validate fields, a hand-crafted client could submit a doc already claiming
+  `triageStatus: "merged"` and so hide itself from the watcher's `"new"` query.
+  That is a nuisance-tier hole (anyone able to do that can already spam feedback)
+  and closing it means field-validating `create`, which would reject older app
+  bundles mid-deploy. Tracked in `COORDINATION.md` as a Codex hardening item.
+- **Reports submitted before 2026-07-28 have no `triageStatus` field at all**, so
+  `where("triageStatus","==","new")` will never return them. That is Firestore
+  semantics, not a bug. Use the `sinceCreatedAt` watermark (or an unfiltered
+  list) to reach them — see "Feedback auto-fix loop" in `DEV_NOTES.md`.
 
 ### `ai_training_labels` (currently implemented — write path only, no callers yet)
 

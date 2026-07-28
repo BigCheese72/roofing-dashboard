@@ -2152,6 +2152,47 @@ var FEEDBACK_VIEW_LABELS = {
   history: "Building History", reports: "Reports", roofmapper: "RoofMapper"
 };
 var feedbackState = { type: null, screenshot: null };
+/* ---- Auto-diagnosis signal (feedback -> auto-fix loop) ----
+   A submitted report only becomes automatically diagnosable if it says WHICH
+   build and WHICH url it came from. Before this, a feedback doc carried a
+   friendly screen name ("Work Order Form") and nothing else -- not enough to
+   reproduce anything. See "Feedback auto-fix loop" in DEV_NOTES.md. */
+
+/* The app is static with no build step, so there is no version constant to
+   read. The cache-buster already on every <script src="js/core.js?v=..."> in
+   index.html IS the build id in practice -- it is bumped on every deploy, so
+   deriving it costs nothing to maintain and can't drift from what actually
+   shipped the way a hand-edited APP_VERSION would. */
+function appBuildId(){
+  try{
+    var tag = document.querySelector('script[src*="js/core.js"]');
+    var m = tag && /[?&]v=([A-Za-z0-9._-]{1,40})/.exec(tag.getAttribute("src") || "");
+    return m ? m[1] : "unknown";
+  }catch(e){ return "unknown"; }
+}
+
+/* Query-string keys whose VALUE must never be persisted into a feedback doc.
+   This is not hypothetical: js/core.js:532 reads a single-use invite token
+   straight off window.location.search, so an untrimmed location.href on the
+   invite screen would copy a live credential into Firestore AND into the
+   feedback email. Keys are redacted, not dropped, so the diagnosis still
+   sees that the parameter was present. */
+var FEEDBACK_ROUTE_SECRET_KEYS = /^(invite|token|access_token|id_token|refresh_token|key|apikey|api_key|secret|sig|signature|password|passwd|pass|pin|auth|code)$/i;
+function sanitizedFeedbackRoute(){
+  var href = "";
+  try{ href = String(window.location.href || ""); }catch(e){ return ""; }
+  try{
+    var u = new URL(href);
+    var keys = [];
+    u.searchParams.forEach(function(_v, k){ keys.push(k); });
+    keys.forEach(function(k){ if (FEEDBACK_ROUTE_SECRET_KEYS.test(k)) u.searchParams.set(k, "REDACTED"); });
+    return u.toString().slice(0, 500);
+  }catch(e){
+    /* No URL support (or an unparseable href): fail toward privacy by
+       dropping the query string wholesale rather than shipping it raw. */
+    return href.split("?")[0].slice(0, 500);
+  }
+}
 function openFeedbackModal(){
   feedbackState = { type: null, screenshot: null };
   setVal("feedback-comments", "");
@@ -2257,6 +2298,22 @@ async function submitFeedback(){
     workOrderId: onWorkOrderScreen ? (currentId || null) : null,
     workOrderJobName: onWorkOrderScreen ? (val("jobName").trim() || null) : null,
     screenshot: feedbackState.screenshot || null,
+    /* Auto-diagnosis signal: which deploy, which url, which Firebase project.
+       `env` matters because dev and prod are SEPARATE Firebase projects since
+       the 2026-07-11 split -- a report is only reproducible against the
+       environment it came from. */
+    appVersion: appBuildId(),
+    route: sanitizedFeedbackRoute(),
+    env: isDevEnvironment() ? "dev" : "prod",
+    /* Seeds the triage lifecycle at creation so the Dispatch watcher's
+       indexed `triageStatus == "new"` query matches immediately. Firestore
+       equality does NOT match documents missing the field, so reports
+       submitted before this shipped stay invisible to that query by design --
+       the sinceCreatedAt watermark path exists for those (DEV_NOTES.md).
+       This is the only triage field the client writes: agentDiagnosis and
+       branchUrl are server-owned (admin.js update_feedback_status), and
+       firestore.rules still forbids client updates entirely. */
+    triageStatus: "new",
     createdAt: Date.now()
   };
   toast("Sending feedback…");
@@ -2295,6 +2352,28 @@ async function loadFeedbackBacklog(){
     if (host) host.innerHTML = '<p class="hint">Couldn\'t load feedback: ' + esc(e.message) + '</p>';
   }
 }
+/* Triage lifecycle labels -- MUST stay in step with TRIAGE_STATUSES in
+   netlify/functions/lib/feedbackStatus.js (a test pins the two together).
+   Anything unrecognised falls through to the raw string rather than being
+   hidden, so a status added server-side is visible here before this map is
+   updated. */
+var FEEDBACK_TRIAGE_LABELS = {
+  new: "🆕 New", triaging: "🔎 Triaging", fix_proposed: "🛠️ Fix proposed",
+  merged: "✅ Merged", wont_fix: "🚫 Won't fix"
+};
+function feedbackTriageLabel(status){
+  if (!status) return "";                      /* pre-loop report: no field */
+  return FEEDBACK_TRIAGE_LABELS[status] || status;
+}
+/* Only ever renders a branch link the server already validated as an https
+   github.com URL. Re-checked here rather than trusted because this value
+   goes into an href: a stored `javascript:` string would otherwise be one
+   admin click from executing. Belt and braces with normalizeBranchUrl(). */
+function safeBranchUrl(url){
+  var raw = String(url || "").trim();
+  if (!raw) return "";
+  return /^https:\/\/(www\.)?github\.com\//i.test(raw) ? raw : "";
+}
 function renderFeedbackBacklog(){
   var host = document.getElementById("feedback-backlog-list");
   if (!host) return;
@@ -2302,15 +2381,29 @@ function renderFeedbackBacklog(){
   var items = feedbackBacklog.filter(function(f){ return !filterType || f.type === filterType; });
   if (!items.length){ host.innerHTML = '<p class="hint">No feedback yet.</p>'; return; }
   host.innerHTML = items.map(function(f){
+    var triage = feedbackTriageLabel(f.triageStatus);
+    var branch = safeBranchUrl(f.branchUrl);
+    var diagnosis = String(f.agentDiagnosis || "").trim();
+    var snippet = diagnosis.length > 300 ? diagnosis.slice(0, 300).trim() + "…" : diagnosis;
     return '<div class="card" style="margin:0 0 8px">' +
       '<div style="display:flex;justify-content:space-between;align-items:start;gap:8px">' +
       '<b>' + esc(f.typeLabel || f.type || "") + '</b>' +
-      '<span class="hint" style="margin:0;white-space:nowrap">' + esc(f.createdAt ? new Date(f.createdAt).toLocaleString() : "") + '</span></div>' +
+      '<span class="hint" style="margin:0;white-space:nowrap">' +
+        (triage ? esc(triage) + ' · ' : '') +
+        esc(f.createdAt ? new Date(f.createdAt).toLocaleString() : "") + '</span></div>' +
       (f.comments ? '<p style="margin:6px 0">' + esc(f.comments) + '</p>' : '<p class="hint" style="margin:6px 0">(no comments)</p>') +
       '<p class="hint" style="margin:0">Screen: ' + esc(f.screen || "") +
         (f.technician ? ' · Tech: ' + esc(f.technician) : '') +
         (f.workOrderJobName ? ' · Work order: ' + esc(f.workOrderJobName) : '') +
         (f.adminMode ? ' · (admin mode)' : '') + '</p>' +
+      /* Build/env/route: what makes a report reproducible. Only shown when
+         present -- reports submitted before this feature have none. */
+      ((f.appVersion || f.env || f.route) ?
+        '<p class="hint" style="margin:2px 0 0;word-break:break-all">Build: ' + esc(f.appVersion || "unknown") +
+          (f.env ? ' (' + esc(f.env) + ')' : '') +
+          (f.route ? ' · ' + esc(f.route) : '') + '</p>' : '') +
+      (snippet ? '<p class="hint" style="margin:6px 0 0;white-space:pre-wrap"><b>Diagnosis:</b> ' + esc(snippet) + '</p>' : '') +
+      (branch ? '<p style="margin:6px 0 0"><a href="' + esc(branch) + '" target="_blank" rel="noopener noreferrer">View proposed fix ↗</a></p>' : '') +
       (f.screenshot ? '<img src="' + esc(f.screenshot) + '" style="max-width:180px;max-height:120px;border:1px solid var(--line);' +
         'border-radius:4px;margin-top:6px;cursor:pointer" onclick="openImageLightbox(this.src)">' : '') +
     '</div>';

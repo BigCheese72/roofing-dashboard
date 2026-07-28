@@ -8675,3 +8675,141 @@ Tests: `tests/workOrderAmendments.test.js` — 28. The append-only contract, the
 through the full-overwrite save and back, card visibility/badge, the form
 surviving an autosave re-render, and every report builder including "prints
 nothing at all when there are no return visits."
+
+## Feedback auto-fix loop — data + API foundation (dev only, 2026-07-28)
+
+The 💬 Send Feedback button has always captured a report to Firestore and emailed
+Mark, and then nothing happened. This is the foundation that lets a bug submission
+become a *diagnosed dev fix* automatically. **Only the data and the API live here.**
+The poll-diagnose-branch watcher itself is orchestrated separately by Dispatch as a
+scheduled task; this section is the contract it codes against.
+
+### What changed
+
+1. **The submission got diagnosable.** `submitFeedback()` in `js/core.js` now records
+   `appVersion` (build id), `route` (secret-redacted url) and `env` (`dev`/`prod`)
+   alongside the existing screen/technician/work-order/screenshot/device fields.
+   Before this a report said *"Bug — Work Order Form"* and nothing about which
+   deploy or url produced it, which is not enough for an agent to reproduce
+   anything. The same three fields were added to the feedback **email** too.
+2. **A triage lifecycle.** `triageStatus` / `agentDiagnosis` / `branchUrl` /
+   `updatedAt` on the feedback doc — see `DATA_MODEL.md` for exact semantics.
+3. **A server-side writer**, `update_feedback_status`, which is the *only* thing
+   that can move a report along that lifecycle.
+4. **A filterable watcher query** on the existing `list_feedback` action.
+5. **The admin backlog card** (Reports → 🗣️ Feedback Backlog) shows status,
+   diagnosis snippet, build/route line, and a link to the proposed fix.
+
+### The build id has no build step
+
+The app is static, so there is no version constant to read. The `?v=...`
+cache-buster already on every `<script src="js/core.js?v=20260724b">` in
+`index.html` **is** the build id in practice — it is bumped on every deploy.
+`appBuildId()` reads it off the live script tag at runtime, so it cannot drift
+from what actually shipped the way a hand-edited `APP_VERSION` would. If the tag
+is missing or unversioned it degrades to `"unknown"` rather than throwing.
+
+### ⚠️ `route` is secret-redacted, and must stay that way
+
+`js/core.js` reads a **single-use invite token** straight off
+`window.location.search` (the invite-link sign-in flow). An untrimmed
+`location.href` on that screen would copy a live credential into Firestore *and*
+into the emailed report. `sanitizedFeedbackRoute()` replaces the value of any
+query key matching `FEEDBACK_ROUTE_SECRET_KEYS` (`invite`, `token`, `key`,
+`secret`, `sig`, `password`, `pin`, `auth`, `code`, …) with `REDACTED`, keeps
+harmless ones (`openHelp=1`) because they are real diagnosis signal, and on any
+parse failure drops the query string **wholesale** rather than shipping it raw.
+Pinned by `tests/feedbackCapture.test.js`.
+
+### Endpoint contract for the Dispatch watcher
+
+Both halves are `POST /.netlify/functions/admin`, `Authorization: Bearer <Firebase
+ID token>`, gated on **`audit.view`** — the same permission the backlog card
+already uses, so the watcher needs one credential for read *and* write. It is an
+admin caller, not an open endpoint: no token is 401, a field tech is 403.
+
+**Which environment you hit decides which Firestore you get.** Since the
+2026-07-11 Firebase split, `dev--leak-work-orders.netlify.app` and
+`leak-work-orders.netlify.app` are separate projects, and `authGuard.getDb()`
+picks the project from the request hostname. Poll the dev host to work dev
+reports; prod feedback is only visible on the prod host.
+
+**1. Poll for new bug reports**
+
+```jsonc
+{ "action": "list_feedback",
+  "type": "bug",            // optional: praise | confusing | bug | feature
+  "triageStatus": "new",    // optional: new | triaging | fix_proposed | merged | wont_fix
+  "sinceCreatedAt": 1753600000000,  // optional: epoch ms, strictly greater-than
+  "limit": 50 }             // optional: 1-200, default 200
+```
+
+Returns `{ ok, items[], query, statuses[] }`, newest first. `items[]` are full
+docs including `id` and every field above. `query` echoes what was actually run;
+`statuses` is the live vocabulary so the watcher never hardcodes the enum. Any
+invalid param is a **400** — never a silently unfiltered query. Sending no params
+at all reproduces the original behaviour exactly (newest 200, unfiltered), which
+is what the admin card still sends.
+
+**2. Write the result back**
+
+```jsonc
+{ "action": "update_feedback_status",
+  "feedbackId": "fb_ab12cd",          // required
+  "triageStatus": "fix_proposed",     // required, must be in the vocabulary
+  "agentDiagnosis": "resizeImageFile() rejects HEIC on iOS 17.",  // optional
+  "branchUrl": "https://github.com/BigCheese72/roofing-dashboard/tree/fix/heic" }  // optional
+```
+
+Returns `{ ok, feedbackId, triageStatus, updatedAt }`. It is a **field merge**:
+the submission evidence (comments, screenshot, route, appVersion) always
+survives, and omitting `agentDiagnosis`/`branchUrl` leaves earlier values intact —
+so a plain `new → triaging` call cannot blank a diagnosis written a step earlier.
+Pass `""` to clear a field deliberately. Unknown `feedbackId` is 404. Every call
+is audit-logged as `update_feedback_status` with a before/after.
+
+`branchUrl` is **allowlisted to https `github.com`** and a violation is a hard 400,
+not a silent drop — the admin viewer renders it into an `<a href>`, so an
+unconstrained string is a stored-XSS surface, and a watcher that believes it
+published a branch link when it didn't is worse than a call it can retry. The
+viewer re-checks the same rule before linking (belt and braces).
+
+### Suggested watcher loop
+
+`triageStatus: "new"` → claim it with `"triaging"` **before** doing the work (that
+write is what stops a second pass picking up the same report) → diagnose → push a
+branch → `"fix_proposed"` + `agentDiagnosis` + `branchUrl`. `"merged"` and
+`"wont_fix"` are terminal. Nothing enforces a state *machine* server-side — only
+the vocabulary — so the watcher may jump straight to `"wont_fix"`.
+
+### ⚠️ Reports submitted before this shipped are invisible to the status query
+
+Firestore equality does not match documents **missing** the field, so anything
+submitted before 2026-07-28 has no `triageStatus` and will never appear in a
+`triageStatus == "new"` poll. This is deliberate (it keeps the loop from waking up
+to a year of backlog on its first run). To reach them, poll with `sinceCreatedAt`
+only, or list unfiltered — `update_feedback_status` works on any doc, so the
+watcher can adopt a legacy report by writing a status onto it.
+
+### Firestore indexes
+
+`firestore.indexes.json` gains `feedback (type, triageStatus, createdAt DESC)`
+plus two narrower pairs. Equality fields come first and `createdAt` (the range +
+`orderBy` field) last, which is what lets one index serve every filter
+combination. These deploy per-context via `scripts/deploy-firestore-rules.js` on
+every Netlify build — they are **not** click-to-create. Without them the watcher's
+poll returns `9 FAILED_PRECONDITION` and the loop silently never sees a bug,
+since nothing else in the app runs this query.
+
+### Rules are unchanged
+
+`feedback` stays create-only for clients (`allow read, update, delete: if false`).
+The loop adds a server-side writer, not client write access. See `DATA_MODEL.md`
+for the one deliberately-unclosed gap (`create` does not field-validate, so a
+crafted client could self-assign a status) and why closing it is a separate
+change.
+
+Tests: `tests/feedbackTriageStatus.test.js` (20 — the gate, the indexed query
+shape, param validation, merge semantics, the branchUrl allowlist, audit
+logging) and `tests/feedbackCapture.test.js` (16 — build id, invite-token
+redaction, payload shape, viewer rendering, client/server vocabulary parity).
