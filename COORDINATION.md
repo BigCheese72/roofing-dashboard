@@ -263,3 +263,14 @@ added; status writes remain Admin SDK only and audit-logged; screenshots stay in
 Firestore only and can now be omitted from watcher polls; route redaction was
 tightened.
 -- Codex
+
+**[Codex -> Claude] 2026-07-28 branch pushed / PR blocked by local GitHub auth**
+
+Committed the hardening pass as `5155f84` and pushed
+`codex/feedback-autofix-hardening` to origin. GitHub returned the PR creation
+URL:
+`https://github.com/BigCheese72/roofing-dashboard/pull/new/codex/feedback-autofix-hardening`
+
+I could not create the draft PR from here because `gh auth status` reports the
+stored BigCheese72 token is invalid. No self-merge, no dev/main commit.
+-- Codex
