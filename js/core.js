@@ -2283,9 +2283,12 @@ async function submitFeedback(){
 }
 /* ---- Admin backlog (Reports tab, admin mode only) ---- */
 var feedbackBacklog = [];
+var feedbackTriageResult = null;
 async function loadFeedbackBacklog(){
   if (!isAdmin) return;
   var host = document.getElementById("feedback-backlog-list");
+  feedbackTriageResult = null;
+  renderFeedbackTriage();
   if (host) host.innerHTML = '<p class="hint">Loading…</p>';
   try{
     var out = await callAdminApi({ action: "list_feedback" });
@@ -2295,11 +2298,59 @@ async function loadFeedbackBacklog(){
     if (host) host.innerHTML = '<p class="hint">Couldn\'t load feedback: ' + esc(e.message) + '</p>';
   }
 }
+function filteredFeedbackBacklog(){
+  var filterType = val("feedback-filter-type");
+  return feedbackBacklog.filter(function(f){ return !filterType || f.type === filterType; });
+}
+function jsArgString(value){
+  return JSON.stringify(String(value || "")).replace(/"/g, "&quot;");
+}
+async function triageFeedbackBacklog(feedbackId){
+  if (!isAdmin) return;
+  var outHost = document.getElementById("feedback-triage-output");
+  var ids = feedbackId ? [feedbackId] : filteredFeedbackBacklog().slice(0, 25).map(function(f){ return f.id; }).filter(Boolean);
+  if (!ids.length){ toast("Load feedback first."); return; }
+  if (outHost) outHost.innerHTML = '<p class="hint">Triaging feedback...</p>';
+  try{
+    var out = await callAdminApi({ action: "triage_feedback", feedbackIds: ids });
+    feedbackTriageResult = out.triage || null;
+    renderFeedbackTriage();
+  }catch(e){
+    if (outHost) outHost.innerHTML = '<p class="hint">Couldn\'t triage feedback: ' + esc(e.message) + '</p>';
+  }
+}
+function renderFeedbackTriage(){
+  var host = document.getElementById("feedback-triage-output");
+  if (!host) return;
+  if (!feedbackTriageResult){ host.innerHTML = ""; return; }
+  var items = feedbackTriageResult.items || [];
+  if (!items.length){ host.innerHTML = '<p class="hint">No feedback was available to triage.</p>'; return; }
+  var clusters = feedbackTriageResult.clusters || [];
+  var clusterHtml = clusters.length ? '<p class="hint" style="margin:4px 0 8px">Possible duplicates: ' +
+    clusters.map(function(c){ return esc(c.count + " matching " + c.duplicateKey); }).join(" | ") + '</p>' : '';
+  host.innerHTML = '<div style="border:1px solid var(--line);border-radius:6px;padding:10px 12px;margin:0 0 10px;background:#fff">' +
+    '<div style="display:flex;justify-content:space-between;align-items:start;gap:8px;flex-wrap:wrap">' +
+      '<b class="cond">Auto-triage drafts</b>' +
+      '<span class="hint" style="margin:0">' + esc(items.length + " draft" + (items.length === 1 ? "" : "s")) + '</span>' +
+    '</div>' +
+    '<p class="hint" style="margin:4px 0 8px">Drafts are deterministic first-pass notes from submitted feedback. Review screenshots/customer context inside RoofOps before sharing anything externally.</p>' +
+    clusterHtml +
+    items.map(function(t){
+      return '<div style="border-top:1px solid var(--line);padding-top:10px;margin-top:10px">' +
+        '<p style="margin:0 0 4px"><b>' + esc(t.issueTitle || "Feedback triage draft") + '</b></p>' +
+        '<p class="hint" style="margin:0 0 6px">Severity: ' + esc(t.severity || "") +
+          ' | Area: ' + esc((t.area && t.area.label) || "") +
+          (t.screenshotAttached ? ' | Screenshot attached' : '') + '</p>' +
+        '<textarea readonly rows="12" onclick="this.select()" style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;line-height:1.35">' +
+          esc(t.issueBody || "") + '</textarea>' +
+      '</div>';
+    }).join("") +
+  '</div>';
+}
 function renderFeedbackBacklog(){
   var host = document.getElementById("feedback-backlog-list");
   if (!host) return;
-  var filterType = val("feedback-filter-type");
-  var items = feedbackBacklog.filter(function(f){ return !filterType || f.type === filterType; });
+  var items = filteredFeedbackBacklog();
   if (!items.length){ host.innerHTML = '<p class="hint">No feedback yet.</p>'; return; }
   host.innerHTML = items.map(function(f){
     return '<div class="card" style="margin:0 0 8px">' +
@@ -2313,6 +2364,7 @@ function renderFeedbackBacklog(){
         (f.adminMode ? ' · (admin mode)' : '') + '</p>' +
       (f.screenshot ? '<img src="' + esc(f.screenshot) + '" style="max-width:180px;max-height:120px;border:1px solid var(--line);' +
         'border-radius:4px;margin-top:6px;cursor:pointer" onclick="openImageLightbox(this.src)">' : '') +
+      '<div class="btnrow" style="margin:6px 0 0"><button class="btn" onclick="triageFeedbackBacklog(' + jsArgString(f.id) + ')">Auto-triage</button></div>' +
     '</div>';
   }).join("");
 }

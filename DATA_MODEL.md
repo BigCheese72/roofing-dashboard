@@ -1148,11 +1148,14 @@ Notes:
 
 - Client can `create` but never `read`/`update`/`delete` (`firestore.rules`) — the
   admin backlog view (Reports tab, admin mode) reads it exclusively through
-  `netlify/functions/admin.js`'s `list_feedback` action (Admin SDK, PIN-gated,
-  newest-first, capped at 200), the same pattern used for every other admin-only
+  `netlify/functions/admin.js`'s `list_feedback` action (Admin SDK, claims-gated
+  on `audit.view`, newest-first, capped at 200), the same pattern used for every other admin-only
   read/write in this file. **The rules change needs a manual apply in the Firebase
   Console** to take effect for reads, same as `app_settings` above — this repo file is
   reference-only, nothing deploys it automatically.
+- `triage_feedback` uses the same `audit.view` boundary and derives issue-draft
+  metadata from these existing docs. It does not add a collection, mutate feedback,
+  or embed screenshot bytes in the returned draft body.
 - Every submission is also emailed to Mark (`netlify/functions/send-feedback.js`, via
   Resend) independent of whether the Firestore write succeeds — the two are
   best-effort and independent, so a network hiccup on one doesn't silently lose the

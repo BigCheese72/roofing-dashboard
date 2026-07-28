@@ -4465,6 +4465,20 @@ this reusable-by-src version (it now just resolves the index to a `.img`
 and calls through) so a screenshot, which has no place in the global
 `photos[]` array, can reuse the exact same lightbox UI.
 
+**Admin auto-triage (shipped 2026-07-25, dev only)**: the Feedback Backlog can
+now run a deterministic diagnosis pass from the Reports tab. `Auto-triage
+visible` sends the currently filtered feedback ids (capped at 25 client-side,
+50 server-side) to `netlify/functions/admin.js`'s `triage_feedback` action;
+each row also has its own `Auto-triage` button for one-off diagnosis. The
+action is read-only and gated with the same `audit.view` permission as
+`list_feedback`; it reads via the Admin SDK, calls
+`netlify/functions/lib/feedbackTriage.js`, and returns draft GitHub issue
+titles/bodies with likely area, severity, suggested first files, duplicate
+keys, acceptance checks, and safety notes. It does **not** write back to
+Firestore, call an LLM, file GitHub issues, or embed screenshot bytes in the
+draft body. Screenshots remain review-only inside RoofOps unless Mark
+manually decides to share them.
+
 Tested with mocked `fdb`/`callAdminApi`/`fetch` (no real writes, no real
 emails, no real admin PIN check): the type picker correctly highlights the
 active selection; submit is blocked with a clear toast when no type is

@@ -562,7 +562,9 @@
           <option value="feature">💡 Feature request</option>
         </select>
         <button class="btn" onclick="loadFeedbackBacklog()">Refresh</button>
+        <button class="btn primary" onclick="triageFeedbackBacklog()">Auto-triage visible</button>
       </div>
+      <div id="feedback-triage-output"></div>
       <div id="feedback-backlog-list"><p class="hint">Tap Refresh to load.</p></div>
     </div>
     <div class="card" id="audit-log-card" style="display:none">
