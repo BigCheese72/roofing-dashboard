@@ -999,11 +999,24 @@ async function cloudSaveOrder(o){
        same reason ccFeedPhotoId must: this is a full overwrite, not a merge,
        so omitting it would silently strip a return visit's photos of their
        visit on the next save of the work order. */
+    /* capturedAt / capturedAtSource: the photo's OWN capture time (EXIF
+       DateTimeOriginal, or the moment of camera capture), in epoch ms. Written
+       here for the same reason ccFeedPhotoId and amendment_id are -- this is a
+       full overwrite, so omitting it would strip every photo of its capture time
+       on the next save, and CompanyCam de-duplication would silently fall back
+       to the content hash on a reopened work order.
+       ccDuplicateOfPhotoId: this photo was found ALREADY IN the linked project
+       (see pushPhotosToCompanyCamFeed) -- deliberately a DIFFERENT field from
+       ccFeedPhotoId, because the photo it matched may be one the tech uploaded
+       to CompanyCam themselves, and ccFeedPhotoId is what the undo-push deletes.
+       Recording a match here must never make someone else's photo deletable. */
     var photoDoc = {
       caption: p.caption || "", w: p.w || 0, h: p.h || 0, i: i,
       finding_id: p.finding_id || null, amendment_id: p.amendment_id || null,
       ccPhotoId: p.ccPhotoId || null, gps: p.gps || null,
       ccFeedPhotoId: p.ccFeedPhotoId || null,
+      ccDuplicateOfPhotoId: p.ccDuplicateOfPhotoId || null,
+      capturedAt: p.capturedAt || null, capturedAtSource: p.capturedAtSource || null,
       storageRef: storageRef, thumb: p.thumb || null
     };
     if (existingImg) photoDoc.img = existingImg;
@@ -1124,6 +1137,11 @@ async function cloudFetchOrder(id){
         finding_id: v.finding_id || null, amendment_id: v.amendment_id || null,
         ccPhotoId: v.ccPhotoId || null, gps: v.gps || null,
         ccFeedPhotoId: v.ccFeedPhotoId || null,
+        /* Hydrated for the same reason they're written above -- without them a
+           reopened work order loses every photo's real capture time and its
+           record of already being in the CompanyCam project. */
+        ccDuplicateOfPhotoId: v.ccDuplicateOfPhotoId || null,
+        capturedAt: v.capturedAt || null, capturedAtSource: v.capturedAtSource || null,
         storageRef: v.storageRef || null, thumb: v.thumb || null,
         imgFallback: (!v.thumb && v.storageRef) ? (v.img || null) : null };
     });
@@ -1841,6 +1859,10 @@ async function runCompanyCamPhotoBackfill(){
     ". Photos already in the feed are skipped automatically, and photos imported FROM CompanyCam are never pushed back — safe to run more than once. Proceed?")) return null;
 
   var pushed = 0, alreadyPushed = 0, failed = 0, ordersTouched = 0, failures = [];
+  /* De-duplication totals across the whole backfill. This is the run where they
+     matter most: a backfill walks EVERY linked work order, so it is the most
+     likely thing in the app to re-send a photo CompanyCam already has. */
+  var duplicate = 0, dupByMeta = 0, dupByHash = 0, unverified = 0, dedupLog = [];
   for (var i = 0; i < linked.length; i++){
     toast("Backfilling CompanyCam photos — work order " + (i + 1) + " of " + linked.length + "…");
     try{
@@ -1850,16 +1872,29 @@ async function runCompanyCamPhotoBackfill(){
       pushed += (r && r.pushed) || 0;
       alreadyPushed += (r && r.alreadyPushed) || 0;
       failed += (r && r.failed) || 0;
+      duplicate += (r && r.duplicate) || 0;
+      dupByMeta += (r && r.dupByMeta) || 0;
+      dupByHash += (r && r.dupByHash) || 0;
+      unverified += (r && r.unverified) || 0;
+      if (r && r.dedupLog && r.dedupLog.length) dedupLog.push({ workOrderId: linked[i].id, entries: r.dedupLog });
       if (r && r.pushed) ordersTouched++;
       if (r && r.failed) failures.push({ workOrderId: linked[i].id, error: r.error || "photo push failed" });
     }catch(e){ failed++; failures.push({ workOrderId: linked[i].id, error: e.message }); }
   }
+  var dupWhy = [];
+  if (dupByMeta) dupWhy.push(dupByMeta + " matched capture time + GPS");
+  if (dupByHash) dupWhy.push(dupByHash + " matched content hash");
   toast(pushed + " photo" + (pushed === 1 ? "" : "s") + " added to CompanyCam across " +
     ordersTouched + " work order" + (ordersTouched === 1 ? "" : "s") + " ✓" +
+    (duplicate ? ", " + duplicate + " skipped as already in CompanyCam" + (dupWhy.length ? " (" + dupWhy.join(", ") + ")" : "") : "") +
     (alreadyPushed ? ", " + alreadyPushed + " already in the feed" : "") +
+    (unverified ? ", " + unverified + " uploaded without a duplicate check" : "") +
     (failed ? ", " + failed + " FAILED (safe to retry — run this again)" : "") + ".");
+  if (dedupLog.length) console.log("CompanyCam backfill de-duplication detail (per photo):", dedupLog);
   if (failures.length) console.warn("CompanyCam photo backfill failures (safe to retry):", failures);
-  return { orders: linked.length, ordersTouched: ordersTouched, pushed: pushed, alreadyPushed: alreadyPushed, failed: failed, failures: failures };
+  return { orders: linked.length, ordersTouched: ordersTouched, pushed: pushed, alreadyPushed: alreadyPushed,
+    duplicate: duplicate, dupByMeta: dupByMeta, dupByHash: dupByHash, unverified: unverified,
+    failed: failed, failures: failures, dedupLog: dedupLog };
 }
 /* Admin toggle button removed entirely (2026-07-12) -- there was nothing
    left for it to toggle. isAdmin has followed sign-in state and role
