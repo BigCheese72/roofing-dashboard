@@ -1286,6 +1286,74 @@ Notes:
   — app_settings is already world-readable/server-write-only, so extending the list is
   a data change (future admin.js action or Console edit), never a code deploy.
 
+### `cc_push_ledger` (currently implemented — server-only)
+
+Per-project record of every image this app has PUSHED into a CompanyCam project,
+keyed by content hash. It is the fallback half of CompanyCam push
+de-duplication — see `netlify/functions/lib/companyCamDedup.js` and "CompanyCam
+push de-duplication" in `DEV_NOTES.md`.
+
+```
+cc_push_ledger/{companyCamProjectId}/entries/{sha256}
+```
+
+```js
+{
+  sha256,          // hex digest of the image bytes — also the doc id
+  projectId,       // the CompanyCam project these bytes were pushed into
+  ccPhotoId,       // the photo id CompanyCam returned, null if it didn't
+  workOrderId,     // which work order pushed it
+  photoIndex,      // and which slot on that order
+  bytes,           // size of the hashed object, for the audit line
+  pushedAt         // Date.now()
+}
+```
+
+Notes:
+
+- A **subcollection**, not one document per project, deliberately: a busy project
+  accumulates thousands of photos and a single Firestore doc caps at 1MB.
+- `firestore.rules`: **fully closed to every client, both directions** (same tier
+  as `secrets/`). The write half is the one that matters — a client that could
+  create entries here could pre-seed hashes for photos that were never pushed and
+  make the app silently skip real field evidence. Written and read only through
+  the Admin SDK inside `companycam.js`'s `upload_photo` action.
+- Losing an entry costs a redundant check (and at worst one duplicate upload),
+  never a dropped photo — which is why the ledger write is best-effort and never
+  fails a push that already succeeded.
+
+### `workorders/{id}/photos/p{i}` — de-duplication fields (currently implemented)
+
+Three fields on the existing per-photo doc, added for CompanyCam push
+de-duplication (written in `cloudSaveOrder()` and hydrated in
+`cloudFetchOrder()`, `js/core.js`):
+
+```js
+{
+  capturedAt,             // number|null — the photo's OWN capture time, epoch ms UTC.
+                          // EXIF DateTimeOriginal recovered from the original bytes at
+                          // import (parseExifCapturedAt(), js/photos.js), or Date.now()
+                          // at the moment of a camera capture. Resolved out of naive
+                          // local time ON THE DEVICE, which is the only place that knows
+                          // the right zone.
+  capturedAtSource,       // "exif" | "camera" | null
+  ccDuplicateOfPhotoId    // string|null — this photo was found ALREADY IN the linked
+                          // CompanyCam project, and this is the id it matched.
+}
+```
+
+Notes:
+
+- `ccDuplicateOfPhotoId` is deliberately **not** `ccFeedPhotoId`. The photo it
+  matched may be one the tech uploaded to CompanyCam themselves, and
+  `ccFeedPhotoId` is the id the undo-push **deletes**
+  (`deletePushedPhotoFromCompanyCam`). Recording a match must never make someone
+  else's photo deletable.
+- `capturedAt` is **identity**, not a display timestamp. A photo without one gets
+  the work order's service date for the CompanyCam feed's `captured_at`, but that
+  derived value is never used for matching — it is identical across every photo
+  on the order and would make them all look like duplicates of each other.
+
 ## Migration Notes
 
 - Keep current `workorders` behavior stable until Phase 2 data cleanup is complete.

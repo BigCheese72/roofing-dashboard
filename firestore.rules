@@ -277,6 +277,26 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // CompanyCam push de-duplication ledger — SHA-256 of every image byte-set
+    // this app has pushed into a given project, so the same photo is never sent
+    // twice (netlify/functions/lib/companyCamDedup.js). Written and read
+    // exclusively through the Admin SDK inside the upload_photo action, which
+    // is not subject to these rules at all; this block is explicit defense in
+    // depth, same tier as secrets/ above.
+    //
+    // Closed to clients in BOTH directions, and the write half is the one that
+    // matters: a client that could create entries here could pre-seed the
+    // ledger with the hashes of photos that have NOT been pushed and thereby
+    // make the app silently skip real field evidence — a false skip, which is
+    // exactly the failure this feature is built to avoid. Nothing in the app
+    // needs client access: the push is entirely server-side.
+    match /cc_push_ledger/{projectId} {
+      allow read, write: if false;
+      match /entries/{sha256} {
+        allow read, write: if false;
+      }
+    }
+
     // Warranty-report ingestion internals (see netlify/functions/
     // inspection-reports.js) -- fully closed to every client, same tier as
     // secrets/ above. The review queue holds extracted-but-unconfirmed
