@@ -71,7 +71,8 @@ var ROLES_ADMIN_PERM_LABELS = {
   "users.manage_nonadmin":      { group: "Users", label: "Manage non-admin users" },
   "users.manage_admin":         { group: "Users", label: "Manage admin users" },
   "users.transfer_owner":       { group: "Users", label: "Transfer ownership" },
-  "feedback.submit":            { group: "Other", label: "Submit in-app feedback" }
+  "feedback.submit":            { group: "Other", label: "Submit in-app feedback" },
+  "feedback.triage":            { group: "Audit & Settings", label: "Triage feedback auto-fix loop" }
 };
 var ROLES_ADMIN_SCOPE_LABELS = { "proj": "Project", "own": "Own records", "billing": "Billing" };
 

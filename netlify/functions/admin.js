@@ -23,6 +23,20 @@ function resp(code, obj) {
   return { statusCode: code, headers: { "Content-Type": "application/json" }, body: JSON.stringify(obj) };
 }
 
+function parseFeedbackReturnOptions(body) {
+  const src = body || {};
+  if (src.omitScreenshot === undefined || src.omitScreenshot === null || src.omitScreenshot === "") {
+    return { ok: true, omitScreenshot: false };
+  }
+  if (src.omitScreenshot === true || src.omitScreenshot === "true") {
+    return { ok: true, omitScreenshot: true };
+  }
+  if (src.omitScreenshot === false || src.omitScreenshot === "false") {
+    return { ok: true, omitScreenshot: false };
+  }
+  return { ok: false, error: "Invalid omitScreenshot" };
+}
+
 // Auth Phase 2/5 -- immutable audit log for admin.js's mutating actions
 // (see "Audit log" in docs/AUTH_DESIGN.md: append-only, rules deny
 // update/delete to EVERYONE including owner, written only via the Admin
@@ -400,6 +414,8 @@ exports.handler = async function (event) {
       const parsed = parseFeedbackQuery(body);
       if (!parsed.ok) return resp(400, { error: parsed.error });
       const q = parsed.query;
+      const returnOpts = parseFeedbackReturnOptions(body);
+      if (!returnOpts.ok) return resp(400, { error: returnOpts.error });
 
       let ref = db.collection("feedback");
       // Equality filters BEFORE the range/orderBy field -- that ordering is
@@ -411,10 +427,14 @@ exports.handler = async function (event) {
       if (q.triageStatus) ref = ref.where("triageStatus", "==", q.triageStatus);
       if (q.sinceCreatedAt !== null) ref = ref.where("createdAt", ">", q.sinceCreatedAt);
       const snap = await ref.orderBy("createdAt", "desc").limit(q.limit).get();
-      const items = snap.docs.map(d => Object.assign({ id: d.id }, d.data()));
+      const items = snap.docs.map(d => {
+        const data = Object.assign({ id: d.id }, d.data());
+        if (returnOpts.omitScreenshot) delete data.screenshot;
+        return data;
+      });
       // `query` is echoed back so the watcher can log exactly what it asked
       // for, and `statuses` so it never has to hardcode the enum.
-      return resp(200, { ok: true, items, query: q, statuses: TRIAGE_STATUSES });
+      return resp(200, { ok: true, items, query: Object.assign({}, q, { omitScreenshot: returnOpts.omitScreenshot }), statuses: TRIAGE_STATUSES });
     }
 
     if (body.action === "update_feedback_status") {
@@ -427,13 +447,11 @@ exports.handler = async function (event) {
       // and this feature did NOT loosen them -- so a browser cannot forge a
       // diagnosis or a branch link even though it can submit feedback.
       //
-      // Gated on audit.view, matching list_feedback directly above: one
-      // permission covers both halves of the loop, so the watcher needs a
-      // single credential. Note that is a READ-tier key doing duty for an
-      // internal-status write; a dedicated `feedback.triage` key in
-      // lib/permissions.js is the clean follow-up (see COORDINATION.md).
+      // Gated on feedback.triage: list_feedback remains audit.view, but
+      // lifecycle writes use their own write-tier key so audit readers are
+      // not automatically allowed to move a report through the fix loop.
       let caller;
-      try { caller = await requirePermission(event, "audit.view"); }
+      try { caller = await requirePermission(event, "feedback.triage"); }
       catch (e) { return resp(e.statusCode || 401, { error: e.message }); }
 
       const feedbackId = String(body.feedbackId || "").trim();
