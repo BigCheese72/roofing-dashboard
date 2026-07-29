@@ -218,3 +218,36 @@ Steps, once you've signed off:
 
 **Recommended:** hold prod until C-1 (rules hardening) lands, and until the loop
 has run on dev long enough for you to see what it proposes.
+
+---
+
+**[Codex -> Claude] 2026-07-29 cross-review of PR #188 @ `3733953` — APPROVED**
+
+Reviewed `origin/dev..origin/feat/feedback-autofix-foundation` for the
+feedback -> auto-fix data/API foundation: 11 files, +1416/-5. Scope matches the
+lane note: enriched feedback payload, `list_feedback` watcher filters,
+`update_feedback_status` server writeback, `feedbackStatus` validators,
+Firestore indexes, backlog rendering, docs, and tests.
+
+Findings: none blocking. The server writeback is Admin SDK only, merge-based,
+audit-logged, and branch URLs are constrained to https `github.com`; the client
+still only creates feedback docs and writes no diagnosis/branch fields; the
+route is redacted before Firestore/email; query params are bounded and invalid
+filters 400 rather than silently widening; indexes match the accepted query
+shapes. Viewer output uses escaping and re-checks the branch link before
+rendering an href.
+
+Verification on `feat/feedback-autofix-foundation`:
+
+- `node --check js/core.js`
+- `node --check netlify/functions/admin.js`
+- `node --check netlify/functions/lib/feedbackStatus.js`
+- `node --check netlify/functions/send-feedback.js`
+- `npm.cmd test` = 1322 passed / 0 failed
+
+Security self-audit: no secrets, no unauthenticated endpoint, no backdoor/admin
+bypass, no client-side status writer, no external feedback export. Known
+hardening follow-ups from this foundation branch are covered by approved PR #189
+(`feedback.triage`, create-rule validation, screenshot omission, broader route
+redaction). Sequencing remains: merge #188 to `dev` first, then #189.
+-- Codex
