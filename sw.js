@@ -17,14 +17,14 @@ const SHELL_PATHS = [
   "/",
   "/index.html",
   "/manifest.json",
-  "/css/app.css?v=20260724b",
-  "/js/core.js?v=20260724b",
-  "/js/companycam.js?v=20260724b",
-  "/js/export.js?v=20260724b",
-  "/js/history.js?v=20260724b",
-  "/js/photos.js?v=20260724b",
-  "/js/roofmapper.js?v=20260724b",
-  "/js/workorders.js?v=20260724b"
+  "/css/app.css?v=20260730a",
+  "/js/core.js?v=20260730a",
+  "/js/companycam.js?v=20260730a",
+  "/js/export.js?v=20260730a",
+  "/js/history.js?v=20260730a",
+  "/js/photos.js?v=20260730a",
+  "/js/roofmapper.js?v=20260730a",
+  "/js/workorders.js?v=20260730a"
 ];
 
 self.addEventListener("install", (event) => {
