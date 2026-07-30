@@ -2058,6 +2058,36 @@ async function downloadPdf(){
   if (!o.companyCamProjectId) toast("PDF downloaded \u2014 attach it to your email.");
   logReportAndHistoryEvent(o, "PDF Downloaded", null, ccUp);
 }
+/* The base64 payload of a jsPDF doc, or "" if it can't be produced. Pulled out
+   of sendEmailNow() because the size-fitting loop below needs to re-measure it
+   after each rebuild, and one extraction point means one place to get the
+   "datauristring" quirk right. */
+function pdfBase64Of(doc){
+  try{ return doc.output("datauristring").split("base64,")[1] || ""; }
+  catch(e){ return ""; }
+}
+/* Turns a failed send response into something a tech on a roof can act on.
+   Before this, ANY non-JSON error body (which is what the platform returns
+   when it rejects a request before our function runs -- see
+   SEND_MAX_PDF_BASE64 in js/export.js) produced the bare string
+   "server error 413", with no cause and no next step.
+
+   `out` is the parsed JSON body or null. When the function itself answered, it
+   always sends JSON and its own message is the most specific thing available,
+   so that wins. The status-code mapping below only ever applies to responses
+   our own code did NOT generate. */
+function sendFailureMessage(status, out){
+  if (out && out.error) return out.error;
+  if (status === 413) {
+    return "The report was too big for the send service to accept. Use Download PDF and attach it yourself, " +
+      "or remove some photos and try again.";
+  }
+  if (status === 401) return "Your session expired — sign in again and re-send.";
+  if (status === 403) return "You don't have permission to email customer documents. Ask an admin to grant it.";
+  if (status >= 500) return "The send service is having trouble right now (error " + status + "). " +
+    "Try again in a minute, or use Download PDF as a backup.";
+  return "server error " + status;
+}
 async function sendEmailNow(){
   var addrs = parseEmailRecipients(val("emailTo"));
   if (!addrs.length){
@@ -2086,9 +2116,39 @@ async function sendEmailNow(){
     "\n\nDate of Service: " + (o.serviceDate || "") +
     "\nLocation: " + (o.location || "") +
     "\n\nSent from the RoofOps app.";
-  var pdfBase64 = "";
-  try{ pdfBase64 = d.output("datauristring").split("base64,")[1] || ""; }catch(e){}
+  var pdfBase64 = pdfBase64Of(d);
   if (!pdfBase64){ toast("Couldn't prepare the PDF for sending \u2014 try Download PDF instead."); return; }
+  /* ---- Fit the report inside the platform's request-body ceiling ----
+     See SEND_MAX_PDF_BASE64 in js/export.js for the measured limit and why a
+     report that exceeds it never reaches our function at all. A report that
+     already fits (the overwhelming majority) takes the fast path: the loop
+     body never runs, nothing is rebuilt, and fidelity is exactly what it was
+     before this existed. */
+  var tier = 0;
+  try{
+    while (!pdfBase64FitsEmail(pdfBase64.length) && tier + 1 < pdfPhotoTierCount()){
+      tier++;
+      toast("Report is " + pdfBase64Mb(pdfBase64.length) + " MB \u2014 too big to email. Shrinking photos and rebuilding\u2026");
+      setPdfPhotoTier(tier);
+      d = await generatePdf();
+      if (!d) return;
+      pdfBase64 = pdfBase64Of(d);
+      if (!pdfBase64){ toast("Couldn't prepare the PDF for sending \u2014 try Download PDF instead."); return; }
+    }
+  } finally {
+    /* Reset unconditionally: the tier is module-level state, and leaving it
+       shrunk would silently degrade every later Download/Share in this
+       session -- including ones for a report that never needed it. */
+    setPdfPhotoTier(0);
+  }
+  if (!pdfBase64FitsEmail(pdfBase64.length)){
+    /* Every tier exhausted. Refusing HERE, with the real number and a route
+       that works, is strictly better than posting it and letting the edge
+       return a bare 413 the tech can do nothing with. */
+    toast(oversizeReportMessage(pdfBase64.length));
+    return;
+  }
+  if (tier) toast("Photos reduced to fit the email \u2014 full-size copies stay on the work order. Sending\u2026");
   try{
     var resp = await fetch("/.netlify/functions/send-workorder", {
       method: "POST",
@@ -2109,7 +2169,7 @@ async function sendEmailNow(){
       }
       await logReportAndHistoryEvent(o, "PDF Emailed", { sent: true, to: addrs, subject: subject }, ccUp);
     } else {
-      toast("Send failed: " + ((out && out.error) || ("server error " + resp.status)));
+      toast("Send failed: " + sendFailureMessage(resp.status, out));
     }
   }catch(e){
     toast("Couldn't reach the send service \u2014 this button only works from your Netlify site with internet. Use Share / Email PDF as backup.");

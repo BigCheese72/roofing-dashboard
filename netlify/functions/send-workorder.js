@@ -9,6 +9,10 @@
 // negative test, a real, live hole regardless of that test existing.
 const { requirePermission } = require("./lib/authGuard");
 
+const SEND_MAX_BODY_BYTES = 6000000;
+const SEND_ENVELOPE_RESERVE = 32768;
+const MAX_PDF_BASE64 = SEND_MAX_BODY_BYTES - SEND_ENVELOPE_RESERVE;
+
 exports.handler = async function (event) {
   if (event.httpMethod !== "POST") {
     return { statusCode: 405, body: JSON.stringify({ error: "Method not allowed" }) };
@@ -31,8 +35,25 @@ exports.handler = async function (event) {
   if (!to.length) {
     return { statusCode: 400, body: JSON.stringify({ error: "No valid recipients" }) };
   }
-  if (!data.pdfBase64 || typeof data.pdfBase64 !== "string" || data.pdfBase64.length > 8000000) {
-    return { statusCode: 400, body: JSON.stringify({ error: "PDF missing or too large (limit ~6MB)" }) };
+  // Mirror of SEND_MAX_PDF_BASE64 in js/export.js -- see the long comment
+  // there for the measurement behind 6,000,000 and 32,768.
+  // tests/largeReportSendBudget.test.js reads BOTH files and fails if these
+  // two numbers ever drift apart.
+  //
+  // This guard was 8,000,000 and was DEAD CODE: Netlify Functions run on AWS
+  // Lambda, whose 6 MiB synchronous payload limit rejects an oversized
+  // request at the platform edge (413, empty body) before this handler is
+  // ever invoked, so no request that would have failed this check could
+  // arrive to fail it. At the corrected number the check is genuinely
+  // reachable -- a body just under the platform wall but over our budget now
+  // gets this clean JSON 400 instead of something the client can't parse.
+  if (!data.pdfBase64 || typeof data.pdfBase64 !== "string" || data.pdfBase64.length > MAX_PDF_BASE64) {
+    const mb = n => Math.round((n * 3 / 4) / 1048576 * 10) / 10;
+    return { statusCode: 400, body: JSON.stringify({
+      error: !data.pdfBase64 || typeof data.pdfBase64 !== "string"
+        ? "PDF missing"
+        : "This report is too big to email (" + mb(data.pdfBase64.length) + " MB; the limit is " +
+          mb(MAX_PDF_BASE64) + " MB). Use Download PDF and attach it yourself, or remove some photos." }) };
   }
 
   const defaultFrom = process.env.FROM_EMAIL || "Watkins Roofing Work Orders <workorders@watkinsroofing.net>";

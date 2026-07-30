@@ -1546,7 +1546,94 @@ function ensureDims(p){
    broken downscale can never cost a photo its place in a report. */
 var PDF_PHOTO_MAX_DIM = 900;
 var PDF_PHOTO_QUALITY = 0.72;
-function pdfPhotoDataUrl(dataUrl){
+/* ---- EMAIL PAYLOAD CEILING (the "Send failed" bug, 2026-07-30) ------------
+   The per-photo downscale above bounds each photo, but NOTHING bounded the
+   TOTAL. A ~31-photo leak report lands a ~6.2MB PDF, which base64-expands by
+   4/3 to ~8.3MB of JSON request body -- and Netlify Functions run on AWS
+   Lambda (confirmed via the Netlify API: provider "aws_lambda", nodejs24.x),
+   whose synchronous invocation payload limit is 6 MiB.
+
+   The request never reaches our handler. It is rejected at the platform edge,
+   which returns an EMPTY body -- so the client's `await resp.json()` throws,
+   `out` is null, and sendEmailNow() falls through to its generic
+   "server error <status>" branch. That is the whole reported symptom: a big
+   photo-heavy report fails to send with a bare status code and no guidance.
+
+   Measured live against the dev deploy (2026-07-30), same code and platform
+   as production, POSTing bodies of increasing size to
+   /.netlify/functions/send-workorder:
+
+       6,000,044 bytes -> 401 {"error":"Missing Authorization bearer token"}
+                          (reached the handler; rejected on auth, as intended)
+       6,500,044 bytes -> 413, empty body (never reached the handler)
+
+   So 6,000,000 bytes of total request body is a PROVEN-GOOD ceiling. It is
+   used rather than the theoretical 6 MiB (6,291,456) precisely because it is
+   the number that was actually observed to work -- the exact boundary between
+   the two probes was not measured, and a field app should not sit on an
+   unverified edge.
+
+   SEND_ENVELOPE_RESERVE covers everything in the JSON body that is not the
+   base64: to[] (<=10 addresses), subject (<=200), body (~10KB cap), filename,
+   jobNo, and the JSON punctuation. 32KB is many times the realistic worst
+   case. Base64 is pure ASCII with no JSON-escapable characters, so its
+   character count IS its byte count -- no expansion factor is needed.
+
+   NOTE: netlify/functions/send-workorder.js carries the SAME number as its
+   own server-side guard, and tests/largeReportSendBudget.test.js reads both
+   files and fails if they ever drift apart. Before this fix the server guard
+   was 8,000,000 base64 chars -- DEAD CODE, because a body that large is
+   already past the platform wall and can never reach the handler to be
+   checked. */
+var SEND_MAX_BODY_BYTES = 6000000;
+var SEND_ENVELOPE_RESERVE = 32768;
+var SEND_MAX_PDF_BASE64 = SEND_MAX_BODY_BYTES - SEND_ENVELOPE_RESERVE; /* 5,967,232 */
+
+/* Progressive downscale tiers, tried in order when a report does not fit.
+   Tier 0 is EXACTLY the previous behaviour (900px/q0.72 -- see the long
+   rationale above), so the common case is untouched: an already-fitting
+   report is built once, at the same fidelity it has always been built at, and
+   pays nothing for this feature. Only an over-budget report ever rebuilds.
+
+   Tiers 1 and 2 trade resolution for reach. 700px still over-serves the
+   ~258x300pt grid cell at 200 DPI; 520px is visibly softer but is the
+   difference between a 40-photo storm report arriving and not arriving, and
+   the full-resolution photos remain in Storage and on CompanyCam regardless
+   -- the PDF is a transmission format here, not the archive. */
+var PDF_PHOTO_TIERS = [
+  { maxDim: PDF_PHOTO_MAX_DIM, quality: PDF_PHOTO_QUALITY },
+  { maxDim: 700, quality: 0.62 },
+  { maxDim: 520, quality: 0.50 }
+];
+var pdfPhotoTier = 0;
+function pdfPhotoTierCount(){ return PDF_PHOTO_TIERS.length; }
+function setPdfPhotoTier(n){
+  pdfPhotoTier = (typeof n === "number" && n >= 0 && n < PDF_PHOTO_TIERS.length) ? n : 0;
+  return PDF_PHOTO_TIERS[pdfPhotoTier];
+}
+/* Does a base64 PDF of this length fit in one send? Pure, and deliberately
+   separate from the send path so it can be tested without a browser. */
+function pdfBase64FitsEmail(base64Len){
+  return typeof base64Len === "number" && base64Len > 0 && base64Len <= SEND_MAX_PDF_BASE64;
+}
+/* Approximate decoded size, for human-readable messages only. */
+function pdfBase64Mb(base64Len){
+  return Math.round((base64Len * 3 / 4) / 1048576 * 10) / 10;
+}
+/* The message a tech sees when even the smallest tier will not fit. It names
+   the real number and gives the two actions that actually work, rather than a
+   status code they can do nothing with. */
+function oversizeReportMessage(base64Len){
+  return "This report is too big to email (" + pdfBase64Mb(base64Len) + " MB after shrinking photos; " +
+    "the limit is " + pdfBase64Mb(SEND_MAX_PDF_BASE64) + " MB). Use Download PDF and attach it yourself, " +
+    "or remove some photos and send again. The photos stay on the work order and on CompanyCam either way.";
+}
+/* tier is optional: callers that want the STABLE 900px image (the AI vision
+   path below) pass nothing and always get tier 0, so a send-time rebuild can
+   never change what the model is shown. Only buildPdfPhotoMap() passes the
+   currently-selected tier. */
+function pdfPhotoDataUrl(dataUrl, tier){
+  var t = tier || PDF_PHOTO_TIERS[0];
   return new Promise(function(res){
     if (!dataUrl) return res(dataUrl);
     var im = new Image();
@@ -1555,13 +1642,13 @@ function pdfPhotoDataUrl(dataUrl){
         var w = im.naturalWidth, h = im.naturalHeight;
         if (!w || !h) return res(dataUrl);
         /* Already small enough -- re-encoding would only lose quality. */
-        if (w <= PDF_PHOTO_MAX_DIM && h <= PDF_PHOTO_MAX_DIM) return res(dataUrl);
-        if (w >= h){ h = Math.round(h * PDF_PHOTO_MAX_DIM / w); w = PDF_PHOTO_MAX_DIM; }
-        else { w = Math.round(w * PDF_PHOTO_MAX_DIM / h); h = PDF_PHOTO_MAX_DIM; }
+        if (w <= t.maxDim && h <= t.maxDim) return res(dataUrl);
+        if (w >= h){ h = Math.round(h * t.maxDim / w); w = t.maxDim; }
+        else { w = Math.round(w * t.maxDim / h); h = t.maxDim; }
         var c = document.createElement("canvas");
         c.width = w; c.height = h;
         c.getContext("2d").drawImage(im, 0, 0, w, h);
-        res(c.toDataURL("image/jpeg", PDF_PHOTO_QUALITY));
+        res(c.toDataURL("image/jpeg", t.quality));
       }catch(e){ res(dataUrl); }
     };
     im.onerror = function(){ res(dataUrl); };
@@ -1576,8 +1663,9 @@ function pdfPhotoDataUrl(dataUrl){
    correct and the grid layout below is unchanged. */
 function buildPdfPhotoMap(photos){
   var map = new Map();
+  var tier = PDF_PHOTO_TIERS[pdfPhotoTier] || PDF_PHOTO_TIERS[0];
   return Promise.all(photos.map(function(p){
-    return pdfPhotoDataUrl(p.img).then(function(u){ map.set(p, u); });
+    return pdfPhotoDataUrl(p.img, tier).then(function(u){ map.set(p, u); });
   })).then(function(){ return map; });
 }
 /* ---- SHARED ~900px downscaler for the AI vision features ----
