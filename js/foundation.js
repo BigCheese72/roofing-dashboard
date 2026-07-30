@@ -49,6 +49,53 @@ function fdnEsc(s) {
   });
 }
 
+/* THE canonical job identity. `job_no` is the primary key everywhere that
+   matters: the foundation_jobs doc id (foundation-sync.js safeDocId), the
+   his_timecard/pending_timecards join (foundationDb buildJobHoursQuery), the
+   "🔗 Linked job (#…)" line, the building's foundationJobNo anchor, and the #
+   badge the tech actually taps in the picker.
+
+   dbo.jobs ALSO has a `job_number` column, and one call-site (the WO form's
+   Job No. field) used to prefer it. Measured against live Foundation on
+   2026-07-30: job_number is blank on effectively every job, and on the one
+   active job where it IS populated it holds a DIFFERENT number (job_no 16457
+   -> job_number 25003). So that preference was the one path by which the form
+   could display a job number that was not the one the user selected. job_no
+   wins; job_number stays as a fallback for a row somehow missing job_no. */
+function fdnJobNo(j) {
+  if (!j) return "";
+  var primary = String(j.job_no == null ? "" : j.job_no).trim();
+  if (primary) return primary;
+  return String(j.job_number == null ? "" : j.job_number).trim();
+}
+
+/* Job numbers whose NAME is shared with another cached job.
+
+   Watkins' data makes this the normal case, not an edge case: a recurring leak
+   site gets a BRAND NEW Foundation job per callout, reusing the name verbatim.
+   Live counts (2026-07-30): 12 duplicate-name groups covering 25 active jobs,
+   11 of the 12 being "… Leak" sites — and 526 of 544 active jobs carry no
+   address at all, so there is no address left to break the tie with. "915
+   Richmond Leak" is #17211 AND #17502.
+
+   Two picker rows differing only in a small "#" badge are a mis-tap waiting to
+   happen, and the mis-tap silently links a stale job. Pure, so the rule is
+   testable without a DOM. */
+function fdnDuplicateNameJobNos(jobs) {
+  var byName = {};
+  (jobs || []).forEach(function (j) {
+    var key = fdnNormalizeText(j && j.name);
+    if (!key) return;
+    (byName[key] = byName[key] || []).push(fdnJobNo(j));
+  });
+  var dupes = {};
+  Object.keys(byName).forEach(function (key) {
+    if (byName[key].length < 2) return;
+    byName[key].forEach(function (no) { if (no) dupes[no] = true; });
+  });
+  return dupes;
+}
+
 // Compose a single-line address from the cached job's parts.
 function fdnComposeAddress(j) {
   var line2 = [j.city, [j.state, j.zip].filter(Boolean).join(" ")].filter(Boolean).join(", ");
@@ -114,14 +161,25 @@ function fdnRenderPicker() {
   }
   if (!fdnFiltered.length) { host.className = "hint"; host.textContent = "No matching jobs."; return; }
   host.className = "";
+  /* Computed over the WHOLE cache, not the filtered slice: two jobs sharing a
+     name collide whether or not the current search happens to show both. */
+  var dupes = fdnDuplicateNameJobNos(fdnCache || []);
   host.innerHTML = fdnFiltered.map(function (j) {
+    var no = fdnJobNo(j);
     var parts = [j.customer_no, j.project_manager_no ? "PM " + j.project_manager_no : "", j.city].filter(Boolean);
     if (fdnFindMatchingBuilding(j)) parts.push("✓ in app");
     var meta = parts.map(fdnEsc).join(" · ");
+    /* A duplicate-name row says so, loudly and on the row itself. Without it
+       "915 Richmond Leak #17211" and "915 Richmond Leak #17502" are the same
+       row to a roofer holding a phone at arm's length on a roof. */
+    if (dupes[no]) {
+      meta += (meta ? " · " : "") +
+        '<b style="color:#b26a00">⚠ another active job shares this name — check the #</b>';
+    }
     return '<div class="bld-item" onclick="fdnSelectJob(' +
-      JSON.stringify(String(j.job_no)).replace(/"/g, "&quot;") + ')"><div class="info">' +
+      JSON.stringify(no).replace(/"/g, "&quot;") + ')"><div class="info">' +
       '<div class="name">' + fdnEsc(j.name || "(unnamed job)") +
-      (j.job_no ? ' <span class="hint">#' + fdnEsc(j.job_no) + '</span>' : "") + '</div>' +
+      (no ? ' <span class="hint">#' + fdnEsc(no) + '</span>' : "") + '</div>' +
       '<div class="meta">' + meta + '</div></div>' +
       '<button class="btn">Select</button></div>';
   }).join("");
@@ -202,18 +260,76 @@ function fdnFindMatchingBuilding(job) {
   });
 }
 
+/* ---- Is a building's stored Foundation anchor safe to auto-inherit? ----
+
+   THE BUG THIS EXISTS FOR (feedback report fb_ms7nxq1flqumf, 2026-07-30):
+   a work order for 915 Richmond linked job #17211 when the ticket was #17502.
+
+   A building's `foundationJobNo` is written by ensureCustomerAndBuilding()
+   (js/core.js) from whichever job the LAST saved work order was linked to. It
+   is a snapshot of last time, not a statement about this time — but
+   bpSelectBuilding() inherited it silently, with the number shown nowhere on
+   the way in. On a recurring leak site, where accounting opens a NEW job per
+   callout under the SAME name, "last time" is exactly the wrong answer, and
+   nothing on screen contradicted it.
+
+   The rule mirrors the doctrine already used by fdnFindMatchingBuilding() and
+   the Service Manager matcher — REFUSE TO GUESS:
+
+     "ok"         the anchor resolves to exactly one cached job and no other
+                  cached job shares that job's name -> inherit, as before.
+     "superseded" other active jobs share the anchored job's name (the 915
+                  Richmond shape) -> DO NOT inherit. Which callout this order
+                  is for is the tech's call, not a stale field's.
+     "stale"      the anchor is not in the jobs cache at all (job closed, or
+                  synced away) -> DO NOT inherit a number we cannot vouch for.
+     "none"       the building carries no anchor -> nothing to do.
+
+   `candidates` carries the rival jobs so the caller can say WHICH numbers are
+   in play instead of just refusing. Pure — no DOM, no Firestore. */
+function fdnResolveBuildingJobAnchor(building, jobs) {
+  var anchor = building ? String(building.foundationJobNo == null ? "" : building.foundationJobNo).trim() : "";
+  if (!anchor) return { status: "none", jobNo: null, name: "", job: null, candidates: [] };
+
+  var all = (jobs || []).filter(Boolean);
+  var job = null;
+  for (var i = 0; i < all.length; i++) {
+    if (fdnJobNo(all[i]) === anchor) { job = all[i]; break; }
+  }
+  if (!job) {
+    return {
+      status: "stale", jobNo: anchor,
+      name: (building && building.foundationJobName) || "", job: null, candidates: []
+    };
+  }
+
+  /* Rivals = other cached jobs carrying the same name. On this data set that
+     is the signal that accounting has opened a newer job for the same site. */
+  var nameKey = fdnNormalizeText(job.name);
+  var candidates = !nameKey ? [] : all.filter(function (x) {
+    return fdnNormalizeText(x.name) === nameKey && fdnJobNo(x) !== anchor;
+  });
+  if (candidates.length) {
+    return { status: "superseded", jobNo: anchor, name: job.name || "", job: job, candidates: candidates };
+  }
+  return { status: "ok", jobNo: anchor, name: job.name || "", job: job, candidates: [] };
+}
+
 // On select: auto-fill the WO fields. Bill To is filled with the customer CODE
 // (customer_no) — the jobs table has no customer display name; the friendly
 // name would need a customers-table join (a small follow-up). If the job is
 // ALSO an existing app building, carry that building's richer context (roof
 // system + CompanyCam link) on top. The tech reviews before saving.
 function fdnSelectJob(jobNo) {
-  var j = (fdnCache || []).find(function (x) { return String(x.job_no) === String(jobNo); });
+  var j = (fdnCache || []).find(function (x) { return fdnJobNo(x) === String(jobNo); });
   if (!j) return;
   if (typeof setVal === "function") {
     setVal("jobName", j.name || "");
     setVal("location", fdnComposeAddress(j));
-    setVal("jobNo", j.job_number || j.job_no || "");
+    /* fdnJobNo(), not `job_number || job_no`: the field must show the SAME
+       number as the badge that was just tapped and as the link line below.
+       See fdnJobNo() for the live-data measurement behind that precedence. */
+    setVal("jobNo", fdnJobNo(j));
     setVal("projectManager", j.project_manager_no || "");
     if (j.customer_no) setVal("billTo", j.customer_no);
   }
@@ -228,12 +344,18 @@ function fdnSelectJob(jobNo) {
       if (typeof renderCCLinkInfo === "function") renderCCLinkInfo();
     }
   }
-  fdnSetLinkedJob(j.job_no, j.name || "", j.customer_no || null, fdnComposeAddress(j));
+  fdnSetLinkedJob(fdnJobNo(j), j.name || "", j.customer_no || null, fdnComposeAddress(j));
   /* Picked job's address is navigable immediately (🧭 Directions —
      js/workorders.js, loads after this file, hence the guard). */
   if (typeof renderLocationDirectionsLink === "function") renderLocationDirectionsLink();
   if (typeof closeBuildingPicker === "function") closeBuildingPicker();
-  if (typeof toast === "function") toast("Loaded job “" + (j.name || j.job_no) + "” — review the fields below before saving");
+  /* Name the NUMBER in the toast. On a duplicate-name site the name alone
+     ("915 Richmond Leak") cannot tell the tech which of two jobs he just
+     picked, which is precisely how a wrong link went unnoticed. */
+  if (typeof toast === "function") {
+    toast("Loaded job “" + (j.name || fdnJobNo(j)) + "” (#" + fdnJobNo(j) +
+      ") — review the fields below before saving");
+  }
 }
 
 // Central setter for the WO's Foundation linkage: updates the module vars (read

@@ -444,3 +444,101 @@ recommendation above. It now needs a rebase onto the new dev (`31f55ac`); the
 deterministic keyword summary in as an `agentDiagnosis` first-pass hint. Yours to
 pick up.
 -- Claude
+
+---
+
+**[Claude -> Codex] 2026-07-30 — fb_ms7nxq1flqumf: WO linked Foundation job #17211 instead of #17502. Root-caused, fixed, 1355 green. Branch `claude/fix-fdn-job-link` (off dev @ `0b99916`). Cross-review requested.**
+
+First bug routed in through the feedback loop we just built, so it doubles as a
+live test of it. **Dev only — nothing here goes to `main`; Mark signs off before
+any promotion.**
+
+### Root cause — it is the DATA shape, not a lookup typo
+
+Read live Foundation (`dbo.jobs`, read-only SELECT) on 2026-07-30 while
+diagnosing. Three measured facts drive the whole bug:
+
+1. **`915 Richmond Leak` is TWO active jobs: #17211 and #17502.** Same name,
+   same customer (`SOPHIAS`), same PM (`MARK`). A recurring leak site gets a
+   brand-new job number per callout, name reused verbatim.
+2. **This is normal, not an edge case.** 12 duplicate-name groups covering 25
+   active jobs; **11 of the 12 are "… Leak"** sites (VU Old State Farm ×3,
+   Westran MS, USPS Columbia, Rio Grande, Planet Fitness, Madison Schools,
+   Five Below Quincy, Eurofins ABC Lane, California HS, 915 Richmond).
+3. **526 of 544 active jobs have NO address at all** (`address_1` NULL). So
+   `fdnAddressMatchKey()` returns `""` for ~97% of jobs — the "address is the
+   strongest signal" tier is effectively dead on this data, and every tie falls
+   through to the **name**, which is exactly what is duplicated.
+
+Against that data there were **two** independent ways to land on #17211:
+
+- **A — stale anchor inheritance (the reported one).** A building's
+  `foundationJobNo` is written by `ensureCustomerAndBuilding()` (`js/core.js:1436`)
+  from whichever job the **last saved** WO used. `bpSelectBuilding()`
+  (`js/workorders.js`) inherited it **silently**, with the number displayed
+  nowhere on the way in. On a recurring leak site "last time" is reliably the
+  *previous* callout. Reproduced deterministically on dev HEAD: picking the 915
+  Richmond building links `17211` and toasts *"Loaded 915 Richmond Leak — review
+  the fields below"* — no number, nothing to notice.
+- **B — job identity split-brain.** `fdnSelectJob()` filled the form's Job No.
+  field from `j.job_number || j.job_no`, while the picker badge, the link line,
+  the `foundation_jobs` doc id, the `his_timecard` join and the building anchor
+  all use **`job_no`**. Live data: `job_number` is blank on effectively every
+  job, and on the one active job where it IS populated it holds a *different*
+  number — **job_no 16457 → job_number 25003**. Verified on dev HEAD: selecting
+  that job puts **25003** in the Job No. field while linking **16457**. Same
+  precedence was spelled in the *reverse* order in
+  `bpFoundationJobNameForBuilding()`, so the two disagreed.
+
+### The fix
+
+`js/foundation.js`
+- `fdnJobNo(j)` — one canonical identity accessor, `job_no` first (trimmed;
+  Foundation stores it CHAR-padded). Kills path B.
+- `fdnResolveBuildingJobAnchor(building, jobs)` — pure arbiter for path A.
+  Returns `ok` / `superseded` / `stale` / `none`. Same refuse-to-guess doctrine
+  as `fdnFindMatchingBuilding()` and `smFindFoundationJobDetailed()`.
+- `fdnDuplicateNameJobNos(jobs)` — pure; picker rows in a name-collision group
+  get **⚠ another active job shares this name — check the #**. Two rows
+  differing only by a small `#` badge is a mis-tap generator on a phone.
+- Select toast now names the **number**, not just the ambiguous name.
+
+`js/workorders.js`
+- `bpSelectBuilding()` consults the arbiter. `superseded`/`stale` → leaves the
+  order **unlinked** and says why, naming both numbers and pointing at
+  🔍 Select Job. `ok` → inherits exactly as before.
+- `bpFoundationJobNameForBuilding()` uses `fdnJobNo()` — precedence split-brain
+  gone. Both call-sites `typeof`-guarded; `js/workorders.js` keeps no hard
+  dependency on `js/foundation.js`.
+
+### Tests — `tests/foundationJobLink.test.js`, +21
+
+Fixtures are the **real** 915 Richmond / 16457 rows, documented in the header
+with the counts above. Includes 4 `WIRED:` cases that load `js/foundation.js`
+**and** `js/workorders.js` together — note the pre-existing
+`tests/workordersRoofLabels.test.js` loads `workorders.js` alone, so the
+arbiter is `undefined` there and those tests pass through the fallback; they
+say nothing about this fix, which is why the wired ones exist.
+
+Both failure modes confirmed to reproduce on dev HEAD before the fix.
+**Baseline dev @ `0b99916`: 1334 / 0 failed. Fix branch: 1355 / 0 failed.**
+
+### Open items — yours / Mark's, deliberately NOT done here
+
+- **`js/roofmapper.js:5643` `rmJobNo()` still spells `job_number || job_no`** —
+  your lane, untouched. Same latent split-brain as path B; suggest adopting
+  `fdnJobNo()`.
+- **`js/servicemanager.js:927`** (`jobNo: f.job_number || f.job_no`) has the
+  same precedence against `:825` using `job_no`. Left alone to keep this diff
+  on the reported path — flagging rather than reaching across.
+- **Structural, needs Mark:** a building carries **one** `foundationJobNo`, but
+  a recurring site legitimately has many jobs over time. The anchor will keep
+  flapping to the last-saved WO's job. Real shape is probably
+  `foundationJobNos: []` (history) + a current pointer. Bigger than a bug fix —
+  not doing it unilaterally.
+- Path A's sibling: `findExistingBuildingId()` (`js/core.js:1268`) looks a
+  building up by `foundationJobNo == <new job>`, finds nothing for #17502, and
+  with the address key empty falls through — so a new callout at a duplicate-name
+  site can still **mint a duplicate building**. Same root data shape; separate fix.
+
+-- Claude
