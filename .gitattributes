@@ -1,0 +1,39 @@
+# Line-ending normalization.
+#
+# The repository stores all text as LF in the index. Working trees may use the
+# platform-native ending (CRLF on Windows) -- that is a checkout-time concern
+# only and never reaches a commit. Declaring this here makes normalization a
+# property of the repo rather than of each developer's local core.autocrlf,
+# so a contributor with autocrlf unset cannot commit CRLF blobs.
+#
+# Verified no-op at introduction: `git ls-files --eol` reported i/lf for all
+# 191 tracked text files, so this codifies existing state and renormalizes
+# nothing.
+* text=auto
+
+# Source and config -- LF in the index, native in the working tree.
+*.js    text
+*.json  text
+*.css   text
+*.html  text
+*.md    text
+*.yml   text
+*.yaml  text
+*.toml  text
+*.rules text
+
+# Scripts whose ending is load-bearing regardless of platform.
+*.sh  text eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary -- never normalize, never diff as text.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.pdf binary
+*.tif binary
+*.tiff binary
