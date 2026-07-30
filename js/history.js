@@ -1491,10 +1491,26 @@ async function ccCacheBuildingGeo(bldId, coord){
       .set({ geoCache: { lat: coord.lat, lng: coord.lng, source: "geocoded", updatedAt: Date.now() } }, { merge: true });
   }catch(e){ /* non-fatal: the coordinate is still used for THIS push */ }
 }
-/* Photos carry no capture timestamp of their own, and captured_at is REQUIRED by
-   CompanyCam -- the service date is the honest answer (it's the day the photo
-   was taken on site), falling back to now. */
-function ccPhotoCapturedAt(o){
+/* The photo's OWN capture time in epoch ms, or null. This is IDENTITY, not a
+   display timestamp: EXIF DateTimeOriginal recovered at import, or the moment
+   of camera capture (see photo.capturedAt in js/photos.js). Already converted
+   out of naive local time on the device that took it, so it is directly
+   comparable with CompanyCam's UTC captured_at.
+   A photo that predates this field, or whose camera wrote no usable EXIF, has
+   none -- and must NOT be given one, because a derived value is shared between
+   photos and would make them look like duplicates of each other. */
+function ccRealCaptureTimeMs(p){
+  var t = p && p.capturedAt !== undefined && p.capturedAt !== null ? Number(p.capturedAt) : NaN;
+  return (isFinite(t) && t > 0) ? t : null;
+}
+/* captured_at is REQUIRED by CompanyCam. The photo's own capture time when it
+   has one; otherwise the service date (the day the photo was taken on site),
+   falling back to now. The fallback is fine for the FEED -- it is only wrong as
+   an identity, which is why ccRealCaptureTimeMs() above is a separate function
+   and only IT is sent as dedup metadata. */
+function ccPhotoCapturedAt(o, p){
+  var own = ccRealCaptureTimeMs(p);
+  if (own) return own;
   var t = o.serviceDate ? Date.parse(o.serviceDate + "T12:00:00") : NaN;
   return isFinite(t) ? t : Date.now();
 }
@@ -1527,16 +1543,44 @@ async function ccPersistFeedPhotoId(workOrderId, photoIndex, ccFeedPhotoId){
                         would duplicate CompanyCam's own photo into its own feed.
                         Never.
      - p.ccFeedPhotoId: already pushed by an earlier save/send. Idempotency.
+     - p.ccDuplicateOfPhotoId
+                      : a previous push found this photo ALREADY IN the project
+                        (see below). Remembering that is what stops every future
+                        send from re-running the check on it.
      - not in Storage : the server reports { skipped } (a legacy pre-migration
                         photo, or a save whose upload hasn't landed yet). Not an
                         error -- the next send picks it up for free.
+     - DUPLICATE      : the server matched it against what is ALREADY in the
+                        CompanyCam project -- on capture time + GPS, or on a
+                        SHA-256 of the image bytes. See
+                        netlify/functions/lib/companyCamDedup.js. This is the
+                        case ccFeedPhotoId never covered: the same photo the
+                        tech also uploaded to CompanyCam from their phone, or the
+                        same image arriving from a different work order.
+
+   WHAT WE SEND FOR DE-DUPLICATION, and why it is not what we send for the feed:
+   dedupCapturedAt/dedupCoordinates are the photo's OWN time and OWN GPS. The
+   feed's captured_at and coordinates fall back to the service date, a finding's
+   pin, and the job location -- all SHARED between photos on an order. Sending
+   those as identity would make photos 1..N duplicates of photo 0 and silently
+   drop them. Photos with no own metadata are checked by hash instead.
 
    One photo's failure never aborts the rest. */
 async function pushPhotosToCompanyCamFeed(o){
   if (!o.companyCamProjectId) return { skipped: true };
   var photos = o.photos || [];
-  var r = { ok: true, pushed: 0, alreadyPushed: 0, imported: 0, notStored: 0, failed: 0, pinned: 0, unpinned: 0, jobLoc: null, error: "" };
+  var r = { ok: true, pushed: 0, alreadyPushed: 0, imported: 0, notStored: 0, failed: 0, pinned: 0, unpinned: 0,
+            duplicate: 0, dupByMeta: 0, dupByHash: 0, alreadyDuplicate: 0, unverified: 0,
+            jobLoc: null, error: "", dedupLog: [] };
   if (!photos.length) return r;
+  /* One key for this whole run, so the server can snapshot the project's photo
+     index ONCE instead of re-fetching it per photo, and so two different pushes
+     never share a snapshot. */
+  var runKey = String(o.id || "wo") + ":" + Date.now();
+  /* Ids created BY THIS RUN. They are excluded from the match, so photo 5 can
+     never be judged a duplicate of photo 3 that we uploaded eight seconds ago --
+     the false-skip guard that matters most within a single send. */
+  var pushedThisRun = [];
 
   /* ONE read: the building's roofs (to georeference base-map x/y pins) AND its
      stored geo-anchor (the reliable JOB-LOCATION FLOOR -- so a photo with no pin
@@ -1549,6 +1593,7 @@ async function pushPhotosToCompanyCamFeed(o){
     if (!p) continue;
     if (p.ccPhotoId){ r.imported++; continue; }
     if (p.ccFeedPhotoId){ r.alreadyPushed++; continue; }
+    if (p.ccDuplicateOfPhotoId){ r.alreadyDuplicate++; continue; }
     if (!jobResolved){
       jobResolved = true;
       jobLoc = ctx.geo || await ccSiteLatLng(o); /* saved geoCache first; live geocode only if none */
@@ -1565,6 +1610,8 @@ async function pushPhotosToCompanyCamFeed(o){
           finding_id: p.finding_id || null, photoGps: p.gps || null, jobLoc: jobLoc || null
         });
     }
+    var ownTime = ccRealCaptureTimeMs(p);
+    var ownGps = ccValidLatLng(p.gps);
     try{
       var out = await ccApiPost({
         action: "upload_photo",
@@ -1572,14 +1619,50 @@ async function pushPhotosToCompanyCamFeed(o){
         workOrderId: o.id,
         photoIndex: i,
         coordinates: payloadCoord,
-        captured_at: ccPhotoCapturedAt(o),
-        description: ccPhotoDescription(p, o)
+        captured_at: ccPhotoCapturedAt(o, p),
+        description: ccPhotoDescription(p, o),
+        /* Identity, not display -- see the block comment above. */
+        dedupCapturedAt: ownTime,
+        dedupCoordinates: ownGps ? { lat: ownGps.lat, lon: ownGps.lng } : null,
+        excludeCcPhotoIds: pushedThisRun,
+        runKey: runKey
       });
       if (out && out.ok && out.photoId){
         p.ccFeedPhotoId = String(out.photoId);
+        pushedThisRun.push(p.ccFeedPhotoId);
         r.pushed++;
         if (payloadCoord) r.pinned++; else r.unpinned++;
+        /* Uploaded WITHOUT a completed duplicate check (couldn't read the
+           project index, couldn't hash the bytes). Never a reason to withhold
+           the photo -- an extra copy is recoverable, a dropped one is not --
+           but it is reported so the summary is honest about what was verified. */
+        if (out.dedup && out.dedup.unverified){
+          r.unverified++;
+          r.dedupLog.push({ photo: i, action: "uploaded_unchecked",
+            note: (out.dedup.detail && (out.dedup.detail.metaError || out.dedup.detail.hashError ||
+                   out.dedup.detail.ledgerError || out.dedup.detail.error)) || "duplicate check unavailable" });
+        }
         await ccPersistFeedPhotoId(o.id, i, p.ccFeedPhotoId);
+      } else if (out && out.duplicate){
+        r.duplicate++;
+        var byHash = out.reason === "matched_hash";
+        if (byHash) r.dupByHash++; else r.dupByMeta++;
+        var d = (out.dedup && out.dedup.detail) || {};
+        r.dedupLog.push({
+          photo: i, action: "skipped_duplicate",
+          reason: byHash ? "matched content hash (SHA-256)" : "matched capture time + GPS",
+          matchedPhotoId: out.matchedPhotoId || null,
+          deltaSeconds: d.deltaSeconds !== undefined ? d.deltaSeconds : null,
+          deltaMeters: d.deltaMeters !== undefined ? d.deltaMeters : null
+        });
+        /* Remember it so future sends stop re-checking. NOT ccFeedPhotoId: the
+           matched photo may be one the tech took in CompanyCam themselves, and
+           ccFeedPhotoId is the id the undo-push deletes (see
+           deletePushedPhotoFromCompanyCam). This field is a record only. */
+        if (out.matchedPhotoId){
+          p.ccDuplicateOfPhotoId = String(out.matchedPhotoId);
+          await ccPersistDuplicateOfPhotoId(o.id, i, p.ccDuplicateOfPhotoId);
+        }
       } else if (out && out.skipped){
         r.notStored++;
       } else {
@@ -1591,7 +1674,45 @@ async function pushPhotosToCompanyCamFeed(o){
     }
   }
   if (r.failed) r.ok = false;
+  /* AUDITABLE, not a black box (Mark's ask): one line per push with the totals,
+     plus the per-photo reason for every skip. Sits alongside the existing
+     per-photo coordinate evidence logged above. */
+  if (typeof console !== "undefined" && console.log){
+    console.log("[CompanyCam push] " + ccPushSummaryLine(r), { workOrder: o.id, project: o.companyCamProjectId, dedup: r.dedupLog });
+  }
   return r;
+}
+/* Companion to ccPersistFeedPhotoId() for the duplicate record. Same merge-only
+   write, same non-fatal contract: losing it costs a redundant check next time,
+   never a photo. */
+async function ccPersistDuplicateOfPhotoId(workOrderId, photoIndex, ccPhotoId){
+  if (!fdb) return;
+  try{
+    await fdb.collection("workorders").doc(workOrderId)
+      .collection("photos").doc("p" + photoIndex)
+      .set({ ccDuplicateOfPhotoId: ccPhotoId }, { merge: true });
+  }catch(e){ /* the in-memory flag still guards this session; the next save persists it */ }
+}
+/* The one-line, human-readable verdict for a push -- "N uploaded, M skipped as
+   duplicates (...)" -- used by the toast, the console audit line, and the
+   owner-only backfill summary so all three tell the same story. */
+function ccPushSummaryLine(r){
+  if (!r) return "nothing to push";
+  var bits = [r.pushed + " uploaded"];
+  if (r.duplicate){
+    var why = [];
+    if (r.dupByMeta) why.push(r.dupByMeta + " matched capture time + GPS");
+    if (r.dupByHash) why.push(r.dupByHash + " matched content hash");
+    bits.push(r.duplicate + " skipped as duplicate" + (r.duplicate === 1 ? "" : "s") +
+      (why.length ? " (" + why.join(", ") + ")" : ""));
+  }
+  if (r.alreadyDuplicate) bits.push(r.alreadyDuplicate + " already known duplicate" + (r.alreadyDuplicate === 1 ? "" : "s"));
+  if (r.alreadyPushed) bits.push(r.alreadyPushed + " already in the feed");
+  if (r.imported) bits.push(r.imported + " imported from CompanyCam");
+  if (r.notStored) bits.push(r.notStored + " not uploaded yet");
+  if (r.unverified) bits.push(r.unverified + " uploaded without a duplicate check");
+  if (r.failed) bits.push(r.failed + " failed");
+  return bits.join(", ");
 }
 async function uploadLinkedPdfToCompanyCam(doc, o, doneLabel){
   if (!o.companyCamProjectId) return { skipped: true };
@@ -1622,6 +1743,21 @@ async function uploadLinkedPdfToCompanyCam(doc, o, doneLabel){
         feed.pinned + " map-pinned";
       if (feed.unpinned) feedMsg += ", " + feed.unpinned + " with NO location (no pin/GPS and the job has no mappable address)";
       toast(feedMsg);
+    }
+    /* De-duplication, said out loud. A silent skip is indistinguishable from a
+       lost photo, so every duplicate is reported WITH the reason it matched --
+       and reported even when nothing uploaded, which is the case that would
+       otherwise look like the push did nothing at all. */
+    if (feed && feed.duplicate){
+      var dupWhy = [];
+      if (feed.dupByMeta) dupWhy.push(feed.dupByMeta + " matched capture time + GPS");
+      if (feed.dupByHash) dupWhy.push(feed.dupByHash + " matched content hash");
+      toast(feed.duplicate + " photo" + (feed.duplicate === 1 ? " was" : "s were") +
+        " already in CompanyCam \u2014 skipped" + (dupWhy.length ? " (" + dupWhy.join(", ") + ")" : "") + ".");
+    }
+    if (feed && feed.unverified){
+      toast(feed.unverified + " photo" + (feed.unverified === 1 ? "" : "s") +
+        " couldn\u2019t be duplicate-checked \u2014 uploaded anyway so nothing is lost. Check the console log.");
     }
     if (feed && feed.failed) toast(feed.failed + " photo" + (feed.failed === 1 ? "" : "s") + " couldn\u2019t be added to CompanyCam \u2014 they retry on the next send.");
     ccUp.photoFeed = feed;
@@ -2058,6 +2194,36 @@ async function downloadPdf(){
   if (!o.companyCamProjectId) toast("PDF downloaded \u2014 attach it to your email.");
   logReportAndHistoryEvent(o, "PDF Downloaded", null, ccUp);
 }
+/* The base64 payload of a jsPDF doc, or "" if it can't be produced. Pulled out
+   of sendEmailNow() because the size-fitting loop below needs to re-measure it
+   after each rebuild, and one extraction point means one place to get the
+   "datauristring" quirk right. */
+function pdfBase64Of(doc){
+  try{ return doc.output("datauristring").split("base64,")[1] || ""; }
+  catch(e){ return ""; }
+}
+/* Turns a failed send response into something a tech on a roof can act on.
+   Before this, ANY non-JSON error body (which is what the platform returns
+   when it rejects a request before our function runs -- see
+   SEND_MAX_PDF_BASE64 in js/export.js) produced the bare string
+   "server error 413", with no cause and no next step.
+
+   `out` is the parsed JSON body or null. When the function itself answered, it
+   always sends JSON and its own message is the most specific thing available,
+   so that wins. The status-code mapping below only ever applies to responses
+   our own code did NOT generate. */
+function sendFailureMessage(status, out){
+  if (out && out.error) return out.error;
+  if (status === 413) {
+    return "The report was too big for the send service to accept. Use Download PDF and attach it yourself, " +
+      "or remove some photos and try again.";
+  }
+  if (status === 401) return "Your session expired — sign in again and re-send.";
+  if (status === 403) return "You don't have permission to email customer documents. Ask an admin to grant it.";
+  if (status >= 500) return "The send service is having trouble right now (error " + status + "). " +
+    "Try again in a minute, or use Download PDF as a backup.";
+  return "server error " + status;
+}
 async function sendEmailNow(){
   var addrs = parseEmailRecipients(val("emailTo"));
   if (!addrs.length){
@@ -2086,9 +2252,39 @@ async function sendEmailNow(){
     "\n\nDate of Service: " + (o.serviceDate || "") +
     "\nLocation: " + (o.location || "") +
     "\n\nSent from the RoofOps app.";
-  var pdfBase64 = "";
-  try{ pdfBase64 = d.output("datauristring").split("base64,")[1] || ""; }catch(e){}
+  var pdfBase64 = pdfBase64Of(d);
   if (!pdfBase64){ toast("Couldn't prepare the PDF for sending \u2014 try Download PDF instead."); return; }
+  /* ---- Fit the report inside the platform's request-body ceiling ----
+     See SEND_MAX_PDF_BASE64 in js/export.js for the measured limit and why a
+     report that exceeds it never reaches our function at all. A report that
+     already fits (the overwhelming majority) takes the fast path: the loop
+     body never runs, nothing is rebuilt, and fidelity is exactly what it was
+     before this existed. */
+  var tier = 0;
+  try{
+    while (!pdfBase64FitsEmail(pdfBase64.length) && tier + 1 < pdfPhotoTierCount()){
+      tier++;
+      toast("Report is " + pdfBase64Mb(pdfBase64.length) + " MB \u2014 too big to email. Shrinking photos and rebuilding\u2026");
+      setPdfPhotoTier(tier);
+      d = await generatePdf();
+      if (!d) return;
+      pdfBase64 = pdfBase64Of(d);
+      if (!pdfBase64){ toast("Couldn't prepare the PDF for sending \u2014 try Download PDF instead."); return; }
+    }
+  } finally {
+    /* Reset unconditionally: the tier is module-level state, and leaving it
+       shrunk would silently degrade every later Download/Share in this
+       session -- including ones for a report that never needed it. */
+    setPdfPhotoTier(0);
+  }
+  if (!pdfBase64FitsEmail(pdfBase64.length)){
+    /* Every tier exhausted. Refusing HERE, with the real number and a route
+       that works, is strictly better than posting it and letting the edge
+       return a bare 413 the tech can do nothing with. */
+    toast(oversizeReportMessage(pdfBase64.length));
+    return;
+  }
+  if (tier) toast("Photos reduced to fit the email \u2014 full-size copies stay on the work order. Sending\u2026");
   try{
     var resp = await fetch("/.netlify/functions/send-workorder", {
       method: "POST",
@@ -2109,7 +2305,7 @@ async function sendEmailNow(){
       }
       await logReportAndHistoryEvent(o, "PDF Emailed", { sent: true, to: addrs, subject: subject }, ccUp);
     } else {
-      toast("Send failed: " + ((out && out.error) || ("server error " + resp.status)));
+      toast("Send failed: " + sendFailureMessage(resp.status, out));
     }
   }catch(e){
     toast("Couldn't reach the send service \u2014 this button only works from your Netlify site with internet. Use Share / Email PDF as backup.");

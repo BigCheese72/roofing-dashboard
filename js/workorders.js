@@ -164,14 +164,25 @@ function bpFoundationJobNameForBuilding(b){
   if (!b || !b.foundationJobNo) return "";
   var jobNo = String(b.foundationJobNo);
   var cached = (typeof fdnCache !== "undefined" && fdnCache) ? fdnCache : [];
-  var j = cached.find(function(x){
-    return String((x && (x.job_no || x.job_number)) || "") === jobNo;
-  });
+  /* fdnJobNo() is the one job-identity accessor (js/foundation.js) — this used
+     to spell its own `job_no || job_number` while fdnSelectJob() spelled the
+     REVERSE precedence, so the two disagreed on any job where the columns
+     differ. Guarded: js/foundation.js is optional to this file. */
+  var idOf = (typeof fdnJobNo === "function")
+    ? fdnJobNo
+    : function(x){ return String((x && (x.job_no || x.job_number)) || "").trim(); };
+  var j = cached.find(function(x){ return idOf(x) === jobNo; });
   return (j && j.name) || b.foundationJobName || b.name || jobNo;
 }
+/* Set by bpSelectBuilding() when it DECLINES to inherit a building's Foundation
+   job anchor, and appended to the "Loaded …" toast. A refusal the tech never
+   sees is just a silently unlinked order — the opposite failure to the one
+   being fixed. */
+var bpPendingJobLinkNotice = "";
 function bpSelectBuilding(buildingId){
   var b = (bpCache || []).find(function(x){ return x.id === buildingId; });
   if (!b) return;
+  bpPendingJobLinkNotice = "";
   /* Picking a building IS choosing its stable identity (FIX 1) — the doc id
      from the buildings collection, not a name-derived slug. This is also
      the deliberate way to RE-POINT an order at a different building (typing
@@ -198,18 +209,43 @@ function bpSelectBuilding(buildingId){
   }
   /* Same inheritance rule as CompanyCam: picking an existing building should
      carry its durable Foundation anchor onto a new work order, but must not
-     overwrite a job the tech already selected in this session. */
+     overwrite a job the tech already selected in this session.
+
+     AND it must not carry a STALE one. A building's foundationJobNo is written
+     from whichever job the LAST saved work order used (ensureCustomerAndBuilding,
+     js/core.js) — on a recurring leak site, where accounting opens a new job per
+     callout under the same name, that is reliably the previous callout's number.
+     Report fb_ms7nxq1flqumf: 915 Richmond linked #17211 when the ticket was
+     #17502. fdnResolveBuildingJobAnchor() (js/foundation.js) is the arbiter;
+     anything other than a clean "ok" leaves the order UNLINKED and says why,
+     so the tech picks the job instead of inheriting last time's. */
   if (b.foundationJobNo && typeof fdnSetLinkedJob === "function" &&
       (typeof fdnLinkedJobNo === "undefined" || !fdnLinkedJobNo)){
-    fdnSetLinkedJob(b.foundationJobNo, bpFoundationJobNameForBuilding(b),
-      b.foundationCustomerNo || null, b.foundationAddress || "");
+    var anchor = (typeof fdnResolveBuildingJobAnchor === "function")
+      ? fdnResolveBuildingJobAnchor(b, (typeof fdnCache !== "undefined" && fdnCache) ? fdnCache : [])
+      : { status: "ok", jobNo: b.foundationJobNo };
+    if (anchor.status === "ok"){
+      fdnSetLinkedJob(anchor.jobNo, bpFoundationJobNameForBuilding(b),
+        b.foundationCustomerNo || null, b.foundationAddress || "");
+    } else if (anchor.status === "superseded"){
+      var others = anchor.candidates.map(function(c){ return "#" + fdnJobNo(c); }).join(", ");
+      bpPendingJobLinkNotice = "This site has more than one active job (" +
+        "#" + anchor.jobNo + ", " + others + "). Left unlinked — tap 🔍 Select Job " +
+        "and pick the right job number.";
+    } else if (anchor.status === "stale"){
+      bpPendingJobLinkNotice = "This building's last job (#" + anchor.jobNo +
+        ") is no longer in the active job list. Left unlinked — tap 🔍 Select Job " +
+        "to link the current one.";
+    }
   }
   currentRoofId = null;
   currentRoofIds = null;
   renderLocationDirectionsLink(); /* picked building's address is navigable immediately */
   if (typeof refreshInspectionRoofPickerIfNeeded === "function") refreshInspectionRoofPickerIfNeeded();
   closeBuildingPicker();
-  toast("Loaded “" + b.name + "” — review the fields below before saving");
+  toast("Loaded “" + b.name + "” — review the fields below before saving" +
+    (bpPendingJobLinkNotice ? ". ⚠ " + bpPendingJobLinkNotice : ""));
+  bpPendingJobLinkNotice = "";
   scheduleInlineBuildingHistoryRefresh();
   /* Change Order only (no-op otherwise): now that this work order is for a
      real building, default its Job No. from that building's parent job and

@@ -21,7 +21,7 @@
 <meta name="apple-mobile-web-app-title" content="RoofOps">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#000000">
-<link rel="stylesheet" href="css/app.css?v=20260724b">
+<link rel="stylesheet" href="css/app.css?v=20260730a">
 <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-auth-compat.js"></script>
@@ -497,6 +497,17 @@
 
   <!-- ================= PREVIEW VIEW ================= -->
   <div id="view-preview" style="display:none">
+    <!-- Return path to the form. Feedback fb_ms7owm7pdbc5a: once you were on
+         Preview there was NO way back to edit. The header "Edit" tab does go
+         back, but on a phone it is an unlabelled icon in a horizontally
+         scrolling row that auto-collapses out of sight the moment you scroll
+         down the report (see .header-collapsed in css/app.css) -- so in the
+         field there was effectively no back. This row is the primary control;
+         #preview-back-bottom repeats it at the end of the document so a long
+         report never has to be scrolled back up. Both are no-print. -->
+    <div class="btnrow no-print" id="preview-back-top">
+      <button class="btn" onclick="backToEdit()" title="Back to the work order form. Nothing is lost — your edits are still there, and Preview rebuilds from the form when you return.">← Back to Edit</button>
+    </div>
     <div class="btnrow no-print" style="align-items:center">
       <select id="emailPick" style="width:auto" onchange="pickRecipient()">
         <option value="">Send to…</option>
@@ -513,6 +524,9 @@
       works the same on phone and computer. The other buttons are backups: "Share / Email PDF" uses your own mail app,
       "Download PDF" saves the file, "Email (text only)" sends a plain-text version without photos.</p>
     <div class="doc" id="doc-output"></div>
+    <div class="btnrow no-print" id="preview-back-bottom" style="margin-top:14px">
+      <button class="btn" onclick="backToEdit()" title="Back to the work order form. Nothing is lost — your edits are still there, and Preview rebuilds from the form when you return.">← Back to Edit</button>
+    </div>
   </div>
 
   <!-- ================= SAVED VIEW ================= -->
@@ -730,6 +744,38 @@
         <div class="fld">
           <label>Notes (optional)</label>
           <textarea id="rm-feature-notes" rows="2"></textarea>
+        </div>
+        <div id="rm-feature-drain-reference-fields" style="display:none">
+          <label style="font-size:12px;font-weight:600;display:block;margin:0 0 6px">Drain Reference Distances</label>
+          <div class="grid">
+            <div class="fld">
+              <label>Point 1</label>
+              <input type="text" id="rm-feature-ref1-label" placeholder="e.g. North parapet">
+            </div>
+            <div class="fld">
+              <label>Distance 1 (ft)</label>
+              <input type="number" step="0.1" min="0" id="rm-feature-ref1-distance" placeholder="0.0">
+            </div>
+            <div class="fld">
+              <label>Point 2</label>
+              <input type="text" id="rm-feature-ref2-label" placeholder="e.g. West wall">
+            </div>
+            <div class="fld">
+              <label>Distance 2 (ft)</label>
+              <input type="number" step="0.1" min="0" id="rm-feature-ref2-distance" placeholder="0.0">
+            </div>
+          </div>
+        </div>
+        <div id="rm-feature-core-fields" style="display:none">
+          <label style="font-size:12px;font-weight:600;display:block;margin:0 0 6px">Core/Test Cut Results</label>
+          <div class="fld">
+            <label>Results</label>
+            <textarea id="rm-feature-core-result" rows="2" placeholder="e.g. 60 mil TPO over 1/2 in HD cover board"></textarea>
+          </div>
+          <div class="fld">
+            <label>Photo Link / ID (optional)</label>
+            <input type="text" id="rm-feature-core-photo-link" placeholder="Paste CompanyCam/photo URL or reference">
+          </div>
         </div>
         <div class="btnrow" style="margin:8px 0 0">
           <button class="btn primary" onclick="rmSaveFeature()">Save Feature</button>
@@ -1477,6 +1523,38 @@
         <label>Notes (optional)</label>
         <textarea id="asset-notes" rows="2"></textarea>
       </div>
+      <div id="asset-drain-reference-fields" style="display:none">
+        <label style="font-size:12px;font-weight:600;display:block;margin:0 0 6px">Drain Reference Distances</label>
+        <div class="grid">
+          <div class="fld">
+            <label>Point 1</label>
+            <input type="text" id="asset-ref1-label" placeholder="e.g. North parapet">
+          </div>
+          <div class="fld">
+            <label>Distance 1 (ft)</label>
+            <input type="number" step="0.1" min="0" id="asset-ref1-distance" placeholder="0.0">
+          </div>
+          <div class="fld">
+            <label>Point 2</label>
+            <input type="text" id="asset-ref2-label" placeholder="e.g. West wall">
+          </div>
+          <div class="fld">
+            <label>Distance 2 (ft)</label>
+            <input type="number" step="0.1" min="0" id="asset-ref2-distance" placeholder="0.0">
+          </div>
+        </div>
+      </div>
+      <div id="asset-core-fields" style="display:none">
+        <label style="font-size:12px;font-weight:600;display:block;margin:0 0 6px">Core/Test Cut Results</label>
+        <div class="fld">
+          <label>Results</label>
+          <textarea id="asset-core-result" rows="2" placeholder="e.g. 60 mil TPO over 1/2 in HD cover board"></textarea>
+        </div>
+        <div class="fld">
+          <label>Photo Link / ID (optional)</label>
+          <input type="text" id="asset-core-photo-link" placeholder="Paste CompanyCam/photo URL or reference">
+        </div>
+      </div>
       <div class="btnrow" style="margin:0">
         <button class="btn primary" onclick="saveAssetFromModal()">Save Feature</button>
         <button class="btn danger" id="asset-delete-btn" onclick="deleteAssetFromModal()" style="display:none">Delete</button>
@@ -1933,37 +2011,37 @@
      inline <script> at the very end of this file (init bootstrap): that
      one DOES run immediately at parse time and calls into several of
      these modules, so it must load dead last, after all seven. -->
-<script src="js/core.js?v=20260724b"></script>
-<script src="js/companycam.js?v=20260724b"></script>
-<script src="js/foundation.js?v=20260724b"></script>
-<script src="js/export.js?v=20260724b"></script>
-<script src="js/photos.js?v=20260724b"></script>
-<script src="js/inspections.js?v=20260724b"></script>
+<script src="js/core.js?v=20260730a"></script>
+<script src="js/companycam.js?v=20260730a"></script>
+<script src="js/foundation.js?v=20260730a"></script>
+<script src="js/export.js?v=20260730a"></script>
+<script src="js/photos.js?v=20260730a"></script>
+<script src="js/inspections.js?v=20260730a"></script>
 <!-- buildinghistory.js loads BEFORE history.js on purpose: history.js calls
      renderBuildingMap(), which lives here. It used to live in workorders.js,
      which loads after history.js -- worked only because the call is at
      runtime. See docs/agents/WORKORDERS_SPLIT_PLAN.md Phase 1. -->
-<script src="js/buildinghistory.js?v=20260724b"></script>
-<script src="js/history.js?v=20260724b"></script>
-<script src="js/workorders.js?v=20260724b"></script>
-<script src="js/roofmapper.js?v=20260724b"></script>
-<script src="js/dpr.js?v=20260724b"></script>
+<script src="js/buildinghistory.js?v=20260730a"></script>
+<script src="js/history.js?v=20260730a"></script>
+<script src="js/workorders.js?v=20260730a"></script>
+<script src="js/roofmapper.js?v=20260730a"></script>
+<script src="js/dpr.js?v=20260730a"></script>
 <!-- Service Manager workspace: proposals inbox, Foundation cross-ref, pre-create
      work order, crew/day assignment, live dispatch board. Loaded after dpr.js
      (reuses DPR_FOREMEN as the crew roster) and workorders.js (dispatch fields
      live in collect()/fill()). See js/servicemanager.js header. -->
-<script src="js/servicemanager.js?v=20260724b"></script>
-<script src="js/roles-admin.js?v=20260724b"></script>
+<script src="js/servicemanager.js?v=20260730a"></script>
+<script src="js/roles-admin.js?v=20260730a"></script>
 <!-- AI training-label write path (see js/ailabels.js). Pure data plumbing,
      no UI of its own and deliberately no callers yet — loaded so the flows
      that confirm/correct an issue label (work orders, photos, inspections)
      can call recordConfirmedLabel() as they wire up. -->
-<script src="js/ailabels.js?v=20260724b"></script>
+<script src="js/ailabels.js?v=20260730a"></script>
 <!-- Help Center / tooltips / first-run walkthrough (see js/help.js). Loaded
      last among the modules since it wraps showView() from the outside and
      needs that + every other global already defined; builds its own DOM at
      runtime, so no other markup in this file belongs to it. -->
-<script src="js/help.js?v=20260724b"></script>
+<script src="js/help.js?v=20260730a"></script>
 <script>
 "use strict";
 /* ================= init ================= */

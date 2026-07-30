@@ -22,9 +22,44 @@
     "    resolveSupersedes() -- called on EVERY filing, before the report doc is",
     "    written. Without the index this throws, so the attachment is neither",
     "    filed nor queued: it just lands in summary.errors and is retried",
-    "    forever. Filing would have been broken outright."
+    "    forever. Filing would have been broken outright.",
+    "",
+    "  feedback (type + triageStatus + createdAt)",
+    "    admin.js list_feedback, when the Dispatch feedback->auto-fix watcher",
+    "    polls it. Equality fields come FIRST and createdAt (the range +",
+    "    orderBy field) LAST, which is what lets this single index serve every",
+    "    filter combination the action accepts: type alone, triageStatus",
+    "    alone, both, and any of those plus a sinceCreatedAt watermark.",
+    "    Without it the watcher's poll returns 9 FAILED_PRECONDITION and the",
+    "    loop simply never sees a bug report -- silently, since nothing else",
+    "    in the app runs this query."
   ],
   "indexes": [
+    {
+      "collectionGroup": "feedback",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "type", "order": "ASCENDING" },
+        { "fieldPath": "triageStatus", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "feedback",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "triageStatus", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "feedback",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "type", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
     {
       "collectionGroup": "warranty_review_queue",
       "queryScope": "COLLECTION",

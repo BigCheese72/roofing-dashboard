@@ -452,6 +452,13 @@ var HELP_ARTICLES = [
       "All of these save the work order and generate the PDF automatically first -- you don't need to save separately.",
       "Every send, download, or share is logged on the building's timeline, and the PDF is uploaded to the linked CompanyCam project automatically."
     ] },
+  { id: "preview-back-to-edit", title: "I'm on Preview and need to fix something -- how do I get back?", screens: ["preview"], roles: "all",
+    keywords: "back edit preview return change fix mistake go back form",
+    body: [
+      "Tap \"← Back to Edit\" -- it's at the top of Preview and again at the bottom of the report, so you don't have to scroll back up.",
+      "Nothing is lost. The form is exactly as you left it, right down to where you were scrolled to, and Preview is rebuilt from the form every time you come back to it.",
+      "Go back and forth as many times as you need. Only \"Send Email Now,\" \"Share / Email PDF,\" and \"Download PDF\" actually produce the report."
+    ] },
   { id: "send-all-reports", title: "Where can I see every report that's been generated?", screens: ["reports"], roles: "all",
     keywords: "all reports list history filter every report tab",
     body: [

@@ -999,11 +999,24 @@ async function cloudSaveOrder(o){
        same reason ccFeedPhotoId must: this is a full overwrite, not a merge,
        so omitting it would silently strip a return visit's photos of their
        visit on the next save of the work order. */
+    /* capturedAt / capturedAtSource: the photo's OWN capture time (EXIF
+       DateTimeOriginal, or the moment of camera capture), in epoch ms. Written
+       here for the same reason ccFeedPhotoId and amendment_id are -- this is a
+       full overwrite, so omitting it would strip every photo of its capture time
+       on the next save, and CompanyCam de-duplication would silently fall back
+       to the content hash on a reopened work order.
+       ccDuplicateOfPhotoId: this photo was found ALREADY IN the linked project
+       (see pushPhotosToCompanyCamFeed) -- deliberately a DIFFERENT field from
+       ccFeedPhotoId, because the photo it matched may be one the tech uploaded
+       to CompanyCam themselves, and ccFeedPhotoId is what the undo-push deletes.
+       Recording a match here must never make someone else's photo deletable. */
     var photoDoc = {
       caption: p.caption || "", w: p.w || 0, h: p.h || 0, i: i,
       finding_id: p.finding_id || null, amendment_id: p.amendment_id || null,
       ccPhotoId: p.ccPhotoId || null, gps: p.gps || null,
       ccFeedPhotoId: p.ccFeedPhotoId || null,
+      ccDuplicateOfPhotoId: p.ccDuplicateOfPhotoId || null,
+      capturedAt: p.capturedAt || null, capturedAtSource: p.capturedAtSource || null,
       storageRef: storageRef, thumb: p.thumb || null
     };
     if (existingImg) photoDoc.img = existingImg;
@@ -1124,6 +1137,11 @@ async function cloudFetchOrder(id){
         finding_id: v.finding_id || null, amendment_id: v.amendment_id || null,
         ccPhotoId: v.ccPhotoId || null, gps: v.gps || null,
         ccFeedPhotoId: v.ccFeedPhotoId || null,
+        /* Hydrated for the same reason they're written above -- without them a
+           reopened work order loses every photo's real capture time and its
+           record of already being in the CompanyCam project. */
+        ccDuplicateOfPhotoId: v.ccDuplicateOfPhotoId || null,
+        capturedAt: v.capturedAt || null, capturedAtSource: v.capturedAtSource || null,
         storageRef: v.storageRef || null, thumb: v.thumb || null,
         imgFallback: (!v.thumb && v.storageRef) ? (v.img || null) : null };
     });
@@ -1841,6 +1859,10 @@ async function runCompanyCamPhotoBackfill(){
     ". Photos already in the feed are skipped automatically, and photos imported FROM CompanyCam are never pushed back — safe to run more than once. Proceed?")) return null;
 
   var pushed = 0, alreadyPushed = 0, failed = 0, ordersTouched = 0, failures = [];
+  /* De-duplication totals across the whole backfill. This is the run where they
+     matter most: a backfill walks EVERY linked work order, so it is the most
+     likely thing in the app to re-send a photo CompanyCam already has. */
+  var duplicate = 0, dupByMeta = 0, dupByHash = 0, unverified = 0, dedupLog = [];
   for (var i = 0; i < linked.length; i++){
     toast("Backfilling CompanyCam photos — work order " + (i + 1) + " of " + linked.length + "…");
     try{
@@ -1850,16 +1872,29 @@ async function runCompanyCamPhotoBackfill(){
       pushed += (r && r.pushed) || 0;
       alreadyPushed += (r && r.alreadyPushed) || 0;
       failed += (r && r.failed) || 0;
+      duplicate += (r && r.duplicate) || 0;
+      dupByMeta += (r && r.dupByMeta) || 0;
+      dupByHash += (r && r.dupByHash) || 0;
+      unverified += (r && r.unverified) || 0;
+      if (r && r.dedupLog && r.dedupLog.length) dedupLog.push({ workOrderId: linked[i].id, entries: r.dedupLog });
       if (r && r.pushed) ordersTouched++;
       if (r && r.failed) failures.push({ workOrderId: linked[i].id, error: r.error || "photo push failed" });
     }catch(e){ failed++; failures.push({ workOrderId: linked[i].id, error: e.message }); }
   }
+  var dupWhy = [];
+  if (dupByMeta) dupWhy.push(dupByMeta + " matched capture time + GPS");
+  if (dupByHash) dupWhy.push(dupByHash + " matched content hash");
   toast(pushed + " photo" + (pushed === 1 ? "" : "s") + " added to CompanyCam across " +
     ordersTouched + " work order" + (ordersTouched === 1 ? "" : "s") + " ✓" +
+    (duplicate ? ", " + duplicate + " skipped as already in CompanyCam" + (dupWhy.length ? " (" + dupWhy.join(", ") + ")" : "") : "") +
     (alreadyPushed ? ", " + alreadyPushed + " already in the feed" : "") +
+    (unverified ? ", " + unverified + " uploaded without a duplicate check" : "") +
     (failed ? ", " + failed + " FAILED (safe to retry — run this again)" : "") + ".");
+  if (dedupLog.length) console.log("CompanyCam backfill de-duplication detail (per photo):", dedupLog);
   if (failures.length) console.warn("CompanyCam photo backfill failures (safe to retry):", failures);
-  return { orders: linked.length, ordersTouched: ordersTouched, pushed: pushed, alreadyPushed: alreadyPushed, failed: failed, failures: failures };
+  return { orders: linked.length, ordersTouched: ordersTouched, pushed: pushed, alreadyPushed: alreadyPushed,
+    duplicate: duplicate, dupByMeta: dupByMeta, dupByHash: dupByHash, unverified: unverified,
+    failed: failed, failures: failures, dedupLog: dedupLog };
 }
 /* Admin toggle button removed entirely (2026-07-12) -- there was nothing
    left for it to toggle. isAdmin has followed sign-in state and role
@@ -2152,6 +2187,47 @@ var FEEDBACK_VIEW_LABELS = {
   history: "Building History", reports: "Reports", roofmapper: "RoofMapper"
 };
 var feedbackState = { type: null, screenshot: null };
+/* ---- Auto-diagnosis signal (feedback -> auto-fix loop) ----
+   A submitted report only becomes automatically diagnosable if it says WHICH
+   build and WHICH url it came from. Before this, a feedback doc carried a
+   friendly screen name ("Work Order Form") and nothing else -- not enough to
+   reproduce anything. See "Feedback auto-fix loop" in DEV_NOTES.md. */
+
+/* The app is static with no build step, so there is no version constant to
+   read. The cache-buster already on every <script src="js/core.js?v=..."> in
+   index.html IS the build id in practice -- it is bumped on every deploy, so
+   deriving it costs nothing to maintain and can't drift from what actually
+   shipped the way a hand-edited APP_VERSION would. */
+function appBuildId(){
+  try{
+    var tag = document.querySelector('script[src*="js/core.js"]');
+    var m = tag && /[?&]v=([A-Za-z0-9._-]{1,40})/.exec(tag.getAttribute("src") || "");
+    return m ? m[1] : "unknown";
+  }catch(e){ return "unknown"; }
+}
+
+/* Query-string keys whose VALUE must never be persisted into a feedback doc.
+   This is not hypothetical: js/core.js:532 reads a single-use invite token
+   straight off window.location.search, so an untrimmed location.href on the
+   invite screen would copy a live credential into Firestore AND into the
+   feedback email. Keys are redacted, not dropped, so the diagnosis still
+   sees that the parameter was present. */
+var FEEDBACK_ROUTE_SECRET_KEYS = /^(invite|invite_token|inviteToken|token|access_token|access-token|accessToken|id_token|id-token|idToken|refresh_token|refresh-token|refreshToken|firebase_token|firebase-token|firebaseToken|auth_token|auth-token|authToken|key|apikey|api_key|api-key|secret|sig|signature|password|passwd|pass|pin|auth|code|jwt|bearer|session|sessionid|session_id|session-token|sessionToken|credential|credentials|assertion|saml)$/i;
+function sanitizedFeedbackRoute(){
+  var href = "";
+  try{ href = String(window.location.href || ""); }catch(e){ return ""; }
+  try{
+    var u = new URL(href);
+    var keys = [];
+    u.searchParams.forEach(function(_v, k){ keys.push(k); });
+    keys.forEach(function(k){ if (FEEDBACK_ROUTE_SECRET_KEYS.test(k)) u.searchParams.set(k, "REDACTED"); });
+    return u.toString().slice(0, 500);
+  }catch(e){
+    /* No URL support (or an unparseable href): fail toward privacy by
+       dropping the query string wholesale rather than shipping it raw. */
+    return href.split("?")[0].slice(0, 500);
+  }
+}
 function openFeedbackModal(){
   feedbackState = { type: null, screenshot: null };
   setVal("feedback-comments", "");
@@ -2257,6 +2333,22 @@ async function submitFeedback(){
     workOrderId: onWorkOrderScreen ? (currentId || null) : null,
     workOrderJobName: onWorkOrderScreen ? (val("jobName").trim() || null) : null,
     screenshot: feedbackState.screenshot || null,
+    /* Auto-diagnosis signal: which deploy, which url, which Firebase project.
+       `env` matters because dev and prod are SEPARATE Firebase projects since
+       the 2026-07-11 split -- a report is only reproducible against the
+       environment it came from. */
+    appVersion: appBuildId(),
+    route: sanitizedFeedbackRoute(),
+    env: isDevEnvironment() ? "dev" : "prod",
+    /* Seeds the triage lifecycle at creation so the Dispatch watcher's
+       indexed `triageStatus == "new"` query matches immediately. Firestore
+       equality does NOT match documents missing the field, so reports
+       submitted before this shipped stay invisible to that query by design --
+       the sinceCreatedAt watermark path exists for those (DEV_NOTES.md).
+       This is the only triage field the client writes: agentDiagnosis and
+       branchUrl are server-owned (admin.js update_feedback_status), and
+       firestore.rules still forbids client updates entirely. */
+    triageStatus: "new",
     createdAt: Date.now()
   };
   toast("Sending feedback…");
@@ -2295,6 +2387,28 @@ async function loadFeedbackBacklog(){
     if (host) host.innerHTML = '<p class="hint">Couldn\'t load feedback: ' + esc(e.message) + '</p>';
   }
 }
+/* Triage lifecycle labels -- MUST stay in step with TRIAGE_STATUSES in
+   netlify/functions/lib/feedbackStatus.js (a test pins the two together).
+   Anything unrecognised falls through to the raw string rather than being
+   hidden, so a status added server-side is visible here before this map is
+   updated. */
+var FEEDBACK_TRIAGE_LABELS = {
+  new: "🆕 New", triaging: "🔎 Triaging", fix_proposed: "🛠️ Fix proposed",
+  merged: "✅ Merged", wont_fix: "🚫 Won't fix"
+};
+function feedbackTriageLabel(status){
+  if (!status) return "";                      /* pre-loop report: no field */
+  return FEEDBACK_TRIAGE_LABELS[status] || status;
+}
+/* Only ever renders a branch link the server already validated as an https
+   github.com URL. Re-checked here rather than trusted because this value
+   goes into an href: a stored `javascript:` string would otherwise be one
+   admin click from executing. Belt and braces with normalizeBranchUrl(). */
+function safeBranchUrl(url){
+  var raw = String(url || "").trim();
+  if (!raw) return "";
+  return /^https:\/\/(www\.)?github\.com\//i.test(raw) ? raw : "";
+}
 function renderFeedbackBacklog(){
   var host = document.getElementById("feedback-backlog-list");
   if (!host) return;
@@ -2302,15 +2416,29 @@ function renderFeedbackBacklog(){
   var items = feedbackBacklog.filter(function(f){ return !filterType || f.type === filterType; });
   if (!items.length){ host.innerHTML = '<p class="hint">No feedback yet.</p>'; return; }
   host.innerHTML = items.map(function(f){
+    var triage = feedbackTriageLabel(f.triageStatus);
+    var branch = safeBranchUrl(f.branchUrl);
+    var diagnosis = String(f.agentDiagnosis || "").trim();
+    var snippet = diagnosis.length > 300 ? diagnosis.slice(0, 300).trim() + "…" : diagnosis;
     return '<div class="card" style="margin:0 0 8px">' +
       '<div style="display:flex;justify-content:space-between;align-items:start;gap:8px">' +
       '<b>' + esc(f.typeLabel || f.type || "") + '</b>' +
-      '<span class="hint" style="margin:0;white-space:nowrap">' + esc(f.createdAt ? new Date(f.createdAt).toLocaleString() : "") + '</span></div>' +
+      '<span class="hint" style="margin:0;white-space:nowrap">' +
+        (triage ? esc(triage) + ' · ' : '') +
+        esc(f.createdAt ? new Date(f.createdAt).toLocaleString() : "") + '</span></div>' +
       (f.comments ? '<p style="margin:6px 0">' + esc(f.comments) + '</p>' : '<p class="hint" style="margin:6px 0">(no comments)</p>') +
       '<p class="hint" style="margin:0">Screen: ' + esc(f.screen || "") +
         (f.technician ? ' · Tech: ' + esc(f.technician) : '') +
         (f.workOrderJobName ? ' · Work order: ' + esc(f.workOrderJobName) : '') +
         (f.adminMode ? ' · (admin mode)' : '') + '</p>' +
+      /* Build/env/route: what makes a report reproducible. Only shown when
+         present -- reports submitted before this feature have none. */
+      ((f.appVersion || f.env || f.route) ?
+        '<p class="hint" style="margin:2px 0 0;word-break:break-all">Build: ' + esc(f.appVersion || "unknown") +
+          (f.env ? ' (' + esc(f.env) + ')' : '') +
+          (f.route ? ' · ' + esc(f.route) : '') + '</p>' : '') +
+      (snippet ? '<p class="hint" style="margin:6px 0 0;white-space:pre-wrap"><b>Diagnosis:</b> ' + esc(snippet) + '</p>' : '') +
+      (branch ? '<p style="margin:6px 0 0"><a href="' + esc(branch) + '" target="_blank" rel="noopener noreferrer">View proposed fix ↗</a></p>' : '') +
       (f.screenshot ? '<img src="' + esc(f.screenshot) + '" style="max-width:180px;max-height:120px;border:1px solid var(--line);' +
         'border-radius:4px;margin-top:6px;cursor:pointer" onclick="openImageLightbox(this.src)">' : '') +
     '</div>';

@@ -15,9 +15,26 @@
 const { getDb, requirePermission, hostnameFromEvent } = require("./lib/authGuard");
 const { PERMISSION_KEYS, PERMISSION_SCOPES, isValidPermissionValue } = require("./lib/permissions");
 const { purgeLabelsForBuilding } = require("./lib/aiLabels");
+const {
+  TRIAGE_STATUSES, isValidTriageStatus, clampDiagnosis, normalizeBranchUrl, parseFeedbackQuery
+} = require("./lib/feedbackStatus");
 
 function resp(code, obj) {
   return { statusCode: code, headers: { "Content-Type": "application/json" }, body: JSON.stringify(obj) };
+}
+
+function parseFeedbackReturnOptions(body) {
+  const src = body || {};
+  if (src.omitScreenshot === undefined || src.omitScreenshot === null || src.omitScreenshot === "") {
+    return { ok: true, omitScreenshot: false };
+  }
+  if (src.omitScreenshot === true || src.omitScreenshot === "true") {
+    return { ok: true, omitScreenshot: true };
+  }
+  if (src.omitScreenshot === false || src.omitScreenshot === "false") {
+    return { ok: true, omitScreenshot: false };
+  }
+  return { ok: false, error: "Invalid omitScreenshot" };
 }
 
 // Auth Phase 2/5 -- immutable audit log for admin.js's mutating actions
@@ -389,9 +406,87 @@ exports.handler = async function (event) {
       try { caller = await requirePermission(event, "audit.view"); }
       catch (e) { return resp(e.statusCode || 401, { error: e.message }); }
 
-      const snap = await db.collection("feedback").orderBy("createdAt", "desc").limit(200).get();
-      const items = snap.docs.map(d => Object.assign({ id: d.id }, d.data()));
-      return resp(200, { ok: true, items });
+      // Optional filters (all absent = the original "newest 200, unfiltered"
+      // behaviour the admin backlog card has always sent, so that view is
+      // unchanged by this feature). With filters, this is also the query the
+      // Dispatch feedback->auto-fix watcher polls -- see "Feedback auto-fix
+      // loop" in DEV_NOTES.md for the exact params.
+      const parsed = parseFeedbackQuery(body);
+      if (!parsed.ok) return resp(400, { error: parsed.error });
+      const q = parsed.query;
+      const returnOpts = parseFeedbackReturnOptions(body);
+      if (!returnOpts.ok) return resp(400, { error: returnOpts.error });
+
+      let ref = db.collection("feedback");
+      // Equality filters BEFORE the range/orderBy field -- that ordering is
+      // what lets one composite index (type, triageStatus, createdAt) serve
+      // every combination below. The indexes are in firestore.indexes.json
+      // and deploy per-context on every Netlify build; they are NOT
+      // click-to-create (see the header comment in that file).
+      if (q.type) ref = ref.where("type", "==", q.type);
+      if (q.triageStatus) ref = ref.where("triageStatus", "==", q.triageStatus);
+      if (q.sinceCreatedAt !== null) ref = ref.where("createdAt", ">", q.sinceCreatedAt);
+      const snap = await ref.orderBy("createdAt", "desc").limit(q.limit).get();
+      const items = snap.docs.map(d => {
+        const data = Object.assign({ id: d.id }, d.data());
+        if (returnOpts.omitScreenshot) delete data.screenshot;
+        return data;
+      });
+      // `query` is echoed back so the watcher can log exactly what it asked
+      // for, and `statuses` so it never has to hardcode the enum.
+      return resp(200, { ok: true, items, query: Object.assign({}, q, { omitScreenshot: returnOpts.omitScreenshot }), statuses: TRIAGE_STATUSES });
+    }
+
+    if (body.action === "update_feedback_status") {
+      // The WRITE half of the feedback -> auto-fix loop: Dispatch's watcher
+      // (and Mark, through the backlog card) moves a report along its triage
+      // lifecycle here.
+      //
+      // This is deliberately the ONLY writer. firestore.rules keeps
+      // `feedback` create-only for clients -- update/delete stay `if false`
+      // and this feature did NOT loosen them -- so a browser cannot forge a
+      // diagnosis or a branch link even though it can submit feedback.
+      //
+      // Gated on feedback.triage: list_feedback remains audit.view, but
+      // lifecycle writes use their own write-tier key so audit readers are
+      // not automatically allowed to move a report through the fix loop.
+      let caller;
+      try { caller = await requirePermission(event, "feedback.triage"); }
+      catch (e) { return resp(e.statusCode || 401, { error: e.message }); }
+
+      const feedbackId = String(body.feedbackId || "").trim();
+      if (!feedbackId) return resp(400, { error: "feedbackId is required" });
+      if (!isValidTriageStatus(body.triageStatus)) {
+        return resp(400, { error: "triageStatus must be one of: " + TRIAGE_STATUSES.join(", ") });
+      }
+
+      // null/"" clears the link; a non-allowlisted or non-https URL is a hard
+      // 400 rather than a silent drop -- the viewer renders this into an
+      // <a href>, and a watcher that thinks it published a branch link when
+      // it didn't is worse than a failed call it can retry.
+      const branchUrl = normalizeBranchUrl(body.branchUrl);
+      if (branchUrl === null) return resp(400, { error: "branchUrl must be an https:// github.com URL" });
+
+      const ref = db.collection("feedback").doc(feedbackId);
+      const snap = await ref.get();
+      if (!snap.exists) return resp(404, { error: "Feedback not found" });
+      const before = snap.data() || {};
+
+      // Field-by-field merge, never a whole-doc set: the submission fields
+      // (comments, screenshot, device, route...) are the evidence this loop
+      // runs on and must survive every status write. `agentDiagnosis` and
+      // `branchUrl` are only touched when the caller actually sent them, so
+      // a plain "new -> triaging" call can't blank an earlier diagnosis.
+      const patch = { triageStatus: body.triageStatus, updatedAt: Date.now() };
+      if (body.agentDiagnosis !== undefined) patch.agentDiagnosis = clampDiagnosis(body.agentDiagnosis);
+      if (body.branchUrl !== undefined) patch.branchUrl = branchUrl;
+      await ref.set(patch, { merge: true });
+
+      await writeAuditLog(db, caller, "update_feedback_status", { feedbackId },
+        { triageStatus: before.triageStatus || null, branchUrl: before.branchUrl || null },
+        { triageStatus: patch.triageStatus, branchUrl: patch.branchUrl === undefined ? (before.branchUrl || null) : patch.branchUrl });
+
+      return resp(200, { ok: true, feedbackId, triageStatus: patch.triageStatus, updatedAt: patch.updatedAt });
     }
 
     if (body.action === "list_audit_log") {

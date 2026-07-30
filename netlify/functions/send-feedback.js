@@ -34,6 +34,13 @@ exports.handler = async function (event) {
     "Technician: " + String(data.technician || "(not set)"),
     "Admin mode: " + (data.adminMode ? "yes" : "no"),
     "Device: " + String(data.device || ""),
+    // Build + route come from js/core.js submitFeedback (see "Feedback
+    // auto-fix loop" in DEV_NOTES.md). Mark triages from this email before
+    // the backlog card, so the two fields that say WHICH deploy and WHICH
+    // screen belong here, not only in Firestore. `route` is already
+    // secret-redacted client-side.
+    "Build: " + String(data.appVersion || "(unknown)") + (data.env ? " (" + String(data.env).slice(0, 10) + ")" : ""),
+    "Route: " + String(data.route || "").slice(0, 300),
     "Work order: " + (data.workOrderJobName
       ? data.workOrderJobName + (data.workOrderId ? " (" + data.workOrderId + ")" : "")
       : "(none open)"),

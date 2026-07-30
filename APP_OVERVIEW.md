@@ -292,8 +292,14 @@ order and are meant to be kept current as the roof itself changes.
 
 Tap **"+ Add Roof Feature"** on a building's Roof Map, pick a type, optionally add a
 label and notes, and place it — no admin PIN needed, any tech can add, move, or remove
-one. Each type gets its own icon/color so they're easy to tell apart from finding pins
-at a glance. Tap an existing feature's marker to edit or remove it.
+one. When the feature is a **Drain**, the form also accepts two reference distances
+in feet (for example, from the north parapet and west wall) so the drain can be
+field-verified from known points instead of relying only on its map position; saved
+drain references show next to the marker on the roof map and in its popup. When the
+feature is a **Core Cut** or **Test Cut**, the form can also capture the cut result
+and an optional photo link/reference. Each type gets its own icon/color so they're
+easy to tell apart from finding pins at a glance. Tap an existing feature's marker to
+edit or remove it.
 
 **Custom base maps** (admin-only): a building can use something other than satellite.
 Requires the building to already have a CompanyCam project linked. Set from the
@@ -386,7 +392,9 @@ helps a tech capture a clean roof outline for a building on the spot:
    what you see in Preview is exactly what SVG/PNG/PDF produce — no surprises between
    them. Every export is a single clean page: the outline (filled, not just an
    outline), every edge's real measured length labeled right on it, every placed
-   feature with its icon AND name, a legend, a scale bar, and a header with the
+   feature with its icon AND name, drain reference distances when entered, core/test
+   cut result callouts with photo links/references when entered, a legend, a scale
+   bar, and a header with the
    building name/address, roof label, area, perimeter, and date. All generated on
    the device, no internet required once the outline exists. Once linked to a
    building, exports include everything marked up on the roof (features + any

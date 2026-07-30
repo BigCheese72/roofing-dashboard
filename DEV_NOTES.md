@@ -361,6 +361,24 @@ blueprint of the building" — the roof's own inventory, not its repair history.
   already findings with pins, tracked per-report on purpose. Adding them here would
   create two competing representations of the same kind of location.
 
+- **Drain reference distances (shipped 2026-07-25, dev only)**: drain assets can now
+  carry two field-measured references in `asset.referenceDistances`:
+  `{point1Label, point1DistanceFt, point2Label, point2DistanceFt, unit:"ft"}`.
+  The fields are shown only when the selected roof feature type is `drain`, in both
+  the Building History modal and RoofMapper's inline feature form. Saved references
+  render as a small non-interactive label next to the drain marker on Building
+  History/RoofMapper maps, and also in the asset popup. This is additive to the
+  existing marker position (`lat/lng` or `x/y`) so older assets and non-drain feature
+  types are unchanged.
+- **Exported asset callouts (shipped 2026-07-25, dev only)**: RoofMapper SVG/PNG/PDF
+  exports and the report PDF roof-plan SVG now carry the full asset object through
+  projection instead of reducing it to `{type,label}`. Drain exports therefore print
+  the saved reference distances next to the drain marker. Core Cut/Test Cut assets can
+  also carry `coreResult` and `corePhotoLink` from both feature entry points; exports
+  render those as a leader-line callout/text box next to the marker. `corePhotoLink`
+  is intentionally a URL/reference string, not uploaded/embedded image bytes, matching
+  the repo's "large binaries stay out of Firestore building docs" rule.
+
 ### RoofMapper: GPS + Overpass roof outline capture (Phase 1, shipped)
 
 A new top-level tab (`showView('roofmapper')`, `#view-roofmapper`) letting a tech stand
@@ -8657,3 +8675,340 @@ Tests: `tests/workOrderAmendments.test.js` — 28. The append-only contract, the
 through the full-overwrite save and back, card visibility/badge, the form
 surviving an autosave re-render, and every report builder including "prints
 nothing at all when there are no return visits."
+
+## Feedback auto-fix loop — data + API foundation (dev only, 2026-07-28)
+
+The 💬 Send Feedback button has always captured a report to Firestore and emailed
+Mark, and then nothing happened. This is the foundation that lets a bug submission
+become a *diagnosed dev fix* automatically. **Only the data and the API live here.**
+The poll-diagnose-branch watcher itself is orchestrated separately by Dispatch as a
+scheduled task; this section is the contract it codes against.
+
+### What changed
+
+1. **The submission got diagnosable.** `submitFeedback()` in `js/core.js` now records
+   `appVersion` (build id), `route` (secret-redacted url) and `env` (`dev`/`prod`)
+   alongside the existing screen/technician/work-order/screenshot/device fields.
+   Before this a report said *"Bug — Work Order Form"* and nothing about which
+   deploy or url produced it, which is not enough for an agent to reproduce
+   anything. The same three fields were added to the feedback **email** too.
+2. **A triage lifecycle.** `triageStatus` / `agentDiagnosis` / `branchUrl` /
+   `updatedAt` on the feedback doc — see `DATA_MODEL.md` for exact semantics.
+3. **A server-side writer**, `update_feedback_status`, which is the *only* thing
+   that can move a report along that lifecycle.
+4. **A filterable watcher query** on the existing `list_feedback` action.
+5. **The admin backlog card** (Reports → 🗣️ Feedback Backlog) shows status,
+   diagnosis snippet, build/route line, and a link to the proposed fix.
+
+### The build id has no build step
+
+The app is static, so there is no version constant to read. The `?v=...`
+cache-buster already on every `<script src="js/core.js?v=20260724b">` in
+`index.html` **is** the build id in practice — it is bumped on every deploy.
+`appBuildId()` reads it off the live script tag at runtime, so it cannot drift
+from what actually shipped the way a hand-edited `APP_VERSION` would. If the tag
+is missing or unversioned it degrades to `"unknown"` rather than throwing.
+
+### ⚠️ `route` is secret-redacted, and must stay that way
+
+`js/core.js` reads a **single-use invite token** straight off
+`window.location.search` (the invite-link sign-in flow). An untrimmed
+`location.href` on that screen would copy a live credential into Firestore *and*
+into the emailed report. `sanitizedFeedbackRoute()` replaces the value of any
+query key matching `FEEDBACK_ROUTE_SECRET_KEYS` (`invite`, `token`, `key`,
+`secret`, `sig`, `password`, `pin`, `auth`, `code`, …) with `REDACTED`, keeps
+harmless ones (`openHelp=1`) because they are real diagnosis signal, and on any
+parse failure drops the query string **wholesale** rather than shipping it raw.
+Pinned by `tests/feedbackCapture.test.js`.
+
+### Endpoint contract for the Dispatch watcher
+
+Both halves are `POST /.netlify/functions/admin`, `Authorization: Bearer <Firebase
+ID token>`, but they are intentionally split by permission: `list_feedback` is
+gated on **`audit.view`** and `update_feedback_status` is gated on
+**`feedback.triage`**. The watcher credential needs both grants. It is an admin
+caller, not an open endpoint: no token is 401, a field tech is 403.
+
+**Which environment you hit decides which Firestore you get.** Since the
+2026-07-11 Firebase split, `dev--leak-work-orders.netlify.app` and
+`leak-work-orders.netlify.app` are separate projects, and `authGuard.getDb()`
+picks the project from the request hostname. Poll the dev host to work dev
+reports; prod feedback is only visible on the prod host.
+
+**1. Poll for new bug reports**
+
+```jsonc
+{ "action": "list_feedback",
+  "type": "bug",            // optional: praise | confusing | bug | feature
+  "triageStatus": "new",    // optional: new | triaging | fix_proposed | merged | wont_fix
+  "sinceCreatedAt": 1753600000000,  // optional: epoch ms, strictly greater-than
+  "limit": 50,              // optional: 1-200, default 200
+  "omitScreenshot": true }  // optional: omit base64 screenshot payloads for watcher polls
+```
+
+Returns `{ ok, items[], query, statuses[] }`, newest first. `items[]` are full
+docs including `id` and every field above unless `omitScreenshot: true` was
+sent, in which case the base64 `screenshot` field is removed from the response.
+`query` echoes what was actually run; `statuses` is the live vocabulary so the
+watcher never hardcodes the enum. Any invalid param is a **400** — never a
+silently unfiltered query. Sending no params at all reproduces the original
+behaviour exactly (newest 200, unfiltered, screenshots included), which is what
+the admin card still sends.
+
+**2. Write the result back**
+
+```jsonc
+{ "action": "update_feedback_status",
+  "feedbackId": "fb_ab12cd",          // required
+  "triageStatus": "fix_proposed",     // required, must be in the vocabulary
+  "agentDiagnosis": "resizeImageFile() rejects HEIC on iOS 17.",  // optional
+  "branchUrl": "https://github.com/BigCheese72/roofing-dashboard/tree/fix/heic" }  // optional
+```
+
+Returns `{ ok, feedbackId, triageStatus, updatedAt }`. It is a **field merge**:
+the submission evidence (comments, screenshot, route, appVersion) always
+survives, and omitting `agentDiagnosis`/`branchUrl` leaves earlier values intact —
+so a plain `new → triaging` call cannot blank a diagnosis written a step earlier.
+Pass `""` to clear a field deliberately. Unknown `feedbackId` is 404. Every call
+is audit-logged as `update_feedback_status` with a before/after.
+
+`branchUrl` is **allowlisted to https `github.com`** and a violation is a hard 400,
+not a silent drop — the admin viewer renders it into an `<a href>`, so an
+unconstrained string is a stored-XSS surface, and a watcher that believes it
+published a branch link when it didn't is worse than a call it can retry. The
+viewer re-checks the same rule before linking (belt and braces).
+
+### Suggested watcher loop
+
+`triageStatus: "new"` → claim it with `"triaging"` **before** doing the work (that
+write is what stops a second pass picking up the same report) → diagnose → push a
+branch → `"fix_proposed"` + `agentDiagnosis` + `branchUrl`. `"merged"` and
+`"wont_fix"` are terminal. Nothing enforces a state *machine* server-side — only
+the vocabulary — so the watcher may jump straight to `"wont_fix"`.
+
+### ⚠️ Reports submitted before this shipped are invisible to the status query
+
+Firestore equality does not match documents **missing** the field, so anything
+submitted before 2026-07-28 has no `triageStatus` and will never appear in a
+`triageStatus == "new"` poll. This is deliberate (it keeps the loop from waking up
+to a year of backlog on its first run). To reach them, poll with `sinceCreatedAt`
+only, or list unfiltered — `update_feedback_status` works on any doc, so the
+watcher can adopt a legacy report by writing a status onto it.
+
+### Firestore indexes
+
+`firestore.indexes.json` gains `feedback (type, triageStatus, createdAt DESC)`
+plus two narrower pairs. Equality fields come first and `createdAt` (the range +
+`orderBy` field) last, which is what lets one index serve every filter
+combination. These deploy per-context via `scripts/deploy-firestore-rules.js` on
+every Netlify build — they are **not** click-to-create. Without them the watcher's
+poll returns `9 FAILED_PRECONDITION` and the loop silently never sees a bug,
+since nothing else in the app runs this query.
+
+### Rules are unchanged
+
+`feedback` stays create-only for clients (`allow read, update, delete: if false`).
+The loop adds a server-side writer, not client write access. See `DATA_MODEL.md`
+for the one deliberately-unclosed gap (`create` does not field-validate, so a
+crafted client could self-assign a status) and why closing it is a separate
+change.
+
+Tests: `tests/feedbackTriageStatus.test.js` (20 — the gate, the indexed query
+shape, param validation, merge semantics, the branchUrl allowlist, audit
+logging) and `tests/feedbackCapture.test.js` (16 — build id, invite-token
+redaction, payload shape, viewer rendering, client/server vocabulary parity).
+
+### Live role update for `feedback.triage`
+
+Adding `feedback.triage` to `SEED_ROLES` does **not** update already-seeded
+Firestore `roles/*` documents. Before pointing Dispatch at dev, grant
+`feedback.triage` in the Roles & Permissions grid to the watcher role and to any
+human roles expected to move reports through the loop. Do not use
+`auth.js seed_roles` as a shortcut unless Mark explicitly accepts overwriting
+the live roles grid; that action reseeds role docs from code and can wipe
+customized permission edits. The safe path is a targeted grid toggle for
+`feedback.triage`.
+
+## Feedback auto-fix loop hardening addendum (dev only, 2026-07-28)
+
+Codex C-1 through C-4 tightened the foundation without changing the admin
+backlog's default behavior:
+
+- `firestore.rules` now validates feedback creates. It accepts the legacy
+  mid-deploy shape with no `triageStatus` and the new bundle shape with only
+  `triageStatus: "new"`, while rejecting forged server-owned lifecycle fields
+  (`agentDiagnosis`, `branchUrl`, `updatedAt`) and non-new statuses.
+- `list_feedback` still defaults to newest 200 full docs for the backlog card.
+  Watchers may now send `omitScreenshot: true` to keep base64 screenshots out of
+  polling payloads; invalid values are a 400, not a silently different query.
+- `update_feedback_status` is now gated by the dedicated `feedback.triage`
+  permission. `list_feedback` remains `audit.view` gated, so a watcher/admin
+  service account needs both read and triage grants.
+- The initial seed grid grants `feedback.triage` to the same roles that already
+  had broad feedback-loop write access via `audit.view`: owner/admin through the
+  all-permissions paths, plus service_manager and ops_manager explicitly.
+- Route redaction now also catches common session/JWT/camelCase token names such
+  as `session_id`, `jwt`, `firebaseToken`, `accessToken`, `credential`,
+  `assertion`, and `saml`.
+
+Additional coverage lives in Codex-owned test files:
+`tests/feedbackCreateRulesHardening.test.js`,
+`tests/feedbackAdminHardeningExtra.test.js`, and
+`tests/feedbackViewerSecurityExtra.test.js`.
+### CompanyCam push de-duplication (built 2026-07-28, dev only)
+
+**Goal (from Mark)**: the RoofOps → CompanyCam photo push must stop re-uploading
+photos that are already in the CompanyCam project. Compare against what is
+**already in CompanyCam**, using **capture date/time + GPS**, with a **content
+hash** as the fallback.
+
+**Where it lives.** Wired into the existing uploader, not beside it.
+`uploadPhotoToCompanyCam()` (`netlify/functions/lib/companyCamPhotos.js`) calls
+`evaluatePhotoForDuplicate()` after the Storage existence check and *before* it
+signs a URL or POSTs anything — so a duplicate costs one check and nothing else.
+Two new files: `lib/companyCamDedupConfig.js` (every knob, one place) and
+`lib/companyCamDedup.js` (the engine). The client orchestration is unchanged in
+shape: `pushPhotosToCompanyCamFeed()` (`js/history.js`) still walks the photos
+one at a time through the same `upload_photo` action.
+
+**The two mechanisms.**
+
+1. *Primary — match the live project.* Fetch the target project's existing
+   photos (`captured_at` + `coordinates`) and match a candidate on **both** time
+   (±3s default) and location (±5m default, haversine). A hit is skipped.
+2. *Fallback — content hash.* SHA-256 of the image bytes against a per-project
+   ledger (`cc_push_ledger/{projectId}/entries/{sha256}`, see `DATA_MODEL.md`).
+   Runs when the primary can't decide, and — with `alwaysHash` on, the default —
+   on every candidate, because the primary check compares the photo's *own* GPS
+   while the copy we previously sent to CompanyCam may sit at a **finding pin**
+   instead. Only the hash can see that one.
+
+**The thing that had to be solved first: photos had no capture time.** The canvas
+resize re-encodes every image and drops all EXIF (the same reason GPS had to be
+recovered in `parseExifGps()`), so `ccPhotoCapturedAt()` was sending the **work
+order's service date at noon** — identical for every photo on the order. Combine
+that with coordinates that fall back to a shared finding pin or the job location
+and *every photo on an order already presented the same (time, place) as every
+other*. A naive time+GPS match would have uploaded photo 0 and skipped 1..N as
+duplicates of it. So:
+
+- `parseExifCapturedAt()` (`js/photos.js`) recovers **DateTimeOriginal** from the
+  original bytes before the resize discards them, on all three photo-creation
+  paths (library import, camera capture, dead-slot replacement). Stored as
+  `photo.capturedAt` (epoch ms) + `capturedAtSource`, persisted through
+  `cloudSaveOrder()`/`cloudFetchOrder()` like `ccFeedPhotoId` and `amendment_id`.
+- Only **per-photo** metadata is sent as dedup identity (`dedupCapturedAt` /
+  `dedupCoordinates`). Derived, shared values are never sent. No own metadata →
+  the primary check does not run at all → hash.
+- `excludeCcPhotoIds` carries the ids the *current run* has created, so photo 5
+  can never be judged a duplicate of photo 3 we uploaded eight seconds ago.
+
+**Timezone.** EXIF `DateTimeOriginal` is naive local wall-clock; CompanyCam's
+`captured_at` is unix seconds UTC (verified read-only against the live API,
+2026-07-28: `1785248380`, `coordinates: {lat, lon}`, 100/100 photos on a page
+carried both). Compared raw, a US Central photo is 5–6 hours out, every match
+misses, and the feature silently does nothing. The conversion happens **on the
+device**, at import — EXIF's own `OffsetTimeOriginal` when the camera wrote one,
+otherwise the phone's own zone, which is the zone the photo was taken in.
+Downstream only ever sees unambiguous epoch ms. `normalizeToEpochSeconds()` still
+handles every other shape, and **refuses** a naive value with no zone rather than
+guessing (configurable via `CC_DEDUP_ASSUMED_UTC_OFFSET_MINUTES` if one ever
+genuinely reaches the server).
+
+**Fail open, always.** A false dup is an annoyance; a false skip is lost field
+evidence off a roof someone will make a warranty claim about. If the project
+index can't be fetched, the bytes can't be hashed, or the ledger can't be read,
+the photo is **uploaded and flagged** (`unverified`), never dropped. The project
+index scan is bounded by both a page count and a **wall-clock budget**
+(`indexMaxMillis`, 6s) so a large project can't outrun the function timeout;
+truncation biases toward an extra upload and is reported.
+
+**Config** — `lib/companyCamDedupConfig.js`, every value overridable by env var,
+read at call time, bounds-checked (a typo'd tolerance falls back to the default
+and lands in `cfg.warnings` rather than turning dedup into a photo shredder):
+`CC_DEDUP_ENABLED` (kill switch), `CC_DEDUP_TIME_TOLERANCE_SECONDS` (3),
+`CC_DEDUP_DISTANCE_TOLERANCE_METERS` (5), `CC_DEDUP_ALWAYS_HASH` (true),
+`CC_DEDUP_HASH_FALLBACK` (true), `CC_DEDUP_ASSUMED_UTC_OFFSET_MINUTES` (null),
+`CC_DEDUP_INDEX_PER_PAGE`/`_MAX_PAGES`/`_MAX_MILLIS`/`_CACHE_TTL_MS`,
+`CC_DEDUP_LEDGER_COLLECTION`, `CC_DEDUP_MAX_HASH_BYTES`. No new secret — it
+reuses `COMPANYCAM_TOKEN`.
+
+**Auditable, not a black box.** Every push logs one summary line
+(`ccPushSummaryLine()`: "N uploaded, M skipped as duplicates (X matched capture
+time + GPS, Y matched content hash)…") plus a per-photo `dedupLog` with the
+matched CompanyCam photo id and the actual time/distance deltas. Duplicates and
+unverified uploads each get their own toast, including when *nothing* uploaded —
+the case that would otherwise look like the push did nothing at all. The
+owner-only backfill aggregates the same counts.
+
+**Safety detail worth keeping.** A metadata match records
+`photo.ccDuplicateOfPhotoId`, deliberately **not** `ccFeedPhotoId`: the photo it
+matched may be one the tech took in CompanyCam themselves, and `ccFeedPhotoId` is
+the id the undo-push deletes. Recording a match must never make someone else's
+photo deletable.
+
+Tests: `tests/companyCamDedup.test.js` — 38. Timezone normalization both ways,
+tolerance edges (±3s inclusive, 4s out), both-must-match, config bounds, the
+live-match skip, the hash-ledger skip across two different work orders, the
+pinned-photo case only the hash catches, `excludeCcPhotoIds`, index truncation by
+page and by clock, fail-open on every failure mode, the kill switch, the auth
+guard still closed, EXIF `DateTimeOriginal` with and without an offset tag, and —
+by name — the **FALSE-SKIP GUARDS**: five metadata-less photos on one work order
+must all upload, and a shared finding pin must never make two photos duplicates.
+
+
+## Report Preview: a way back to the form (dev only, 2026-07-30)
+
+**The first fix produced by the feedback → auto-fix loop.** Report
+`fb_ms7owm7pdbc5a`: *once you are on Preview there is no way to go back and
+edit.*
+
+### Why the existing Edit tab did not count
+
+It was tempting to close this as "the header Edit tab already does that" — it
+does, and `showView("edit")` has always been a lossless show/hide. But look at
+what the tab actually is on a phone, which is where the report came from:
+
+- `.tab .tab-label{display:none}` (`css/app.css`, `max-width:640px`) — the tab
+  is a bare ✏️ emoji with no word "Edit" on it.
+- The header is a single `flex-wrap:nowrap; overflow-x:auto` row, so that emoji
+  may be scrolled off to the side entirely.
+- `.header-collapsed` slides the whole header out of view on scroll-down, and
+  the preview document is pages long — so by the time a tech has read the
+  report, the only exit has left the screen.
+
+Three separate mechanisms, each individually reasonable, adding up to a dead
+end. The report was right.
+
+### What was added
+
+`#preview-back-top` and `#preview-back-bottom` in `index.html` — the same
+"← Back to Edit" `.btn` above the document and again below it. The bottom copy
+is the one that matters in the field: after scrolling a 20-photo leak report,
+back should be *where you already are*, not a scroll back up to a collapsed
+header.
+
+`backToEdit()` (`js/export.js`) deliberately does nothing but navigate. It must
+not save, reload, re-collect or reset — the form's DOM **is** the live copy of
+the work, `renderDoc()` rebuilds Preview from `collect()` every time, and
+leaving the edit view already flushes the pending local autosave through the
+`showView()` wrapper in `js/workorders.js` ("never lose edits on back-out").
+Adding a save here would be the classic way a Back button starts *causing* the
+data loss it was meant to prevent.
+
+`previewReturnScrollY` carries the form's scroll position across the round trip.
+`showView()` always scrolls to 0, which is right for a view *switch* but wrong
+for Edit → Preview → Edit: landing at the top of a long work order means hunting
+for the field you came back to fix. It is captured on the way **out**
+(`rememberEditScrollForPreview()`, first statement of `goToPreview()`, before
+anything can `await` or hide the view) and only while the edit view is actually
+visible — the Preview tab is live on Preview itself, and re-tapping it there
+would otherwise overwrite the remembered position with Preview's own scroll.
+
+Both rows are `.no-print`; they are chrome, not report content.
+
+Docs: Help Center entry `preview-back-to-edit` (screens `["preview"]`).
+Tests: `tests/reportPreviewBackToEdit.test.js` (8) — control present above *and*
+below the document, both no-print, `backToEdit()` navigates and nothing else
+(stubs for `saveOrder`/`loadOrder`/`collect`/`renderDoc` must stay untouched),
+and the scroll round trip including the re-tap-Preview case.

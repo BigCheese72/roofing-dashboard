@@ -182,7 +182,33 @@ service cloud.firestore {
     // SDK, PIN-gated) instead, same pattern as app_settings' write-only
     // gate above, just mirrored onto read.
     match /feedback/{feedbackId} {
-      allow create: if true;
+      allow create: if request.resource.data.keys().hasOnly([
+          'type', 'typeLabel', 'comments', 'screen', 'technician',
+          'adminMode', 'device', 'workOrderId', 'workOrderJobName',
+          'screenshot', 'createdAt', 'appVersion', 'route', 'env',
+          'triageStatus'
+        ])
+        && request.resource.data.keys().hasAll([
+          'type', 'typeLabel', 'screen', 'adminMode', 'device', 'createdAt'
+        ])
+        && request.resource.data.type in ['praise', 'confusing', 'bug', 'feature']
+        && request.resource.data.typeLabel is string
+        && request.resource.data.screen is string
+        && request.resource.data.adminMode is bool
+        && request.resource.data.device is string
+        && request.resource.data.createdAt is number
+        && (!request.resource.data.keys().hasAny(['comments']) || request.resource.data.comments is string)
+        && (!request.resource.data.keys().hasAny(['technician']) || request.resource.data.technician is string)
+        && (!request.resource.data.keys().hasAny(['workOrderId']) || request.resource.data.workOrderId == null || request.resource.data.workOrderId is string)
+        && (!request.resource.data.keys().hasAny(['workOrderJobName']) || request.resource.data.workOrderJobName == null || request.resource.data.workOrderJobName is string)
+        && (!request.resource.data.keys().hasAny(['screenshot']) || request.resource.data.screenshot == null || request.resource.data.screenshot is string)
+        && (!request.resource.data.keys().hasAny(['appVersion']) || request.resource.data.appVersion is string)
+        && (!request.resource.data.keys().hasAny(['route']) || (request.resource.data.route is string && request.resource.data.route.size() <= 500))
+        && (!request.resource.data.keys().hasAny(['env']) || request.resource.data.env in ['dev', 'prod'])
+        // Mid-deploy compatibility: old bundles submitted no triageStatus;
+        // the new bundle may seed only "new". Server-owned triage fields
+        // agentDiagnosis/branchUrl/updatedAt are not in hasOnly() above.
+        && (!request.resource.data.keys().hasAny(['triageStatus']) || request.resource.data.triageStatus == 'new');
       allow read, update, delete: if false;
     }
 
@@ -249,6 +275,26 @@ service cloud.firestore {
     // to read or write anything under here, no exceptions, ever.
     match /secrets/{secretId} {
       allow read, write: if false;
+    }
+
+    // CompanyCam push de-duplication ledger — SHA-256 of every image byte-set
+    // this app has pushed into a given project, so the same photo is never sent
+    // twice (netlify/functions/lib/companyCamDedup.js). Written and read
+    // exclusively through the Admin SDK inside the upload_photo action, which
+    // is not subject to these rules at all; this block is explicit defense in
+    // depth, same tier as secrets/ above.
+    //
+    // Closed to clients in BOTH directions, and the write half is the one that
+    // matters: a client that could create entries here could pre-seed the
+    // ledger with the hashes of photos that have NOT been pushed and thereby
+    // make the app silently skip real field evidence — a false skip, which is
+    // exactly the failure this feature is built to avoid. Nothing in the app
+    // needs client access: the push is entirely server-side.
+    match /cc_push_ledger/{projectId} {
+      allow read, write: if false;
+      match /entries/{sha256} {
+        allow read, write: if false;
+      }
     }
 
     // Warranty-report ingestion internals (see netlify/functions/

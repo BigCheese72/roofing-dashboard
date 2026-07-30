@@ -418,6 +418,15 @@ Remaining known follow-up gap:
             // "test_cut" | "safety_hazard" | "other"
   label,    // optional free text, e.g. "RTU-2"
   notes,    // optional free text
+  referenceDistances, // optional, drain-only: { point1Label, point1DistanceFt,
+                      // point2Label, point2DistanceFt, unit:"ft" }. Additive
+                      // field measurements from two site reference points,
+                      // entered when placing/editing a drain.
+  coreResult,         // optional, core_cut/test_cut only: free-text cut result.
+  corePhotoLink,      // optional, core_cut/test_cut only: URL or field reference
+                      // to the core/test-cut photo. Deliberately a reference,
+                      // not image bytes, so roof assets do not bloat the
+                      // building doc.
   lat, lng, x, y, // exactly one of {lat,lng} or {x,y}, same convention as finding pins
   createdAt, updatedAt
 }
@@ -1131,7 +1140,44 @@ In-app Send Feedback submissions — the 💬 button reachable from every screen
                    // photo as a fallback) — same resize-before-store discipline as
                    // work order photos, just capped smaller since these are
                    // debugging aids, not documentation. null if not attached.
-  createdAt        // Date.now() at submission
+  createdAt,       // Date.now() at submission
+
+  // ---- auto-diagnosis signal (feedback -> auto-fix loop, dev 2026-07-28) ----
+  // Written by the CLIENT at create time. Everything above says what the tester
+  // felt; these three say what they were actually running, which is what makes a
+  // report reproducible without asking them.
+  appVersion,      // build id — the `?v=...` cache-buster on index.html's
+                   // <script src="js/core.js?v=..."> tag, read at runtime by
+                   // appBuildId(). The app is static with no build step, so this
+                   // is the only value that provably moves on every deploy.
+                   // "unknown" if the tag is missing or unversioned.
+  route,           // window.location.href, SECRET-REDACTED and capped at 500 chars
+                   // (sanitizedFeedbackRoute()). Query keys matching
+                   // FEEDBACK_ROUTE_SECRET_KEYS (invite, token, key, secret, sig,
+                   // password, pin, auth, code, ...) have their VALUE replaced with
+                   // "REDACTED" — js/core.js reads a single-use invite token off
+                   // location.search, so a raw href would copy a live credential
+                   // into this doc and into the feedback email.
+  env,             // "dev" | "prod" — isDevEnvironment(). Since the 2026-07-11
+                   // Firebase split these are SEPARATE projects, so this is also
+                   // which Firestore the doc lives in. A fix can only be verified
+                   // against the environment the report came from.
+
+  // ---- triage lifecycle (server-owned except the seed) ----
+  triageStatus,    // "new" | "triaging" | "fix_proposed" | "merged" | "wont_fix"
+                   // — TRIAGE_STATUSES in netlify/functions/lib/feedbackStatus.js.
+                   // The client seeds "new" at create ONLY because Firestore
+                   // equality cannot match a missing field, so the watcher's
+                   // indexed query needs it to exist. Every later transition is
+                   // written server-side.
+  agentDiagnosis,  // free text from the triage agent, trimmed + capped at 4000
+                   // chars. Absent until first written — never client-written.
+  branchUrl,       // https://github.com/... link to the proposed fix. Allowlisted
+                   // to github.com server-side AND re-checked before the admin
+                   // viewer renders it into an <a href>. Absent until written.
+  updatedAt        // Date.now() of the last status write. Absent until the first
+                   // one — a doc with createdAt but no updatedAt has never been
+                   // touched by the loop.
 }
 ```
 
@@ -1150,6 +1196,30 @@ Notes:
   other. The email subject always starts with the stable `[RoofOps Feedback]` token
   (regardless of type) so a mail rule can file every one of these into one Outlook
   folder reliably.
+- **The triage fields do not loosen the rules.** `feedback` stays
+  `allow create: if true; allow read, update, delete: if false` — a browser can
+  submit a report but cannot forge a diagnosis, a branch link, or a status. The
+  only writer is `admin.js`'s `update_feedback_status` (Admin SDK, `audit.view`,
+  audit-logged). Known gap, deliberately not closed here: because `create` does
+  not validate fields, a hand-crafted client could submit a doc already claiming
+  `triageStatus: "merged"` and so hide itself from the watcher's `"new"` query.
+  That is a nuisance-tier hole (anyone able to do that can already spam feedback)
+  and closing it means field-validating `create`, which would reject older app
+  bundles mid-deploy. Tracked in `COORDINATION.md` as a Codex hardening item.
+- **Reports submitted before 2026-07-28 have no `triageStatus` field at all**, so
+  `where("triageStatus","==","new")` will never return them. That is Firestore
+  semantics, not a bug. Use the `sinceCreatedAt` watermark (or an unfiltered
+  list) to reach them — see "Feedback auto-fix loop" in `DEV_NOTES.md`.
+
+Hardening addendum (2026-07-28): `feedback` client creates are now
+field-validated while preserving deploy compatibility. Valid creates may either
+omit `triageStatus` (old bundle) or set exactly `triageStatus: "new"` (new
+bundle). Client creates still cannot include server-owned `agentDiagnosis`,
+`branchUrl`, or `updatedAt`; later lifecycle writes go through Admin SDK
+`update_feedback_status` behind `feedback.triage`, not direct client writes.
+Watcher/admin list calls may pass `omitScreenshot: true` to exclude the base64
+screenshot field from polling payloads; the default list behavior still returns
+full docs for the admin backlog card.
 
 ### `ai_training_labels` (currently implemented — write path only, no callers yet)
 
@@ -1215,6 +1285,74 @@ Notes:
 - Vocabulary admin seam: `app_settings/ai_label_vocab` `{ extraLabels: [{key,label}] }`
   — app_settings is already world-readable/server-write-only, so extending the list is
   a data change (future admin.js action or Console edit), never a code deploy.
+
+### `cc_push_ledger` (currently implemented — server-only)
+
+Per-project record of every image this app has PUSHED into a CompanyCam project,
+keyed by content hash. It is the fallback half of CompanyCam push
+de-duplication — see `netlify/functions/lib/companyCamDedup.js` and "CompanyCam
+push de-duplication" in `DEV_NOTES.md`.
+
+```
+cc_push_ledger/{companyCamProjectId}/entries/{sha256}
+```
+
+```js
+{
+  sha256,          // hex digest of the image bytes — also the doc id
+  projectId,       // the CompanyCam project these bytes were pushed into
+  ccPhotoId,       // the photo id CompanyCam returned, null if it didn't
+  workOrderId,     // which work order pushed it
+  photoIndex,      // and which slot on that order
+  bytes,           // size of the hashed object, for the audit line
+  pushedAt         // Date.now()
+}
+```
+
+Notes:
+
+- A **subcollection**, not one document per project, deliberately: a busy project
+  accumulates thousands of photos and a single Firestore doc caps at 1MB.
+- `firestore.rules`: **fully closed to every client, both directions** (same tier
+  as `secrets/`). The write half is the one that matters — a client that could
+  create entries here could pre-seed hashes for photos that were never pushed and
+  make the app silently skip real field evidence. Written and read only through
+  the Admin SDK inside `companycam.js`'s `upload_photo` action.
+- Losing an entry costs a redundant check (and at worst one duplicate upload),
+  never a dropped photo — which is why the ledger write is best-effort and never
+  fails a push that already succeeded.
+
+### `workorders/{id}/photos/p{i}` — de-duplication fields (currently implemented)
+
+Three fields on the existing per-photo doc, added for CompanyCam push
+de-duplication (written in `cloudSaveOrder()` and hydrated in
+`cloudFetchOrder()`, `js/core.js`):
+
+```js
+{
+  capturedAt,             // number|null — the photo's OWN capture time, epoch ms UTC.
+                          // EXIF DateTimeOriginal recovered from the original bytes at
+                          // import (parseExifCapturedAt(), js/photos.js), or Date.now()
+                          // at the moment of a camera capture. Resolved out of naive
+                          // local time ON THE DEVICE, which is the only place that knows
+                          // the right zone.
+  capturedAtSource,       // "exif" | "camera" | null
+  ccDuplicateOfPhotoId    // string|null — this photo was found ALREADY IN the linked
+                          // CompanyCam project, and this is the id it matched.
+}
+```
+
+Notes:
+
+- `ccDuplicateOfPhotoId` is deliberately **not** `ccFeedPhotoId`. The photo it
+  matched may be one the tech uploaded to CompanyCam themselves, and
+  `ccFeedPhotoId` is the id the undo-push **deletes**
+  (`deletePushedPhotoFromCompanyCam`). Recording a match must never make someone
+  else's photo deletable.
+- `capturedAt` is **identity**, not a display timestamp. A photo without one gets
+  the work order's service date for the CompanyCam feed's `captured_at`, but that
+  derived value is never used for matching — it is identical across every photo
+  on the order and would make them all look like duplicates of each other.
 
 ## Migration Notes
 

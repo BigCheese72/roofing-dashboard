@@ -843,6 +843,8 @@ function assetPopupReadonlyHtml(a){
   var t = ROOF_ASSET_TYPES[a.type] || ROOF_ASSET_TYPES.other;
   return "<b>" + t.emoji + " " + esc(t.label) + "</b>" + (a.label ? " - " + esc(a.label) : "") + "<br>" +
     (a.notes ? esc(a.notes) + "<br>" : "") +
+    assetReferenceDistancesHtml(a) +
+    assetCoreInfoHtml(a) +
     "<span style='color:var(--muted);font-size:12px'>Read-only roof feature</span>";
 }
 function outlinePopupHtml(o, roofLabel){
@@ -1001,8 +1003,10 @@ function renderBuildingMap(pins, customBld, bldAddress, orthoOverlay, assets, bu
         assets.forEach(function(a){
           if (typeof a.x !== "number") return;
           if (!buildingMapImageFrameMatches(a, customBld.roof_base_map_url)) return;
-          L.marker([a.y * h, a.x * w], { icon: assetIcon(a.type) }).addTo(map)
+          var assetLatLng = [a.y * h, a.x * w];
+          L.marker(assetLatLng, { icon: assetIcon(a.type) }).addTo(map)
             .bindPopup(readOnly ? assetPopupReadonlyHtml(a) : assetPopupHtml(buildingId, a));
+          addAssetReferenceDistanceLabel(map, assetLatLng, a);
         });
         map.fitBounds(bounds);
         map.invalidateSize();
@@ -1063,8 +1067,10 @@ function renderBuildingMap(pins, customBld, bldAddress, orthoOverlay, assets, bu
       });
       assets.forEach(function(a){
         if (!buildingMapShouldUseWorldPoint(a, a)) return;
-        L.marker([a.lat, a.lng], { icon: assetIcon(a.type) }).addTo(map)
+        var assetLatLng = [a.lat, a.lng];
+        L.marker(assetLatLng, { icon: assetIcon(a.type) }).addTo(map)
           .bindPopup(readOnly ? assetPopupReadonlyHtml(a) : assetPopupHtml(buildingId, a));
+        addAssetReferenceDistanceLabel(map, assetLatLng, a);
       });
       if (bounds.length === 1) map.setView(bounds[0], 19);
       else if (bounds.length > 1) map.fitBounds(bounds, { padding: [30, 30] });

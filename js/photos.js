@@ -521,6 +521,155 @@ function assetIcon(type){
       'box-shadow:0 1px 3px rgba(0,0,0,.4)">' + t.emoji + '</div>'
   });
 }
+function roofAssetDistanceFt(raw){
+  if (raw === null || raw === undefined || String(raw).trim() === "") return null;
+  var n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? Math.round(n * 10) / 10 : null;
+}
+function roofAssetDrainReferenceFromFields(prefix, type){
+  if (type !== "drain") return null;
+  var p1 = document.getElementById(prefix + "-ref1-label");
+  var d1 = document.getElementById(prefix + "-ref1-distance");
+  var p2 = document.getElementById(prefix + "-ref2-label");
+  var d2 = document.getElementById(prefix + "-ref2-distance");
+  var ref = {
+    point1Label: p1 ? p1.value.trim() : "",
+    point1DistanceFt: d1 ? roofAssetDistanceFt(d1.value) : null,
+    point2Label: p2 ? p2.value.trim() : "",
+    point2DistanceFt: d2 ? roofAssetDistanceFt(d2.value) : null,
+    unit: "ft"
+  };
+  return (ref.point1Label || ref.point1DistanceFt !== null || ref.point2Label || ref.point2DistanceFt !== null) ? ref : null;
+}
+function setRoofAssetDrainReferenceFields(prefix, asset){
+  var ref = (asset && asset.referenceDistances) || {};
+  var values = {
+    "ref1-label": ref.point1Label || "",
+    "ref1-distance": ref.point1DistanceFt === null || ref.point1DistanceFt === undefined ? "" : ref.point1DistanceFt,
+    "ref2-label": ref.point2Label || "",
+    "ref2-distance": ref.point2DistanceFt === null || ref.point2DistanceFt === undefined ? "" : ref.point2DistanceFt
+  };
+  Object.keys(values).forEach(function(k){
+    var el = document.getElementById(prefix + "-" + k);
+    if (el) el.value = values[k];
+  });
+  toggleRoofAssetDrainReferenceFields(prefix, asset ? asset.type : "drain");
+}
+function toggleRoofAssetDrainReferenceFields(prefix, type){
+  var row = document.getElementById(prefix + "-drain-reference-fields");
+  if (row) row.style.display = type === "drain" ? "" : "none";
+}
+function roofAssetIsCoreLike(type){
+  return type === "core_cut" || type === "test_cut";
+}
+function roofAssetCoreInfoFromFields(prefix, type){
+  if (!roofAssetIsCoreLike(type)) return null;
+  var resultEl = document.getElementById(prefix + "-core-result");
+  var photoEl = document.getElementById(prefix + "-core-photo-link");
+  var info = {
+    coreResult: resultEl ? resultEl.value.trim() : "",
+    corePhotoLink: photoEl ? photoEl.value.trim() : ""
+  };
+  return (info.coreResult || info.corePhotoLink) ? info : null;
+}
+function setRoofAssetCoreInfoFields(prefix, asset){
+  var values = {
+    "core-result": asset && asset.coreResult ? asset.coreResult : "",
+    "core-photo-link": asset && asset.corePhotoLink ? asset.corePhotoLink : ""
+  };
+  Object.keys(values).forEach(function(k){
+    var el = document.getElementById(prefix + "-" + k);
+    if (el) el.value = values[k];
+  });
+  toggleRoofAssetCoreInfoFields(prefix, asset ? asset.type : "drain");
+}
+function toggleRoofAssetCoreInfoFields(prefix, type){
+  var row = document.getElementById(prefix + "-core-fields");
+  if (row) row.style.display = roofAssetIsCoreLike(type) ? "" : "none";
+}
+function roofAssetReferenceDistanceLine(label, distanceFt, fallback){
+  if (distanceFt === null || distanceFt === undefined) return label ? String(label) : "";
+  return String(label || fallback) + ": " + String(distanceFt) + " ft";
+}
+function assetReferenceDistancesText(a){
+  var ref = a && a.referenceDistances;
+  if (!ref) return "";
+  var lines = [
+    roofAssetReferenceDistanceLine(ref.point1Label, ref.point1DistanceFt, "Point 1"),
+    roofAssetReferenceDistanceLine(ref.point2Label, ref.point2DistanceFt, "Point 2")
+  ].filter(Boolean);
+  return lines.join(" | ");
+}
+function assetReferenceDistancesHtml(a){
+  var text = assetReferenceDistancesText(a);
+  return text ? "<span style='color:var(--muted);font-size:12px'>Refs: " + esc(text) + "</span><br>" : "";
+}
+function assetCoreInfoText(a){
+  if (!a || !roofAssetIsCoreLike(a.type)) return "";
+  var lines = [];
+  if (a.coreResult) lines.push("Core results: " + a.coreResult);
+  if (a.corePhotoLink) lines.push("Photo: " + a.corePhotoLink);
+  return lines.join(" | ");
+}
+function assetCoreInfoHtml(a){
+  if (!a || !roofAssetIsCoreLike(a.type)) return "";
+  var html = "";
+  if (a.coreResult) html += "<span style='color:var(--muted);font-size:12px'>Core results: " + esc(a.coreResult) + "</span><br>";
+  if (a.corePhotoLink){
+    var safeLink = esc(a.corePhotoLink);
+    var href = /^https?:\/\/[^\s"'<>]+$/i.test(a.corePhotoLink) ? a.corePhotoLink : "";
+    if (href){
+      html += "<span style='color:var(--muted);font-size:12px'>Photo: <a href=\"" + href + "\" target=\"_blank\" rel=\"noopener\">Open photo</a></span><br>";
+    } else {
+      html += "<span style='color:var(--muted);font-size:12px'>Photo: " + safeLink + "</span><br>";
+    }
+  }
+  return html;
+}
+function roofAssetWrapText(text, maxLen){
+  text = String(text || "").replace(/\s+/g, " ").trim();
+  if (!text) return [];
+  maxLen = maxLen || 40;
+  var words = text.split(" "), lines = [], line = "";
+  words.forEach(function(word){
+    var next = line ? line + " " + word : word;
+    if (line && next.length > maxLen){
+      lines.push(line);
+      line = word;
+    } else {
+      line = next;
+    }
+  });
+  if (line) lines.push(line);
+  return lines;
+}
+function assetExportLabelLines(a){
+  var t = ROOF_ASSET_TYPES[(a && a.type) || "other"] || ROOF_ASSET_TYPES.other;
+  var lines = [((a && a.label) || t.label)];
+  var refs = assetReferenceDistancesText(a);
+  if (refs) lines = lines.concat(roofAssetWrapText("Refs: " + refs, 42));
+  if (a && roofAssetIsCoreLike(a.type)){
+    if (a.coreResult) lines = lines.concat(roofAssetWrapText("Core: " + a.coreResult, 42));
+    if (a.corePhotoLink) lines = lines.concat(roofAssetWrapText("Photo: " + a.corePhotoLink, 42));
+  }
+  return lines.filter(Boolean);
+}
+function addAssetReferenceDistanceLabel(layer, latlng, a){
+  if (!layer || !latlng || !a || a.type !== "drain") return;
+  var text = assetReferenceDistancesText(a);
+  if (!text) return;
+  return L.marker(latlng, {
+    interactive: false,
+    keyboard: false,
+    icon: L.divIcon({
+      className: "",
+      iconAnchor: [-18, 28],
+      html: '<div style="background:#fff;color:#263238;border:1px solid var(--line);border-radius:4px;' +
+        'box-shadow:0 1px 3px rgba(0,0,0,.25);padding:2px 5px;font-size:11px;line-height:1.25;' +
+        'white-space:nowrap;max-width:240px;overflow:hidden;text-overflow:ellipsis">Refs: ' + esc(text) + '</div>'
+    })
+  }).addTo(layer);
+}
 function assetPopupHtml(buildingId, a){
   var t = ROOF_ASSET_TYPES[a.type] || ROOF_ASSET_TYPES.other;
   /* This map only ever renders the currently-selected roof's assets (see
@@ -528,6 +677,8 @@ function assetPopupHtml(buildingId, a){
      roof for this marker's Edit button. */
   return "<b>" + t.emoji + " " + esc(t.label) + "</b>" + (a.label ? " — " + esc(a.label) : "") + "<br>" +
     (a.notes ? esc(a.notes) + "<br>" : "") +
+    assetReferenceDistancesHtml(a) +
+    assetCoreInfoHtml(a) +
     "<button class=\"btn\" style=\"margin-top:6px\" onclick=\"openAssetModal('" + buildingId + "','" + a.id + "','" + historySelectedRoofId + "')\">Edit</button>";
 }
 var assetMap = null, assetMarker = null, assetModalBuildingId = null, assetModalAssetId = null,
@@ -599,6 +750,8 @@ async function openAssetModal(buildingId, assetId, roofId){
   document.getElementById("asset-type").value = existing ? existing.type : "drain";
   document.getElementById("asset-label").value = existing ? (existing.label || "") : "";
   document.getElementById("asset-notes").value = existing ? (existing.notes || "") : "";
+  setRoofAssetDrainReferenceFields("asset", existing || { type: "drain" });
+  setRoofAssetCoreInfoFields("asset", existing || { type: "drain" });
 
   var hasCustomBaseMap = !!((roof.roof_base_map_type === "roof_plan" || roof.roof_base_map_type === "sketch") && roof.roof_base_map_url);
   var orthoOverlay = (roof.roof_base_map_type === "drone_ortho" && roof.roof_base_map_url && roof.roof_base_map_bounds) ?
@@ -693,6 +846,8 @@ async function openAssetModalSatellite(bld, assets, existing, orthoOverlay, outl
 }
 document.getElementById("asset-type") && document.getElementById("asset-type").addEventListener("change", function(){
   if (assetMarker) assetMarker.setIcon(assetIcon(this.value));
+  toggleRoofAssetDrainReferenceFields("asset", this.value);
+  toggleRoofAssetCoreInfoFields("asset", this.value);
 });
 function closeAssetModal(){
   var buildingId = assetModalBuildingId;
@@ -722,6 +877,10 @@ async function saveAssetFromModal(){
     lat: null, lng: null, x: null, y: null,
     updatedAt: Date.now()
   };
+  var refs = roofAssetDrainReferenceFromFields("asset", asset.type);
+  if (refs) asset.referenceDistances = refs;
+  var coreInfo = roofAssetCoreInfoFromFields("asset", asset.type);
+  if (coreInfo) Object.assign(asset, coreInfo);
   if (assetMapMode === "xy" && assetXYSize){
     asset.x = ll.lng / assetXYSize.w;
     asset.y = ll.lat / assetXYSize.h;
@@ -1069,6 +1228,130 @@ function dataUrlExifGps(dataUrl){
     return parseExifGps(bytes.buffer);
   }catch(e){ return null; }
 }
+/* EXIF CAPTURE TIME -- the other half of what CompanyCam de-duplication needs
+   (netlify/functions/lib/companyCamDedup.js).
+
+   Until now a photo carried NO capture time of its own. ccPhotoCapturedAt() in
+   js/history.js sent the WORK ORDER's service date at noon for every photo on
+   the order, because the canvas resize above re-encodes the image and throws
+   all EXIF away -- exactly the same reason GPS had to be recovered here first
+   (see parseExifGps). That is fine as a feed timestamp but useless as identity:
+   every photo on an order shared one value, so "match on time + GPS" would have
+   read every photo as a duplicate of the first one. This recovers the REAL
+   per-photo time from the original bytes, before the resize discards them.
+
+   TIMEZONE -- the trap this function exists to avoid. EXIF DateTimeOriginal is
+   naive local wall-clock ("2026:07:10 14:32:07"), with no zone. CompanyCam's
+   captured_at is unix seconds UTC. Comparing them raw puts a US Central photo
+   5-6 hours out, every match misses, and de-duplication silently does nothing.
+   The conversion belongs HERE, on the device, because this is the only place
+   that knows the right answer: EXIF's own OffsetTimeOriginal tag when the camera
+   wrote one, and otherwise the device's own timezone -- the tech's phone is in
+   the zone the photo was taken in. Downstream (photo.capturedAt, the push, the
+   server) only ever sees unambiguous epoch milliseconds.
+
+   Deliberately a SEPARATE TIFF walk from rmExifGpsFromTiff() above rather than a
+   shared refactor of it: that function is the GPS recovery Mark's 2026-07-15
+   smoke test drove out, it is covered by its own tests, and a photo losing its
+   pin is a worse regression than a photo losing a dedup hint. Same trade the
+   file already makes elsewhere. Fully non-fatal: anything malformed, absent, or
+   implausible returns null and the photo behaves exactly as it did before. */
+function rmExifStampToEpochMs(stamp, offset){
+  var m = /^(\d{4})[:\-](\d{2})[:\-](\d{2})[ T](\d{2}):(\d{2}):(\d{2})/.exec(String(stamp || "").trim());
+  if (!m) return null;
+  var y = +m[1], mo = +m[2], d = +m[3], h = +m[4], mi = +m[5], s = +m[6];
+  if (mo < 1 || mo > 12 || d < 1 || d > 31 || h > 23 || mi > 59 || s > 60) return null;
+  var ms;
+  var om = /^([+\-])(\d{2}):?(\d{2})$/.exec(String(offset || "").trim());
+  if (om){
+    var mins = (+om[2]) * 60 + (+om[3]);
+    if (om[1] === "-") mins = -mins;
+    ms = Date.UTC(y, mo - 1, d, h, mi, s) - mins * 60000;   /* camera told us the zone */
+  } else {
+    ms = new Date(y, mo - 1, d, h, mi, s).getTime();        /* naive local -> this device's zone */
+  }
+  if (!isFinite(ms)) return null;
+  /* A blank/zeroed EXIF field ("0000:00:00 00:00:00") and a phone with a wildly
+     wrong clock both produce a timestamp that would only ever mis-match. Reject
+     rather than carry a lie: no capture time simply routes dedup to the hash. */
+  if (ms < Date.UTC(1990, 0, 1) || ms > Date.now() + 86400000) return null;
+  return ms;
+}
+function rmExifCapturedAtFromTiff(view, tiff){
+  var bo = view.getUint16(tiff);
+  var little = bo === 0x4949;                                /* "II" little-endian; "MM" big-endian */
+  if (!little && bo !== 0x4D4D) return null;
+  var u16 = function(o){ return view.getUint16(o, little); };
+  var u32 = function(o){ return view.getUint32(o, little); };
+  if (u16(tiff + 2) !== 0x002A) return null;
+  function entryFor(ifd, tag){
+    if (ifd < 0 || ifd + 2 > view.byteLength) return -1;
+    var n = u16(ifd);
+    for (var i = 0; i < n; i++){
+      var e = ifd + 2 + i * 12;
+      if (e + 12 > view.byteLength) return -1;
+      if (u16(e) === tag) return e;
+    }
+    return -1;
+  }
+  /* ASCII tag value. <=4 bytes are stored inline in the entry's value field;
+     anything longer (a 20-byte timestamp) is a pointer into the TIFF block. */
+  function ascii(e){
+    if (e < 0) return "";
+    var count = u32(e + 4);
+    if (!count || count > 64) return "";
+    var at = count <= 4 ? e + 8 : tiff + u32(e + 8);
+    var s = "";
+    for (var i = 0; i < count; i++){
+      if (at + i >= view.byteLength) break;
+      var c = view.getUint8(at + i);
+      if (!c) break;
+      s += String.fromCharCode(c);
+    }
+    return s;
+  }
+  var ifd0 = tiff + u32(tiff + 4);
+  var subPtr = entryFor(ifd0, 0x8769);                       /* Exif SubIFD pointer */
+  var sub = subPtr >= 0 ? tiff + u32(subPtr + 8) : -1;
+  var stamp = "", offset = "";
+  if (sub >= 0){
+    stamp = ascii(entryFor(sub, 0x9003)) || ascii(entryFor(sub, 0x9004));  /* DateTimeOriginal, then DateTimeDigitized */
+    offset = ascii(entryFor(sub, 0x9011)) || ascii(entryFor(sub, 0x9012)); /* OffsetTimeOriginal / OffsetTimeDigitized */
+  }
+  if (!stamp) stamp = ascii(entryFor(ifd0, 0x0132));         /* IFD0 DateTime -- last resort */
+  return rmExifStampToEpochMs(stamp, offset);
+}
+function parseExifCapturedAt(buffer){
+  try{
+    var view = new DataView(buffer);
+    if (view.byteLength < 12 || view.getUint16(0) !== 0xFFD8) return null; /* not a JPEG */
+    var offset = 2;
+    while (offset + 4 <= view.byteLength){
+      var marker = view.getUint16(offset);
+      if ((marker & 0xFF00) !== 0xFF00) return null;
+      if (marker === 0xFFE1){ /* APP1 -- Exif */
+        var exif = offset + 4;
+        if (exif + 6 <= view.byteLength && view.getUint32(exif) === 0x45786966 && view.getUint16(exif + 4) === 0){
+          return rmExifCapturedAtFromTiff(view, exif + 6);
+        }
+        return null;
+      }
+      if (marker === 0xFFDA) return null; /* start of scan -- no EXIF beyond here */
+      offset += 2 + view.getUint16(offset + 2);
+    }
+    return null;
+  }catch(e){ return null; }
+}
+function dataUrlExifCapturedAt(dataUrl){
+  try{
+    var comma = String(dataUrl || "").indexOf(",");
+    if (comma < 0) return null;
+    var bin = atob(dataUrl.slice(comma + 1, comma + 1 + 200000));
+    var n = bin.length, bytes = new Uint8Array(n);
+    for (var i = 0; i < n; i++) bytes[i] = bin.charCodeAt(i);
+    return parseExifCapturedAt(bytes.buffer);
+  }catch(e){ return null; }
+}
 /* amendmentId (optional, third arg) tags a photo to a RETURN VISIT
    (photo.amendment_id — see the amendments block in js/workorders.js).
    Deliberately a separate field from findingId rather than reusing it: a
@@ -1112,6 +1395,12 @@ function addPhotosFromFiles(files, findingId, amendmentId){
          it (see parseExifGps). null when the photo has no location -- then it
          behaves exactly as an import did before. */
       var exifGps = dataUrlExifGps(reader.result);
+      /* The photo's OWN capture time, off the same original bytes and for the
+         same reason -- the resize below strips it. Feeds CompanyCam
+         de-duplication AND the feed's captured_at, which until now was the work
+         order's service date for every photo (see ccPhotoCapturedAt() in
+         js/history.js). null when the camera wrote no usable EXIF timestamp. */
+      var exifTime = dataUrlExifCapturedAt(reader.result);
       var img = new Image();
       img.onload = function(){
         var preset = photoPreset();
@@ -1124,7 +1413,8 @@ function addPhotosFromFiles(files, findingId, amendmentId){
         c.width = w; c.height = h;
         c.getContext("2d").drawImage(img, 0, 0, w, h);
         results[idx] = { caption:"", img: c.toDataURL("image/jpeg", preset.q), thumb: makeThumbDataUrl(img), w: w, h: h,
-          finding_id: findingId || null, amendment_id: amendmentId || null, gps: exifGps, localId: makeLocalPhotoId() };
+          finding_id: findingId || null, amendment_id: amendmentId || null, gps: exifGps, localId: makeLocalPhotoId(),
+          capturedAt: exifTime, capturedAtSource: exifTime ? "exif" : null };
         done();
       };
       img.onerror = function(){ toast("Couldn't read one of the photos"); done(); };
@@ -1277,9 +1567,13 @@ function addPhotosFromCamera(files, findingId, amendmentId){
           var c = document.createElement("canvas");
           c.width = w; c.height = h;
           c.getContext("2d").drawImage(img, 0, 0, w, h);
+          /* A camera capture needs no EXIF archaeology: the shutter just fired,
+             so "now" IS the capture time -- a real, per-photo, already-UTC value,
+             which is exactly what CompanyCam de-duplication wants. */
           results[idx] = { caption:"", img: c.toDataURL("image/jpeg", preset.q), thumb: makeThumbDataUrl(img), w: w, h: h,
             finding_id: findingId || null, amendment_id: amendmentId || null,
-            gps: gps, gpsFailReason: gpsFailReason, localId: makeLocalPhotoId() };
+            gps: gps, gpsFailReason: gpsFailReason, localId: makeLocalPhotoId(),
+            capturedAt: Date.now(), capturedAtSource: "camera" };
           done();
         };
         img.onerror = function(){ toast("Couldn't read the photo"); done(); };
@@ -1420,6 +1714,7 @@ function processReplacementPhoto(i, file){
   var reader = new FileReader();
   reader.onload = function(){
     var exifGps = dataUrlExifGps(reader.result);
+    var exifTime = dataUrlExifCapturedAt(reader.result);
     var img = new Image();
     img.onload = function(){
       var preset = photoPreset();
@@ -1440,7 +1735,10 @@ function processReplacementPhoto(i, file){
       photos[i] = { caption: old.caption || "", img: c.toDataURL("image/jpeg", preset.q),
         thumb: makeThumbDataUrl(img), w: w, h: h,
         finding_id: old.finding_id || null, amendment_id: old.amendment_id || null,
-        gps: exifGps, localId: makeLocalPhotoId() };
+        gps: exifGps, localId: makeLocalPhotoId(),
+        /* New image, new identity -- the replacement's own capture time, never
+           the dead slot's. Its dedup identity must not inherit the old photo's. */
+        capturedAt: exifTime, capturedAtSource: exifTime ? "exif" : null };
       idbPutPhoto(photos[i].localId, photos[i].img);
       renderPhotos();
       if (photos[i].finding_id){

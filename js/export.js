@@ -386,7 +386,41 @@ function rmReportRoofPlanEntriesFor(){
   if (!rmReportRoofPlanData || rmReportRoofPlanData.woId !== currentId) return [];
   return rmReportRoofPlanData.entries;
 }
+/* Where the tech was in the form when they left for Preview, so Back puts
+   them there instead of at the top of a long work order. showView() always
+   scrolls to 0 (js/core.js) -- that is right for a view SWITCH, but Preview
+   -> Edit is a round trip, and landing back at the top of a 20-finding leak
+   report means hunting for the field you came back to fix. Captured on the
+   way out rather than read on the way in, because by then the edit view is
+   hidden and window.scrollY belongs to Preview. */
+var previewReturnScrollY = 0;
+
+/* The return half of goToPreview(), added for feedback fb_ms7owm7pdbc5a --
+   "once on Preview there is no way to go back and edit". Nothing is saved or
+   discarded here: showView() is a pure show/hide (js/core.js), the form's DOM
+   is never torn down, and Preview is rebuilt from collect() on every
+   renderDoc() -- so the tech can bounce Edit <-> Preview as often as they
+   like and the work simply follows them. Leaving the edit view also flushes
+   the pending local autosave, via the showView() wrapper in js/workorders.js
+   ("never lose edits on back-out"), which is the durability half of that
+   promise. */
+function backToEdit(){
+  showView("edit");
+  try{ window.scrollTo(0, previewReturnScrollY); }catch(e){}
+}
+
+/* Only meaningful while the form is the visible view -- the Preview tab is
+   live on Preview itself, and re-tapping it there would otherwise overwrite
+   the remembered form position with Preview's own scroll. */
+function rememberEditScrollForPreview(){
+  try{
+    var editView = document.getElementById("view-edit");
+    if (editView && editView.style.display !== "none") previewReturnScrollY = window.scrollY || 0;
+  }catch(e){}
+}
+
 async function goToPreview(){
+  rememberEditScrollForPreview();
   var photoCheck = await ensurePhotosLoadedForExport();
   if (!photoCheck.ok){
     /* Preview is intentionally non-blocking (unlike generatePdf) -- the tech
@@ -939,6 +973,38 @@ function rmRoofPlanResponsiveSvg(plan){
   if (svg.indexOf("<svg ") !== 0) return svg; /* unexpected shape: embed as-is */
   return '<svg style="max-width:100%;height:auto;display:inline-block" ' + svg.slice("<svg ".length);
 }
+function rmReportAssetLabelLines(a){
+  if (typeof assetExportLabelLines === "function") return assetExportLabelLines(a);
+  var t = (typeof ROOF_ASSET_TYPES === "object" && ROOF_ASSET_TYPES[(a && a.type) || "other"]) ||
+    (typeof ROOF_ASSET_TYPES === "object" && ROOF_ASSET_TYPES.other) || { label: "Roof Feature" };
+  return [((a && a.label) || t.label)];
+}
+function rmReportAssetLabelMetrics(lines, fontSize){
+  lines = (lines && lines.length) ? lines : [""];
+  var longest = lines.reduce(function(max, line){ return Math.max(max, String(line || "").length); }, 0);
+  return { width: longest * fontSize * 0.58 + 12, height: lines.length * (fontSize + 3) + 6 };
+}
+function rmReportAssetLabelItem(id, a, svgP, fontSize){
+  var lines = rmReportAssetLabelLines(a);
+  var metrics = rmReportAssetLabelMetrics(lines, fontSize);
+  return {
+    id: id, kind: "asset", text: lines[0], lines: lines,
+    boxed: lines.length > 1 || (typeof roofAssetIsCoreLike === "function" && roofAssetIsCoreLike(a.type)),
+    anchorX: svgP.x, anchorY: svgP.y, dx: 11 + metrics.width / 2, dy: 0,
+    width: metrics.width, height: metrics.height
+  };
+}
+function rmReportSvgMultilineText(lines, x, y, fontSize, fontWeight, fill, strokeWidth){
+  lines = (lines && lines.length) ? lines : [""];
+  var lineH = fontSize + 3;
+  var firstY = y - ((lines.length - 1) * lineH / 2) + fontSize / 3;
+  return lines.map(function(line, i){
+    return '<text x="' + x.toFixed(1) + '" y="' + (firstY + i * lineH).toFixed(1) +
+      '" font-family="Arial, sans-serif" font-size="' + fontSize + '" font-weight="' + fontWeight +
+      '" fill="' + fill + '" text-anchor="middle" stroke="#ffffff" stroke-width="' + strokeWidth +
+      '" paint-order="stroke fill">' + rmEscXml(line) + '</text>';
+  }).join("");
+}
 function rmBuildReportRoofPlanSvg(roofEntries){
   if (!roofEntries || !roofEntries.length) return null;
   /* Only roofs with a real world-coordinate ring can be projected to scale.
@@ -952,7 +1018,7 @@ function rmBuildReportRoofPlanSvg(roofEntries){
   var origin = rmGeomRingCentroid(allRingPts);
   var projected = roofEntries.map(function(r){
     var pts = r.outline.ring.map(function(p){ return rmExportProjectPoint(p, origin); });
-    var assetPts = (r.assets || []).map(function(a){ return Object.assign({}, rmExportProjectPoint(a, origin), { type: a.type, label: a.label }); });
+    var assetPts = (r.assets || []).map(function(a){ return Object.assign({}, a, rmExportProjectPoint(a, origin)); });
     var centroidPt = rmExportProjectPoint(r.outline.center || rmGeomRingCentroid(r.outline.ring), origin);
     return { roofLabel: r.roofLabel, outline: r.outline, pts: pts, assetPts: assetPts, centroidPt: centroidPt, methodInfo: rmReportMethodSentences(r.outline) };
   });
@@ -968,7 +1034,7 @@ function rmBuildReportRoofPlanSvg(roofEntries){
   function toSvg(p){
     return { x: (p.x - minX + padFt) * scale, y: headerH + (h * scale) - ((p.y - minY + padFt) * scale) };
   }
-  var shapeSvg = "", roofLabelItems = [];
+  var shapeSvg = "", roofLabelItems = [], assetLabelItems = [], markerObstacles = [];
   projected.forEach(function(r, i){
     var pathPts = r.pts.map(toSvg);
     var pathD = "M " + pathPts.map(function(p){ return p.x.toFixed(1) + "," + p.y.toFixed(1); }).join(" L ") + " Z" +
@@ -1015,9 +1081,11 @@ function rmBuildReportRoofPlanSvg(roofEntries){
         '" font-family="Arial, sans-serif" font-size="11.5" font-weight="700" fill="#fff" text-anchor="middle">' +
         rmEscXml(dimLabel) + '</text>';
     }
-    r.assetPts.forEach(function(a){
+    r.assetPts.forEach(function(a, ai){
       var svgP = toSvg(a);
       shapeSvg += '<circle cx="' + svgP.x.toFixed(1) + '" cy="' + svgP.y.toFixed(1) + '" r="6" fill="#455A64" stroke="#fff" stroke-width="1.5"/>';
+      markerObstacles.push({ x: svgP.x, y: svgP.y, r: 6 });
+      assetLabelItems.push(rmReportAssetLabelItem("asset-" + i + "-" + ai, a, svgP, 10.5));
     });
     if (roofEntries.length > 1){
       var lp = toSvg(r.centroidPt);
@@ -1026,7 +1094,7 @@ function rmBuildReportRoofPlanSvg(roofEntries){
   });
   var labelSvg = "";
   if (roofLabelItems.length){
-    rmDeconflictLabels(roofLabelItems, svgW, svgH).forEach(function(pl){
+    rmDeconflictLabels(roofLabelItems, svgW, svgH, markerObstacles).forEach(function(pl){
       if (pl.moved){
         labelSvg += '<line x1="' + pl.anchorX.toFixed(1) + '" y1="' + pl.anchorY.toFixed(1) + '" x2="' + pl.x.toFixed(1) + '" y2="' + pl.y.toFixed(1) +
           '" stroke="#8a8f93" stroke-width="1" stroke-dasharray="2,2"/><circle cx="' + pl.anchorX.toFixed(1) + '" cy="' + pl.anchorY.toFixed(1) + '" r="3" fill="#263238"/>';
@@ -1036,6 +1104,17 @@ function rmBuildReportRoofPlanSvg(roofEntries){
         'stroke="#ffffff" stroke-width="4" paint-order="stroke fill">' + rmEscXml(pl.name) + '</text>';
     });
   }
+  rmDeconflictLabels(assetLabelItems, svgW, svgH, markerObstacles).forEach(function(pl){
+    if (pl.moved){
+      labelSvg += '<line x1="' + pl.anchorX.toFixed(1) + '" y1="' + pl.anchorY.toFixed(1) + '" x2="' + pl.x.toFixed(1) + '" y2="' + pl.y.toFixed(1) +
+        '" stroke="#8a8f93" stroke-width="1" stroke-dasharray="2,2"/>';
+    }
+    if (pl.boxed){
+      labelSvg += '<rect x="' + (pl.x - pl.width / 2).toFixed(1) + '" y="' + (pl.y - pl.height / 2).toFixed(1) +
+        '" width="' + pl.width.toFixed(1) + '" height="' + pl.height.toFixed(1) + '" rx="4" fill="#ffffff" stroke="#CFD8DC" stroke-width="1"/>';
+    }
+    labelSvg += rmReportSvgMultilineText(pl.lines || [pl.text], pl.x, pl.y, 10.5, "600", "#263238", pl.boxed ? 0 : 2.5);
+  });
   var titleSvg = '<text x="14" y="24" font-family="Arial, sans-serif" font-size="15" font-weight="700" fill="#263238">' +
     rmEscXml(roofEntries.length > 1 ? "Roof Plan — " + roofEntries.length + " Roofs" : "Roof Plan — " + roofEntries[0].roofLabel) + '</text>';
   /* Method line(s), one per DISTINCT method text (a single-roof report --
@@ -1501,7 +1580,94 @@ function ensureDims(p){
    broken downscale can never cost a photo its place in a report. */
 var PDF_PHOTO_MAX_DIM = 900;
 var PDF_PHOTO_QUALITY = 0.72;
-function pdfPhotoDataUrl(dataUrl){
+/* ---- EMAIL PAYLOAD CEILING (the "Send failed" bug, 2026-07-30) ------------
+   The per-photo downscale above bounds each photo, but NOTHING bounded the
+   TOTAL. A ~31-photo leak report lands a ~6.2MB PDF, which base64-expands by
+   4/3 to ~8.3MB of JSON request body -- and Netlify Functions run on AWS
+   Lambda (confirmed via the Netlify API: provider "aws_lambda", nodejs24.x),
+   whose synchronous invocation payload limit is 6 MiB.
+
+   The request never reaches our handler. It is rejected at the platform edge,
+   which returns an EMPTY body -- so the client's `await resp.json()` throws,
+   `out` is null, and sendEmailNow() falls through to its generic
+   "server error <status>" branch. That is the whole reported symptom: a big
+   photo-heavy report fails to send with a bare status code and no guidance.
+
+   Measured live against the dev deploy (2026-07-30), same code and platform
+   as production, POSTing bodies of increasing size to
+   /.netlify/functions/send-workorder:
+
+       6,000,044 bytes -> 401 {"error":"Missing Authorization bearer token"}
+                          (reached the handler; rejected on auth, as intended)
+       6,500,044 bytes -> 413, empty body (never reached the handler)
+
+   So 6,000,000 bytes of total request body is a PROVEN-GOOD ceiling. It is
+   used rather than the theoretical 6 MiB (6,291,456) precisely because it is
+   the number that was actually observed to work -- the exact boundary between
+   the two probes was not measured, and a field app should not sit on an
+   unverified edge.
+
+   SEND_ENVELOPE_RESERVE covers everything in the JSON body that is not the
+   base64: to[] (<=10 addresses), subject (<=200), body (~10KB cap), filename,
+   jobNo, and the JSON punctuation. 32KB is many times the realistic worst
+   case. Base64 is pure ASCII with no JSON-escapable characters, so its
+   character count IS its byte count -- no expansion factor is needed.
+
+   NOTE: netlify/functions/send-workorder.js carries the SAME number as its
+   own server-side guard, and tests/largeReportSendBudget.test.js reads both
+   files and fails if they ever drift apart. Before this fix the server guard
+   was 8,000,000 base64 chars -- DEAD CODE, because a body that large is
+   already past the platform wall and can never reach the handler to be
+   checked. */
+var SEND_MAX_BODY_BYTES = 6000000;
+var SEND_ENVELOPE_RESERVE = 32768;
+var SEND_MAX_PDF_BASE64 = SEND_MAX_BODY_BYTES - SEND_ENVELOPE_RESERVE; /* 5,967,232 */
+
+/* Progressive downscale tiers, tried in order when a report does not fit.
+   Tier 0 is EXACTLY the previous behaviour (900px/q0.72 -- see the long
+   rationale above), so the common case is untouched: an already-fitting
+   report is built once, at the same fidelity it has always been built at, and
+   pays nothing for this feature. Only an over-budget report ever rebuilds.
+
+   Tiers 1 and 2 trade resolution for reach. 700px still over-serves the
+   ~258x300pt grid cell at 200 DPI; 520px is visibly softer but is the
+   difference between a 40-photo storm report arriving and not arriving, and
+   the full-resolution photos remain in Storage and on CompanyCam regardless
+   -- the PDF is a transmission format here, not the archive. */
+var PDF_PHOTO_TIERS = [
+  { maxDim: PDF_PHOTO_MAX_DIM, quality: PDF_PHOTO_QUALITY },
+  { maxDim: 700, quality: 0.62 },
+  { maxDim: 520, quality: 0.50 }
+];
+var pdfPhotoTier = 0;
+function pdfPhotoTierCount(){ return PDF_PHOTO_TIERS.length; }
+function setPdfPhotoTier(n){
+  pdfPhotoTier = (typeof n === "number" && n >= 0 && n < PDF_PHOTO_TIERS.length) ? n : 0;
+  return PDF_PHOTO_TIERS[pdfPhotoTier];
+}
+/* Does a base64 PDF of this length fit in one send? Pure, and deliberately
+   separate from the send path so it can be tested without a browser. */
+function pdfBase64FitsEmail(base64Len){
+  return typeof base64Len === "number" && base64Len > 0 && base64Len <= SEND_MAX_PDF_BASE64;
+}
+/* Approximate decoded size, for human-readable messages only. */
+function pdfBase64Mb(base64Len){
+  return Math.round((base64Len * 3 / 4) / 1048576 * 10) / 10;
+}
+/* The message a tech sees when even the smallest tier will not fit. It names
+   the real number and gives the two actions that actually work, rather than a
+   status code they can do nothing with. */
+function oversizeReportMessage(base64Len){
+  return "This report is too big to email (" + pdfBase64Mb(base64Len) + " MB after shrinking photos; " +
+    "the limit is " + pdfBase64Mb(SEND_MAX_PDF_BASE64) + " MB). Use Download PDF and attach it yourself, " +
+    "or remove some photos and send again. The photos stay on the work order and on CompanyCam either way.";
+}
+/* tier is optional: callers that want the STABLE 900px image (the AI vision
+   path below) pass nothing and always get tier 0, so a send-time rebuild can
+   never change what the model is shown. Only buildPdfPhotoMap() passes the
+   currently-selected tier. */
+function pdfPhotoDataUrl(dataUrl, tier){
+  var t = tier || PDF_PHOTO_TIERS[0];
   return new Promise(function(res){
     if (!dataUrl) return res(dataUrl);
     var im = new Image();
@@ -1510,13 +1676,13 @@ function pdfPhotoDataUrl(dataUrl){
         var w = im.naturalWidth, h = im.naturalHeight;
         if (!w || !h) return res(dataUrl);
         /* Already small enough -- re-encoding would only lose quality. */
-        if (w <= PDF_PHOTO_MAX_DIM && h <= PDF_PHOTO_MAX_DIM) return res(dataUrl);
-        if (w >= h){ h = Math.round(h * PDF_PHOTO_MAX_DIM / w); w = PDF_PHOTO_MAX_DIM; }
-        else { w = Math.round(w * PDF_PHOTO_MAX_DIM / h); h = PDF_PHOTO_MAX_DIM; }
+        if (w <= t.maxDim && h <= t.maxDim) return res(dataUrl);
+        if (w >= h){ h = Math.round(h * t.maxDim / w); w = t.maxDim; }
+        else { w = Math.round(w * t.maxDim / h); h = t.maxDim; }
         var c = document.createElement("canvas");
         c.width = w; c.height = h;
         c.getContext("2d").drawImage(im, 0, 0, w, h);
-        res(c.toDataURL("image/jpeg", PDF_PHOTO_QUALITY));
+        res(c.toDataURL("image/jpeg", t.quality));
       }catch(e){ res(dataUrl); }
     };
     im.onerror = function(){ res(dataUrl); };
@@ -1531,8 +1697,9 @@ function pdfPhotoDataUrl(dataUrl){
    correct and the grid layout below is unchanged. */
 function buildPdfPhotoMap(photos){
   var map = new Map();
+  var tier = PDF_PHOTO_TIERS[pdfPhotoTier] || PDF_PHOTO_TIERS[0];
   return Promise.all(photos.map(function(p){
-    return pdfPhotoDataUrl(p.img).then(function(u){ map.set(p, u); });
+    return pdfPhotoDataUrl(p.img, tier).then(function(u){ map.set(p, u); });
   })).then(function(){ return map; });
 }
 /* ---- SHARED ~900px downscaler for the AI vision features ----
