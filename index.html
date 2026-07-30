@@ -495,6 +495,17 @@
 
   <!-- ================= PREVIEW VIEW ================= -->
   <div id="view-preview" style="display:none">
+    <!-- Return path to the form. Feedback fb_ms7owm7pdbc5a: once you were on
+         Preview there was NO way back to edit. The header "Edit" tab does go
+         back, but on a phone it is an unlabelled icon in a horizontally
+         scrolling row that auto-collapses out of sight the moment you scroll
+         down the report (see .header-collapsed in css/app.css) -- so in the
+         field there was effectively no back. This row is the primary control;
+         #preview-back-bottom repeats it at the end of the document so a long
+         report never has to be scrolled back up. Both are no-print. -->
+    <div class="btnrow no-print" id="preview-back-top">
+      <button class="btn" onclick="backToEdit()" title="Back to the work order form. Nothing is lost — your edits are still there, and Preview rebuilds from the form when you return.">← Back to Edit</button>
+    </div>
     <div class="btnrow no-print" style="align-items:center">
       <select id="emailPick" style="width:auto" onchange="pickRecipient()">
         <option value="">Send to…</option>
@@ -511,6 +522,9 @@
       works the same on phone and computer. The other buttons are backups: "Share / Email PDF" uses your own mail app,
       "Download PDF" saves the file, "Email (text only)" sends a plain-text version without photos.</p>
     <div class="doc" id="doc-output"></div>
+    <div class="btnrow no-print" id="preview-back-bottom" style="margin-top:14px">
+      <button class="btn" onclick="backToEdit()" title="Back to the work order form. Nothing is lost — your edits are still there, and Preview rebuilds from the form when you return.">← Back to Edit</button>
+    </div>
   </div>
 
   <!-- ================= SAVED VIEW ================= -->

@@ -386,7 +386,41 @@ function rmReportRoofPlanEntriesFor(){
   if (!rmReportRoofPlanData || rmReportRoofPlanData.woId !== currentId) return [];
   return rmReportRoofPlanData.entries;
 }
+/* Where the tech was in the form when they left for Preview, so Back puts
+   them there instead of at the top of a long work order. showView() always
+   scrolls to 0 (js/core.js) -- that is right for a view SWITCH, but Preview
+   -> Edit is a round trip, and landing back at the top of a 20-finding leak
+   report means hunting for the field you came back to fix. Captured on the
+   way out rather than read on the way in, because by then the edit view is
+   hidden and window.scrollY belongs to Preview. */
+var previewReturnScrollY = 0;
+
+/* The return half of goToPreview(), added for feedback fb_ms7owm7pdbc5a --
+   "once on Preview there is no way to go back and edit". Nothing is saved or
+   discarded here: showView() is a pure show/hide (js/core.js), the form's DOM
+   is never torn down, and Preview is rebuilt from collect() on every
+   renderDoc() -- so the tech can bounce Edit <-> Preview as often as they
+   like and the work simply follows them. Leaving the edit view also flushes
+   the pending local autosave, via the showView() wrapper in js/workorders.js
+   ("never lose edits on back-out"), which is the durability half of that
+   promise. */
+function backToEdit(){
+  showView("edit");
+  try{ window.scrollTo(0, previewReturnScrollY); }catch(e){}
+}
+
+/* Only meaningful while the form is the visible view -- the Preview tab is
+   live on Preview itself, and re-tapping it there would otherwise overwrite
+   the remembered form position with Preview's own scroll. */
+function rememberEditScrollForPreview(){
+  try{
+    var editView = document.getElementById("view-edit");
+    if (editView && editView.style.display !== "none") previewReturnScrollY = window.scrollY || 0;
+  }catch(e){}
+}
+
 async function goToPreview(){
+  rememberEditScrollForPreview();
   var photoCheck = await ensurePhotosLoadedForExport();
   if (!photoCheck.ok){
     /* Preview is intentionally non-blocking (unlike generatePdf) -- the tech
