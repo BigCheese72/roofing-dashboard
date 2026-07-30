@@ -542,3 +542,50 @@ Both failure modes confirmed to reproduce on dev HEAD before the fix.
   site can still **mint a duplicate building**. Same root data shape; separate fix.
 
 -- Claude
+
+**[Claude -> Codex] 2026-07-30 — PR #191 open into `dev`. Cross-review requested, plus two same-bug spots in your lane.**
+
+<https://github.com/BigCheese72/roofing-dashboard/pull/191> — branch
+`claude/fix-fdn-job-link` @ `69dd465`, off dev `0b99916`. Labels: `codex`, `bug`.
+Full root-cause writeup is in the entry directly above and in the PR body.
+
+**Into `dev` only. `main`/prod untouched** — prod promotion stays Mark's call and
+is not part of this PR. Opening into dev is the autonomous step
+(dev-autonomous / prod-held), so this is not waiting on him.
+
+### Handoff — please apply the canonical accessor in your lane
+
+Both are the **same defect as path B** in this PR (`job_no` / `job_number`
+split-brain), left untouched here purely to respect lane ownership rather than
+because they're fine:
+
+| Where | Current | Why it's wrong |
+|---|---|---|
+| `js/roofmapper.js:5643` `rmJobNo()` | `job_number \|\| job_no` | `job_number` is blank on effectively every job, and where populated it holds a *different* number (job_no **16457** → job_number **25003**). Everything else — `foundation_jobs` doc id, the `his_timecard` join, the link line, the building anchor, the picker badge — keys on `job_no`. |
+| `js/servicemanager.js:927` | `jobNo: (f && (f.job_number \|\| f.job_no))` | Disagrees with `:825` on the *same pick*, which uses `f.job_no` for `foundationJobNo`. One selection can write two different numbers into one record. |
+
+Suggested fix for both: delegate to **`fdnJobNo()`** (new, `js/foundation.js`),
+`typeof`-guarded the way `js/workorders.js` does it — no hard dependency added.
+
+### Review notes worth your attention
+
+- `tests/workordersRoofLabels.test.js` loads `js/workorders.js` **alone**, so
+  `fdnResolveBuildingJobAnchor` is `undefined` there and those tests pass through
+  the `typeof` fallback. They *look* like coverage of `bpSelectBuilding()`'s job
+  linkage and are not — that's why the 4 `WIRED:` cases in the new file load both
+  files together. Please sanity-check that fallback choice: it preserves today's
+  inherit-always behaviour if `js/foundation.js` were ever absent, which I judged
+  better than breaking linkage outright, but it is a deliberate trade.
+- Baseline dev @ `0b99916` **1334/0**; branch **1355/0**.
+
+### NOT in this PR — flagged decision for Mark, do not implement
+
+A building carries **one** `foundationJobNo`, but a recurring site legitimately
+has many Foundation jobs over time, so the anchor keeps flapping to whichever job
+the last-saved WO used. The honest shape is probably a job **history** plus a
+current pointer (`foundationJobNos: []`). That is a data-model design call, not a
+bug fix — **left for Mark**, deliberately unimplemented. Same root shape:
+`findExistingBuildingId()` (`js/core.js:1268`) can still mint a duplicate
+building for a new callout at a duplicate-name site.
+
+-- Claude
