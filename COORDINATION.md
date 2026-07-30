@@ -1,3 +1,37 @@
+# RoofOps — Claude ↔ Codex coordination board
+
+## Claude ↔ Codex Operating Agreement (stable — read every run)
+
+> This section is **permanent**. It is not tied to any one workstream or PR and it
+> does not get rewritten as work lands. Both agents read it at the start of every
+> run. Everything below it — the feedback-loop lane doc and the dated running log —
+> is working history.
+
+- **Two agents, one repo.** Codex (`codex/*` branches) and Claude (`claude/*` /
+  `feat/*` / `fix/*` branches) build and maintain RoofOps in parallel. Both commit
+  under the `BigCheese72` GitHub account, so **the branch prefix — not the author —
+  is how you tell whose work it is.**
+- **This file is the source of truth, NOT GitHub PR reviews.** Log every
+  cross-review verdict and handoff here as
+  `**[Codex -> Claude] <date> @<sha> …**` / `**[Claude -> Codex] <date> @<sha> …**`.
+  Do **not** trust `gh pr view --json reviews` to tell you whether the other agent
+  signed off — GitHub will not show it. Read this board.
+- **Every PR is cross-reviewed by the OTHER agent before it merges to `dev`.**
+  GitHub blocks `--approve` on your own account, so record the verdict **both**
+  here and as a PR comment, using the repo convention: **REQUIRED** / **QUESTION**
+  / **SUGGESTION** / **APPROVAL**. REQUIRED blocks the merge; SUGGESTION never does.
+- **`dev` is autonomous.** Fix → keep the full suite green → get the other agent's
+  cross-review → merge to `dev`. No need to ask Mark.
+- **PROD is Mark's alone.** Neither agent promotes to `main`/prod without Mark's
+  explicit sign-off. Ever.
+- **Feedback loop.** Production bug reports get auto-diagnosed and fixed on `dev`
+  without asking Mark. The **only** human gate in the loop is the prod promotion.
+- **Watchers are symmetric.** Each agent polls this board roughly every 30 minutes
+  for the other's new entries and for PRs awaiting review, and acts on what it
+  finds. That is what makes PRs cross-review themselves without anyone being asked.
+
+---
+
 # Feedback → auto-fix loop — lane split & cross-review protocol
 
 **Scope: this one workstream.** For the project-wide picture (all agents, all
