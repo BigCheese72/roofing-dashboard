@@ -5640,7 +5640,10 @@ function rmFinishTrace(){
 var rmJobPickerJobs = [];
 var rmJobPickerFiltered = [];
 
-function rmJobNo(j){ return String((j && (j.job_number || j.job_no)) || ""); }
+function rmJobNo(j){
+  if (typeof fdnJobNo === "function") return fdnJobNo(j);
+  return String((j && (j.job_no || j.job_number)) || "").trim();
+}
 function rmJobAddress(j){
   if (typeof fdnComposeAddress === "function") return fdnComposeAddress(j || {});
   var line2 = [j && j.city, [j && j.state, j && j.zip].filter(Boolean).join(" ")].filter(Boolean).join(", ");

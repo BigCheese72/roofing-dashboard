@@ -592,6 +592,54 @@ test("an auto-match never clobbers a location the manager typed", async () => {
   assert.strictEqual(ctx.document._els["sm-pc-billTo"].value, "TYPEDCUST");
 });
 
+test("pre-created work order jobNo uses canonical Foundation job identity", async () => {
+  const ctx = loadSmLive();
+  const saved = [];
+  ctx.fdb = {};
+  ctx.todayStr = () => "2026-07-30";
+  ctx.smCurrentUserLabel = () => "Tester";
+  ctx.cloudSaveOrder = async (o) => { saved.push(o); };
+  ctx.loadDb = () => ({ orders: {}, index: [] });
+  ctx.saveDb = () => {};
+  ctx.fdnJobNo = (j) => String(j.job_no || j.job_number || "").trim();
+
+  const o = await ctx.smSaveNewWorkOrder({
+    foundation: {
+      job_no: "16457",
+      job_number: "25003",
+      name: "Osage Co R-II Reno & Addition"
+    }
+  });
+
+  assert.strictEqual(o.jobNo, "16457");
+  assert.strictEqual(o.foundationJobNo, "16457");
+  assert.strictEqual(saved[0].jobNo, "16457");
+});
+
+test("pre-created work order fallback still prefers job_no over job_number", async () => {
+  const ctx = loadSmLive();
+  const saved = [];
+  ctx.fdb = {};
+  ctx.todayStr = () => "2026-07-30";
+  ctx.smCurrentUserLabel = () => "Tester";
+  ctx.cloudSaveOrder = async (o) => { saved.push(o); };
+  ctx.loadDb = () => ({ orders: {}, index: [] });
+  ctx.saveDb = () => {};
+  ctx.fdnJobNo = undefined;
+
+  const o = await ctx.smSaveNewWorkOrder({
+    foundation: {
+      job_no: "16457",
+      job_number: "25003",
+      name: "Osage Co R-II Reno & Addition"
+    }
+  });
+
+  assert.strictEqual(o.jobNo, "16457");
+  assert.strictEqual(o.foundationJobNo, "16457");
+  assert.strictEqual(saved[0].jobNo, "16457");
+});
+
 test("✕ unlink actually drops the binding (nothing persists a stale pick)", async () => {
   const jobs = [{ job_no: "17456", name: "Prairie Farms", customer_no: "ACME", address: "1100 N Providence Rd", city: "Columbia", state: "MO" }];
   const ctx = loadSmLive({ jobs });

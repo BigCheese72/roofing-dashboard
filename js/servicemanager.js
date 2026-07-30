@@ -924,7 +924,7 @@ async function smSaveNewWorkOrder(data){
     woType: data.woType || "Repair",
     serviceDate: data.serviceDate || ((typeof todayStr === "function") ? todayStr() : ""),
     jobName: data.jobName || "", location: data.location || "", suite: "",
-    jobNo: (f && (f.job_number || f.job_no)) || "",
+    jobNo: f ? ((typeof fdnJobNo === "function") ? fdnJobNo(f) : String(f.job_no || f.job_number || "").trim()) : "",
     projectManager: (f && f.project_manager_no) || "",
     billTo: data.billTo || (f && f.customer_no) || "",
     billContact: "", billPhone: "", siteContact: "", technician: "",

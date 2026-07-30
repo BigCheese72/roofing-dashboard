@@ -15,8 +15,8 @@ function between(a, b) {
   return src.slice(s, e);
 }
 
-function makeCtx() {
-  const ctx = {
+function makeCtx(extra) {
+  const ctx = Object.assign({
     String, Array, Object, JSON,
     rmState: {},
     esc: (s) => String(s == null ? "" : s),
@@ -24,7 +24,7 @@ function makeCtx() {
       const line2 = [j.city, [j.state, j.zip].filter(Boolean).join(" ")].filter(Boolean).join(", ");
       return [j.address, line2].filter(Boolean).join(", ");
     }
-  };
+  }, extra || {});
   vm.runInNewContext(between("var rmJobPickerJobs", "/* ---- save to building"), ctx);
   return ctx;
 }
@@ -97,6 +97,21 @@ test("RoofMapper selected job remembers job identity, address, and matched build
   assert.strictEqual(ctx.rmState.pendingBuildingId, "bld_west");
   assert.strictEqual(ctx.rmState.pendingBuildingName, "West Middle School");
   assert.strictEqual(ctx.rmState.pendingBuildingSource, "job");
+});
+
+test("RoofMapper job identity delegates to fdnJobNo when available", () => {
+  const ctx = makeCtx({
+    fdnJobNo(j) {
+      return String(j.job_no || j.job_number || "").trim();
+    }
+  });
+  assert.strictEqual(ctx.rmJobNo({ job_no: "16457", job_number: "25003" }), "16457");
+});
+
+test("RoofMapper job identity fallback still prefers job_no over job_number", () => {
+  const ctx = makeCtx();
+  assert.strictEqual(ctx.rmJobNo({ job_no: "16457", job_number: "25003" }), "16457");
+  assert.strictEqual(ctx.rmJobNo({ job_no: "", job_number: "25003" }), "25003");
 });
 
 test("RoofMapper selected job without an app building keeps create-building data and clears pending building", () => {
