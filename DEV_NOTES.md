@@ -8855,3 +8855,59 @@ Additional coverage lives in Codex-owned test files:
 `tests/feedbackCreateRulesHardening.test.js`,
 `tests/feedbackAdminHardeningExtra.test.js`, and
 `tests/feedbackViewerSecurityExtra.test.js`.
+
+## Report Preview: a way back to the form (dev only, 2026-07-30)
+
+**The first fix produced by the feedback → auto-fix loop.** Report
+`fb_ms7owm7pdbc5a`: *once you are on Preview there is no way to go back and
+edit.*
+
+### Why the existing Edit tab did not count
+
+It was tempting to close this as "the header Edit tab already does that" — it
+does, and `showView("edit")` has always been a lossless show/hide. But look at
+what the tab actually is on a phone, which is where the report came from:
+
+- `.tab .tab-label{display:none}` (`css/app.css`, `max-width:640px`) — the tab
+  is a bare ✏️ emoji with no word "Edit" on it.
+- The header is a single `flex-wrap:nowrap; overflow-x:auto` row, so that emoji
+  may be scrolled off to the side entirely.
+- `.header-collapsed` slides the whole header out of view on scroll-down, and
+  the preview document is pages long — so by the time a tech has read the
+  report, the only exit has left the screen.
+
+Three separate mechanisms, each individually reasonable, adding up to a dead
+end. The report was right.
+
+### What was added
+
+`#preview-back-top` and `#preview-back-bottom` in `index.html` — the same
+"← Back to Edit" `.btn` above the document and again below it. The bottom copy
+is the one that matters in the field: after scrolling a 20-photo leak report,
+back should be *where you already are*, not a scroll back up to a collapsed
+header.
+
+`backToEdit()` (`js/export.js`) deliberately does nothing but navigate. It must
+not save, reload, re-collect or reset — the form's DOM **is** the live copy of
+the work, `renderDoc()` rebuilds Preview from `collect()` every time, and
+leaving the edit view already flushes the pending local autosave through the
+`showView()` wrapper in `js/workorders.js` ("never lose edits on back-out").
+Adding a save here would be the classic way a Back button starts *causing* the
+data loss it was meant to prevent.
+
+`previewReturnScrollY` carries the form's scroll position across the round trip.
+`showView()` always scrolls to 0, which is right for a view *switch* but wrong
+for Edit → Preview → Edit: landing at the top of a long work order means hunting
+for the field you came back to fix. It is captured on the way **out**
+(`rememberEditScrollForPreview()`, first statement of `goToPreview()`, before
+anything can `await` or hide the view) and only while the edit view is actually
+visible — the Preview tab is live on Preview itself, and re-tapping it there
+would otherwise overwrite the remembered position with Preview's own scroll.
+
+Both rows are `.no-print`; they are chrome, not report content.
+
+Docs: Help Center entry `preview-back-to-edit` (screens `["preview"]`).
+Tests: `tests/reportPreviewBackToEdit.test.js` (8) — control present above *and*
+below the document, both no-print, `backToEdit()` navigates and nothing else
+(stubs for `saveOrder`/`loadOrder`/`collect`/`renderDoc` must stay untouched),
+and the scroll round trip including the re-tap-Preview case.
