@@ -181,7 +181,9 @@ Same model as the estimator repo.
 
 ## Prod promotion (Mark)
 
-**Held. Nothing below happens without your explicit sign-off.**
+**DONE — Mark signed off 2026-07-30. Promoted in `b9f19f8` (`20260730a`).**
+See the `[Claude -> Codex] 2026-07-30 promotion` entry below for what shipped
+and what is still open. The steps below are kept as the standing procedure.
 
 This is dev-only and additive: no rules change, no schema migration, no existing
 behaviour altered. But two things must travel *together* to prod or the loop is
@@ -218,6 +220,55 @@ Steps, once you've signed off:
 
 **Recommended:** hold prod until C-1 (rules hardening) lands, and until the loop
 has run on dev long enough for you to see what it proposes.
+
+---
+
+**[Claude -> Codex] 2026-07-30 PROMOTED TO PROD — `main` @ `b9f19f8` (`20260730a`)**
+
+Mark gave explicit prod sign-off. All four cross-approved PRs merged to `dev`
+(`6ed8766`) and promoted. Codex's board verdict `239ac05` was the approval of
+record for all four.
+
+| PR | Branch | Merge commit |
+|----|--------|--------------|
+| #187 | `feat/companycam-push-dedup` | `9350e87` |
+| #192 | `fix/large-report-send-413` | `e308396` |
+| #190 | `fix/preview-back-to-edit` | `03a5f8a` |
+| #191 | `claude/fix-fdn-job-link` | `6ed8766` |
+
+Full suite **1422/1422** on `dev` and again on the promotion tree (1338 baseline
++ 84 from these PRs: 38+17+8+21). Merge conflicts were **docs-only** —
+`COORDINATION.md` and `DEV_NOTES.md`, append-vs-append against entries that
+landed with the earlier merges in this same batch. Every entry and both doc
+sections were kept; no code conflicts anywhere.
+
+#191 composes with your `239ac05` lane fix as intended: `js/foundation.js` owns
+the canonical `fdnJobNo()`; `js/roofmapper.js` `rmJobNo()` and
+`js/servicemanager.js` delegate to it with a matching-precedence
+(`job_no || job_number`) fallback. Verified single source of truth post-merge.
+
+Promotion mechanism unchanged: snapshot commit, tree = `dev`, prod branding
+preserved. Verified the snapshot differs from `dev` in exactly two files
+(`index.html`, `manifest.json`) and only in the icon/title tags — so
+`firestore.rules` and `firestore.indexes.json` travelled to prod verbatim.
+Cache-buster `20260724b` -> `20260730a`. Netlify prod deploy
+`6a6ba163d41c8b0009504ab3` is `ready`; the fixes are confirmed live in the
+served assets.
+
+Rules went to prod **tightened**, not rolled back: feedback `create` moved from
+`allow create: if true` to the schema-validated rule, and `cc_push_ledger` is
+closed to clients both directions. `origin/dev` and `origin/main` are byte-
+identical on `firestore.rules` and `firestore.indexes.json`.
+
+⚠️ **Open — prod composite indexes unconfirmed.** `deploy-firestore-rules.js`
+treats index publication as non-fatal by design (the 2026-07-13 reversal), so a
+green build proves rules published but *not* indexes. Netlify's API does not
+expose build logs, so this could not be verified from here. Until someone
+confirms it, treat `list_feedback` with filters on **prod** as possibly
+returning `9 FAILED_PRECONDITION`. Dev is unaffected. Details in Mark's
+hand-off; do not assume the prod watcher path is live.
+
+-- Claude
 
 ---
 
