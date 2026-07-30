@@ -44,6 +44,7 @@
 // ONLY thing in the app that hands out a Storage-readable URL, and it hands it
 // to CompanyCam, not to a browser.
 const { getAdmin, getDb } = require("./authGuard");
+const { evaluatePhotoForDuplicate, recordHashInLedger } = require("./companyCamDedup");
 
 // Same shapes photos.js validates -- a crafted workOrderId must not be able to
 // address anything outside the workorders/ prefix, and the path is always
@@ -156,6 +157,49 @@ async function uploadPhotoToCompanyCam(opts) {
     return { ok: false, skipped: true, reason: "not_in_storage", error: "Photo is not in Storage yet -- it will be pushed on the next save/send once its upload lands." };
   }
 
+  // ---- DE-DUPLICATION (lib/companyCamDedup.js) ----
+  // Deliberately here: after we know the object exists (the dedup hash reads
+  // those same bytes) and BEFORE we sign a URL or POST anything, so a duplicate
+  // costs nothing beyond the check itself.
+  //
+  // dedupCapturedAt / dedupCoordinates are the photo's OWN capture time and OWN
+  // GPS -- NOT the captured_at/coordinates we are about to send, which fall back
+  // to the work order's service date, a finding's pin, and the job location and
+  // are therefore identical across photos. Passing those instead would make
+  // every photo on a GPS-less work order look like a duplicate of the first one.
+  // See the FALSE-SKIP RULE block in companyCamDedup.js.
+  //
+  // A thrown error here can never block the push: evaluatePhotoForDuplicate()
+  // does not throw, and this catch is a second belt for anything unforeseen --
+  // an un-checkable photo is UPLOADED and flagged, never dropped.
+  let dedup = { duplicate: false, hash: null, unverified: true, checks: {}, detail: {} };
+  try {
+    dedup = await evaluatePhotoForDuplicate({
+      projectId: projectId,
+      file: file,
+      readToken: readToken || writeToken,
+      dedupCapturedAt: opts.dedupCapturedAt,
+      dedupCoordinates: opts.dedupCoordinates,
+      excludeCcPhotoIds: opts.excludeCcPhotoIds,
+      runKey: opts.runKey
+    });
+  } catch (e) {
+    dedup = {
+      duplicate: false, hash: null, unverified: true,
+      checks: { meta: "error", hash: "error" },
+      detail: { error: (e && e.message) ? e.message : "dedup check failed" }
+    };
+  }
+  if (dedup.duplicate) {
+    return {
+      ok: false,
+      duplicate: true,
+      reason: dedup.reason,
+      matchedPhotoId: dedup.matchedPhotoId || null,
+      dedup: dedup
+    };
+  }
+
   let uri;
   try {
     const signed = await file.getSignedUrl({
@@ -193,11 +237,29 @@ async function uploadPhotoToCompanyCam(opts) {
     if (!r.ok) return { ok: false, error: "CompanyCam rejected the photo: " + r.status + " " + t.slice(0, 300) };
     let out = null;
     try { out = JSON.parse(t); } catch (e) {}
+    const photoId = out && out.id ? String(out.id) : null;
+
+    // Record the bytes we just sent, so this exact image is never pushed into
+    // this project again -- from this work order or any other. Best-effort by
+    // design: the photo IS in CompanyCam now, and a ledger write failure must
+    // not turn a successful push into a reported failure. It self-heals on the
+    // next push (the primary time+GPS check still covers the photo meanwhile).
+    if (dedup.hash) {
+      const rec = await recordHashInLedger(projectId, dedup.hash, {
+        ccPhotoId: photoId,
+        workOrderId: opts.workOrderId,
+        photoIndex: opts.photoIndex,
+        bytes: dedup.detail && dedup.detail.bytes
+      });
+      if (!rec.ok) dedup.detail.ledgerWriteError = rec.error;
+    }
+
     return {
       ok: true,
-      photoId: out && out.id ? String(out.id) : null,
+      photoId: photoId,
       coordinates: coordinates,
-      photo: out
+      photo: out,
+      dedup: dedup
     };
   } catch (e) {
     return { ok: false, error: e.message };

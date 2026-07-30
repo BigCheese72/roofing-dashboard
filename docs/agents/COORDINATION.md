@@ -237,6 +237,32 @@ and `index.html` for the Codex estimator. There is **no `js/estimator.js` on `de
 files have been edited since (`70e5ae0` core.js 2026-07-22, `a97d11a` index.html), so the hold
 has lapsed in practice. Proceeding on Mark's direct instruction; flagging rather than assuming.
 
+**CC-1 — CompanyCam push DE-DUPLICATION → PR #187 into `dev`** *(2026-07-28)*
+Mark asked for this directly: the photo push must stop re-uploading photos the CompanyCam
+project already has. Matches against the **live project** on capture time + GPS (±3s / ±5m,
+configurable), with a **SHA-256 content-hash ledger** as the fallback. Wired into the existing
+`uploadPhotoToCompanyCam()` — **not** a parallel uploader.
+
+Shared surfaces touched, so everyone should know: `js/core.js` (two field pairs in the photo
+doc write/read — `capturedAt`/`capturedAtSource`/`ccDuplicateOfPhotoId` — plus the backfill
+summary), `js/history.js` (the push loop + `ccPushSummaryLine()`), `js/photos.js`
+(`parseExifCapturedAt()` on all three capture paths), `netlify/functions/companycam.js`,
+`firestore.rules` (new closed `cc_push_ledger`). Two new server libs are self-contained.
+Suite green **1324** (was 1286). **Holds nothing** — PR open, awaiting cross-review.
+
+**Two things worth knowing if you touch photos:**
+1. Photos now carry their **own** `capturedAt` (EXIF `DateTimeOriginal`, or the moment of
+   camera capture). Before this, every photo on an order was sent the work order's service
+   date at noon. If you add a photo-creation path, stamp `capturedAt` on it.
+2. `ccDuplicateOfPhotoId` is **not** `ccFeedPhotoId` and must never be conflated with it. The
+   matched photo may be one the tech took in CompanyCam themselves, and `ccFeedPhotoId` is the
+   id `deletePushedPhotoFromCompanyCam()` **deletes**.
+
+⚠️ Same note as WO-2: the 2026-07-18 FULL HOLD banner is lapsed — the estimator moved out of
+RoofOps entirely (see the comment at `js/core.js` `updateAdminUI()`), there is no
+`js/estimator.js`, and `dev` has taken merges since (#182, #185, #186). Proceeding on Mark's
+direct instruction; flagging rather than assuming. **DEV only — prod promotion is Mark's call.**
+
 **LEAD-1 — SPLIT MANDATE: `js/workorders.js` → per-section modules** *(raised by Lead, 2026-07-18)*
 *(Was H-5, then H-8 — collided twice in one afternoon with Warranty and Building History.
 That is the third data point behind ratifying DPR's per-agent prefix scheme above; this item

@@ -1228,6 +1228,130 @@ function dataUrlExifGps(dataUrl){
     return parseExifGps(bytes.buffer);
   }catch(e){ return null; }
 }
+/* EXIF CAPTURE TIME -- the other half of what CompanyCam de-duplication needs
+   (netlify/functions/lib/companyCamDedup.js).
+
+   Until now a photo carried NO capture time of its own. ccPhotoCapturedAt() in
+   js/history.js sent the WORK ORDER's service date at noon for every photo on
+   the order, because the canvas resize above re-encodes the image and throws
+   all EXIF away -- exactly the same reason GPS had to be recovered here first
+   (see parseExifGps). That is fine as a feed timestamp but useless as identity:
+   every photo on an order shared one value, so "match on time + GPS" would have
+   read every photo as a duplicate of the first one. This recovers the REAL
+   per-photo time from the original bytes, before the resize discards them.
+
+   TIMEZONE -- the trap this function exists to avoid. EXIF DateTimeOriginal is
+   naive local wall-clock ("2026:07:10 14:32:07"), with no zone. CompanyCam's
+   captured_at is unix seconds UTC. Comparing them raw puts a US Central photo
+   5-6 hours out, every match misses, and de-duplication silently does nothing.
+   The conversion belongs HERE, on the device, because this is the only place
+   that knows the right answer: EXIF's own OffsetTimeOriginal tag when the camera
+   wrote one, and otherwise the device's own timezone -- the tech's phone is in
+   the zone the photo was taken in. Downstream (photo.capturedAt, the push, the
+   server) only ever sees unambiguous epoch milliseconds.
+
+   Deliberately a SEPARATE TIFF walk from rmExifGpsFromTiff() above rather than a
+   shared refactor of it: that function is the GPS recovery Mark's 2026-07-15
+   smoke test drove out, it is covered by its own tests, and a photo losing its
+   pin is a worse regression than a photo losing a dedup hint. Same trade the
+   file already makes elsewhere. Fully non-fatal: anything malformed, absent, or
+   implausible returns null and the photo behaves exactly as it did before. */
+function rmExifStampToEpochMs(stamp, offset){
+  var m = /^(\d{4})[:\-](\d{2})[:\-](\d{2})[ T](\d{2}):(\d{2}):(\d{2})/.exec(String(stamp || "").trim());
+  if (!m) return null;
+  var y = +m[1], mo = +m[2], d = +m[3], h = +m[4], mi = +m[5], s = +m[6];
+  if (mo < 1 || mo > 12 || d < 1 || d > 31 || h > 23 || mi > 59 || s > 60) return null;
+  var ms;
+  var om = /^([+\-])(\d{2}):?(\d{2})$/.exec(String(offset || "").trim());
+  if (om){
+    var mins = (+om[2]) * 60 + (+om[3]);
+    if (om[1] === "-") mins = -mins;
+    ms = Date.UTC(y, mo - 1, d, h, mi, s) - mins * 60000;   /* camera told us the zone */
+  } else {
+    ms = new Date(y, mo - 1, d, h, mi, s).getTime();        /* naive local -> this device's zone */
+  }
+  if (!isFinite(ms)) return null;
+  /* A blank/zeroed EXIF field ("0000:00:00 00:00:00") and a phone with a wildly
+     wrong clock both produce a timestamp that would only ever mis-match. Reject
+     rather than carry a lie: no capture time simply routes dedup to the hash. */
+  if (ms < Date.UTC(1990, 0, 1) || ms > Date.now() + 86400000) return null;
+  return ms;
+}
+function rmExifCapturedAtFromTiff(view, tiff){
+  var bo = view.getUint16(tiff);
+  var little = bo === 0x4949;                                /* "II" little-endian; "MM" big-endian */
+  if (!little && bo !== 0x4D4D) return null;
+  var u16 = function(o){ return view.getUint16(o, little); };
+  var u32 = function(o){ return view.getUint32(o, little); };
+  if (u16(tiff + 2) !== 0x002A) return null;
+  function entryFor(ifd, tag){
+    if (ifd < 0 || ifd + 2 > view.byteLength) return -1;
+    var n = u16(ifd);
+    for (var i = 0; i < n; i++){
+      var e = ifd + 2 + i * 12;
+      if (e + 12 > view.byteLength) return -1;
+      if (u16(e) === tag) return e;
+    }
+    return -1;
+  }
+  /* ASCII tag value. <=4 bytes are stored inline in the entry's value field;
+     anything longer (a 20-byte timestamp) is a pointer into the TIFF block. */
+  function ascii(e){
+    if (e < 0) return "";
+    var count = u32(e + 4);
+    if (!count || count > 64) return "";
+    var at = count <= 4 ? e + 8 : tiff + u32(e + 8);
+    var s = "";
+    for (var i = 0; i < count; i++){
+      if (at + i >= view.byteLength) break;
+      var c = view.getUint8(at + i);
+      if (!c) break;
+      s += String.fromCharCode(c);
+    }
+    return s;
+  }
+  var ifd0 = tiff + u32(tiff + 4);
+  var subPtr = entryFor(ifd0, 0x8769);                       /* Exif SubIFD pointer */
+  var sub = subPtr >= 0 ? tiff + u32(subPtr + 8) : -1;
+  var stamp = "", offset = "";
+  if (sub >= 0){
+    stamp = ascii(entryFor(sub, 0x9003)) || ascii(entryFor(sub, 0x9004));  /* DateTimeOriginal, then DateTimeDigitized */
+    offset = ascii(entryFor(sub, 0x9011)) || ascii(entryFor(sub, 0x9012)); /* OffsetTimeOriginal / OffsetTimeDigitized */
+  }
+  if (!stamp) stamp = ascii(entryFor(ifd0, 0x0132));         /* IFD0 DateTime -- last resort */
+  return rmExifStampToEpochMs(stamp, offset);
+}
+function parseExifCapturedAt(buffer){
+  try{
+    var view = new DataView(buffer);
+    if (view.byteLength < 12 || view.getUint16(0) !== 0xFFD8) return null; /* not a JPEG */
+    var offset = 2;
+    while (offset + 4 <= view.byteLength){
+      var marker = view.getUint16(offset);
+      if ((marker & 0xFF00) !== 0xFF00) return null;
+      if (marker === 0xFFE1){ /* APP1 -- Exif */
+        var exif = offset + 4;
+        if (exif + 6 <= view.byteLength && view.getUint32(exif) === 0x45786966 && view.getUint16(exif + 4) === 0){
+          return rmExifCapturedAtFromTiff(view, exif + 6);
+        }
+        return null;
+      }
+      if (marker === 0xFFDA) return null; /* start of scan -- no EXIF beyond here */
+      offset += 2 + view.getUint16(offset + 2);
+    }
+    return null;
+  }catch(e){ return null; }
+}
+function dataUrlExifCapturedAt(dataUrl){
+  try{
+    var comma = String(dataUrl || "").indexOf(",");
+    if (comma < 0) return null;
+    var bin = atob(dataUrl.slice(comma + 1, comma + 1 + 200000));
+    var n = bin.length, bytes = new Uint8Array(n);
+    for (var i = 0; i < n; i++) bytes[i] = bin.charCodeAt(i);
+    return parseExifCapturedAt(bytes.buffer);
+  }catch(e){ return null; }
+}
 /* amendmentId (optional, third arg) tags a photo to a RETURN VISIT
    (photo.amendment_id — see the amendments block in js/workorders.js).
    Deliberately a separate field from findingId rather than reusing it: a
@@ -1271,6 +1395,12 @@ function addPhotosFromFiles(files, findingId, amendmentId){
          it (see parseExifGps). null when the photo has no location -- then it
          behaves exactly as an import did before. */
       var exifGps = dataUrlExifGps(reader.result);
+      /* The photo's OWN capture time, off the same original bytes and for the
+         same reason -- the resize below strips it. Feeds CompanyCam
+         de-duplication AND the feed's captured_at, which until now was the work
+         order's service date for every photo (see ccPhotoCapturedAt() in
+         js/history.js). null when the camera wrote no usable EXIF timestamp. */
+      var exifTime = dataUrlExifCapturedAt(reader.result);
       var img = new Image();
       img.onload = function(){
         var preset = photoPreset();
@@ -1283,7 +1413,8 @@ function addPhotosFromFiles(files, findingId, amendmentId){
         c.width = w; c.height = h;
         c.getContext("2d").drawImage(img, 0, 0, w, h);
         results[idx] = { caption:"", img: c.toDataURL("image/jpeg", preset.q), thumb: makeThumbDataUrl(img), w: w, h: h,
-          finding_id: findingId || null, amendment_id: amendmentId || null, gps: exifGps, localId: makeLocalPhotoId() };
+          finding_id: findingId || null, amendment_id: amendmentId || null, gps: exifGps, localId: makeLocalPhotoId(),
+          capturedAt: exifTime, capturedAtSource: exifTime ? "exif" : null };
         done();
       };
       img.onerror = function(){ toast("Couldn't read one of the photos"); done(); };
@@ -1436,9 +1567,13 @@ function addPhotosFromCamera(files, findingId, amendmentId){
           var c = document.createElement("canvas");
           c.width = w; c.height = h;
           c.getContext("2d").drawImage(img, 0, 0, w, h);
+          /* A camera capture needs no EXIF archaeology: the shutter just fired,
+             so "now" IS the capture time -- a real, per-photo, already-UTC value,
+             which is exactly what CompanyCam de-duplication wants. */
           results[idx] = { caption:"", img: c.toDataURL("image/jpeg", preset.q), thumb: makeThumbDataUrl(img), w: w, h: h,
             finding_id: findingId || null, amendment_id: amendmentId || null,
-            gps: gps, gpsFailReason: gpsFailReason, localId: makeLocalPhotoId() };
+            gps: gps, gpsFailReason: gpsFailReason, localId: makeLocalPhotoId(),
+            capturedAt: Date.now(), capturedAtSource: "camera" };
           done();
         };
         img.onerror = function(){ toast("Couldn't read the photo"); done(); };
@@ -1579,6 +1714,7 @@ function processReplacementPhoto(i, file){
   var reader = new FileReader();
   reader.onload = function(){
     var exifGps = dataUrlExifGps(reader.result);
+    var exifTime = dataUrlExifCapturedAt(reader.result);
     var img = new Image();
     img.onload = function(){
       var preset = photoPreset();
@@ -1599,7 +1735,10 @@ function processReplacementPhoto(i, file){
       photos[i] = { caption: old.caption || "", img: c.toDataURL("image/jpeg", preset.q),
         thumb: makeThumbDataUrl(img), w: w, h: h,
         finding_id: old.finding_id || null, amendment_id: old.amendment_id || null,
-        gps: exifGps, localId: makeLocalPhotoId() };
+        gps: exifGps, localId: makeLocalPhotoId(),
+        /* New image, new identity -- the replacement's own capture time, never
+           the dead slot's. Its dedup identity must not inherit the old photo's. */
+        capturedAt: exifTime, capturedAtSource: exifTime ? "exif" : null };
       idbPutPhoto(photos[i].localId, photos[i].img);
       renderPhotos();
       if (photos[i].finding_id){

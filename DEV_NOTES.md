@@ -8855,3 +8855,103 @@ Additional coverage lives in Codex-owned test files:
 `tests/feedbackCreateRulesHardening.test.js`,
 `tests/feedbackAdminHardeningExtra.test.js`, and
 `tests/feedbackViewerSecurityExtra.test.js`.
+### CompanyCam push de-duplication (built 2026-07-28, dev only)
+
+**Goal (from Mark)**: the RoofOps → CompanyCam photo push must stop re-uploading
+photos that are already in the CompanyCam project. Compare against what is
+**already in CompanyCam**, using **capture date/time + GPS**, with a **content
+hash** as the fallback.
+
+**Where it lives.** Wired into the existing uploader, not beside it.
+`uploadPhotoToCompanyCam()` (`netlify/functions/lib/companyCamPhotos.js`) calls
+`evaluatePhotoForDuplicate()` after the Storage existence check and *before* it
+signs a URL or POSTs anything — so a duplicate costs one check and nothing else.
+Two new files: `lib/companyCamDedupConfig.js` (every knob, one place) and
+`lib/companyCamDedup.js` (the engine). The client orchestration is unchanged in
+shape: `pushPhotosToCompanyCamFeed()` (`js/history.js`) still walks the photos
+one at a time through the same `upload_photo` action.
+
+**The two mechanisms.**
+
+1. *Primary — match the live project.* Fetch the target project's existing
+   photos (`captured_at` + `coordinates`) and match a candidate on **both** time
+   (±3s default) and location (±5m default, haversine). A hit is skipped.
+2. *Fallback — content hash.* SHA-256 of the image bytes against a per-project
+   ledger (`cc_push_ledger/{projectId}/entries/{sha256}`, see `DATA_MODEL.md`).
+   Runs when the primary can't decide, and — with `alwaysHash` on, the default —
+   on every candidate, because the primary check compares the photo's *own* GPS
+   while the copy we previously sent to CompanyCam may sit at a **finding pin**
+   instead. Only the hash can see that one.
+
+**The thing that had to be solved first: photos had no capture time.** The canvas
+resize re-encodes every image and drops all EXIF (the same reason GPS had to be
+recovered in `parseExifGps()`), so `ccPhotoCapturedAt()` was sending the **work
+order's service date at noon** — identical for every photo on the order. Combine
+that with coordinates that fall back to a shared finding pin or the job location
+and *every photo on an order already presented the same (time, place) as every
+other*. A naive time+GPS match would have uploaded photo 0 and skipped 1..N as
+duplicates of it. So:
+
+- `parseExifCapturedAt()` (`js/photos.js`) recovers **DateTimeOriginal** from the
+  original bytes before the resize discards them, on all three photo-creation
+  paths (library import, camera capture, dead-slot replacement). Stored as
+  `photo.capturedAt` (epoch ms) + `capturedAtSource`, persisted through
+  `cloudSaveOrder()`/`cloudFetchOrder()` like `ccFeedPhotoId` and `amendment_id`.
+- Only **per-photo** metadata is sent as dedup identity (`dedupCapturedAt` /
+  `dedupCoordinates`). Derived, shared values are never sent. No own metadata →
+  the primary check does not run at all → hash.
+- `excludeCcPhotoIds` carries the ids the *current run* has created, so photo 5
+  can never be judged a duplicate of photo 3 we uploaded eight seconds ago.
+
+**Timezone.** EXIF `DateTimeOriginal` is naive local wall-clock; CompanyCam's
+`captured_at` is unix seconds UTC (verified read-only against the live API,
+2026-07-28: `1785248380`, `coordinates: {lat, lon}`, 100/100 photos on a page
+carried both). Compared raw, a US Central photo is 5–6 hours out, every match
+misses, and the feature silently does nothing. The conversion happens **on the
+device**, at import — EXIF's own `OffsetTimeOriginal` when the camera wrote one,
+otherwise the phone's own zone, which is the zone the photo was taken in.
+Downstream only ever sees unambiguous epoch ms. `normalizeToEpochSeconds()` still
+handles every other shape, and **refuses** a naive value with no zone rather than
+guessing (configurable via `CC_DEDUP_ASSUMED_UTC_OFFSET_MINUTES` if one ever
+genuinely reaches the server).
+
+**Fail open, always.** A false dup is an annoyance; a false skip is lost field
+evidence off a roof someone will make a warranty claim about. If the project
+index can't be fetched, the bytes can't be hashed, or the ledger can't be read,
+the photo is **uploaded and flagged** (`unverified`), never dropped. The project
+index scan is bounded by both a page count and a **wall-clock budget**
+(`indexMaxMillis`, 6s) so a large project can't outrun the function timeout;
+truncation biases toward an extra upload and is reported.
+
+**Config** — `lib/companyCamDedupConfig.js`, every value overridable by env var,
+read at call time, bounds-checked (a typo'd tolerance falls back to the default
+and lands in `cfg.warnings` rather than turning dedup into a photo shredder):
+`CC_DEDUP_ENABLED` (kill switch), `CC_DEDUP_TIME_TOLERANCE_SECONDS` (3),
+`CC_DEDUP_DISTANCE_TOLERANCE_METERS` (5), `CC_DEDUP_ALWAYS_HASH` (true),
+`CC_DEDUP_HASH_FALLBACK` (true), `CC_DEDUP_ASSUMED_UTC_OFFSET_MINUTES` (null),
+`CC_DEDUP_INDEX_PER_PAGE`/`_MAX_PAGES`/`_MAX_MILLIS`/`_CACHE_TTL_MS`,
+`CC_DEDUP_LEDGER_COLLECTION`, `CC_DEDUP_MAX_HASH_BYTES`. No new secret — it
+reuses `COMPANYCAM_TOKEN`.
+
+**Auditable, not a black box.** Every push logs one summary line
+(`ccPushSummaryLine()`: "N uploaded, M skipped as duplicates (X matched capture
+time + GPS, Y matched content hash)…") plus a per-photo `dedupLog` with the
+matched CompanyCam photo id and the actual time/distance deltas. Duplicates and
+unverified uploads each get their own toast, including when *nothing* uploaded —
+the case that would otherwise look like the push did nothing at all. The
+owner-only backfill aggregates the same counts.
+
+**Safety detail worth keeping.** A metadata match records
+`photo.ccDuplicateOfPhotoId`, deliberately **not** `ccFeedPhotoId`: the photo it
+matched may be one the tech took in CompanyCam themselves, and `ccFeedPhotoId` is
+the id the undo-push deletes. Recording a match must never make someone else's
+photo deletable.
+
+Tests: `tests/companyCamDedup.test.js` — 38. Timezone normalization both ways,
+tolerance edges (±3s inclusive, 4s out), both-must-match, config bounds, the
+live-match skip, the hash-ledger skip across two different work orders, the
+pinned-photo case only the hash catches, `excludeCcPhotoIds`, index truncation by
+page and by clock, fail-open on every failure mode, the kill switch, the auth
+guard still closed, EXIF `DateTimeOriginal` with and without an offset tag, and —
+by name — the **FALSE-SKIP GUARDS**: five metadata-less photos on one work order
+must all upload, and a shared finding pin must never make two photos duplicates.

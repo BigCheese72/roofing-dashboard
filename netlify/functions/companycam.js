@@ -174,14 +174,45 @@ exports.handler = async function (event) {
           photoIndex: body.photoIndex,
           coordinates: body.coordinates || null,
           capturedAt: body.captured_at,
-          description: body.description || ""
+          description: body.description || "",
+          // De-duplication inputs (lib/companyCamDedup.js). All optional -- a
+          // caller that sends none of them still uploads, it just falls back to
+          // the content-hash ledger instead of the time+GPS match.
+          //   dedupCapturedAt    the photo's OWN capture time (EXIF
+          //                      DateTimeOriginal / moment of camera capture),
+          //                      already resolved to epoch ms by the client
+          //                      while it still knew the device's timezone.
+          //   dedupCoordinates   the photo's OWN GPS -- never a finding pin or
+          //                      the job location, which are shared between
+          //                      photos and would cause false skips.
+          //   excludeCcPhotoIds  ids this push run has already created, so a
+          //                      photo cannot be judged a duplicate of one we
+          //                      uploaded seconds ago in the same run.
+          //   runKey             groups one push run's per-photo invocations so
+          //                      they can share a single project-index snapshot.
+          dedupCapturedAt: body.dedupCapturedAt,
+          dedupCoordinates: body.dedupCoordinates || null,
+          excludeCcPhotoIds: Array.isArray(body.excludeCcPhotoIds) ? body.excludeCcPhotoIds.slice(0, 500) : [],
+          runKey: body.runKey ? String(body.runKey).slice(0, 120) : ""
         });
         if (result.skipped) return resp(200, { ok: false, skipped: true, reason: result.reason || "skipped" });
+        // A duplicate is a SUCCESSFUL outcome, not an error: the photo is
+        // already in the project, which is the goal. 200 + ok:false + the
+        // reason, so the client can count and explain it instead of reporting a
+        // failure and retrying it forever.
+        if (result.duplicate) {
+          return resp(200, {
+            ok: false, duplicate: true,
+            reason: result.reason || "duplicate",
+            matchedPhotoId: result.matchedPhotoId || null,
+            dedup: result.dedup || null
+          });
+        }
         if (!result.ok) {
           const code = /not set/.test(result.error) ? 500 : (/Missing|Invalid/.test(result.error) ? 400 : 502);
           return resp(code, { error: result.error });
         }
-        return resp(200, { ok: true, photoId: result.photoId, coordinates: result.coordinates || null });
+        return resp(200, { ok: true, photoId: result.photoId, coordinates: result.coordinates || null, dedup: result.dedup || null });
       }
 
       // Removes ONE integration-pushed photo from a CompanyCam project's feed
