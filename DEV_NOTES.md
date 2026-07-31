@@ -9012,3 +9012,13 @@ Tests: `tests/reportPreviewBackToEdit.test.js` (8) — control present above *an
 below the document, both no-print, `backToEdit()` navigates and nothing else
 (stubs for `saveOrder`/`loadOrder`/`collect`/`renderDoc` must stay untouched),
 and the scroll round trip including the re-tap-Preview case.
+
+## ASIL front-end contract
+
+`asil.html` is the embodied voice surface. `js/asil-state-machine.js` owns its
+UI state vocabulary and `js/asil-face.js` owns rendering, microphone input,
+speech output, and browser events. Backend adapters listen for `asil:command`
+and answer through the event detail's `respond()` and `setState()` callbacks.
+The interface also emits `asil:statechange` and exposes `window.ASIL` for local
+integration and diagnostics. No model credentials, durable memory, or
+privileged agent tools belong in these browser files.
