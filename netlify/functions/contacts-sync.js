@@ -49,7 +49,7 @@
 //     calendar actions NO-OP with a clear "calendar scope not granted yet"
 //     message (gated via hasCalendarScope()) rather than failing with a raw 403.
 const { requirePermission } = require("./lib/authGuard");
-const { asilKeyAllows } = require("./lib/asilKey");
+const { asilKeyAllows, presentedAsilKey } = require("./lib/asilKey");
 const { graphFetchDelegated, hasCalendarScope } = require("./lib/graphDelegatedAuth");
 
 // Actions ASIL's bridge key may reach here (see lib/asilKey.js): read actions
@@ -776,7 +776,35 @@ exports.handler = async function (event) {
     try {
       await requirePermission(event, "warranty.manage_reports");
     } catch (e) {
-      return resp(e.statusCode || 401, { error: e.message });
+      // DIAGNOSTIC CLARITY (added 2026-07-31 after a real misdiagnosis). This
+      // gate runs BEFORE any Graph call and before secrets/ms_graph_delegated is
+      // ever read, so a 401 from here carries ZERO information about the
+      // delegated Microsoft 365 session -- yet two automated runs that hit it
+      // were read as "the dev M365 session has expired and stopped
+      // auto-renewing". It had not; the delegated refresh path was healthy the
+      // whole time. Both messages below were the reason:
+      //
+      //   * An ASIL caller (key header, no bearer token) fell through to
+      //     "Missing Authorization bearer token" -- a bearer token it never
+      //     intended to send, pointing the investigation away from its actual
+      //     problem (the key).
+      //   * A caller with a bad/wrong-project Firebase token got the bare
+      //     "Invalid or expired session", which reads like an M365 session.
+      //
+      // authGuard.js owns those strings and is another agent's lane, so the
+      // clarification is applied HERE, at the boundary that returns them.
+      // The ASIL branch deliberately COLLAPSES "key rejected" and "action not
+      // allowlisted" into one message -- splitting them would be an oracle.
+      const code = e.statusCode || 401;
+      let msg = e.message;
+      if (code === 401) {
+        msg = presentedAsilKey(event)
+          ? "ASIL key not accepted for action \"" + action + "\" (key rejected, or action not on the ASIL allowlist)."
+          : e.message;
+        msg += " This is a RoofOps caller-identity failure, not a Microsoft 365 one" +
+          " -- this check runs before any Graph call, so it says nothing about the delegated M365 session.";
+      }
+      return resp(code, { error: msg });
     }
   }
 

@@ -20,7 +20,7 @@
 // Run: npm test
 const test = require("node:test");
 const assert = require("node:assert");
-const { hasValidAsilKey, asilKeyAllows, timingSafeEqualStr } = require("../netlify/functions/lib/asilKey");
+const { hasValidAsilKey, asilKeyAllows, presentedAsilKey, timingSafeEqualStr } = require("../netlify/functions/lib/asilKey");
 
 const GOOD = "b7f1c9a4e2d84f6b8c3a5d7e9f1b2c4d6e8a0f2b"; // 40 chars, >= 32
 const ALLOWED = ["mail_read", "calendar_list", "create_draft", "jobs"];
@@ -155,4 +155,53 @@ test("comparison is timing-safe (never short-circuits on the first differing byt
   assert.strictEqual(timingSafeEqualStr(diffFirst, GOOD), false);
   assert.strictEqual(timingSafeEqualStr(diffLast, GOOD), false);
   assert.strictEqual(timingSafeEqualStr(GOOD, GOOD), true);
+});
+
+// =====================================================================
+// presentedAsilKey() -- diagnostic only, and must NOT become an oracle.
+//
+// Regression cover for a real misdiagnosis (2026-07-31): an ASIL caller whose
+// key was not accepted fell through to the human gate and was told "Missing
+// Authorization bearer token" -- a credential it never intended to send. That
+// wrong signal, on a function whose whole job is Microsoft 365, was read as
+// "the delegated M365 session has expired", which it had not. contacts-sync.js
+// uses this helper to say "your ASIL key path failed" instead.
+// =====================================================================
+test("presentedAsilKey: true whenever the header is present, regardless of value", () => {
+  // The POINT is that it does not care whether the key is right -- a caller
+  // with a WRONG key still attempted the ASIL path and must be told so.
+  withSecret(GOOD, () => {
+    assert.strictEqual(presentedAsilKey(ev({ "x-roofops-asil-key": GOOD })), true);
+    assert.strictEqual(presentedAsilKey(ev({ "x-roofops-asil-key": "totally-wrong-value" })), true);
+    assert.strictEqual(presentedAsilKey(ev({ "X-RoofOps-Asil-Key": GOOD })), true, "canonical casing too");
+  });
+});
+
+test("presentedAsilKey: false when no key header was sent", () => {
+  withSecret(GOOD, () => {
+    assert.strictEqual(presentedAsilKey(ev({})), false);
+    assert.strictEqual(presentedAsilKey(ev({ authorization: "Bearer something" })), false,
+      "a bearer-token caller never attempted the ASIL path");
+    assert.strictEqual(presentedAsilKey(ev({ "x-roofops-asil-key": "" })), false, "empty header is not an attempt");
+  });
+});
+
+test("presentedAsilKey: degenerate events never throw", () => {
+  for (const bad of [undefined, null, {}, { headers: null }, { headers: undefined }]) {
+    assert.strictEqual(presentedAsilKey(bad), false);
+  }
+});
+
+test("presentedAsilKey is NOT an oracle: it never reveals whether the key matched", () => {
+  // Same header presence => same answer, whether the env secret is unset, weak,
+  // or a perfect match. If this ever varied with the SECRET rather than the
+  // HEADER, it would leak exactly what hasValidAsilKey() protects.
+  const e = ev({ "x-roofops-asil-key": GOOD });
+  const answers = [];
+  withSecret(undefined, () => answers.push(presentedAsilKey(e)));
+  withSecret("short", () => answers.push(presentedAsilKey(e)));
+  withSecret("b".repeat(40), () => answers.push(presentedAsilKey(e)));
+  withSecret(GOOD, () => answers.push(presentedAsilKey(e)));
+  assert.deepStrictEqual(answers, [true, true, true, true],
+    "the answer must depend only on the header, never on the stored secret");
 });

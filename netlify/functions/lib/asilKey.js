@@ -57,4 +57,20 @@ function asilKeyAllows(event, action, allowed) {
   return hasValidAsilKey(event);
 }
 
-module.exports = { hasValidAsilKey, asilKeyAllows, timingSafeEqualStr, MIN_ASIL_KEY_LEN };
+// Did this request even ATTEMPT the ASIL path? Presence of the header only --
+// says nothing about whether the key is right. Purely diagnostic: it exists so
+// a function that refuses an ASIL caller can say "your key path failed" instead
+// of the fall-through gate's "Missing Authorization bearer token", which is
+// actively misleading to a caller that never intended to send a bearer token.
+//
+// SECURITY: deliberately NOT an oracle. It reports only that a header was
+// presented -- something the caller already knows, since it sent it -- and
+// never whether the value matched, so it leaks nothing hasValidAsilKey()
+// protects. Callers must keep "key wrong" and "action off the allowlist"
+// collapsed into ONE message for the same reason.
+function presentedAsilKey(event) {
+  const h = (event && event.headers) || {};
+  return !!(h["x-roofops-asil-key"] || h["X-RoofOps-Asil-Key"]);
+}
+
+module.exports = { hasValidAsilKey, asilKeyAllows, presentedAsilKey, timingSafeEqualStr, MIN_ASIL_KEY_LEN };
