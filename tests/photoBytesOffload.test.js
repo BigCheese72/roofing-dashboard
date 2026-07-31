@@ -14,20 +14,32 @@ const vm = require("node:vm");
 
 const src = fs.readFileSync(path.join(__dirname, "..", "js", "core.js"), "utf8");
 
-/* ---- leanDbReplacer ---- */
-function replacerCtx(){ const ctx = { JSON }; vm.runInNewContext(src.slice(src.indexOf("function leanDbReplacer"), src.indexOf("function saveDb")), ctx); return ctx; }
+/* ---- leanDbReplacer ----
+   Pulls in the photoBytesAre* predicates too: leanDbReplacer delegates its
+   "are these bytes safe to omit" decision to them, so they are part of the same
+   unit rather than a separate concern to stub out. */
+function replacerCtx(){
+  const ctx = { JSON };
+  const helpers = src.slice(src.indexOf("function photoBytesAreSafeElsewhere"), src.indexOf("function stripPhotoBytes"));
+  const replacer = src.slice(src.indexOf("function leanDbReplacer"), src.indexOf("function saveDb"));
+  vm.runInNewContext(helpers + "\n" + replacer, ctx);
+  return ctx;
+}
 
 test("leanDbReplacer drops img for IDB- and Storage-backed photos, keeps un-backed", () => {
   const ctx = replacerCtx();
   const db = { photos: [
     { img: "A_BYTES", _idbBacked: true, localId: "L1", thumb: "tA" },
     { img: "B_BYTES", storageRef: "workorders/w/0.jpg", thumb: "tB" },
-    { img: "C_BYTES", localId: "L2", thumb: "tC" } // un-backed: no flag, no ref
+    { img: "C_BYTES", localId: "L2", thumb: "tC" }, // un-backed: no flag, no ref
+    { storageRef: "workorders/w/1.jpg", imgFallback: "D_BYTES" } // migrated, no thumb
   ]};
   const out = JSON.parse(JSON.stringify(db, ctx.leanDbReplacer));
   assert.equal("img" in out.photos[0], false, "IDB-backed img dropped");
   assert.equal("img" in out.photos[1], false, "Storage-backed img dropped");
   assert.equal(out.photos[2].img, "C_BYTES", "un-backed img KEPT (only copy)");
+  assert.equal("imgFallback" in out.photos[3], false,
+    "a migrated photo's full-res imgFallback is dropped too -- it is display-only and always re-derivable");
   // metadata always survives
   assert.equal(out.photos[0].thumb, "tA");
   assert.equal(out.photos[0].localId, "L1");
