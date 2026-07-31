@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#101618">
+  <title>ASIL</title>
+  <link rel="stylesheet" href="css/asil.css?v=20260731a">
+  <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
+</head>
+<body data-asil-state="idle">
+  <main class="asil-shell" aria-label="ASIL voice interface">
+    <div id="asil-canvas" aria-hidden="true"></div>
+    <header class="asil-topbar">
+      <div class="asil-brand">ASIL <small>AI collaborator</small></div>
+      <div class="asil-spacer"></div>
+      <div class="asil-state" aria-live="polite">
+        <span id="asil-state-dot" aria-label="Ready"></span>
+        <span id="asil-status">Ready</span>
+      </div>
+    </header>
+    <a class="asil-back" href="index.html">Back to RoofOps</a>
+    <details class="asil-state-lab">
+      <summary>State lab</summary>
+      <div class="asil-state-options" aria-label="Preview ASIL states">
+        <button class="asil-icon-button" data-asil-demo-state="idle" title="Idle">I</button>
+        <button class="asil-icon-button" data-asil-demo-state="listening" title="Listening">L</button>
+        <button class="asil-icon-button" data-asil-demo-state="thinking" title="Thinking">T</button>
+        <button class="asil-icon-button" data-asil-demo-state="speaking" title="Speaking">S</button>
+        <button class="asil-icon-button" data-asil-demo-state="acting" title="Acting">A</button>
+        <button class="asil-icon-button" data-asil-demo-state="needs_attention" title="Needs attention">?</button>
+        <button class="asil-icon-button" data-asil-demo-state="success" title="Success">OK</button>
+        <button class="asil-icon-button" data-asil-demo-state="error" title="Error">!</button>
+      </div>
+    </details>
+    <div class="asil-transcript-wrap" aria-live="polite"><p id="asil-transcript" hidden></p></div>
+    <div class="asil-controls" role="group" aria-label="Talk with ASIL">
+      <button id="asil-mic" class="asil-icon-button" type="button" aria-pressed="false" title="Start listening"><i data-lucide="mic"></i></button>
+      <input id="asil-command" class="asil-command" type="text" autocomplete="off" aria-label="Message ASIL" placeholder="Talk to ASIL">
+      <button id="asil-send" class="asil-icon-button" type="button" title="Send"><i data-lucide="arrow-up"></i></button>
+      <button id="asil-stop" class="asil-icon-button" type="button" title="Stop"><i data-lucide="square"></i></button>
+    </div>
+  </main>
+  <script src="js/asil-state-machine.js?v=20260731a"></script>
+  <script type="module" src="js/asil-face.js?v=20260731b"></script>
+  <script>lucide.createIcons();</script>
+</body>
+</html>
