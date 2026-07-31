@@ -833,10 +833,34 @@ function photoStorageIndex(p){
   var m = p && p.storageRef && /^workorders\/[^/]+\/(\d+)\.jpg$/.exec(p.storageRef);
   return m ? +m[1] : null;
 }
+/* The savedAt of the LAST cloud write this browser session landed, per work
+   order id. In memory ON PURPOSE: it is the one record of "we wrote that
+   value" that survives a localStorage write failure, which is exactly the
+   case the false-conflict fix in cloudSaveOrder() below depends on. Never
+   persisted, never read from storage — a page reload correctly forgets it and
+   falls back to the base stamped by cloudFetchOrder(). */
+var sessionLastCloudWrite = Object.create(null);
+/* Identifies THIS tab for the lifetime of the page. Stamped onto every work
+   order this session writes (savedBySession, alongside savedByUid) purely as
+   an audit trail: until now a work order doc recorded WHEN it was last saved
+   and nothing whatsoever about WHO or WHAT saved it, so "was this really
+   another device?" — the exact question the clobber guard's message asserts an
+   answer to — could not be answered from the record at all. Diagnosing Mark's
+   #17412 block took reconstructing it from feedback reports. Not read by the
+   guard: the conflict decision stays on the exact-savedAt match, which is
+   provable without trusting a self-reported id. */
+var cloudSaveSessionId = "s" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
 async function cloudSaveOrder(o){
   if (!fdb) throw new Error("cloud not available");
   var main = {};
-  Object.keys(o).forEach(function(k){ if (k !== "photos") main[k] = (o[k] == null ? "" : o[k]); });
+  /* _cloudBaseSavedAt is LOCAL bookkeeping for the clobber guard, not part of
+     the work order. It used to ride along into the cloud doc with every other
+     key, where it was permanently one save behind the doc's own savedAt — a
+     stale base sitting in the record, waiting for any reader that took it at
+     face value. cloudFetchOrder() overwrites it with savedAt on the way in, so
+     nothing depended on the persisted copy; ref.set() below is a full
+     overwrite, so it drops off existing docs on their next save. */
+  Object.keys(o).forEach(function(k){ if (k !== "photos" && k !== "_cloudBaseSavedAt") main[k] = (o[k] == null ? "" : o[k]); });
   var ph = o.photos || [];
   /* Drop dead slots (photoSlotIsEmpty) rather than re-persist them; compact
      survivors to a contiguous 0..n-1. photoCount reflects the compacted set. */
@@ -844,6 +868,8 @@ async function cloudSaveOrder(o){
   var droppedEmpty = ph.length - writePhotos.length;
   main.photoCount = writePhotos.length;
   main.savedAt = Date.now();
+  main.savedBySession = cloudSaveSessionId;
+  main.savedByUid = (typeof currentAuthUser !== "undefined" && currentAuthUser && currentAuthUser.uid) || "";
   var ref = fdb.collection("workorders").doc(o.id);
   /* MULTI-DEVICE CLOBBER GUARD (optimistic concurrency). Refuse to overwrite a
      cloud doc that has advanced past the version THIS copy descends from
@@ -857,6 +883,29 @@ async function cloudSaveOrder(o){
   if (base){
     var cloudSavedAt = 0, gotCloud = false;
     try{ var curSnap = await ref.get(); cloudSavedAt = curSnap.exists ? (curSnap.data().savedAt || 0) : 0; gotCloud = true; }catch(e){}
+    /* OUR OWN WRITE IS NOT ANOTHER DEVICE (Mark's Vandalia #17412 block,
+       2026-07-31). Both places that persist the base advance below go through
+       saveDb(), which RETURNS FALSE — silently, by design — when localStorage
+       is full. Mark's device was at 4.89MB of a ~5MB quota and toasting
+       "Storage is full"; every cloud write landed, every base advance was
+       dropped on the floor. The next save then read the stale base back out of
+       localStorage, saw a savedAt this very tab had written, and called it
+       another device — blocking the email over and over, with no other device
+       or session involved at all.
+       So: before treating a newer cloud savedAt as a conflict, check whether
+       it is literally the value THIS session last wrote for this order. If it
+       is, there is no other writer — adopt it as the base and carry on. EXACT
+       match against our own last successful write, deliberately, not a <=
+       range: a genuine write from another device carries that device's clock,
+       which can legitimately fall below ours, and only an exact match proves
+       the value is one we produced ourselves.
+       Real protection is untouched: any write we did not make (another device,
+       another tab, a later write from anywhere) has a savedAt that is not our
+       recorded value, and still throws. */
+    if (gotCloud && cloudSavedAt > base && sessionLastCloudWrite[o.id] === cloudSavedAt){
+      base = cloudSavedAt;
+      o._cloudBaseSavedAt = cloudSavedAt;
+    }
     if (gotCloud && cloudSavedAt > base){
       var ce = new Error("This work order was updated on another device. Reopen it to get the latest version before saving — your changes on this screen weren't uploaded, so they don't overwrite the newer copy.");
       ce.__conflict = true;
@@ -864,6 +913,10 @@ async function cloudSaveOrder(o){
     }
   }
   await ref.set(main);
+  /* Recorded the instant the write is committed and BEFORE the base advance
+     below, because the base advance is the half that can fail. This is what
+     makes the check above able to tell our own write from a stranger's. */
+  sessionLastCloudWrite[o.id] = main.savedAt;
   /* BASE ADVANCE — do it the INSTANT the work-order doc's savedAt is committed,
      BEFORE the photo ops below. Once ref.set(main) lands, this device's copy
      descends from exactly main.savedAt, so the clobber-guard base must match it
@@ -878,7 +931,16 @@ async function cloudSaveOrder(o){
      Real protection is intact: base only ever advances to a savedAt THIS device
      just wrote past the pre-write conflict check above, so a genuine newer
      other-device write is still caught on the next save. See "Multi-device
-     clobber guard" in DEV_NOTES.md. */
+     clobber guard" in DEV_NOTES.md.
+
+     The saveDb() below is the OTHER way this advance can be lost, and the one
+     that actually bit Mark: it returns false (no throw, so this try/catch never
+     sees it) when localStorage is full, leaving the persisted base behind a
+     committed cloud write. sessionLastCloudWrite above is the backstop —
+     nothing here has to succeed for the next save to still recognise its own
+     write. Left best-effort deliberately: a full-storage save is already
+     toasted by saveDb() itself, and failing the cloud save over a local cache
+     write that didn't fit would be strictly worse for the tech. */
   o._cloudBaseSavedAt = main.savedAt;
   try{ var sdb0 = loadDb(); if (sdb0.orders[o.id]){ sdb0.orders[o.id]._cloudBaseSavedAt = main.savedAt; saveDb(sdb0); } }catch(e){}
   /* Photos off base64/localStorage onto Storage (Mark's "photos gone in
