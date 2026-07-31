@@ -26,8 +26,21 @@ import * as THREE from "../vendor/three.module.min.js";
     host.appendChild(this.renderer.domElement);
     this.group=new THREE.Group(); this.scene.add(this.group);
     var geometry=new THREE.IcosahedronGeometry(1.62,5); this.base=Float32Array.from(geometry.attributes.position.array);
-    this.material=new THREE.MeshPhysicalMaterial({color:STYLE.idle.color,emissive:STYLE.idle.emissive,emissiveIntensity:.55,roughness:.32,metalness:.18,transmission:.08,clearcoat:1,clearcoatRoughness:.2});
+    this.material=new THREE.MeshPhysicalMaterial({color:0x132e35,emissive:STYLE.idle.emissive,emissiveIntensity:.2,roughness:.08,metalness:.05,transmission:.88,transparent:true,opacity:.36,clearcoat:1,clearcoatRoughness:.05,side:THREE.DoubleSide,depthWrite:false});
     this.mesh=new THREE.Mesh(geometry,this.material); this.group.add(this.mesh);
+    this.coreMaterial=new THREE.MeshBasicMaterial({color:0xeaffff,transparent:true,opacity:.92,blending:THREE.AdditiveBlending,depthWrite:false});
+    this.core=new THREE.Mesh(new THREE.SphereGeometry(.27,32,24),this.coreMaterial);this.group.add(this.core);
+    this.auraMaterial=new THREE.MeshBasicMaterial({color:STYLE.idle.color,transparent:true,opacity:.12,blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.BackSide});
+    this.aura=new THREE.Mesh(new THREE.SphereGeometry(.48,32,24),this.auraMaterial);this.group.add(this.aura);
+    this.filaments=[];
+    for(var filamentIndex=0;filamentIndex<18;filamentIndex++){
+      var y=1-(filamentIndex/(17))*2,angle=filamentIndex*2.399963229728653,radial=Math.sqrt(Math.max(0,1-y*y));
+      var direction=new THREE.Vector3(Math.cos(angle)*radial,y,Math.sin(angle)*radial);
+      var filamentGeometry=new THREE.BufferGeometry();filamentGeometry.setAttribute("position",new THREE.BufferAttribute(new Float32Array(27*3),3));
+      var filamentMaterial=new THREE.LineBasicMaterial({color:STYLE.idle.color,transparent:true,opacity:.58,blending:THREE.AdditiveBlending,depthWrite:false});
+      var filament=new THREE.Line(filamentGeometry,filamentMaterial);filament.frustumCulled=false;this.group.add(filament);
+      this.filaments.push({line:filament,direction:direction,phase:filamentIndex*.83,twist:.7+(filamentIndex%5)*.11});
+    }
     this.ringMaterial=new THREE.MeshBasicMaterial({color:STYLE.idle.color,transparent:true,opacity:.25});
     this.ring=new THREE.Mesh(new THREE.TorusGeometry(2.05,.018,12,180),this.ringMaterial); this.ring.rotation.x=Math.PI*.54; this.group.add(this.ring);
     var key=new THREE.PointLight(0xd8f7ff,22,15,2); key.position.set(3.2,3,4.5); this.scene.add(key);
@@ -47,13 +60,29 @@ import * as THREE from "../vendor/three.module.min.js";
     for(var i=0;i<p.count;i++){var n=i*3,x=b[n],y=b[n+1],z=b[n+2],len=Math.sqrt(x*x+y*y+z*z)||1;var wave=Math.sin(x*3.2+time*style.speed)*Math.cos(y*2.8-time*style.speed*.7);var voice=Math.sin((y+z)*7+time*8)*this.audio*.08;var amount=(style.pulse*wave+voice)*motion;p.setXYZ(i,x+x/len*amount,y+y/len*amount,z+z/len*amount);}
     p.needsUpdate=true; this.mesh.geometry.computeVertexNormals();
   };
+  Face.prototype.animateFilaments=function(time,style){
+    var energy=.7+this.audio*1.25+((this.state==="listening"||this.state==="speaking") ? .28 : 0);
+    for(var f=0;f<this.filaments.length;f++){
+      var item=this.filaments[f],position=item.line.geometry.attributes.position,d=item.direction;
+      var axis=Math.abs(d.y)<.85?new THREE.Vector3(0,1,0):new THREE.Vector3(1,0,0),side=new THREE.Vector3().crossVectors(d,axis).normalize(),up=new THREE.Vector3().crossVectors(d,side).normalize();
+      for(var i=0;i<27;i++){
+        var p=i/26,radius=1.5*p,edgeFade=Math.sin(Math.PI*p),branch=Math.sin((p*10+time*3.2)*item.twist+item.phase)*.095*edgeFade*energy;
+        var fork=Math.cos(p*17-time*2.1+item.phase)*.06*edgeFade*energy;
+        position.setXYZ(i,d.x*radius+side.x*branch+up.x*fork,d.y*radius+side.y*branch+up.y*fork,d.z*radius+side.z*branch+up.z*fork);
+      }
+      position.needsUpdate=true;item.line.material.opacity=.34+energy*.18+Math.sin(time*5+item.phase)*.08;item.line.material.color.lerp(new THREE.Color(style.color),.08);
+    }
+    this.core.scale.setScalar(1+Math.sin(time*5)*.12+this.audio*.35);this.aura.scale.setScalar(1+Math.sin(time*2.4)*.16+this.audio*.28);
+    this.coreMaterial.color.lerp(new THREE.Color(style.color).lerp(new THREE.Color(0xffffff),.72),.12);this.auraMaterial.color.lerp(new THREE.Color(style.color),.1);
+    this.auraMaterial.opacity=.1+this.audio*.16+Math.sin(time*2.4)*.025;
+  };
   Face.prototype.animate=function(){
     var self=this;requestAnimationFrame(function(){self.animate();});var t=this.clock.getElapsedTime(),s=STYLE[this.state]||STYLE.idle,drift=this.reduced?0:1;
-    this.audio+=(this.audioTarget-this.audio)*.18;if(this.state!=="listening"&&this.state!=="speaking")this.audioTarget*=.94;this.deform(t,s);
+    this.audio+=(this.audioTarget-this.audio)*.18;if(this.state!=="listening"&&this.state!=="speaking")this.audioTarget*=.94;this.deform(t,s);this.animateFilaments(t,s);
     this.group.rotation.y+=(this.pointer.x*.18-this.group.rotation.y)*.035;this.group.rotation.x+=(-this.pointer.y*.12-this.group.rotation.x)*.035;
     this.mesh.rotation.y=t*.08*drift;this.mesh.position.y=Math.sin(t*.7)*.07*drift;this.mesh.scale.setScalar(1+Math.sin(t*s.speed)*s.pulse*.35*drift+this.audio*.035);
     this.ring.rotation.z=t*s.speed*.23*drift;this.ringMaterial.opacity+=(s.ring*.48-this.ringMaterial.opacity)*.06;
-    this.material.color.lerp(new THREE.Color(s.color),.055);this.material.emissive.lerp(new THREE.Color(s.emissive),.055);this.ringMaterial.color.lerp(new THREE.Color(s.color),.06);
+    this.material.color.lerp(new THREE.Color(s.color).multiplyScalar(.22),.055);this.material.emissive.lerp(new THREE.Color(s.emissive),.055);this.ringMaterial.color.lerp(new THREE.Color(s.color),.06);
     this.renderer.render(this.scene,this.camera);
   };
 
