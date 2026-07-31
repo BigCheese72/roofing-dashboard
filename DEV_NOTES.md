@@ -9012,3 +9012,81 @@ Tests: `tests/reportPreviewBackToEdit.test.js` (8) — control present above *an
 below the document, both no-print, `backToEdit()` navigates and nothing else
 (stubs for `saveOrder`/`loadOrder`/`collect`/`renderDoc` must stay untouched),
 and the scroll round trip including the re-tap-Preview case.
+
+## Report roof plan follows the SELECTED roof (dev only, 2026-07-31)
+
+Feedback `fb_ms9ifxihyy1rc` (prod, WO "915 Richmond Leak"): *"this map is attached
+but the isn't what I see in building history or when I edit the pdf — I see the
+correct base map."*
+
+### Two resolvers, one question, no reconciliation
+
+The report's Roof Plan and the edit view's Building History card were answering
+"which roof is this work order about?" independently:
+
+| | how it picked the roof |
+|---|---|
+| Building History card (`refreshInlineBuildingHistory`, js/buildinghistory.js) | `inlineSelectedRoofId()` — the **selected** roof (`currentRoofId`), else the first of `currentRoofIds` **in roofs order**, else `roofs[0]` |
+| Report roof plan (`rmFetchReportRoofOutlines`, js/export.js) | `reportDistinctRoofIds()` — the **findings'** own `roofId`s, and `roofs[0]` only when the building had exactly one roof |
+
+Those agree on the ordinary single-roof order and diverge the moment a finding
+carries a `roofId` of its own. Three ways that happens, all normal:
+
+* `rmMaybeAutoAssignRoofForPin()` (js/photos.js) sets `f.roofId` from a photo's
+  GPS on any multi-roof building. It can land on a neighbouring roof, and it can
+  be flagged `f.roofIdAmbiguous` — a guess the tech was *asked* to confirm and
+  may never have confirmed. The report used it either way.
+* `reid_building_roof` (netlify/functions/admin.js) re-keys a roof and
+  **deliberately does not re-point the records referencing it** (see
+  `tests/roofIdCollision.test.js`), so a finding can carry an id the building no
+  longer has.
+* A roof moved to another building takes its id with it.
+
+When it diverged, the report drew a **different roof** than every in-app view was
+showing, and said nothing. An unresolvable id was dropped on the floor, which
+made it worse: the stale roof vanished and whatever *other* roof a finding named
+became the only thing drawn.
+
+### What changed (js/export.js)
+
+`rmReportSelectedRoofId(o, roofs)` — pure, derived from the report's own
+`collect()` snapshot (`o.roofId` / `o.roofIds`), deliberately a mirror of
+`inlineSelectedRoofId()`. **Roofs order, not selection order**, for the
+multi-select case; a test runs the two implementations side by side over the same
+fixtures rather than asserting parity by eye.
+
+`rmFetchReportRoofOutlines()` now puts that roof **first** and appends
+`reportDistinctRoofIds()` behind it. Nothing is dropped — a genuinely multi-roof
+report still shows every roof it covers, each labelled — the roof the tech is
+looking at is simply guaranteed to be in the picture. The old
+`if (!ids.length && roofs.length === 1)` special case is folded into the
+`roofs[0]` fallback, so an order with no filled findings now shows the same roof
+in the report as in the edit view instead of a plan in one and nothing in the
+other. It also returns `selectedRoofId` and `unresolvedRoofIds`, and stamps
+`isSelectedRoof` on each entry.
+
+`rmReportPlanRoofSubstitutionNotice()` — the honesty half. A roof traced on a
+non-georeferenced image can't be drawn to scale (issue #44) and is named in a
+notice instead. On a multi-roof report that left a trap: the notice named the
+roof that *isn't* shown while the picture above it belonged to some other roof,
+with nothing saying the drawing wasn't this job's roof. Same rule js/photos.js
+already applies to a borrowed base map — *say whose it is*. Emitted by **both**
+the HTML report and the PDF; the PDF is the copy that leaves the building and
+must not be the quieter of the two.
+
+`rmWarnUnresolvedReportRoofIds()` — tech-facing only, never printed in the
+customer document. A finding pointing at a roof the building no longer has is a
+data problem a human has to fix by re-picking the roof; it now toasts on both
+Preview and Download PDF instead of disappearing.
+
+Not changed: `reportDistinctRoofIds()` keeps **selection** order, because
+"Roof(s) Covered" and the photo grouping ask a different question than "which
+roof anchors the drawing".
+
+Tests: `tests/reportRoofPlanSelectedRoof.test.js` (15) — selected roof leads the
+plan under GPS auto-assign, no duplicate when the findings already name it,
+multi-roof-with-no-findings parity, live parity against `inlineSelectedRoofId()`,
+unresolvable id reported not dropped, identical result shape on every early
+return, still exactly one read-only building `get()`, and the substitution notice
+firing/staying silent in each case including legacy entries with no
+`isSelectedRoof` flag.

@@ -434,8 +434,25 @@ async function goToPreview(){
   }
   var roofPlanResult = await rmFetchReportRoofOutlines(collect());
   if (roofPlanResult.error) toast("Roof plan couldn't be loaded: " + roofPlanResult.error);
+  rmWarnUnresolvedReportRoofIds(roofPlanResult);
   rmReportRoofPlanData = { woId: currentId, entries: roofPlanResult.roofEntries };
   showView("preview");
+}
+/* TECH-FACING ONLY -- deliberately never printed in the customer document.
+   A finding filed against a roofId this building no longer has (a roof moved
+   to another building, or re-keyed by admin.js's reid_building_roof, which
+   does not re-point the records referencing it) is a data problem a human has
+   to fix by re-picking the roof on that finding. Dropping it in silence is
+   half of how a report ends up drawing only the OTHER roofs -- see
+   rmReportSelectedRoofId(). */
+function rmWarnUnresolvedReportRoofIds(result){
+  var missing = (result && result.unresolvedRoofIds) || [];
+  if (!missing.length) return;
+  try{ console.warn("Report roof plan: roofId(s) not on this building: " + missing.join(", ")); }catch(e){}
+  if (typeof toast === "function"){
+    toast("Heads up: this order references " + missing.length + " roof" +
+      (missing.length === 1 ? "" : "s") + " the building no longer has. Re-pick the roof on those findings so the roof plan is right.");
+  }
 }
 function renderDoc(){
   var o = collect();
@@ -540,23 +557,89 @@ function rmReportOutlineDrawability(outline){
     (Array.isArray(outline.imageRing) && outline.imageRing.length >= 3);
   return { include: hasImageFrame, planUnavailable: hasImageFrame };
 }
+/* WHICH ROOF THIS WORK ORDER IS ABOUT -- deliberately the same answer
+   inlineSelectedRoofId() (js/buildinghistory.js) gives the Building History
+   card in the edit view, i.e. the roof whose base map the tech is actually
+   looking at while they work: the selected roof if the building still has it,
+   else the first selected roof of a multi-roof Inspection, else roofs[0].
+   Derived from `o` alone (collect() stamps o.roofId from currentRoofId and
+   o.roofIds from currentRoofIds -- js/workorders.js), so this stays a pure
+   function of the report's own snapshot rather than a second read of globals
+   that could have moved on since the snapshot was taken.
+
+   Feedback fb_ms9ifxihyy1rc, "this map is attached but isn't what I see in
+   building history or when I edit the pdf -- I see the correct base map":
+   the report's roof plan used to derive its roof set EXCLUSIVELY from
+   reportDistinctRoofIds(), i.e. the FINDINGS' own roofIds. Those are not
+   always the selected roof, and nothing reconciled the two:
+
+     * rmMaybeAutoAssignRoofForPin() (js/photos.js) sets f.roofId from a
+       photo's GPS on any multi-roof building. It can land on a neighbouring
+       roof, and it can be flagged f.roofIdAmbiguous -- a guess the tech was
+       asked to confirm and may never have confirmed.
+     * A roof re-keyed by admin.js's reid_building_roof is explicitly NOT
+       re-pointed on the records referencing it (see tests/roofIdCollision),
+       and a roof moved to another building takes its id with it. Either way
+       a finding can carry a roofId this building no longer has.
+
+   When that happened the customer-facing drawing quietly became a DIFFERENT
+   roof from the one every in-app view was showing, with nothing on the page
+   saying so. Anchoring on the selected roof DROPS nothing -- the findings'
+   roofs still follow it, each labelled -- it only guarantees the roof the
+   tech is looking at is in the picture, and first. */
+function rmReportSelectedRoofId(o, roofs){
+  roofs = roofs || [];
+  var selectedId = o && o.roofId;
+  if (selectedId && roofs.some(function(r){ return r && r.id === selectedId; })) return selectedId;
+  var multi = (o && o.roofIds) || [];
+  if (multi.length){
+    /* Scanned in ROOFS order, not selection order -- inlineSelectedRoofId()
+       does exactly this (`roofs.find(r => currentRoofIds.indexOf(r.id) !== -1)`)
+       and a test below runs the two side by side. The distinction is real: pick
+       Roof B then Roof A on an Inspection and Building History anchors on Roof
+       A, so the report has to as well or the fix reintroduces the very mismatch
+       it exists to close. reportDistinctRoofIds() keeps SELECTION order for the
+       "Roof(s) Covered" list -- that's a different question. */
+    var byRoofOrder = roofs.filter(function(r){ return r && multi.indexOf(r.id) !== -1; })[0];
+    if (byRoofOrder) return byRoofOrder.id;
+  }
+  return roofs[0] ? roofs[0].id : null;
+}
 async function rmFetchReportRoofOutlines(o){
   /* Stored id first (audit FIX 1), canonical name-slug (buildingIdFor(),
      js/core.js) as the legacy fallback. */
   var bldId = o.buildingId || buildingIdFor(o.billTo, o.jobName);
-  if (!fdb || !bldId) return { roofEntries: [], error: null };
+  var empty = { roofEntries: [], selectedRoofId: null, unresolvedRoofIds: [], error: null };
+  if (!fdb || !bldId) return empty;
   try{
     var snap = await fdb.collection("buildings").doc(bldId).get(); /* READ ONLY -- see comment above; never .set()/.update() from this path */
-    if (!snap.exists) return { roofEntries: [], error: null };
+    if (!snap.exists) return empty;
     var bld = snap.data();
     var roofs = getBuildingRoofs(bld); /* pure in-memory transform, no I/O -- confirmed by reading its body */
-    if (!roofs.length) return { roofEntries: [], error: null };
+    if (!roofs.length) return empty;
+    /* Selected roof FIRST, then every other roof this report actually covers.
+       First matters: rmBuildReportRoofPlanSvg() draws them all onto one canvas
+       and titles a single-entry plan with that roof's label, so the roof the
+       tech is looking at leads the drawing instead of trailing whichever
+       finding happened to be filled in first. The old
+       `if (!ids.length && roofs.length === 1)` special case is folded in --
+       roofs[0] is now the fallback for ANY roof count, which is exactly what
+       Building History already does, so an order with no filled findings shows
+       the same roof in both places instead of a plan in one and nothing in the
+       other. */
+    var selectedRoofId = rmReportSelectedRoofId(o, roofs);
     var ids = reportDistinctRoofIds(o);
-    if (!ids.length && roofs.length === 1) ids = [roofs[0].id];
-    var out = [];
+    if (selectedRoofId){
+      ids = [selectedRoofId].concat(ids.filter(function(id){ return id !== selectedRoofId; }));
+    }
+    var out = [], unresolved = [];
     ids.forEach(function(id){
       var roof = roofs.find(function(r){ return r.id === id; });
-      if (!roof) return;
+      /* A roofId this building no longer has (moved/re-keyed roof, or a
+         work order re-pointed by a merge). It used to vanish silently, which
+         is how a report ended up drawing only the OTHER roofs. Collected so
+         the caller can tell the tech, rather than dropped on the floor. */
+      if (!roof){ if (id) unresolved.push(id); return; }
       var outlines = roof.roof_outlines || [];
       var outline = outlines[outlines.length - 1];
       var draw = rmReportOutlineDrawability(outline);
@@ -566,16 +649,48 @@ async function rmFetchReportRoofOutlines(o){
         roofLabel: roof.label || (o.roofLabels && o.roofLabels[id]) || "Roof",
         outline: outline,
         assets: (roof.roof_assets || []).filter(function(a){ return typeof a.lat === "number" && typeof a.lng === "number"; }),
-        planUnavailable: draw.planUnavailable
+        planUnavailable: draw.planUnavailable,
+        /* Marks the one entry the editor/Building History is showing, so the
+           renderers can tell whether the picture on the page is actually this
+           work order's roof -- see rmReportPlanRoofSubstitutionNotice(). */
+        isSelectedRoof: id === selectedRoofId
       });
     });
-    return { roofEntries: out, error: null };
+    return { roofEntries: out, selectedRoofId: selectedRoofId, unresolvedRoofIds: unresolved, error: null };
   }catch(e){
     /* NOT swallowed -- returned for the caller to surface (toast), per
        PR #17 review. A failed lookup and "no linked building" are
        different states; the report reader deserves to know which. */
-    return { roofEntries: [], error: e.message || "Couldn't load the roof plan." };
+    return { roofEntries: [], selectedRoofId: null, unresolvedRoofIds: [],
+      error: e.message || "Couldn't load the roof plan." };
   }
+}
+/* An honest label beats a silent substitution -- the same rule js/photos.js
+   applies to a base map borrowed from another roof ("SAY WHOSE IT IS").
+
+   A roof traced on a non-georeferenced image can't be drawn to scale (issue
+   #44), so it is named in a notice instead of drawn. On a multi-roof report
+   that leaves a real trap: the notice names the roof that ISN'T shown, while
+   the picture immediately above it belongs to some OTHER roof -- and nothing
+   says the drawing is not the roof this work order is filed against. That is
+   feedback fb_ms9ifxihyy1rc's symptom exactly. Returns "" whenever the
+   selected roof IS in the drawing, when nothing is drawn at all (the existing
+   per-roof notices carry that case on their own), or when the fetcher didn't
+   mark a selected roof. */
+function rmReportPlanRoofSubstitutionNotice(roofEntries){
+  var entries = roofEntries || [];
+  var drawn = entries.filter(function(r){
+    var d = rmReportOutlineDrawability(r.outline);
+    return d.include && !d.planUnavailable;
+  });
+  if (!drawn.length) return "";
+  if (drawn.some(function(r){ return r.isSelectedRoof; })) return "";
+  var selected = entries.filter(function(r){ return r.isSelectedRoof; })[0];
+  if (!selected) return "";
+  var drawnLabels = drawn.map(function(r){ return r.roofLabel; }).join(", ");
+  return "The drawing above is " + drawnLabels + ", not " + selected.roofLabel +
+    " — the roof this work order is filed against. " + selected.roofLabel +
+    " was traced on a non-georeferenced image, so it can't be drawn to scale here.";
 }
 
 /* Two independent sentences -- capture, then scale -- NEVER merged into
@@ -1237,6 +1352,11 @@ function renderLeakReportDoc(o){
          silently losing content. */
       if (plan) h += "<div style='border:1px solid #CFD8DC;border-radius:6px;overflow:auto;text-align:center'>" +
         rmRoofPlanResponsiveSvg(plan) + "</div>";
+      /* ...and if the roof we DID draw isn't the one this order is filed
+         against, say so before the notices below, while the reader is still
+         looking at the picture. */
+      var substitution = rmReportPlanRoofSubstitutionNotice(roofPlanEntries);
+      if (plan && substitution) h += "<p style='margin:8px 0;color:#B45309'>" + esc(substitution) + "</p>";
       /* A roof that can't be drawn to scale (traced on a non-georeferenced
          image, issue #44) is NAMED here rather than silently omitted -- the
          report still quotes its measurements below. */
@@ -1954,6 +2074,7 @@ async function generatePdf(){
      assuming an ordering between the two entry points. */
   var roofPlanResult = await rmFetchReportRoofOutlines(o);
   if (roofPlanResult.error) toast("Roof plan couldn't be loaded: " + roofPlanResult.error);
+  rmWarnUnresolvedReportRoofIds(roofPlanResult);
   return generateLeakReportPdf(o, roofPlanResult.roofEntries);
 }
 async function generateLeakReportPdf(o, roofPlanData){
@@ -2076,6 +2197,11 @@ async function generateLeakReportPdf(o, roofPlanData){
           y += planH + 18;
         }catch(e){ console.warn("Couldn't rasterize roof plan for PDF:", e); }
       }
+      /* Same substitution disclosure the HTML report carries -- the PDF is the
+         copy that actually leaves the building, so it must not be the quieter
+         of the two. */
+      var planSubstitution = rmReportPlanRoofSubstitutionNotice(roofPlanData);
+      if (plan && planSubstitution) wrappedTextPdf(planSubstitution);
       /* Name any roof we can't draw to scale (issue #44) -- measurements
          still print below; the plan just can't be rendered for it. */
       planUnavailableRoofs.forEach(function(r){
