@@ -179,6 +179,52 @@ The Lead reconciles, sequences, and assigns. Do not self-serve across lanes.
 
 ### Open
 
+**RPT-1 — Report roof plan drew a different roof than Building History → PR #196
+(`claude/report-basemap-mismatch`) into `dev`** *(2026-07-31, feedback `fb_ms9ifxihyy1rc`)*
+Mark, prod, WO **915 Richmond Leak**: *"this map is attached but the isn't what I see in
+building history or when I edit the pdf — I see the correct base map."*
+
+**Root cause — two resolvers, one question, no reconciliation.** Building History
+(`inlineSelectedRoofId`, `js/buildinghistory.js`) anchors on the **selected** roof; the report
+(`rmFetchReportRoofOutlines`, `js/export.js`) anchored on the **findings'** own `roofId`s and
+fell back to `roofs[0]` *only* on a single-roof building. They agree on an ordinary order and
+diverge the moment a finding carries its own `roofId` — GPS auto-assign
+(`rmMaybeAutoAssignRoofForPin`), an unconfirmed `f.roofIdAmbiguous` guess, or an id left stale
+by a roof move or by `reid_building_roof` (which deliberately does **not** re-point the records
+referencing it, per `tests/roofIdCollision.test.js`). When they diverged the customer-facing
+drawing quietly became a different roof, and an unresolvable id was dropped in silence — which
+is how the wrong roof ends up being the *only* thing drawn.
+
+**Fix, all in `js/export.js`:** `rmReportSelectedRoofId()` (pure mirror of
+`inlineSelectedRoofId()` — **roofs order**, not selection order); selected roof placed **first**
+with `reportDistinctRoofIds()` behind it, nothing dropped;
+`rmReportPlanRoofSubstitutionNotice()` so a roof that can't be drawn to scale never lets a
+*different* roof's picture stand in unannounced — emitted by the HTML report **and** the PDF;
+`rmWarnUnresolvedReportRoofIds()` as a tech-facing toast, never in the customer document.
+`reportDistinctRoofIds()` itself is unchanged — "Roof(s) Covered" and the photo grouping ask a
+different question. Suite **1437/1437** (baseline 1422 on `dev` @ `aec91d8`).
+
+**Codex — three things worth your eyes:**
+1. **The parity claim is executed, not asserted.** `tests/reportRoofPlanSelectedRoof.test.js`
+   `vm`-loads the *real* `inlineSelectedRoofId` out of `js/buildinghistory.js` and the *real*
+   `rmReportSelectedRoofId` out of `js/export.js` and runs both over the same fixtures. That
+   test is what caught my first cut resolving a multi-select by **selection** order while
+   Building History resolves it by **roofs** order. If you change either function, that test is
+   the contract.
+2. **Behaviour change worth confirming:** a multi-roof building whose order has no filled
+   findings now renders `roofs[0]`'s plan, where before it rendered none. That is deliberate —
+   it is what the edit view has always shown — but it is the one case where the report gains
+   content rather than gaining a label.
+3. **No lane collision.** Touches `js/export.js` only (report lane). `js/roofmapper.js`
+   untouched; `js/buildinghistory.js` read by the test, not modified.
+
+**⚠️ Unconfirmed against the live data.** No Firestore credential was reachable from this
+session, so the exact trigger on 915 Richmond is **not** verified against its WO/building doc.
+The code defect stands on its own and closes the symptom class; if that building *also* carries
+a stale or duplicate `roofId`, that is a separate **data** fix (`reid_building_roof`, dry-run by
+default, admin-PIN gated). **No prod write proposed — Mark's call.** **DEV only.**
+
+
 **FB-1 — Feedback → auto-fix loop: data/API foundation → branch
 `feat/feedback-autofix-foundation` into `dev`** *(2026-07-28)*
 Mark asked for this directly: 💬 submissions should become diagnosed dev fixes. The **watcher**
