@@ -8320,7 +8320,149 @@ metadata + thumb + `storageRef` + `localId`.
   evict behavior.
 
 Still open: **Phase 2** upload-on-add (get bytes to Storage as you shoot, so
-they're cloud-durable, not just IDB-durable) and **Phase 3** proactive eviction.
+they're cloud-durable, not just IDB-durable). **Phase 3** proactive eviction
+landed with the quota fix below.
+
+## "Storage is full" on Report Preview — `imgFallback` + a terminal evictor (Phase 3)
+
+Mark, prod, 2026-07-31 08:36 CT, on the **Report Preview** screen of the Vandalia
+report, from his **desktop**: *"keep getting storage full toasts."* PR #194 fixed
+what that broke downstream (a full cache false-firing the multi-device clobber
+guard, blocking his email) and explicitly left the storage pressure itself — his
+`leak-workorders-v1` key measured **4,890,778 bytes** against a ~5 MB quota. This
+is that pass. Two independent defects, either one sufficient on its own.
+
+### 1. Root cause: `imgFallback` was never treated as photo bytes
+
+`cloudFetchOrder()` sets `imgFallback` to a photo's **full-resolution base64**
+whenever it has a `storageRef` but no `thumb` — which is *every photo the
+server-side migration backfilled* ("all 37 photos had img present, 0 had thumb").
+It was added as a display-only rescue for the "captions but no photos" bug and it
+does that job correctly. What nothing noticed is that it is a **byte-bearing
+field**, and every piece of storage machinery only ever looked at `img`:
+
+| | looked at `img` | looked at `imgFallback` |
+| --- | --- | --- |
+| `leanDbReplacer` (what gets serialized) | yes | **no** |
+| `stripPhotoBytes()` (the strip/evict action) | yes | **no** |
+| `orderHasCachedPhotoBytes()` (is there anything to evict) | yes | **no** |
+
+So **merely opening one migrated work order** wrote ~650 KB per photo into
+localStorage, permanently, and no eviction path could see or free a byte of it.
+Eight such photos are the entire quota. This also quietly falsified the invariant
+the whole storage section is built on — *"merely opening/viewing a report never
+caches its photo bytes locally"* — because `loadOrder()`'s deliberate
+`stripPhotoBytes()` call left `imgFallback` sitting right there.
+
+Measured, not estimated (jimp, against a real roof photo in `tools/`): a
+200 px/q0.6 thumb is 7,599 raw bytes → **~10,155 base64 chars**; a 1600 px/q0.8
+full-size is 486,589 → **~648,811**. A ~64:1 ratio, which is why the eviction
+ladder below sheds bytes before thumbs.
+
+### 2. Why it never recovered: the evictor had gone silently no-op
+
+`saveDb()`'s quota recovery had exactly one rung — `evictCloudBackedPhotoBytes()`,
+which drops `img` from cloud-backed orders. **Phase 1 had already moved every
+`img` out of localStorage.** So the rung found nothing, returned `false`, and
+`saveDb()` gave up *without retrying*: the toast fired on every single save with
+no way back under the quota short of clearing site data. That is the "keep
+getting" in Mark's report — not a burst, a permanent state. Phase 1 made the
+failure *worse-behaving* by succeeding at its own job.
+
+### The fix
+
+**One predicate pair, used everywhere,** so the serializer, the stripper and every
+eviction rung can never disagree about what is safe to lose:
+
+- `photoBytesAreSafeElsewhere(p)` — `storageRef` (Firebase Storage), `_idbBacked`
+  (confirmed in IndexedDB), or `_cloudImg` (these exact bytes were just read back
+  out of the cloud Firestore doc). Governs **evictability**.
+- `photoBytesAreRedundantLocally(p)` — the stricter half: `storageRef` or
+  `_idbBacked` only, i.e. retrievable without a round-trip through a Firestore
+  *document*. Governs **what is never written at all**.
+
+The gap between them is deliberate and field-first: a `_cloudImg` photo's bytes
+keep their local copy so a tech who saved an order still sees its photos with no
+signal — they become *evictable*, not *evicted*. `imgFallback` gets no such
+grace; it is display-only, always accompanied by a `storageRef`, and
+`cloudFetchOrder()` re-derives it on the very next open, so it is **never**
+persisted at any cache size.
+
+**A three-rung eviction ladder** (`evictLocalCacheRung`), cheapest first, retried
+after each rung, and shared by both the proactive trim and the quota catch:
+
+| rung | gives up | recovered by |
+| --- | --- | --- |
+| 0 | full-resolution bytes (`img` / `imgFallback`) of cloud-backed orders | Storage / IDB / cloud doc, on demand |
+| 1 | their 200 px thumbs as well | Firestore, next time the order opens |
+| 2 | whole cached records, **oldest first**, 8 per round | `mergedIndex()` unions the local and cloud indexes, so the order still lists and still opens |
+
+Rung 2 is what makes a full cache **non-terminal**. Rungs 1 and 2 shed oldest-
+first in batches rather than sweeping, so a cache 10 % over budget costs the ten
+oldest orders their thumbs, not every order in the cache.
+
+**Proactive budgeting.** `saveDb()` now measures the string it was going to write
+anyway; if it exceeds `LOCAL_CACHE_BUDGET_BYTES` (3 MB, headroom under the ~5 MB
+quota for the sync queue, field-value history, RoofMapper local saves and email
+recipients) it walks the same ladder until it fits. A cache already under budget
+costs nothing extra. This is the Phase 3 proactive eviction that was still open.
+
+**Every data-loss guard is unchanged and re-pinned by tests.** No rung ever
+touches the open order, an order still waiting to sync, a photo whose bytes exist
+nowhere else, a record that never reached the cloud (`_cloudBaseSavedAt`), or a
+Change Order signature. When nothing is evictable at any rung, `saveDb()` still
+returns `false` and still shows the toast — an honest failure, never a silent one.
+
+### The Preview-specific trigger
+
+Why that screen: `goToPreview()` runs `ensurePhotosLoadedForExport()`, which
+hydrates `p.img` on **every** photo, and then `showView("preview")` — whose
+wrapper in `js/workorders.js` flushes the pending local autosave. So Preview is
+the one action that hydrates the whole photo set and immediately persists it.
+Two of those hydration paths were re-importing bytes Phase 1 had just offloaded,
+because they set `p.img` without recording where the bytes came from:
+`resolvePhotoImg()`'s and `ensurePhotosLoadedForExport()`'s IDB branches now set
+`_idbBacked` (true by construction — the bytes came *out* of IDB), and the
+cloud-refetch recovery sets `_cloudImg`. `.img` itself is untouched in all three,
+so `cloudSaveOrder()`'s "does this photo carry `.img`" fresh-capture-upload
+trigger (see its CRITICAL DATA-LOSS GUARD) is completely unaffected.
+
+**Why desktop.** Nothing about desktop image sizes. Mark is the one who *opens
+old reports to review and send them*; a tech shoots fresh photos, which get real
+thumbs and go to IDB. Opening migrated orders is what deposits unevictable
+full-resolution bytes, and the desktop profile is where hundreds of them
+accumulate over months.
+
+### Effect on a cache shaped like Mark's
+
+Simulated with the measured byte sizes above — 1 open order, 3 migrated orders ×
+8 photos, 20 ordinary orders × 15 thumbs:
+
+```
+cache as dev would hold it : 18.40 MB   <-- over the ~5MB quota
+saveDb() -> true | toasts: (none)
+cache after the fix        :  2.38 MB
+orders kept                : 24 of 24
+open order's only-copy bytes kept: true
+```
+
+It self-heals an *existing* over-quota cache on the first save after the update:
+`loadDb()` reads the old blob, and the very next serialize drops `imgFallback`.
+
+### Known tradeoff, not fixed here
+
+A migrated photo (storageRef, no thumb) now caches **nothing renderable** —
+`orderPhotosAreStrippedLocally()` was extended to recognise that state so a reopen
+prefers a cloud refetch rather than rendering blank tiles from cache. Online this
+is invisible. Offline, such an order shows empty tiles where it previously showed
+full-resolution images at ~650 KB each — a price the quota simply cannot pay. The
+durable answer is the existing **Backfill Thumbnails** admin action, which gives
+those photos real 10 KB thumbs; that is Mark's to run.
+
+Tests: `tests/localStorageQuotaPressure.test.js` (15), plus an `imgFallback`
+assertion in `tests/photoBytesOffload.test.js`. 10 of the 15 fail against `dev`'s
+`core.js` — verified by swapping the file in, not assumed; the 5 that pass pin
+behaviour that was already correct.
 
 ## Admin page (field-first UX)
 
