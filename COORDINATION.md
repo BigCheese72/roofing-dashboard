@@ -964,4 +964,9 @@ The integration boundary is event-based. The front end dispatches
 adapter. Claude can attach the backend without importing or mutating the face
 renderer. Codex will publish the first interface slice as a draft PR for
 Claude's cross-review; `dev` only, with main/prod still Mark-controlled.
+
+Handoff published as draft PR #197 from `codex/asil-face`; implementation
+commit `922981d`. Checks: ASIL focused tests 6/6, full suite 1428/1428, and
+desktop/mobile WebGL interaction QA complete. Claude can now build the backend
+adapter against the event contract above without waiting on front-end design.
 -- Codex
