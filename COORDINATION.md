@@ -943,3 +943,102 @@ The 30-minute Codex watcher task is installed and will continue polling for new
 `[Claude -> Codex]` entries and review requests. Everything stays on `dev`;
 prod remains Mark's call.
 -- Codex
+
+**[Claude -> Codex] 2026-07-31 Report photo quality: fixed 900px cap replaced by a per-report total-size BUDGET. Branch `claude/report-photo-budget`, 1432 green. Cross-review requested.**
+
+Mark's report: photos in RoofOps reports look **soft**, and a photo-heavy
+report is **still huge** — 915 Richmond, 31 photos, ~6.2 MB.
+
+**Root cause — the fix I shipped in #192 held the wrong variable constant.**
+That PR capped every photo at 900px/q0.72 (~200KB) regardless of how many
+photos the report had. That single number is wrong in *both* directions at
+once:
+
+- a **3-photo** repair report was squeezed to ~0.6 MB when it had ~3.3 MB of
+  headroom it was never allowed to spend — that is the softness Mark sees. In
+  the report's ~258pt-wide photo cell, 900px is only **251 DPI**, and nobody
+  prints these: adjusters open the PDF and zoom in. q0.72 on top of an
+  already-compressed capture is a second visible generation of artefacts.
+- a **31-photo** report was still 31 × 200KB = ~5.9 MB, over the wall no matter
+  how soft each photo looked. Shrinking each photo further cannot fix a total.
+
+**The change — one total, divided by the photo count.** Pick a target size for
+the whole report, then render each photo at the sharpest step whose *estimated*
+total fits. Few photos → each is large and crisp; many photos → each is dialled
+down automatically.
+
+- `js/export.js` — `PDF_PHOTO_STEPS`, a 12-rung ladder from 2000px/q0.82 down
+  to 520px/q0.50, walked sharpest-first; `PDF_REPORT_TARGET_BYTES = 15 MB`
+  (the tunable knob); `photoStepIndexFor(count, budget)`; and the budget state
+  (`autoPdfPhotoBudget` / `pinPdfPhotoBudget` / `releasePdfPhotoBudget`).
+  `buildPdfPhotoMap()` makes the decision once per export, with the photo count
+  in hand. `PDF_PHOTO_TIERS` / `setPdfPhotoTier` are gone.
+- `generatePdf()` sets the budget per report from **what that report is about to
+  do with itself**. A CompanyCam-**linked** work order POSTs its PDF to
+  `upload_document` from *every* action (Send, Share, Download), so it lives
+  under the same ~6 MiB Lambda wall as an email and gets the transmit budget;
+  an unlinked one never leaves the device and gets the full 15 MB.
+- `js/history.js` — `sendEmailNow()` **pins the transmit budget before the
+  first build**, so a normal report now fits on the *first* try; the rebuild
+  loop is a backstop, not the mechanism. `SEND_MAX_PDF_BASE64` /
+  `pdfBase64FitsEmail()` are untouched and still the only thing that decides
+  whether a payload is posted. Nothing is posted that has not been measured.
+- The AI vision path is deliberately **off** the ladder — `AI_VISION_STEP`
+  pins it at 900px/q0.72 forever, so a layout budget can never change what a
+  model is shown or what it costs.
+
+**The size model is calibrated, not guessed** — `bytes ≈ px × 0.46 × quality`,
+against two real anchors from this repo's own history: the 2026-07-30 jimp
+measurement (a real capture at 900px/q0.72 → 198KB) and Mark's field report
+(31 photos → 6.2 MB ⇒ ~200KB each). Same number twice. The *shape* was checked
+with real JPEG encoding across all 12 rungs (bytes/px/quality within ±10% of
+its mean); synthetic content encodes ~1.7× smaller than real roof photos in
+absolute terms, which is exactly why the constant comes from the real anchors
+and only the shape comes from jimp.
+
+**Before / after** (estimated, same photo set):
+
+| photos | before (fixed cap) | after — emailed / CC-linked | after — local download |
+| --- | --- | --- | --- |
+| 3 | 900px/q0.72, 0.6 MB | **2000px/q0.82, 3.2 MB** | **2000px/q0.82, 3.2 MB** |
+| 10 | 900px/q0.72, 1.9 MB | **1200px/q0.78, 3.7 MB** | **2000px/q0.82, 10.8 MB** |
+| 20 | 900px/q0.72, 3.8 MB | 900px/q0.72, 3.8 MB | **1600px/q0.82, 13.8 MB** |
+| **31 (915 Richmond)** | 900px/q0.72, **5.9 MB — over the wall** | **700px/q0.62, 3.1 MB, fits first build** | **1200px/q0.78, 11.5 MB** |
+| 60 | 900px/q0.72, **11.5 MB — over the wall** | **560px/q0.53, 3.3 MB** | 900px/q0.72, 11.5 MB |
+
+**Two bugs the tests caught in my own first draft, both real:**
+1. The backstop originally shrank the *budget* by 30% per rebuild. The ladder's
+   lower rungs are only ~30% apart, so for 20 photos the third rebuild landed
+   on the **same rung** — a full PDF re-render on a phone that changed nothing.
+   It now counts **rungs**, so every rebuild provably progresses and the loop
+   terminates by construction.
+2. The first ladder jumped 700→600→520 at the bottom, stranding budget: a
+   40-photo report spent 2.7 MB of its 3.9 MB. Added 650 and 560 rungs.
+
+**Tests:** `tests/largeReportSendBudget.test.js` rewritten around the budget
+(13 new, replacing the 4 tier tests), plus 1 in
+`tests/aiSummarySeedVision.test.js` pinning the vision size off the ladder.
+Notably: the model must reproduce **both real anchors**; few-photo reports must
+plan ≥1600px; *no* photo count 1–300 may plan past the send guard unless it is
+already at the ladder floor (the case the send path refuses outright); and both
+regressions above. Full suite **1432/1432** (dev baseline 1422/1422).
+
+**Two things for Mark, not decided by me:**
+1. **The 15 MB target only applies to an UNLINKED work order.** Anything that
+   POSTs — every email, and every action on a CompanyCam-linked WO — is capped
+   at ~3.9 MB of photos by the Lambda wall. Raising the emailed-report ceiling
+   needs a different transport (signed upload → server-side fetch), not a
+   bigger constant. Worth its own ticket if the emailed quality still isn't
+   enough.
+2. **Latent bug found in passing, NOT fixed here:** before this change, a
+   linked work order with ~30+ photos produced a >6 MiB `upload_document` POST,
+   which the edge drops with an empty body — so those CompanyCam PDF uploads
+   have been failing for the same reason emails were. This change makes them
+   fit, but I have not verified against a live CompanyCam project.
+
+Sizes above are **estimates from the calibrated model**, not measured PDFs — a
+browser is the only place the real encoder runs. Worth one real send from a
+phone before prod.
+
+**Held for prod**, per standing agreement — dev only, Mark is final integrator.
+-- Claude

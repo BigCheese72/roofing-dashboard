@@ -2233,8 +2233,49 @@ async function sendEmailNow(){
   toast("Saving work order\u2026");
   if (!(await autoSaveBeforeReport("sending email"))) return;
   toast("Building PDF\u2026");
-  var d = await generatePdf();
+  /* ---- Size the report for the send BEFORE building it ----
+     The report photo budget (js/export.js) turns the platform's request-body
+     ceiling into a resolution decision instead of a failure: pin the transmit
+     budget, and generatePdf() renders however many photos this report has at
+     the sharpest step whose estimated total fits. A 3-photo report comes out
+     at 2000px; a 31-photo one comes out at 700px; both fit on the FIRST build,
+     so the rebuild loop below is now a backstop rather than the mechanism.
+
+     It is still a real backstop: the budget divides an ESTIMATE of encoded
+     size, and an unusually detailed set of photos can beat it. Each pass
+     forces the plan one rung further down the ladder and rebuilds, and
+     pdfBase64FitsEmail() -- not the estimate -- decides when to stop. Nothing
+     is posted that has not been measured. */
+  pinPdfPhotoBudget(transmitPhotoBudget());
+  var d = null, pdfBase64 = "", rebuilds = 0;
+  try{
+    d = await generatePdf();
+    if (d){
+      pdfBase64 = pdfBase64Of(d);
+      while (pdfBase64 && !pdfBase64FitsEmail(pdfBase64.length) && rebuilds < PDF_PHOTO_MAX_REBUILDS){
+        rebuilds++;
+        toast("Report is " + pdfBase64Mb(pdfBase64.length) + " MB \u2014 too big to email. Shrinking photos and rebuilding\u2026");
+        softenPdfPhotoPlan();
+        d = await generatePdf();
+        pdfBase64 = d ? pdfBase64Of(d) : "";
+      }
+    }
+  } finally {
+    /* Release unconditionally: the budget is module-level state, and leaving
+       it pinned small would silently degrade every later Download/Share in
+       this session -- including ones for a report that never needed it. */
+    releasePdfPhotoBudget();
+  }
   if (!d) return;
+  if (!pdfBase64){ toast("Couldn't prepare the PDF for sending \u2014 try Download PDF instead."); return; }
+  if (!pdfBase64FitsEmail(pdfBase64.length)){
+    /* Budget exhausted and it STILL does not fit. Refusing here, with the real
+       number and a route that works, is strictly better than posting it and
+       letting the edge return a bare 413 the tech can do nothing with. */
+    toast(oversizeReportMessage(pdfBase64.length));
+    return;
+  }
+  if (rebuilds) toast("Photos reduced to fit the email \u2014 full-size copies stay on the work order. Sending\u2026");
   toast("Sending email\u2026");
   var o = collect();
   var isCO = o.woType === "Change Order";
@@ -2252,39 +2293,6 @@ async function sendEmailNow(){
     "\n\nDate of Service: " + (o.serviceDate || "") +
     "\nLocation: " + (o.location || "") +
     "\n\nSent from the RoofOps app.";
-  var pdfBase64 = pdfBase64Of(d);
-  if (!pdfBase64){ toast("Couldn't prepare the PDF for sending \u2014 try Download PDF instead."); return; }
-  /* ---- Fit the report inside the platform's request-body ceiling ----
-     See SEND_MAX_PDF_BASE64 in js/export.js for the measured limit and why a
-     report that exceeds it never reaches our function at all. A report that
-     already fits (the overwhelming majority) takes the fast path: the loop
-     body never runs, nothing is rebuilt, and fidelity is exactly what it was
-     before this existed. */
-  var tier = 0;
-  try{
-    while (!pdfBase64FitsEmail(pdfBase64.length) && tier + 1 < pdfPhotoTierCount()){
-      tier++;
-      toast("Report is " + pdfBase64Mb(pdfBase64.length) + " MB \u2014 too big to email. Shrinking photos and rebuilding\u2026");
-      setPdfPhotoTier(tier);
-      d = await generatePdf();
-      if (!d) return;
-      pdfBase64 = pdfBase64Of(d);
-      if (!pdfBase64){ toast("Couldn't prepare the PDF for sending \u2014 try Download PDF instead."); return; }
-    }
-  } finally {
-    /* Reset unconditionally: the tier is module-level state, and leaving it
-       shrunk would silently degrade every later Download/Share in this
-       session -- including ones for a report that never needed it. */
-    setPdfPhotoTier(0);
-  }
-  if (!pdfBase64FitsEmail(pdfBase64.length)){
-    /* Every tier exhausted. Refusing HERE, with the real number and a route
-       that works, is strictly better than posting it and letting the edge
-       return a bare 413 the tech can do nothing with. */
-    toast(oversizeReportMessage(pdfBase64.length));
-    return;
-  }
-  if (tier) toast("Photos reduced to fit the email \u2014 full-size copies stay on the work order. Sending\u2026");
   try{
     var resp = await fetch("/.netlify/functions/send-workorder", {
       method: "POST",
