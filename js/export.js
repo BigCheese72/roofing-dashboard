@@ -1832,7 +1832,13 @@ async function ensurePhotosLoadedForExport(){
       if (await resolvePhotoImg(p)) recovered++; else loadFailed.push(p);
     } else if (p.localId){
       var localBytes = await idbGetPhoto(p.localId);
-      if (localBytes){ p.img = localBytes; pending++; }
+      /* _idbBacked is true by construction here -- the bytes just came out of
+         IndexedDB. Setting it is what stops the autosave that fires the moment
+         Preview opens from writing them straight back into the ~5MB
+         localStorage cache (see photoBytesAreSafeElsewhere/leanDbReplacer in
+         js/core.js). Preview is the screen Mark reported the "storage full"
+         toasts on, and this hydration is why. */
+      if (localBytes){ p.img = localBytes; p._idbBacked = true; pending++; }
       else deadCandidates.push(p);
     } else {
       deadCandidates.push(p);
@@ -1853,7 +1859,10 @@ async function ensurePhotosLoadedForExport(){
             var dp = deadCandidates[di];
             var idx = photos.indexOf(dp);
             var match = idx >= 0 ? cloudCopy.photos[idx] : null;
-            if (match && match.img){ dp.img = match.img; recovered++; }
+            /* _cloudImg for the same reason: these bytes were just read out of
+               the cloud doc, which still holds them, so the local cache does
+               not need its own copy of them. */
+            if (match && match.img){ dp.img = match.img; dp._cloudImg = true; recovered++; }
             else if (match && match.storageRef){
               dp.storageRef = match.storageRef;
               if (await resolvePhotoImg(dp)) recovered++; else loadFailed.push(dp);
