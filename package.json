@@ -4,6 +4,7 @@
   "version": "1.0.0",
   "description": "RoofOps Field (Watkins Roofing work order app) — Netlify Functions dependencies.",
   "scripts": {
+    "pretest": "node scripts/check-deps.js",
     "test": "node --test \"tests/**/*.test.js\""
   },
   "dependencies": {
