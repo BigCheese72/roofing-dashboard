@@ -120,6 +120,59 @@ function extractBearerToken(event) {
   return m ? m[1] : null;
 }
 
+// ---------------------------------------------------------------------
+// CROSS-PROJECT TOKEN DIAGNOSTIC (added 2026-07-31)
+// ---------------------------------------------------------------------
+// Since the 2026-07-11 Firebase split, dev and production are SEPARATE
+// Firebase projects. A Firebase ID token is audience-bound: one minted for
+// "watkins-service-orders" is valid on production and MUST be rejected by the
+// dev deployment, which verifies against "watkins-service-orders-dev" (and
+// vice versa). That rejection is the project boundary working correctly -- it
+// is the whole point of the split.
+//
+// The problem was never the decision, it was the MESSAGE. A perfectly valid
+// production token sent to dev produced a bare "Invalid or expired session",
+// which reads as "my session died". Because the same endpoints also accept a
+// non-Firebase credential (the ASIL bridge key), callers using that key kept
+// succeeding side by side with the 401s -- so the failure looked INTERMITTENT
+// and got chased as an expiring session, twice, when it was in fact perfectly
+// deterministic: wrong-project token every time, ASIL key fine every time.
+//
+// So: on a verification failure, read the token's `aud` claim WITHOUT verifying
+// it, purely to name the mismatch. This is never trusted for any auth decision
+// -- the token has ALREADY been rejected by verifyIdToken() before this runs,
+// and nothing here can turn a rejection into an acceptance. `aud` is also not a
+// secret: it is a Firebase project id, already public in js/core.js's
+// FIREBASE_CONFIG, and it is the caller's own token.
+function unverifiedTokenAudience(token) {
+  try {
+    const parts = String(token || "").split(".");
+    if (parts.length !== 3) return null;
+    const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
+    const aud = payload && payload.aud;
+    // Firebase project ids are a narrow charset. Anything else is not echoed
+    // back -- an error string must never become a channel for attacker text.
+    return typeof aud === "string" && /^[A-Za-z0-9][A-Za-z0-9-]{0,62}$/.test(aud) ? aud : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+// Which Firebase project THIS deployment verifies against. Parsed from the same
+// credentials JSON getAdmin() initializes with (identical approach to auth.js's
+// whoami_project), so it cannot drift from the real verifier. Returns null if
+// unreadable -- a diagnostic must never throw and change an auth outcome.
+function initializedProjectId() {
+  try {
+    const raw = process.env.FIREBASE_SERVICE_ACCOUNT;
+    if (!raw) return null;
+    const id = JSON.parse(raw).project_id;
+    return typeof id === "string" && id ? id : null;
+  } catch (e) {
+    return null;
+  }
+}
+
 // Verifies the caller's ID token and returns their identity + claims, or
 // throws. checkRevoked:true additionally rejects a token whose session was
 // explicitly revoked (admin.auth().revokeRefreshTokens()) even if the
@@ -149,7 +202,21 @@ async function verifyCaller(event, opts) {
   try {
     decoded = await authInstance.verifyIdToken(token, !!opts.checkRevoked);
   } catch (e) {
-    const err = new Error("Invalid or expired session");
+    // The token is already rejected at this point. Everything below only
+    // chooses WORDING -- same 401, same refusal, in every branch.
+    let message = "Invalid or expired session";
+    const aud = unverifiedTokenAudience(token);
+    const expected = initializedProjectId();
+    if (aud && expected && aud !== expected) {
+      message += ": this token was issued for Firebase project \"" + aud +
+        "\", but this deployment verifies against \"" + expected + "\". " +
+        "Dev and production are separate Firebase projects, so a token minted " +
+        "against one is correctly refused by the other -- mint the token against \"" +
+        expected + "\", or use a non-Firebase credential this endpoint accepts.";
+    }
+    // If the audience MATCHES, the wording stays deliberately bare: that is a
+    // real expiry/signature/revocation failure and we say nothing about which.
+    const err = new Error(message);
     err.statusCode = 401;
     throw err;
   }
@@ -208,4 +275,4 @@ async function tryVerifyCaller(event) {
   catch (e) { return null; }
 }
 
-module.exports = { getAdmin, getDb, getAuth, verifyCaller, tryVerifyCaller, getPermissionValue, requirePermission, hostnameFromEvent };
+module.exports = { getAdmin, getDb, getAuth, verifyCaller, tryVerifyCaller, getPermissionValue, requirePermission, hostnameFromEvent, unverifiedTokenAudience, initializedProjectId };
