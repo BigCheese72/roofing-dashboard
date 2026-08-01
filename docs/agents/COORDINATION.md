@@ -1,29 +1,17 @@
 # RoofOps Agent Coordination Board
 
-> # ⏸️ FULL HOLD — 2026-07-18: CODEX IS BUILDING THE ESTIMATOR
+> # ✅ HOLD LIFTED — the 2026-07-18 "Codex is building the estimator" full hold is OBSOLETE
 >
-> **Mark's directive. Nobody starts anything new until Codex finishes the estimator tool.**
->
-> - **Codex owns the estimator lane** — likely a new `js/estimator.js` plus a tab wired into
->   `js/core.js` and `index.html`.
-> - **EVERYONE STAYS OFF `js/core.js` AND `index.html`.** That is where the estimator wires in
->   and it is the whole reason for this hold.
-> - **The `js/workorders.js` split is HELD.** Not cancelled — held. It touches `core.js` and
->   `index.html`, exactly Codex's wiring surface.
-> - **No merges to `dev`.** #170, #171, #172 stay as branches/PRs so Codex can branch off a
->   stable `dev` without forced rebases. Nothing is lost.
-> - **Section agents remain held/advisory.** Report and map; do not edit.
-> - Work already mid-edit could finish and commit so nothing was lost. Nothing new after that.
->
-> **Status: standing by** for the post-Codex review (dev vs prod, the four PRs, the split
-> decision).
->
-> ⚠️ **One merge beat the hold:** **#173 landed at `a851763`** minutes before the directive
-> arrived. It is **tests-only** — one new file, +407/−0, no source, no `core.js`, no
-> `index.html` — so it cannot force a rebase on Codex. Flagged to Mark; left in place because
-> reverting is itself a change to `dev`. Revert on request.
+> The estimator was removed from prod, so the hold that froze `js/core.js`, `index.html` and
+> the `js/workorders.js` split no longer applies. **The standing rules both agents work under
+> now live in the "Claude ↔ Codex Operating Agreement" at the top of the repo-root
+> [`COORDINATION.md`](../../COORDINATION.md) — read that, not the hold history below.**
 
-> # 🛑 MODEL CHANGE — 2026-07-18: SINGLE SERIALIZED BUILDER
+> # 🛑 MODEL CHANGE — 2026-07-18: SINGLE SERIALIZED BUILDER *(superseded — history only)*
+>
+> **Superseded by the Claude ↔ Codex Operating Agreement in the repo-root
+> [`COORDINATION.md`](../../COORDINATION.md):** Claude and Codex now work in parallel on
+> separate branch prefixes, cross-reviewing each other's PRs. Kept below for history.
 >
 > **Mark's decision: parallel agents collide, so the team goes fully serial.**
 > There is now **exactly ONE writer** — the Lead — on one worktree. Nothing can collide by

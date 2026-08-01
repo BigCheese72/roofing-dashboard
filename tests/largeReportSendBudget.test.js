@@ -34,14 +34,13 @@ const historySrc = fs.readFileSync(path.join(__dirname, "..", "js", "history.js"
 const fnSrc = fs.readFileSync(
   path.join(__dirname, "..", "netlify", "functions", "send-workorder.js"), "utf8");
 
-/* ---- the budget + tier helpers, lifted from js/export.js ---------------- */
+/* ---- the budget + ladder helpers, lifted from js/export.js -------------- */
 function budgetCtx() {
   const start = exportSrc.indexOf("var SEND_MAX_BODY_BYTES");
   const end = exportSrc.indexOf("function buildPdfPhotoMap");
   assert.notEqual(start, -1, "SEND_MAX_BODY_BYTES must exist in js/export.js");
   assert.notEqual(end, -1);
-  const ctx = { Math: Math, Promise: Promise,
-    PDF_PHOTO_MAX_DIM: 900, PDF_PHOTO_QUALITY: 0.72 };
+  const ctx = { Math: Math, Promise: Promise };
   vm.runInNewContext(exportSrc.slice(start, end), ctx);
   return ctx;
 }
@@ -49,7 +48,7 @@ function budgetCtx() {
 /* vm.runInNewContext gives objects a DIFFERENT realm's Object.prototype, so
    deepStrictEqual reports "same structure but not reference-equal". Compare
    the values, not the prototypes. */
-const tierOf = t => ({ maxDim: t.maxDim, quality: t.quality });
+const stepOf = t => ({ maxDim: t.maxDim, quality: t.quality });
 
 /* ---- sendFailureMessage + pdfBase64Of, lifted from js/history.js -------- */
 function historyCtx() {
@@ -103,48 +102,245 @@ test("REGRESSION: the exact reported payload (~6.2MB PDF) is refused, not posted
     "sanity: this payload really is past the platform wall, not merely past our budget");
 });
 
-/* ============================================= progressive downscaling === */
+/* ================================== the per-report photo size budget ===== */
+/* The 900px/q0.72 hard cap these tests used to pin was replaced on 2026-07-31
+   by a per-report TOTAL budget: pick a target size for the whole report, then
+   spend it across however many photos the report has. See the long rationale
+   at PDF_PHOTO_STEPS in js/export.js. */
 
-test("tier 0 is byte-for-byte the pre-fix behaviour -- a fitting report pays nothing", () => {
+test("the ladder descends monotonically in BOTH resolution and quality", () => {
   const c = budgetCtx();
-  assert.deepStrictEqual(tierOf(c.PDF_PHOTO_TIERS[0]), { maxDim: 900, quality: 0.72 });
-  assert.strictEqual(c.pdfPhotoTierCount(), 3);
-});
-
-test("tiers shrink monotonically, so each rebuild is guaranteed to make progress", () => {
-  const c = budgetCtx();
-  for (let i = 1; i < c.PDF_PHOTO_TIERS.length; i++) {
-    assert.ok(c.PDF_PHOTO_TIERS[i].maxDim < c.PDF_PHOTO_TIERS[i - 1].maxDim,
-      "tier " + i + " must be smaller than tier " + (i - 1));
-    assert.ok(c.PDF_PHOTO_TIERS[i].quality < c.PDF_PHOTO_TIERS[i - 1].quality,
-      "tier " + i + " must be lower quality than tier " + (i - 1));
+  assert.ok(c.PDF_PHOTO_STEPS.length >= 5, "a coarse ladder cannot track a budget");
+  for (let i = 1; i < c.PDF_PHOTO_STEPS.length; i++) {
+    assert.ok(c.PDF_PHOTO_STEPS[i].maxDim < c.PDF_PHOTO_STEPS[i - 1].maxDim,
+      "step " + i + " must be smaller than step " + (i - 1));
+    assert.ok(c.PDF_PHOTO_STEPS[i].quality <= c.PDF_PHOTO_STEPS[i - 1].quality,
+      "step " + i + " must not be HIGHER quality than step " + (i - 1));
+  }
+  // Monotonic size is what makes the search well-ordered: a softer step must
+  // never be estimated as costing more than a sharper one.
+  for (let i = 1; i < c.PDF_PHOTO_STEPS.length; i++) {
+    assert.ok(c.estPhotoBytes(c.PDF_PHOTO_STEPS[i]) < c.estPhotoBytes(c.PDF_PHOTO_STEPS[i - 1]),
+      "step " + i + " must estimate smaller than step " + (i - 1));
   }
 });
 
-test("setPdfPhotoTier clamps garbage back to tier 0 rather than corrupting an export", () => {
+test("the ceiling is well above the old 900px cap, and 900px is still on the ladder", () => {
   const c = budgetCtx();
-  const t0 = tierOf(c.PDF_PHOTO_TIERS[0]);
-  assert.deepStrictEqual(tierOf(c.setPdfPhotoTier(2)), { maxDim: 520, quality: 0.50 });
-  assert.deepStrictEqual(tierOf(c.setPdfPhotoTier(99)), t0);
-  assert.deepStrictEqual(tierOf(c.setPdfPhotoTier(-1)), t0);
-  assert.deepStrictEqual(tierOf(c.setPdfPhotoTier("2")), t0);
-  assert.deepStrictEqual(tierOf(c.setPdfPhotoTier()), t0);
+  assert.ok(c.PDF_PHOTO_STEPS[0].maxDim >= 1600,
+    "a few-photo report must be allowed to render large -- that is the whole point");
+  assert.ok(c.PDF_PHOTO_STEPS[0].quality >= 0.80,
+    "resolution without quality still looks soft (q0.72 on a re-encode is visible)");
+  assert.ok(c.PDF_PHOTO_STEPS.some(s => s.maxDim === 900),
+    "the old fixed cap must remain reachable as a middle rung");
 });
 
-test("the fitting loop terminates at the last tier instead of spinning forever", () => {
+test("the size model reproduces the two REAL measurements it is calibrated on", () => {
   const c = budgetCtx();
-  // Mirrors sendEmailNow()'s loop condition against a payload that NEVER
-  // shrinks -- the pathological case (e.g. a report whose bulk is vector text,
-  // not photos). It must stop, not hang a phone.
-  let tier = 0, rebuilds = 0;
+  // Anchor 1 (2026-07-30, jimp on a real capture): 900px/q0.72 -> 198KB.
+  const at900 = c.estPhotoBytes({ maxDim: 900, quality: 0.72 });
+  assert.ok(Math.abs(at900 - 198 * 1024) < 30 * 1024,
+    "900px/q0.72 must estimate ~198KB, got " + Math.round(at900 / 1024) + "KB");
+  // Anchor 2 (the field report that started this): 915 Richmond, 31 photos at
+  // 900px/q0.72 came to ~6.2MB. The model must reproduce the actual bug.
+  const richmond = c.estReportPhotoBytes(31, { maxDim: 900, quality: 0.72 });
+  assert.ok(Math.abs(richmond - 6.2 * 1048576) < 1.2 * 1048576,
+    "31 photos at the old cap must estimate ~6.2MB, got " + (richmond / 1048576).toFixed(1) + "MB");
+  // ...and that is over the wall, which is why it could not be emailed.
+  assert.ok(richmond > c.transmitPhotoBudget(),
+    "sanity: the reported report really was over the transmit budget at the old cap");
+});
+
+test("FEW photos are rendered large and sharp -- not squeezed to 900px for nothing", () => {
+  const c = budgetCtx();
+  // The case Mark reported as soft: a handful of photos on a linked work
+  // order, so the tightest budget in the app (it still has to reach Lambda).
+  for (const n of [1, 2, 3]) {
+    const step = c.photoStepFor(n, c.transmitPhotoBudget());
+    assert.ok(step.maxDim >= 1600,
+      n + " photos should render at >=1600px, got " + step.maxDim);
+    assert.ok(step.quality >= 0.80, n + " photos should render at >=q0.80");
+  }
+  // A local (unlinked) download has 15MB to spend and should reach the top.
+  assert.deepStrictEqual(stepOf(c.photoStepFor(3, c.localPhotoBudget())),
+    stepOf(c.PDF_PHOTO_STEPS[0]));
+});
+
+test("MANY photos dial DOWN automatically, and the total lands inside the budget", () => {
+  const c = budgetCtx();
+  for (const budget of [c.transmitPhotoBudget(), c.localPhotoBudget()]) {
+    let prev = -1;
+    for (const n of [1, 3, 6, 10, 15, 20, 31, 40, 60, 120]) {
+      const i = c.photoStepIndexFor(n, budget);
+      assert.ok(i >= prev, "more photos must never produce a SHARPER step (n=" + n + ")");
+      prev = i;
+      const total = c.estReportPhotoBytes(n, c.PDF_PHOTO_STEPS[i]);
+      // The only counts allowed to exceed the budget are ones already at the
+      // floor of the ladder -- there is nothing softer to fall back to.
+      if (i < c.PDF_PHOTO_STEPS.length - 1) {
+        assert.ok(total <= budget,
+          n + " photos estimated " + (total / 1048576).toFixed(1) + "MB against a " +
+          (budget / 1048576).toFixed(1) + "MB budget");
+      }
+    }
+  }
+});
+
+test("the chosen step is the SHARPEST that fits, never a lazier one", () => {
+  const c = budgetCtx();
+  for (const n of [1, 4, 9, 17, 31, 55]) {
+    const budget = c.transmitPhotoBudget();
+    const i = c.photoStepIndexFor(n, budget);
+    if (i > 0) {
+      assert.ok(c.estReportPhotoBytes(n, c.PDF_PHOTO_STEPS[i - 1]) > budget,
+        "step " + (i - 1) + " fit for n=" + n + " but was passed over");
+    }
+  }
+});
+
+test("REGRESSION: 915 Richmond (31 photos) now fits the send on the FIRST build", () => {
+  const c = budgetCtx();
+  const step = c.photoStepFor(31, c.transmitPhotoBudget());
+  const total = c.estReportPhotoBytes(31, step);
+  assert.ok(total <= c.transmitPhotoBudget(),
+    "31 photos must be planned inside the transmit budget, got " + (total / 1048576).toFixed(1) + "MB");
+  // And the whole PDF, base64-expanded, must clear the send guard -- the
+  // number that actually bounced it.
+  const base64Len = Math.ceil((total + c.PDF_NON_PHOTO_RESERVE) * 4 / 3);
+  assert.strictEqual(c.pdfBase64FitsEmail(base64Len), true,
+    "the planned report must pass the guard it used to fail");
+  assert.ok(step.maxDim < 900, "31 photos must be dialled BELOW the old cap to fit");
+});
+
+test("NO photo count can plan a report past the send guard", () => {
+  const c = budgetCtx();
+  // Requirement 3, stated as the invariant that actually holds for EVERY
+  // count: a planned report either clears the guard, or it is already at the
+  // floor of the ladder -- which is the case the send path refuses outright
+  // with oversizeReportMessage() rather than posting.
+  const floor = c.PDF_PHOTO_STEPS.length - 1;
+  let firstUnfittable = 0;
+  for (let n = 1; n <= 300; n++) {
+    const i = c.photoStepIndexFor(n, c.transmitPhotoBudget());
+    const total = c.estReportPhotoBytes(n, c.PDF_PHOTO_STEPS[i]);
+    const base64Len = Math.ceil((total + c.PDF_NON_PHOTO_RESERVE) * 4 / 3);
+    if (c.pdfBase64FitsEmail(base64Len)) continue;
+    assert.strictEqual(i, floor,
+      n + " photos planned " + (base64Len / 1048576).toFixed(1) +
+      "MB of base64 but was NOT at the ladder floor -- a softer step was available");
+    if (!firstUnfittable) firstUnfittable = n;
+  }
+  // The point of the whole change: a real photo-heavy report is nowhere near
+  // that cliff. 915 Richmond had 31.
+  assert.ok(firstUnfittable > 60,
+    "reports up to 60 photos must be emailable; the cliff starts at " + firstUnfittable);
+});
+
+test("the transmit budget really is derived from the guard, not a parallel number", () => {
+  const c = budgetCtx();
+  assert.ok(c.transmitPhotoBudget() < c.SEND_MAX_PDF_BASE64 * 3 / 4,
+    "the photo budget must sit below the DECODED guard, with room for the pages");
+  assert.strictEqual(c.transmitPhotoBudget(),
+    Math.floor(c.SEND_MAX_PDF_BASE64 * 3 / 4) - c.PDF_NON_PHOTO_RESERVE);
+  assert.ok(c.localPhotoBudget() > c.transmitPhotoBudget(),
+    "a report that stays on the device should get more, not less");
+  assert.strictEqual(c.PDF_REPORT_TARGET_BYTES, 15 * 1024 * 1024,
+    "the tunable target Mark asked for");
+});
+
+test("pinning wins over the automatic budget, and releasing restores it", () => {
+  const c = budgetCtx();
+  // A Download on an unlinked work order: full local budget.
+  assert.strictEqual(c.autoPdfPhotoBudget(false), c.localPhotoBudget());
+  // A Download on a CompanyCam-LINKED work order still POSTs the PDF, so it
+  // gets the transmit budget -- the bug this would otherwise reintroduce.
+  assert.strictEqual(c.autoPdfPhotoBudget(true), c.transmitPhotoBudget());
+  // A send pins its own, and generatePdf() must not be able to overwrite it.
+  c.pinPdfPhotoBudget(1000000);
+  assert.strictEqual(c.autoPdfPhotoBudget(false), 1000000,
+    "a pinned budget must survive generatePdf()'s automatic decision");
+  assert.strictEqual(c.currentPhotoStepFor(4).maxDim, c.photoStepFor(4, 1000000).maxDim);
+  c.releasePdfPhotoBudget();
+  assert.strictEqual(c.autoPdfPhotoBudget(false), c.localPhotoBudget(),
+    "releasing must hand control back, or every later Download stays degraded");
+  // Garbage pins fall back to the transmit budget rather than corrupting an
+  // export with a zero or negative budget.
+  assert.strictEqual(c.pinPdfPhotoBudget(0), c.transmitPhotoBudget());
+  assert.strictEqual(c.pinPdfPhotoBudget("big"), c.transmitPhotoBudget());
+  assert.strictEqual(c.pinPdfPhotoBudget(-5), c.transmitPhotoBudget());
+  c.releasePdfPhotoBudget();
+});
+
+test("REGRESSION: every rebuild moves a rung -- a % budget cut did not", () => {
+  const c = budgetCtx();
+  /* The bug this pins: shrinking the BUDGET by 30% per rebuild landed on the
+     same rung twice for 20 photos (the lower rungs are only ~30% apart), so a
+     rebuild re-rendered the whole PDF on a phone and changed nothing. The
+     backstop counts rungs instead. Checked for every photo count, not just
+     the one that happened to fail. */
+  const floor = c.PDF_PHOTO_STEPS.length - 1;
+  for (const n of [1, 3, 5, 10, 20, 31, 40, 60, 87]) {
+    c.pinPdfPhotoBudget(c.transmitPhotoBudget());
+    let prev = c.currentPhotoStepIndexFor(n);
+    for (let r = 1; r <= c.PDF_PHOTO_MAX_REBUILDS; r++) {
+      c.softenPdfPhotoPlan();
+      const i = c.currentPhotoStepIndexFor(n);
+      assert.ok(i > prev || i === floor,
+        "n=" + n + " rebuild " + r + " did not soften the plan (stuck at step " + i + ")");
+      prev = i;
+    }
+    c.releasePdfPhotoBudget();
+  }
+});
+
+test("the rebuild loop terminates instead of spinning forever on a phone", () => {
+  const c = budgetCtx();
+  // Mirrors sendEmailNow()'s backstop against a payload that NEVER shrinks --
+  // the pathological case (e.g. a report whose bulk is vector text, not
+  // photos, so softening the photos cannot help).
+  c.pinPdfPhotoBudget(c.transmitPhotoBudget());
+  let rebuilds = 0;
   const neverShrinks = c.SEND_MAX_PDF_BASE64 * 4;
-  while (!c.pdfBase64FitsEmail(neverShrinks) && tier + 1 < c.pdfPhotoTierCount()) {
-    tier++; rebuilds++;
+  while (!c.pdfBase64FitsEmail(neverShrinks) && rebuilds < c.PDF_PHOTO_MAX_REBUILDS) {
+    rebuilds++;
+    c.softenPdfPhotoPlan();
   }
-  assert.strictEqual(rebuilds, 2, "at most one rebuild per remaining tier");
-  assert.strictEqual(tier, c.pdfPhotoTierCount() - 1);
+  assert.strictEqual(rebuilds, c.PDF_PHOTO_MAX_REBUILDS, "bounded, not unbounded");
   assert.strictEqual(c.pdfBase64FitsEmail(neverShrinks), false,
     "and it still doesn't fit -- so the caller must show oversizeReportMessage()");
+  c.releasePdfPhotoBudget();
+  // With nothing pinned the fallback is deliberately the SAFE budget, and the
+  // forced softening must be gone -- otherwise the NEXT report in the session
+  // is silently degraded by this one's failure.
+  assert.strictEqual(c.currentPhotoStepIndexFor(20), c.photoStepIndexFor(20, c.transmitPhotoBudget()),
+    "releasing must clear the softening too, or the NEXT report stays degraded");
+});
+
+test("exhausting the rebuilds leaves nothing on the table", () => {
+  const c = budgetCtx();
+  /* Justifies PDF_PHOTO_MAX_REBUILDS = 4: when the loop gives up, the report
+     must EITHER have been cut hard (the estimator was badly out and we made a
+     real attempt) OR already be at the softest the app is willing to render.
+     Either way oversizeReportMessage() is honest -- there was nothing left to
+     try.
+
+     2.5x, not 4x: the ladder's lower rungs are close together on purpose (see
+     PDF_PHOTO_STEPS), so four rungs buy less size down there. That trade is
+     deliberate -- the fine rungs improve every storm report, while this loop
+     only runs when the estimate was beaten, and 2.5x is far more estimator
+     error than the two real calibration anchors suggest is possible. */
+  const floor = c.PDF_PHOTO_STEPS.length - 1;
+  for (const n of [3, 10, 20, 31, 60]) {
+    c.pinPdfPhotoBudget(c.transmitPhotoBudget());
+    const before = c.estReportPhotoBytes(n, c.currentPhotoStepFor(n));
+    for (let r = 0; r < c.PDF_PHOTO_MAX_REBUILDS; r++) c.softenPdfPhotoPlan();
+    const after = c.estReportPhotoBytes(n, c.currentPhotoStepFor(n));
+    const atFloor = c.currentPhotoStepIndexFor(n) === floor;
+    c.releasePdfPhotoBudget();
+    assert.ok(atFloor || before / after >= 2.5,
+      "n=" + n + ": gave up after only a " + (before / after).toFixed(1) +
+      "x cut without reaching the ladder floor");
+  }
 });
 
 test("the give-up message names the real size and a route that actually works", () => {

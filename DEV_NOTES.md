@@ -8291,6 +8291,66 @@ Last-writer-wins by `savedAt`; cross-device clock skew is a known minor risk
 (a server timestamp would be more robust — later). Does NOT merge concurrent
 edits: the newer cloud wins and the older copy is surfaced, not silently lost.
 
+### False conflict when storage is full (Vandalia #17412, 2026-07-31)
+
+Mark could not email work order 17412 (`wo_1784721368286`): every send was
+refused with "NOT sending email — this work order isn't safely saved… updated
+on another device." **There was no other device.** He was on one desktop, and
+three minutes earlier had reported *"keep getting storage full toasts. I am on
+my desktop."* His `leak-workorders-v1` key was 4.89 MB against a ~5 MB quota.
+
+The chain:
+
+1. `cloudSaveOrder()` commits `ref.set(main)` — `savedAt` advances in the cloud.
+2. It then persists the base advance through `saveDb()`, which on
+   `QuotaExceededError` **returns `false`** (it does not throw, so the
+   surrounding `try/catch` never fires). The advance is dropped silently.
+3. `saveOrder()` re-reads the base from `localStorage` on the next save — the
+   old value — and the guard compares it against a `savedAt` **this very tab
+   had just written**. `cloud > base` → `__conflict`.
+4. `autoSaveBeforeReport()` treats a refused save as fatal (correctly — see
+   the Flat Branch data-loss note), so the email is blocked. Retrying repeats
+   it exactly, because nothing in the loop can advance the persisted base.
+
+Note this is the SAME failure the base-advance reordering fixed for partial
+photo-op failures, arriving through the other door: there, the advance never
+ran; here, it ran and could not be stored.
+
+Fix: `sessionLastCloudWrite[id]` — an in-memory map of the last `savedAt` this
+page session successfully committed per work order. Before throwing, the guard
+checks whether the newer cloud `savedAt` is **exactly** a value this session
+wrote; if so there is no other writer, so it adopts it as the base and proceeds.
+In memory on purpose: it is the one record of "we wrote that" that survives a
+localStorage failure, and a reload correctly forgets it (`cloudFetchOrder()`
+re-stamps the base from the cloud anyway). Exact match, not `<=`: another
+device's write carries that device's clock, which can legitimately read below
+ours, and only an exact match proves the value is one we produced.
+
+Protection is unchanged — a write from another device, another tab, or a later
+write from anywhere carries a `savedAt` this session did not produce and still
+throws. Covered by `tests/photoClobberGuard.test.js` (both the false conflict
+and each negative control).
+
+Two related changes in the same function:
+
+- `_cloudBaseSavedAt` is no longer written into the cloud doc. It is local
+  bookkeeping that had been riding along with every other key, sitting in the
+  record permanently one save behind that doc's own `savedAt` — a stale base
+  waiting for any reader that took it at face value. `cloudFetchOrder()`
+  overwrites it with `savedAt` on read, so nothing depended on the stored copy;
+  `ref.set()` is a full overwrite, so it drops off existing docs on next save.
+- Every write is now stamped `savedByUid` + `savedBySession`. Until this, a
+  work order doc recorded *when* it was last saved and nothing about *who* or
+  *what* saved it — so "was that really another device?", the exact claim the
+  guard's message makes, could not be answered from the record. Diagnosing this
+  one meant reconstructing it from in-app feedback reports. Audit trail only:
+  the conflict decision stays on the exact-`savedAt` match, which is provable
+  without trusting a self-reported id.
+
+The storage pressure itself is untouched by this and is the real irritant —
+see "Photo bytes in IndexedDB (Phase 1)" below. This fix stops a full cache
+from blocking a send; it does not stop the cache filling up.
+
 ## Photo bytes in IndexedDB (Phase 1)
 
 localStorage's ~5 MB ceiling was the origin of the whole storage saga: full

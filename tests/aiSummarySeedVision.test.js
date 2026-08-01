@@ -165,8 +165,22 @@ test("there is ONE downscaler, shared, not a second implementation", () => {
   /* Two independent resize paths would drift. The vision helper reuses the
      PDF path that is already proven on production. */
   const block = between(exportSource, "function aiVisionImagePart", "function pdfFileName");
-  assert.match(block, /pdfPhotoDataUrl\(dataUrl\)/);
+  assert.match(block, /pdfPhotoDataUrl\(dataUrl, AI_VISION_STEP\)/);
   assert.doesNotMatch(block, /createElement\("canvas"\)/, "must not re-implement the resize");
+});
+
+test("the vision size is PINNED, not whatever the report budget picked", () => {
+  /* The report photo ladder (2026-07-31) makes the PDF's photo size depend on
+     how many photos the report has. What a vision model is shown must NOT:
+     that is a cost and prompt-stability decision, not a layout one. So the
+     vision path passes its own constant step rather than the live budget. */
+  const step = /var AI_VISION_STEP = \{ maxDim: (\d+), quality: ([0-9.]+) \};/.exec(exportSource);
+  assert.ok(step, "AI_VISION_STEP must exist as a fixed constant in js/export.js");
+  assert.strictEqual(Number(step[1]), 900,
+    "Anthropic rescales past ~1568px and bills the resized tokens anyway");
+  const block = between(exportSource, "function aiVisionImagePart", "function pdfFileName");
+  assert.doesNotMatch(block, /currentPhotoStepFor|pdfPhotoBudget/,
+    "the vision path must never read the report budget");
 });
 
 test("the downscaler returns the exact shape cleanInlineImage validates", () => {
