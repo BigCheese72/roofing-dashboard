@@ -1549,37 +1549,28 @@ function ensureDims(p){
     im.src = p.img;
   });
 }
-/* ---- PDF photo downscale: decouples EMAIL size from CAPTURE fidelity ----
+/* ---- PDF photo downscale: decouples REPORT size from CAPTURE fidelity ----
    Photos are stored at whatever the global capture preset produces
    (SIZE_PRESETS in js/photos.js). That preset became a training-data
    decision on 2026-07-18 -- `large` (1600px/q0.80) is what a vision model
-   wants -- but it is the WRONG size to email, and until now the two were
-   the same bytes: the loops below embedded p.img directly.
+   wants -- but it is the wrong thing to embed verbatim in a report, and
+   until 2026-07-30 the two were the same bytes: the loops below embedded
+   p.img directly.
 
-   Why that breaks: netlify/functions/send-workorder.js:35 hard-rejects a
-   PDF over ~6MB, and at `large` each photo lands ~700KB-1.1MB, capping a
+   Why that breaks: netlify/functions/send-workorder.js hard-rejects a PDF
+   over ~6MB, and at `large` each photo lands ~700KB-1.1MB, capping a
    sendable report at ~5-7 photos. A 12-photo leak report could not be sent.
 
-   Why 900px, not smaller: the grid below renders every photo into a box of
-   cw (~258pt) x 300pt max. At 200 DPI that box can only show ~717x833px, so
-   900px still over-serves the layout. It is set to EXACTLY the `small`
-   capture preset's max dimension on purpose -- a photo captured at `small`
-   (900px) is then <= this cap and passes through UNTOUCHED, so the common
-   prod case pays no re-encode cost and no double-compression quality loss.
-   Only `medium` (1200px) and `large` (1600px) get downscaled. Verified with
-   real JPEG encoding (jimp) on a 1600x1200 photo-like image: `large` goes
-   1551KB -> 198KB (a 3-photo report budget becomes 30), `medium` 428KB ->
-   198KB, `small` stays 146KB (passthrough). All three clear the ~6MB wall
-   with room for 30+ photos.
+   The FIRST fix (2026-07-30) was a fixed 900px/q0.72 cap on every photo.
+   That traded the wrong thing away -- see the budget section below, which
+   replaces it.
 
-   Do NOT try to solve this with jsPDF's compress:true instead (see the
-   comment at its construction): that flag is for the roof plan's mostly-
+   Do NOT try to solve any of this with jsPDF's compress:true instead (see
+   the comment at its construction): that flag is for the roof plan's mostly-
    white PNG. Deflate gains ~0-2% on already-entropy-coded JPEG data.
 
    Fail-safe: every failure path resolves to the ORIGINAL dataUrl, so a
    broken downscale can never cost a photo its place in a report. */
-var PDF_PHOTO_MAX_DIM = 900;
-var PDF_PHOTO_QUALITY = 0.72;
 /* ---- EMAIL PAYLOAD CEILING (the "Send failed" bug, 2026-07-30) ------------
    The per-photo downscale above bounds each photo, but NOTHING bounded the
    TOTAL. A ~31-photo leak report lands a ~6.2MB PDF, which base64-expands by
@@ -1623,27 +1614,206 @@ var SEND_MAX_BODY_BYTES = 6000000;
 var SEND_ENVELOPE_RESERVE = 32768;
 var SEND_MAX_PDF_BASE64 = SEND_MAX_BODY_BYTES - SEND_ENVELOPE_RESERVE; /* 5,967,232 */
 
-/* Progressive downscale tiers, tried in order when a report does not fit.
-   Tier 0 is EXACTLY the previous behaviour (900px/q0.72 -- see the long
-   rationale above), so the common case is untouched: an already-fitting
-   report is built once, at the same fidelity it has always been built at, and
-   pays nothing for this feature. Only an over-budget report ever rebuilds.
+/* ================= REPORT PHOTO BUDGET =====================================
+   The 2026-07-30 fix capped every photo at 900px/q0.72 no matter how many
+   there were. That is the wrong variable to hold fixed, and it is wrong in
+   BOTH directions at once (Mark, 2026-07-31):
 
-   Tiers 1 and 2 trade resolution for reach. 700px still over-serves the
-   ~258x300pt grid cell at 200 DPI; 520px is visibly softer but is the
-   difference between a 40-photo storm report arriving and not arriving, and
-   the full-resolution photos remain in Storage and on CompanyCam regardless
-   -- the PDF is a transmission format here, not the archive. */
-var PDF_PHOTO_TIERS = [
-  { maxDim: PDF_PHOTO_MAX_DIM, quality: PDF_PHOTO_QUALITY },
-  { maxDim: 700, quality: 0.62 },
-  { maxDim: 520, quality: 0.50 }
+     - a 3-photo repair report was squeezed to ~200KB/photo for no reason --
+       it had ~4MB of headroom it was never allowed to spend, and the photos
+       came out visibly soft;
+     - a 31-photo report (915 Richmond) still came to ~6.2MB, because 31 x
+       200KB is over the wall regardless of how soft each photo looks.
+
+   So the fixed number is replaced by a fixed TOTAL: pick a target size for
+   the whole report, then divide it by the photo count and render each photo
+   as large and as sharp as that share allows. Few photos -> each is huge and
+   crisp; many photos -> each is dialled down automatically, and the report
+   still lands near the target instead of blowing past it.
+
+   ---- the size model -------------------------------------------------------
+   To divide the budget before encoding anything, we need to predict a JPEG's
+   size from (maxDim, quality). For photographic content the bytes scale with
+   pixel count and roughly linearly with the quality setting:
+
+       bytes ~= (maxDim * maxDim * ASPECT) * BYTES_PER_PIXEL_AT_Q1 * quality
+
+   BYTES_PER_PIXEL_AT_Q1 = 0.46 is calibrated against real roof photos, not
+   guessed. Two independent anchors, both from this repo's own history:
+
+     1. the 2026-07-30 measurement: a real capture re-encoded at 900px/q0.72
+        came out 198KB. 198KB / (900*675 px) = 0.334 B/px; / 0.72 = 0.464.
+     2. the field report that started this: 915 Richmond, 31 photos at
+        900px/q0.72, 6.2MB total => ~200KB/photo. Same number.
+
+   The SHAPE (bytes/px proportional to quality, ~constant across the ladder)
+   was checked with real JPEG encoding via jimp across all ten steps below:
+   bytes/px/quality stayed within +/-10% of its mean. Synthetic test content
+   encodes ~1.7x smaller than real roof photos in absolute terms, which is
+   exactly why the CONSTANT comes from the two real anchors above and only the
+   shape comes from jimp.
+
+   It is an estimate, and it is allowed to be: overshooting a local download
+   only means a slightly bigger file, and overshooting a SEND is caught by
+   pdfBase64FitsEmail() plus the rebuild loop in sendEmailNow(), which remain
+   the hard backstop. Nothing here can cause a bounced send.
+
+   ---- why the ceiling moved from 900px to 2000px ---------------------------
+   The photo grid renders into a cell of cw (~258pt = 3.58in) x 300pt max. At
+   that width:  900px = 251 DPI,  1600px = 447 DPI,  2000px = 558 DPI. 251 DPI
+   is fine for paper, but nobody prints these -- adjusters and PMs open the
+   PDF and ZOOM IN on the damage, where 251 DPI is exactly the softness Mark
+   is reporting. Quality matters as much as pixels: 0.72 on top of an already-
+   compressed capture is a visible second generation of artefacts, so the top
+   of the ladder pairs the higher resolutions with q0.82.
+
+   The ladder is walked from sharpest to softest, and the FIRST step whose
+   estimated total fits the budget wins. Steps descend monotonically in both
+   dimensions, so the search is well-ordered and always terminates on the
+   floor step. The floor (520px/q0.50, 145 DPI) is deliberately soft: it is
+   the difference between a 60-photo storm report arriving and not arriving,
+   and the full-resolution photos remain in Storage and on CompanyCam either
+   way -- the PDF is a transmission format here, not the archive. */
+var PDF_PHOTO_STEPS = [
+  { maxDim: 2000, quality: 0.82 },
+  { maxDim: 1600, quality: 0.82 },
+  { maxDim: 1400, quality: 0.80 },
+  { maxDim: 1200, quality: 0.78 },
+  { maxDim: 1000, quality: 0.75 },
+  { maxDim: 900,  quality: 0.72 },  /* the old fixed cap -- now just one rung */
+  { maxDim: 800,  quality: 0.68 },
+  { maxDim: 700,  quality: 0.62 },
+  /* The bottom of the ladder is deliberately finer-grained than the top. A
+     coarse rung down here strands real budget: with 600px as the next stop
+     after 700px, a 40-photo report spent only 2.7MB of its 3.9MB allowance
+     and came out softer than it had to. The rungs above are far apart because
+     nothing up there is ever budget-constrained. */
+  { maxDim: 650,  quality: 0.59 },
+  { maxDim: 600,  quality: 0.56 },
+  { maxDim: 560,  quality: 0.53 },
+  { maxDim: 520,  quality: 0.50 }
 ];
-var pdfPhotoTier = 0;
-function pdfPhotoTierCount(){ return PDF_PHOTO_TIERS.length; }
-function setPdfPhotoTier(n){
-  pdfPhotoTier = (typeof n === "number" && n >= 0 && n < PDF_PHOTO_TIERS.length) ? n : 0;
-  return PDF_PHOTO_TIERS[pdfPhotoTier];
+var PHOTO_BYTES_PER_PIXEL_AT_Q1 = 0.46;
+/* Roof photos are overwhelmingly 4:3 or 3:4, so the short edge is ~0.75 of
+   maxDim. A 1:1 crop would be underestimated by a third; the send backstop
+   covers that, and assuming square would make every normal report needlessly
+   soft. */
+var PHOTO_ASPECT_SHORT_OVER_LONG = 0.75;
+/* Everything in the PDF that is NOT a photo: text, tables, the signature, and
+   the roof plan's deflated PNG. Held out of the photo budget so a report with
+   a big roof plan does not silently overshoot. */
+var PDF_NON_PHOTO_RESERVE = 400 * 1024;
+
+/* ---- the two budgets -----------------------------------------------------
+   PDF_REPORT_TARGET_BYTES is the tunable knob Mark asked for: the size a
+   report should come out at when nothing else constrains it.
+
+   But most reports DO have something else constraining them. Every
+   PDF-producing action (Send, Share, Download) POSTs the finished PDF to a
+   Netlify function when the work order is linked to a CompanyCam project --
+   send-workorder for the email, ccApiPost/upload_document for CompanyCam --
+   and both run on AWS Lambda behind the same ~6MiB request-body wall
+   documented above. So a transmitted report gets the transmit budget, and
+   only a report that stays on the device gets the full target. Picking that
+   per report (rather than one global compromise) is the whole reason a
+   3-photo emailed report can now be 2000px and a 31-photo one still fits. */
+var PDF_REPORT_TARGET_BYTES = 15 * 1024 * 1024;
+function localPhotoBudget(){
+  return PDF_REPORT_TARGET_BYTES - PDF_NON_PHOTO_RESERVE;
+}
+function transmitPhotoBudget(){
+  /* base64 chars -> decoded PDF bytes, then hold back the non-photo pages. */
+  return Math.floor(SEND_MAX_PDF_BASE64 * 3 / 4) - PDF_NON_PHOTO_RESERVE;
+}
+/* Estimated encoded size of ONE photo rendered at this step. Pure. */
+function estPhotoBytes(step){
+  if (!step) return 0;
+  return Math.round(step.maxDim * step.maxDim * PHOTO_ASPECT_SHORT_OVER_LONG *
+    PHOTO_BYTES_PER_PIXEL_AT_Q1 * step.quality);
+}
+/* Estimated photo bytes of a whole report at this step. Pure. */
+function estReportPhotoBytes(count, step){
+  return estPhotoBytes(step) * (count > 0 ? count : 0);
+}
+/* The sharpest ladder step whose whole-report estimate fits `budgetBytes`.
+   Returns an INDEX so callers can talk about "one step softer" without
+   knowing the ladder. A zero/garbage count gets the sharpest step (there is
+   nothing to spend the budget on); a budget nothing fits gets the floor. */
+function photoStepIndexFor(count, budgetBytes){
+  var n = (typeof count === "number" && count > 0) ? count : 0;
+  var budget = (typeof budgetBytes === "number" && budgetBytes > 0) ? budgetBytes : 0;
+  if (!n) return 0;
+  for (var i = 0; i < PDF_PHOTO_STEPS.length; i++){
+    if (estReportPhotoBytes(n, PDF_PHOTO_STEPS[i]) <= budget) return i;
+  }
+  return PDF_PHOTO_STEPS.length - 1;
+}
+function photoStepFor(count, budgetBytes){
+  return PDF_PHOTO_STEPS[photoStepIndexFor(count, budgetBytes)];
+}
+/* ---- the budget in force for the export currently being built -------------
+   Module-level, like the tier it replaces, because buildPdfPhotoMap() is
+   reached through jsPDF layout code that has no business threading a budget
+   argument through it.
+
+   Two layers, and the precedence matters: generatePdf() sets the AUTOMATIC
+   budget for every report from what that report is about to do with itself,
+   while sendEmailNow() PINS an explicit one for the duration of a send (and
+   shrinks it on a rebuild). A pin always wins, and is always released in a
+   finally -- leaving it set would silently degrade every later Download in
+   the session, which is the bug the old setPdfPhotoTier(0) reset guarded. */
+var pdfPhotoBudget = 0;              /* 0 until the first generatePdf() */
+var pdfPhotoBudgetPinned = false;
+function autoPdfPhotoBudget(willTransmit){
+  if (!pdfPhotoBudgetPinned) pdfPhotoBudget = willTransmit ? transmitPhotoBudget() : localPhotoBudget();
+  return pdfPhotoBudget;
+}
+function pinPdfPhotoBudget(bytes){
+  pdfPhotoBudget = (typeof bytes === "number" && bytes > 0) ? Math.floor(bytes) : transmitPhotoBudget();
+  pdfPhotoBudgetPinned = true;
+  return pdfPhotoBudget;
+}
+function releasePdfPhotoBudget(){
+  pdfPhotoBudgetPinned = false;
+  pdfPhotoBudget = 0;
+  pdfPhotoPlanSoftening = 0;
+  return pdfPhotoBudget;
+}
+/* ---- the send backstop ---------------------------------------------------
+   When a rebuilt report still does not fit, the estimate was beaten and the
+   budget is no longer trustworthy for this report -- so the backstop does NOT
+   argue with it in bytes. It forces the plan a fixed number of RUNGS softer
+   than whatever the budget picked.
+
+   That is deliberate. Cutting the budget by a percentage was the obvious
+   first design and it is wrong: the ladder's lower rungs are only ~30% apart,
+   so a 30% cut can land on the SAME rung and burn a full PDF rebuild on a
+   phone for no change at all (20 photos, third rebuild -- caught in test).
+   Counting rungs makes every rebuild provably progress, and makes the loop
+   terminate by construction rather than by arithmetic that happens to work.
+
+   Four rebuilds is worth a ~3x size cut (less near the bottom of the ladder,
+   where the rungs are closer together -- that is the price of the finer rungs
+   down there, and it is worth paying because the fine rungs help EVERY storm
+   report while the rebuild loop only runs when the estimate was beaten). If
+   the estimator is out by more than 3x, the report is refused with
+   oversizeReportMessage(): an honest dead end with a working alternative
+   beats an unbounded rebuild loop on a phone on a roof. */
+var PDF_PHOTO_MAX_REBUILDS = 4;
+var pdfPhotoPlanSoftening = 0;
+function softenPdfPhotoPlan(){
+  pdfPhotoPlanSoftening++;
+  return pdfPhotoPlanSoftening;
+}
+/* The step this report will actually be rendered at: what the live budget
+   affords, moved down by any softening the send path has forced. Exposed so
+   the send path and tests can reason about it without building a PDF. */
+function currentPhotoStepIndexFor(count){
+  var i = photoStepIndexFor(count, pdfPhotoBudget > 0 ? pdfPhotoBudget : transmitPhotoBudget());
+  return Math.min(i + pdfPhotoPlanSoftening, PDF_PHOTO_STEPS.length - 1);
+}
+function currentPhotoStepFor(count){
+  return PDF_PHOTO_STEPS[currentPhotoStepIndexFor(count)];
 }
 /* Does a base64 PDF of this length fit in one send? Pure, and deliberately
    separate from the send path so it can be tested without a browser. */
@@ -1662,12 +1832,13 @@ function oversizeReportMessage(base64Len){
     "the limit is " + pdfBase64Mb(SEND_MAX_PDF_BASE64) + " MB). Use Download PDF and attach it yourself, " +
     "or remove some photos and send again. The photos stay on the work order and on CompanyCam either way.";
 }
-/* tier is optional: callers that want the STABLE 900px image (the AI vision
-   path below) pass nothing and always get tier 0, so a send-time rebuild can
-   never change what the model is shown. Only buildPdfPhotoMap() passes the
-   currently-selected tier. */
-function pdfPhotoDataUrl(dataUrl, tier){
-  var t = tier || PDF_PHOTO_TIERS[0];
+/* The AI vision path is deliberately NOT on the report ladder: it wants one
+   stable image size forever (see aiVisionImagePart below for why 900px), and
+   a report-budget decision must never change what a model is shown. It passes
+   this constant; buildPdfPhotoMap() passes the budgeted step. */
+var AI_VISION_STEP = { maxDim: 900, quality: 0.72 };
+function pdfPhotoDataUrl(dataUrl, step){
+  var t = step || AI_VISION_STEP;
   return new Promise(function(res){
     if (!dataUrl) return res(dataUrl);
     var im = new Image();
@@ -1697,17 +1868,20 @@ function pdfPhotoDataUrl(dataUrl, tier){
    correct and the grid layout below is unchanged. */
 function buildPdfPhotoMap(photos){
   var map = new Map();
-  var tier = PDF_PHOTO_TIERS[pdfPhotoTier] || PDF_PHOTO_TIERS[0];
+  /* THE budget decision, made once per export with the photo count in hand --
+     this is the only place that knows both halves of it. */
+  var step = currentPhotoStepFor(photos.length);
   return Promise.all(photos.map(function(p){
-    return pdfPhotoDataUrl(p.img, tier).then(function(u){ map.set(p, u); });
+    return pdfPhotoDataUrl(p.img, step).then(function(u){ map.set(p, u); });
   })).then(function(){ return map; });
 }
 /* ---- SHARED ~900px downscaler for the AI vision features ----
    The AI summary and the per-photo issue-ID chip both send photos to a vision
-   model, and both want the SAME small image the PDF path already produces:
-   900px/q0.72 (PDF_PHOTO_MAX_DIM above). Deliberately reuses pdfPhotoDataUrl()
-   rather than adding a second downscaler -- two independent resize paths would
-   drift, and this one is already proven on production.
+   model, and both want the same small image: 900px/q0.72 (AI_VISION_STEP
+   above). Deliberately reuses pdfPhotoDataUrl() rather than adding a second
+   downscaler -- two independent resize paths would drift, and this one is
+   already proven on production. It passes AI_VISION_STEP explicitly so the
+   report budget can never move it.
 
    Why it matters beyond payload size: Anthropic re-scales anything over
    ~1568px on the long edge and bills the resized token count anyway, so
@@ -1721,7 +1895,7 @@ function buildPdfPhotoMap(photos){
    null when the photo can't be read. Never throws: a photo that won't
    downscale is simply one the model doesn't see, never a failed draft. */
 function aiVisionImagePart(dataUrl){
-  return pdfPhotoDataUrl(dataUrl).then(function(u){
+  return pdfPhotoDataUrl(dataUrl, AI_VISION_STEP).then(function(u){
     var m = /^data:(image\/[a-z0-9.+-]+);base64,(.+)$/.exec(typeof u === "string" ? u : "");
     return m ? { mediaType: m[1], data: m[2] } : null;
   }).catch(function(){ return null; });
@@ -1947,6 +2121,14 @@ async function generatePdf(){
      one) -- see resolveBuildingCompanyCamLink() in js/companycam.js. */
   if (typeof resolveBuildingCompanyCamLink === "function") await resolveBuildingCompanyCamLink();
   var o = collect();
+  /* Set the photo budget for THIS report, here, because this is the one place
+     that knows whether the finished PDF is about to be POSTed anywhere. A
+     linked work order uploads its PDF to CompanyCam from every action (see
+     uploadLinkedPdfToCompanyCam in js/history.js), so it lives under the same
+     ~6MiB Lambda wall as an email; an unlinked one is only ever saved to the
+     device and gets the full PDF_REPORT_TARGET_BYTES. A send pins its own
+     budget before calling us, and pinning wins. */
+  autoPdfPhotoBudget(!!o.companyCamProjectId);
   if (o.woType === "Change Order") return generateChangeOrderPdf(o);
   /* PDF generation doesn't necessarily pass through Preview first (a
      direct "Download PDF" tap), so this fetches fresh rather than relying
