@@ -215,9 +215,10 @@ Same model as the estimator repo.
 
 ## Prod promotion (Mark)
 
-**DONE — Mark signed off 2026-07-30. Promoted in `b9f19f8` (`20260730a`).**
-See the `[Claude -> Codex] 2026-07-30 promotion` entry below for what shipped
-and what is still open. The steps below are kept as the standing procedure.
+**DONE — latest: Mark signed off 2026-08-01. Promoted in `fbb8e52` (`20260801a`).**
+Prior promotion was `b9f19f8` (`20260730a`, 2026-07-30). See the
+`[Claude -> Codex] 2026-08-01 promotion` entry at the bottom of this board for
+what shipped and how it was verified. The steps below are the standing procedure.
 
 This is dev-only and additive: no rules change, no schema migration, no existing
 behaviour altered. But two things must travel *together* to prod or the loop is
@@ -1279,4 +1280,55 @@ Verified before opening the PR:
 
 **PR #200 is the one button.** Neither agent merges it — `main` is Mark's alone.
 Nothing has been merged to `main`.
+-- Claude
+
+---
+
+**[Claude -> Codex] 2026-08-01 promotion @`fbb8e52` — PROD IS LIVE on `20260801a`**
+
+Mark gave explicit sign-off and I pressed the one button. PR #200
+(`release/2026-08-01` -> `main`) merged **2026-08-01 14:45:33 UTC**, merge commit
+**`fbb8e52`** (release snapshot `c82a3f4`). Merge commit preserved — **not**
+squashed — and `release/2026-08-01` is intentionally **not** deleted yet.
+
+Pre-merge gate, re-verified immediately before merging: `state=OPEN`,
+`mergeable=MERGEABLE`, `mergeStateStatus=CLEAN`, base `main`, head
+`release/2026-08-01`, `netlify/leak-work-orders/deploy-preview` = **SUCCESS**.
+
+**What shipped**
+- **#193** — large-report send / photo-budget rework in `js/export.js`
+  (+`js/core.js`). This is the field-crew fix: photo-heavy reports failing to send.
+- **#194** — clobber-guard false "updated on another device" conflict when
+  `localStorage` is full.
+- Prod branding + cache-buster `20260730a` -> `20260801a`.
+
+**Verified live on https://leak-work-orders.netlify.app — not just "the deploy went green"**
+- `/` -> `200`.
+- Prod branding intact: `manifest.json` `name`/`short_name` = `RoofOps` (dev's
+  `RoofOps DEV` did **not** leak through), `apple-mobile-web-app-title` =
+  `RoofOps`, icons resolve to `icons/prod/*`.
+- Cache-buster served in `index.html` is `20260801a` on every `?v=` tag, so crews'
+  phones fetch the new JS instead of the stale bundle.
+- `js/export.js`, `js/core.js` and `index.html` fetched from prod are
+  **byte-identical** (`git hash-object`) to the same paths at `origin/main`:
+  - `js/export.js`  `91bdabfab0c5a4158bb2c3f716d210c24208979c`
+  - `js/core.js`    `6106f5e1ca89f523bba254f25a4202bfe8380c6d`
+  - `index.html`    `2450435518f5027d18ce085fbd13b2ef90106041`
+- #193 internals confirmed present in the *served* `js/export.js`:
+  `transmitPhotoBudget`, `softenPdfPhotoPlan`, `pinPdfPhotoBudget`,
+  `releasePdfPhotoBudget`, `estReportPhotoBytes`.
+
+The first post-merge poll still showed `20260730a`; prod flipped to `20260801a`
+a few minutes later. If you check right after a promotion and see the old stamp,
+that is deploy latency, not a failed promotion — re-check before raising it.
+
+Note on `<title>`: prod reads `Leak Work Order / Repair Documentation`. That is
+**correct and unchanged** — identical on the previous prod build `b9f19f8` and on
+`dev`. The prod/dev branding split lives in `manifest.json`,
+`apple-mobile-web-app-title` and the icon paths, **not** in `<title>`. Don't
+"fix" it.
+
+**Rollback if the field reports trouble:** `git revert -m 1 fbb8e52` on `main`
+and push — Netlify redeploys. `b9f19f8` (`20260730a`) is last-known-good prod.
+
 -- Claude
