@@ -36,7 +36,11 @@ function makeCtx(opts){
     Date: { now: () => NOW }, console: { warn(){}, log(){} },
     fdb: { collection: () => ({ doc: () => ref }) },
     loadDb: () => ({ orders: { wo: {} } }),
-    saveDb: (db) => { rec.savedBase = db.orders.wo._cloudBaseSavedAt; return true; },
+    /* saveDb RETURNS FALSE (it does not throw) when localStorage is full --
+       see its QuotaExceededError branch in js/core.js. Modelled exactly,
+       because that silent false is what stranded the base in prod. */
+    saveDb: (db) => { if (opts.saveDbFails) return false; rec.savedBase = db.orders.wo._cloudBaseSavedAt; return true; },
+    currentAuthUser: opts.authUser || null,
     uploadPhotoToStorage: async () => "workorders/wo/0.jpg",
     deletePhotoFromStorage: async () => {},
     resolvePhotoImg: async () => null
@@ -134,4 +138,100 @@ test("guard STILL blocks a GENUINE newer other-device write after our base advan
     (e) => { assert.equal(e.__conflict, true); return true; }
   );
   assert.equal(ctx.__rec.mainSet, null, "a real newer other-device copy is NOT overwritten");
+});
+
+/* ---- Regression: Mark's Vandalia #17412 block (prod, 2026-07-31). The device
+   was at 4.89MB of a ~5MB localStorage quota and toasting "Storage is full".
+   Every cloud write landed; every base advance was dropped, because saveDb()
+   RETURNS FALSE rather than throwing when the quota is blown. The next save
+   read the stale base back out and mistook the savedAt THIS TAB had just
+   written for another device, blocking the email over and over. No second
+   device, no second session, nothing to reconcile. ---- */
+function saveWithStaleBase(ctx, base){
+  /* saveOrder() re-reads the base from localStorage on every save, so a
+     dropped advance means the NEXT save starts from the same old base. */
+  return ctx.cloudSaveOrder(order(base));
+}
+
+test("storage full: a dropped base advance does NOT make the next save a conflict", async () => {
+  const ctx = makeCtx({ cloudSavedAt: 100, saveDbFails: true });
+  await saveWithStaleBase(ctx, 200);                   // commits savedAt = NOW
+  assert.equal(ctx.__rec.savedBase, null, "the base advance really was lost (quota)");
+  ctx.__rec.mainSet = null;
+  // Cloud now holds NOW; localStorage still says base 200. Pre-fix: __conflict.
+  await saveWithStaleBase(ctx, 200);
+  assert.ok(ctx.__rec.mainSet, "our own committed write is not 'another device' — the save proceeds");
+});
+
+test("storage full: the email/report path is not blocked by our own write", async () => {
+  const ctx = makeCtx({ cloudSavedAt: 100, saveDbFails: true });
+  await saveWithStaleBase(ctx, 200);
+  // Three attempts in a row, exactly as Mark retried: none may throw.
+  await saveWithStaleBase(ctx, 200);
+  await saveWithStaleBase(ctx, 200);
+  await saveWithStaleBase(ctx, 200);
+});
+
+test("storage full: a GENUINE newer other-device write is STILL blocked", async () => {
+  const ctx = makeCtx({ cloudSavedAt: 100, saveDbFails: true });
+  await saveWithStaleBase(ctx, 200);                   // we wrote NOW
+  ctx.__rec.mainSet = null;
+  ctx.__forceCloudSavedAt(NOW + 100);                  // someone else wrote after us
+  await assert.rejects(
+    saveWithStaleBase(ctx, 200),
+    (e) => { assert.equal(e.__conflict, true); return true; }
+  );
+  assert.equal(ctx.__rec.mainSet, null, "the other device's newer copy is NOT overwritten");
+});
+
+test("another SESSION's write is never mistaken for our own", async () => {
+  /* A fresh context is a fresh page/tab: it has written nothing, so a cloud
+     savedAt it did not produce -- even one that happens to equal this clock's
+     Date.now() -- is still a conflict. Proves the exemption is scoped to
+     writes this session actually made, not to a timestamp value. */
+  const ctx = makeCtx({ cloudSavedAt: NOW });
+  await assert.rejects(
+    saveWithStaleBase(ctx, 200),
+    (e) => { assert.equal(e.__conflict, true); return true; }
+  );
+  assert.equal(ctx.__rec.mainSet, null);
+});
+
+test("the exemption is per work order, not global", async () => {
+  const ctx = makeCtx({ cloudSavedAt: 100, saveDbFails: true });
+  await saveWithStaleBase(ctx, 200);                   // we wrote wo at NOW
+  ctx.__rec.mainSet = null;
+  ctx.__forceCloudSavedAt(NOW);
+  // Same cloud state, but a DIFFERENT order id we have never written.
+  await assert.rejects(
+    ctx.cloudSaveOrder({ id: "wo_other", _cloudBaseSavedAt: 200, photos: [] }),
+    (e) => { assert.equal(e.__conflict, true); return true; }
+  );
+});
+
+/* ---- What gets written ---- */
+test("_cloudBaseSavedAt is local bookkeeping and never rides into the cloud doc", async () => {
+  const ctx = makeCtx({ cloudSavedAt: 100 });
+  await ctx.cloudSaveOrder(order(200));
+  assert.ok(ctx.__rec.mainSet, "doc written");
+  assert.equal("_cloudBaseSavedAt" in ctx.__rec.mainSet, false,
+    "the guard's base must not be persisted — in the doc it is permanently one save stale");
+});
+
+test("every write is stamped with who and which session saved it", async () => {
+  const ctx = makeCtx({ cloudSavedAt: 100, authUser: { uid: "uid_mark" } });
+  await ctx.cloudSaveOrder(order(200));
+  const first = ctx.__rec.mainSet;
+  assert.equal(first.savedByUid, "uid_mark");
+  assert.ok(first.savedBySession, "a session id is recorded");
+  ctx.__rec.mainSet = null;
+  await ctx.cloudSaveOrder(order(NOW));
+  assert.equal(ctx.__rec.mainSet.savedBySession, first.savedBySession,
+    "the session id is stable for the life of the page");
+});
+
+test("a signed-out save still writes, with an empty uid rather than a broken one", async () => {
+  const ctx = makeCtx({ cloudSavedAt: 100 });   // currentAuthUser = null
+  await ctx.cloudSaveOrder(order(200));
+  assert.equal(ctx.__rec.mainSet.savedByUid, "");
 });

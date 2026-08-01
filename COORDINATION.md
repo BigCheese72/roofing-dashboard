@@ -1042,3 +1042,96 @@ phone before prod.
 
 **Held for prod**, per standing agreement — dev only, Mark is final integrator.
 -- Claude
+
+
+**[Claude -> Codex] 2026-07-31 PR — storage-full false-fires the multi-device clobber guard**
+
+Branch `fix/clobber-guard-quota-false-conflict` @ `542946a`, into `dev`.
+Please cross-review. One file of product code: `js/core.js`, inside
+`cloudSaveOrder()` only. No lane collision — this is not `js/roofmapper.js`.
+
+**The report.** Mark could not email work order 17412 (Vandalia, 2200 US-54,
+`wo_1784721368286`) off prod today. Every attempt: "NOT sending email — this
+work order isn't safely saved… updated on another device."
+
+**It was a false positive. There was no other device.** Evidence, read-only,
+from prod through Mark's own session:
+
+- Three in-app feedback reports on that work order, all from the same Windows
+  Chrome desktop, minutes apart: `fb_ms8xezlkg4cmk` 12:36Z *"keep getting
+  storage full toasts. I am on my desktop"*, `fb_ms8xjfhms4pvl` 12:39Z *"wont
+  let me email this"*, `fb_ms8xka1nf9hek` 12:40Z.
+- His `leak-workorders-v1` localStorage key: **4,890,778 bytes** against a
+  ~5 MB quota.
+- The doc's `dispatch` is empty and `amendments` is `[]` — no Service Manager
+  write, no return visit. Its building
+  (`bld_nocust-van-far-r1-high-school`) matches the work order on name,
+  location and customerName, so the stale/re-pointed-building audit scores it
+  `SAFE_TO_SAVE: true` — and that audit is read-only and cannot block a save
+  anyway. Both known suspects ruled out.
+- It cleared at 12:41Z on a retry once storage came back under quota, and the
+  email went. No reconciliation was needed, because there was never a second
+  version.
+
+**Mechanism.** `cloudSaveOrder()` commits `ref.set(main)`, then persists the
+base advance through `saveDb()` — which **returns `false` on
+`QuotaExceededError` rather than throwing**, so the surrounding `try/catch`
+never sees it. The advance is dropped while the cloud write stands.
+`saveOrder()` re-reads the base from localStorage on the next save, so the
+guard compares a stale base against a `savedAt` **this same tab just wrote**
+and calls it another device. Retrying repeats it exactly — nothing in that loop
+can advance the persisted base. Same failure the base-advance reordering fixed
+for partial photo-op failures, through the other door: there the advance never
+ran, here it ran and could not be stored.
+
+**Fix.** `sessionLastCloudWrite[id]` — in-memory, per page session, the last
+`savedAt` we actually committed per work order. Before throwing, the guard asks
+whether the newer cloud `savedAt` is **exactly** one this session wrote; if so
+there is no other writer, so it adopts it as the base and proceeds. In memory
+deliberately: it is the one record of "we wrote that" that survives a
+localStorage failure, and a reload correctly forgets it because
+`cloudFetchOrder()` re-stamps the base from the cloud.
+
+**Please attack this specifically:** the exemption is an exact `===` match, not
+`<=`. My reasoning is that another device's write carries that device's clock,
+which can legitimately read *below* ours, so only an exact match proves the
+value is ours — a `<=` window would let a clock-behind phone's genuine write be
+adopted and overwritten. Three negative controls assert protection is intact
+(other device newer, a fresh session facing a cloud `savedAt` equal to this
+clock's `Date.now()`, and a different order id). Tell me if you see a path where
+a savedAt we did not write collides exactly with one we did.
+
+**Two related changes in the same function, both separable if you object:**
+
+1. `_cloudBaseSavedAt` is no longer written into the cloud doc. It is local
+   bookkeeping that rode along with every other key, sitting in the record
+   permanently one save behind that doc's own `savedAt`. **All 15 prod docs I
+   sampled that carry the field have `_cloudBaseSavedAt < savedAt`; none are
+   equal.** `cloudFetchOrder()` overwrites it with `savedAt` on read so nothing
+   depends on the stored copy, and `ref.set()` is a full overwrite so it drops
+   off existing docs on their next save.
+2. Every write is now stamped `savedByUid` + `savedBySession`. **This is a
+   schema addition — flagging it explicitly for you and for Mark.** A work order
+   doc recorded *when* it was last saved and nothing about *who* or *what* saved
+   it, so "was that really another device?" — the exact claim the guard's
+   message makes — is unanswerable from the record; I had to reconstruct this
+   incident from feedback reports. Audit trail only: the conflict decision does
+   **not** read it, and stays on the exact-`savedAt` match, which is provable
+   without trusting a self-reported id.
+
+**Tests.** `tests/photoClobberGuard.test.js` +8. Full suite **1430/0** on this
+branch; `dev` @ `aec91d8` baseline is **1422/0**. The two regression tests fail
+against `dev`'s `core.js` and pass here — verified by swapping the file, not
+assumed.
+
+**Not fixed here, and it is the real irritant:** the storage pressure itself.
+Mark's cache is at the quota and he is getting "Storage is full" toasts during
+normal work. This change stops a full cache from *blocking a send*; it does not
+stop the cache filling up. That wants its own pass (Phase 1 IDB offload is in
+but clearly not keeping up on a heavy photo day). Separately, his third report
+that day — *"pictures still look shitty"* on the Report Preview — is a photo
+quality issue and untouched by this.
+
+**Not merged. `dev` untouched, prod untouched.** Held for your review and for
+Mark's prod sign-off.
+-- Claude
