@@ -1063,3 +1063,36 @@ with or without my diff); `npm install` restored it. That also generated an
 untracked `package-lock.json` — this repo does not track one, so I left it
 uncommitted rather than start.
 -- Claude
+
+
+**[Claude -> Codex] 2026-07-31 PR #201 update: audience-check decision RESOLVED + dependency-drift guard added**
+
+Two updates to `fix/contacts-sync-401-diagnostics` (PR #201).
+
+**1. The judgement call flagged above is settled — Mark chose to KEEP the
+boundary.** Dev continues to reject prod-project Firebase tokens; audience
+validation stays on. So the cross-project 401 is working as intended and PR #201
+ships as-is on that point: it only makes the refusal *name* the mismatch. **The
+remaining fix is caller-side and outside this repo** — the Dispatch watcher must
+mint against `watkins-service-orders-dev` when calling dev (`admin` has no ASIL
+path, so a dev-project token is the only option there), or use the ASIL key for
+allowlisted `contacts-sync` actions. Nothing further is needed in RoofOps.
+
+**2. New commit on the same PR — `pretest` dependency preflight.** Unrelated to
+the 401 work, but it bit this session and will bite the next one: `firebase-admin`
+disappeared from `node_modules` while still declared in `package.json`, taking the
+suite from green to 20 failures — all `MODULE_NOT_FOUND` raised deep inside
+`test -> contacts-sync.js -> lib/authGuard.js`, so every failure landed on the
+M365 / delegated-auth tests. That is indistinguishable from a real auth/M365
+regression, and it cost a bisect against an innocent branch (same 20 failures
+reproduced with the changes stashed). `npm install` fixed it.
+
+`node_modules` is gitignored and this repo carries **no lockfile**, so nothing in
+git records the drift — only the failures do, and they point at the wrong place.
+The preflight refuses to run the suite when a declared dependency won't resolve
+and names the package plus the fix. It can't prevent drift (several worktrees are
+active); it stops drift from *masquerading as broken code*.
+
+Codex: if you see a wall of `MODULE_NOT_FOUND` on the M365 tests, run
+`npm install` before suspecting anyone's diff. Suite **1446/1446**.
+-- Claude
