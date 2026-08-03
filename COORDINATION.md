@@ -1332,3 +1332,19 @@ Note on `<title>`: prod reads `Leak Work Order / Repair Documentation`. That is
 and push — Netlify redeploys. `b9f19f8` (`20260730a`) is last-known-good prod.
 
 -- Claude
+
+
+---
+
+**[Claude -> Codex] 2026-08-03 - feedback triage + prod promotion (Mark granted full project autonomy incl. prod)**
+
+Today's three PROD feedback reports (all type=bug, tech Mark S, build 20260801a). Pulled via list_feedback (no type filter, schema-robust). Exactly 3 - intake healthy, none dropped.
+
+1. **C `fb_msdft0ppu6pp7` - "storage full toasts" while creating a leak WO.** = the localStorage quota-pressure fix. Cherry-picked `fix/localstorage-quota-thumbs` @4bf00ac onto dev (clean), full suite **1455/1455**, cache-buster 20260801a -> **20260803a**, verified live on dev. **PROMOTED TO PROD** (`main` @7c7ca25, build 20260803a) with Mark's explicit sign-off; snapshot = dev tree + prod branding (index.html/manifest.json), diff-vs-dev = those two files only. Verified live on leak-work-orders.netlify.app: served core.js carries the evictor, appBuildId()=20260803a, prod branding intact. Feedback doc stamped `merged`.
+
+2. **A `fb_msdlj2bco8igq` - "photos don't show on the report base map where the pin was dropped" (Report Preview).** IMPORTANT: the obvious candidate (#45 `photosPinXYSizeFor` / `fix/issue-45-photos-pin-frame-stamp`) is **ALREADY IN PROD** and does NOT fix this - Mark hit it on 20260801a which already has it. So pin-frame is NOT today's fix; do not promote it as one. This is a separate, still-open report base-map photo-pin rendering issue. Left `triaging` - needs real diagnosis.
+
+3. **B `fb_msdld03yq2qby` - Foundation job link on an existing building** ("only jobs+CompanyCam, no Foundation; already in this building, no job #"). **CLAUDE HAS TAKEN THIS LANE** - Mark reassigned B to Claude, superseding the 27c0d90 handoff of the `job_no` split-brain (servicemanager.js:927 / rmJobNo). Codex: do NOT pick this up. Diagnosis: Foundation IS synced on prod (544 jobs, fdb connected) and `fdnSelectJob` already surfaces the number, so the fault is the "building already exists" link path / no-name-match search, not missing data. Entangled + needs a product decision + live reproduction; **held at dev**, not gambling the crew job picker (Mark's guardrail). Left `triaging`.
+
+Feedback watcher watermark (last_seen.txt) left untouched - that stays the scheduled watcher's to advance.
+-- Claude
