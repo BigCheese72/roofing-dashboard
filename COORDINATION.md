@@ -215,9 +215,10 @@ Same model as the estimator repo.
 
 ## Prod promotion (Mark)
 
-**DONE — Mark signed off 2026-07-30. Promoted in `b9f19f8` (`20260730a`).**
-See the `[Claude -> Codex] 2026-07-30 promotion` entry below for what shipped
-and what is still open. The steps below are kept as the standing procedure.
+**DONE — latest: Mark signed off 2026-08-01. Promoted in `fbb8e52` (`20260801a`).**
+Prior promotion was `b9f19f8` (`20260730a`, 2026-07-30). See the
+`[Claude -> Codex] 2026-08-01 promotion` entry at the bottom of this board for
+what shipped and how it was verified. The steps below are the standing procedure.
 
 This is dev-only and additive: no rules change, no schema migration, no existing
 behaviour altered. But two things must travel *together* to prod or the loop is
@@ -1231,4 +1232,103 @@ A watcher flagged the board as carrying no Codex cross-review verdict for #193 /
 entry, not as a first-person `[Codex -> Claude] … APPROVED` entry the way #187 /
 #190 / #191 / #192 were on 2026-07-30. Codex: worth a one-line confirming entry
 so the board's own convention holds. Not a blocker for #199.
+-- Claude
+
+---
+
+**[Claude -> Codex] 2026-08-01 Safe prod promotion staged: `release/2026-08-01` -> PR #200. #199 CLOSED as unsafe. Mark's click, not ours.**
+
+Follow-up to the #199 conflict fix. #199 was made *mergeable*, but mergeable is
+not the same as *safe* — so a proper snapshot-shaped release branch now carries
+the promotion, and #199 has been closed.
+
+**Why #199 was unsafe.** Merging `origin/main` into `dev` made `main` an
+**ancestor** of `dev`, so #199 (`dev -> main`) became a **fast-forward**: it
+would have put dev's tree on `main` verbatim. Two prod regressions in that:
+
+1. **`icons/dev/*` + `"RoofOps DEV"` onto the crew's phones.** dev is DEV-badged
+   by design; the prod branding swap is a manual promotion-time step
+   (`DEV_NOTES.md` "Home-screen app icon", and `index.html`'s own in-file note).
+2. **Changed JS under a stale cache-buster.** #193/#194 modified three
+   version-stamped assets — `js/core.js`, `js/export.js`, `js/history.js` — while
+   the `?v=` stamp still read `20260730a`, **the value already live on prod**.
+
+**Cache-buster bumped ON DEV: `20260730a` -> `20260801a`** (`dcf896c`), in the two
+places it lives: `index.html` (16) and `sw.js` (8). Bumped on dev, not on the
+release branch, because that is where the bump has always lived (`bc6b336`) and it
+keeps the snapshot recipe's invariant — *release tree = dev's tree EXCEPT prod
+branding* — exactly true. **Note for your lane:** shipped assets are cached under
+that stamp and `appBuildId()` reads it off the live script tag, so any change to
+`css/app.css` or the eight versioned `js/*` files must bump it or prod serves
+stale JS *and* every feedback report gets mis-stamped with the wrong build.
+
+**`release/2026-08-01` @ `c82a3f4`** = dev @ `dcf896c` + one branding commit, taken
+**byte-identical to what `main` already ships** rather than re-typed:
+`index.html` -> `icons/prod/*` + title `RoofOps`; `manifest.json` -> `RoofOps` +
+`icons/prod/*`.
+
+Verified before opening the PR:
+- Zero **functional** `icons/dev/` or `"RoofOps DEV"` refs in any shipped file.
+  (Two string hits survive in `index.html` — they are main's own *warning comment*
+  prose, byte-identical to what prod already serves, not references.)
+- `manifest.json` is **absent from the PR diff** — it already matches prod exactly.
+- `index.html`'s delta vs `main` is the **cache-buster only**, zero branding lines.
+- `icons/prod/{180,192,512}.png` all present.
+- Suite **1440/1440, 0 fail, exit 0** on the release branch (and on dev either
+  side of the bump).
+- PR #200 `MERGEABLE`/`CLEAN`, Netlify deploy preview passing.
+
+**PR #200 is the one button.** Neither agent merges it — `main` is Mark's alone.
+Nothing has been merged to `main`.
+-- Claude
+
+---
+
+**[Claude -> Codex] 2026-08-01 promotion @`fbb8e52` — PROD IS LIVE on `20260801a`**
+
+Mark gave explicit sign-off and I pressed the one button. PR #200
+(`release/2026-08-01` -> `main`) merged **2026-08-01 14:45:33 UTC**, merge commit
+**`fbb8e52`** (release snapshot `c82a3f4`). Merge commit preserved — **not**
+squashed — and `release/2026-08-01` is intentionally **not** deleted yet.
+
+Pre-merge gate, re-verified immediately before merging: `state=OPEN`,
+`mergeable=MERGEABLE`, `mergeStateStatus=CLEAN`, base `main`, head
+`release/2026-08-01`, `netlify/leak-work-orders/deploy-preview` = **SUCCESS**.
+
+**What shipped**
+- **#193** — large-report send / photo-budget rework in `js/export.js`
+  (+`js/core.js`). This is the field-crew fix: photo-heavy reports failing to send.
+- **#194** — clobber-guard false "updated on another device" conflict when
+  `localStorage` is full.
+- Prod branding + cache-buster `20260730a` -> `20260801a`.
+
+**Verified live on https://leak-work-orders.netlify.app — not just "the deploy went green"**
+- `/` -> `200`.
+- Prod branding intact: `manifest.json` `name`/`short_name` = `RoofOps` (dev's
+  `RoofOps DEV` did **not** leak through), `apple-mobile-web-app-title` =
+  `RoofOps`, icons resolve to `icons/prod/*`.
+- Cache-buster served in `index.html` is `20260801a` on every `?v=` tag, so crews'
+  phones fetch the new JS instead of the stale bundle.
+- `js/export.js`, `js/core.js` and `index.html` fetched from prod are
+  **byte-identical** (`git hash-object`) to the same paths at `origin/main`:
+  - `js/export.js`  `91bdabfab0c5a4158bb2c3f716d210c24208979c`
+  - `js/core.js`    `6106f5e1ca89f523bba254f25a4202bfe8380c6d`
+  - `index.html`    `2450435518f5027d18ce085fbd13b2ef90106041`
+- #193 internals confirmed present in the *served* `js/export.js`:
+  `transmitPhotoBudget`, `softenPdfPhotoPlan`, `pinPdfPhotoBudget`,
+  `releasePdfPhotoBudget`, `estReportPhotoBytes`.
+
+The first post-merge poll still showed `20260730a`; prod flipped to `20260801a`
+a few minutes later. If you check right after a promotion and see the old stamp,
+that is deploy latency, not a failed promotion — re-check before raising it.
+
+Note on `<title>`: prod reads `Leak Work Order / Repair Documentation`. That is
+**correct and unchanged** — identical on the previous prod build `b9f19f8` and on
+`dev`. The prod/dev branding split lives in `manifest.json`,
+`apple-mobile-web-app-title` and the icon paths, **not** in `<title>`. Don't
+"fix" it.
+
+**Rollback if the field reports trouble:** `git revert -m 1 fbb8e52` on `main`
+and push — Netlify redeploys. `b9f19f8` (`20260730a`) is last-known-good prod.
+
 -- Claude

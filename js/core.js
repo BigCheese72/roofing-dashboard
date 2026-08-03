@@ -809,7 +809,12 @@ async function resolvePhotoImg(p){
      and needs no network. Closes the gap where resolvePhotoImg looked only in
      Storage, so an IDB-only photo couldn't be shown or exported. */
   if (p.localId){
-    try{ var local = await idbGetPhoto(p.localId); if (local){ p.img = local; return local; } }catch(e){}
+    /* _idbBacked: these bytes came OUT of IndexedDB, so IndexedDB has them --
+       the flag is true by construction. Without it leanDbReplacer would write
+       the very bytes Phase 1 offloaded straight back into localStorage on the
+       next autosave (Mark's Preview loop: goToPreview hydrates every photo,
+       showView flushes the autosave, the cache re-inflates). */
+    try{ var local = await idbGetPhoto(p.localId); if (local){ p.img = local; p._idbBacked = true; return local; } }catch(e){}
   }
   if (!p.storageRef) return null;
   var m = /^workorders\/([^/]+)\/(\d+)\.jpg$/.exec(p.storageRef);
@@ -1195,7 +1200,16 @@ async function cloudFetchOrder(id){
          the client-side photo object, re-opening a work order and re-sending it
          would push every photo a second time -- see pushPhotosToCompanyCamFeed()
          in js/history.js. */
+      /* _cloudImg: whatever bytes we hand back here came out of the cloud doc,
+         which still holds them -- so the localStorage cache never needs its own
+         copy (leanDbReplacer omits them). This is the un-migrated legacy shape:
+         img in Firestore, no storageRef, previously the one byte-bearing case
+         nothing could keep out of the ~5MB cache. Purely a "where else do these
+         bytes live" marker -- .img itself is untouched, so cloudSaveOrder()'s
+         fresh-capture-upload trigger (see its CRITICAL DATA-LOSS GUARD) is
+         completely unaffected. */
       photosArr[v.i] = { caption: v.caption || "", img: v.storageRef ? null : (v.img || null), w: v.w || 0, h: v.h || 0,
+        _cloudImg: !!(v.img && !v.storageRef),
         finding_id: v.finding_id || null, amendment_id: v.amendment_id || null,
         ccPhotoId: v.ccPhotoId || null, gps: v.gps || null,
         ccFeedPhotoId: v.ccFeedPhotoId || null,
@@ -2976,25 +2990,86 @@ var MAX_CACHED_PHOTO_DRAFTS = 5;
    own "synchronous, no Firestore access" comment). This flag is what
    loadOrder() now checks instead of trusting the timestamp alone -- see
    "PDF/preview missing photos" in DEV_NOTES.md. */
+/* THE byte-bearing fields on a photo. `img` is the obvious one; `imgFallback`
+   is the trap that caused Mark's 2026-07-31 "storage full" loop: it is set by
+   cloudFetchOrder() to the photo's FULL-RESOLUTION base64 whenever a photo has
+   a storageRef but no thumb (every photo the server-side migration backfilled
+   -- "all 37 photos had img present, 0 had thumb"), and until this fix NOTHING
+   treated it as photo bytes. stripPhotoBytes() left it, leanDbReplacer() left
+   it, and orderHasCachedPhotoBytes() didn't see it -- so merely OPENING one
+   migrated work order wrote ~650KB per photo into the ~5MB localStorage cache
+   permanently, and no eviction path could ever free a byte of it. Eight such
+   photos fill the entire quota on their own. Listed once, here, so a future
+   byte-bearing field gets added in exactly one place. */
+var PHOTO_BYTE_FIELDS = ["img", "imgFallback"];
+/* This photo's bytes exist somewhere OTHER than the localStorage cache, so the
+   local copy is a cache we may drop rather than the only copy:
+     - storageRef   -- in Firebase Storage
+     - _idbBacked   -- confirmed written to the on-device IndexedDB backup
+     - _cloudImg    -- these exact bytes were just read back OUT of the cloud
+                       Firestore doc, which therefore still holds them
+   The single answer to "is this local copy droppable", used by the serializer,
+   the stripper and every eviction rung, so they can never disagree with each
+   other about what is safe to lose. Anything else -- a freshly captured photo
+   not yet uploaded, a Change Order signature -- has none of these and is
+   protected everywhere (data-loss guard, Mark's #1 rule). */
+function photoBytesAreSafeElsewhere(p){
+  return !!(p && (p.storageRef || p._idbBacked === true || p._cloudImg === true));
+}
+/* The stricter half of that question: bytes we should not write to localStorage
+   AT ALL, because getting them back needs no round-trip through a Firestore
+   DOCUMENT -- Storage serves them by ref, IndexedDB by localId, both on demand.
+   Deliberately narrower than photoBytesAreSafeElsewhere(): a `_cloudImg` photo's
+   bytes live in the work order's own cloud doc, so keeping them locally is what
+   lets a tech who saved an order still see its photos with no signal. Those stay
+   until the cache is actually under pressure, and then evict like everything
+   else (rung 0). Field-first: pay the quota, not the roofer. */
+function photoBytesAreRedundantLocally(p){
+  return !!(p && (p.storageRef || p._idbBacked === true));
+}
 function stripPhotoBytes(o){
   var copy = Object.assign({}, o);
   copy.photos = (o.photos || []).map(function(p){
     var p2 = Object.assign({}, p);
-    delete p2.img;
+    PHOTO_BYTE_FIELDS.forEach(function(f){ delete p2[f]; });
+    return p2;
+  });
+  copy.photosStripped = true;
+  return copy;
+}
+/* Drops the small (200px) thumbnails too. A separate, MORE destructive rung than
+   stripPhotoBytes(): thumbs are what make a cached order still render its gallery
+   offline, so this is only ever reached when the quota is genuinely exhausted and
+   dropping full-resolution bytes was not enough (see evictLocalCacheRung). The
+   thumb is re-hydrated from Firestore the next time the order is opened. */
+function stripPhotoThumbs(o){
+  var copy = Object.assign({}, o);
+  copy.photos = (o.photos || []).map(function(p){
+    var p2 = Object.assign({}, p);
+    delete p2.thumb;
     return p2;
   });
   copy.photosStripped = true;
   return copy;
 }
 function orderHasCachedPhotoBytes(o){
-  return !!(o && o.photos && o.photos.some(function(p){ return p && p.img; }));
+  return !!(o && o.photos && o.photos.some(function(p){
+    return p && PHOTO_BYTE_FIELDS.some(function(f){ return !!p[f]; });
+  }));
 }
-/* Every photo that still has local bytes ALSO has a storageRef -- i.e. its bytes
-   are safely in Firebase Storage and the local copy is just a cache we can drop.
-   A photo with img but NO storageRef was never uploaded: its local bytes are the
-   ONLY copy, so eviction MUST keep it (data-loss guard, Mark's #1 rule). */
+function orderHasCachedPhotoThumbs(o){
+  return !!(o && o.photos && o.photos.some(function(p){ return p && p.thumb; }));
+}
+/* Every photo that still has local bytes has them safely somewhere else -- so
+   the whole order's byte cache is droppable. A photo with img but no elsewhere-
+   copy was never uploaded: its local bytes are the ONLY copy, so eviction MUST
+   keep it (data-loss guard, Mark's #1 rule). */
 function orderIsFullyCloudBacked(o){
-  return !!(o && o.photos) && o.photos.every(function(p){ return !p || !p.img || !!p.storageRef; });
+  return !!(o && o.photos) && o.photos.every(function(p){
+    if (!p) return true;
+    var hasBytes = PHOTO_BYTE_FIELDS.some(function(f){ return !!p[f]; });
+    return !hasBytes || photoBytesAreSafeElsewhere(p);
+  });
 }
 /* An order is safe to evict photo bytes from ONLY if it's not the one open now,
    not still waiting to sync, and every photo it holds is already in Storage. */
@@ -3021,10 +3096,21 @@ function orderPhotoBytesAreEvictable(db, orderId, pending){
    actually show one (no img, no storageRef, no thumb) -- regardless of
    whether photosStripped happens to be set. See "PDF/preview missing
    photos" and "Photo storage migration" in DEV_NOTES.md. */
+/* Nothing renderable and no local bytes: img/imgFallback/thumb all absent. A
+   storageRef alone does NOT make a cached copy good enough to show -- it is a
+   pointer that needs a network round-trip, and this predicate's job is to stop
+   loadOrder() trusting a byte-less local copy over a cloud refetch. That
+   distinction started mattering the moment imgFallback stopped being persisted
+   (see PHOTO_BYTE_FIELDS): a migrated photo's cached copy is now storageRef-
+   only, so it must resolve as stripped or a reopen would render blank tiles
+   from cache instead of refetching. */
+function photoHasNothingRenderableLocally(p){
+  return !p.img && !p.imgFallback && !p.thumb;
+}
 function orderPhotosAreStrippedLocally(o){
   if (!o || !(o.photos && o.photos.length)) return false;
   if (o.photosStripped) return true;
-  return o.photos.every(function(p){ return !p.img && !p.storageRef && !p.thumb; });
+  return o.photos.every(photoHasNothingRenderableLocally);
 }
 function pruneCachedPhotoDrafts(db){
   var pending = loadSyncQueue();
@@ -3054,6 +3140,94 @@ function evictCloudBackedPhotoBytes(db){
   });
   return freed;
 }
+/* An order whose whole cached RECORD can go -- the last-resort rung. Same
+   protections as byte eviction (never the open order, never one still waiting
+   to sync) plus one more: it must have actually reached the cloud
+   (_cloudBaseSavedAt is stamped by cloudSaveOrder/cloudFetchOrder), because a
+   record that never got there is the only copy of that work. Dropping it costs
+   nothing but an offline reopen -- the Saved list is a merge of the local index
+   and the cloud index (mergedIndex), so the order still lists and still opens. */
+function orderRecordIsEvictable(db, orderId, pending){
+  if (orderId === currentId) return false;
+  if (pending && pending[orderId]) return false;
+  var o = db.orders[orderId];
+  return !!(o && o._cloudBaseSavedAt);
+}
+/* Everything the cache is willing to lose, in order of increasing cost, so a
+   quota failure gives up the cheapest thing that works instead of the most.
+     0 -- full-resolution bytes (img/imgFallback) of cloud-backed orders
+     1 -- their 200px thumbs as well (gallery re-hydrates from Firestore)
+     2 -- whole cached records (the Saved list still shows them: mergedIndex()
+          unions the local index with the cloud one, so they list and open)
+   Rung 2 is what makes a full cache non-terminal. Before this, rung 0 was the
+   only rung: once Phase 1 had offloaded every `img` to IndexedDB there was
+   nothing left for it to free, so it returned false, saveDb() gave up without
+   retrying, and the toast fired on EVERY save with no way back under the quota
+   short of clearing site data. That is the loop Mark hit on 2026-07-31.
+
+   Rungs 1 and 2 shed OLDEST FIRST and a BATCH AT A TIME rather than sweeping
+   the whole cache, so the caller can stop the moment it fits: a cache 10% over
+   budget should cost the ten oldest orders their thumbs, not every order in the
+   cache. (Rung 0 is a single sweep -- full-resolution bytes are ~64x a thumb and
+   the freshest of them is still the biggest thing we can cheaply lose.) Each
+   call returns whether it freed anything, so `while (evictLocalCacheRung(...))`
+   drains a rung and then falls through to the next. */
+var EVICT_ORDERS_PER_ROUND = 8;
+/* Cache entries this rung may take, oldest first, capped per round. */
+function evictionCandidates(db, isEligible){
+  return db.index.filter(function(e){ return isEligible(e); })
+    .sort(function(a, b){ return (a.savedAt || 0) - (b.savedAt || 0); })
+    .slice(0, EVICT_ORDERS_PER_ROUND);
+}
+function evictLocalCacheRung(db, rung){
+  if (rung === 0) return evictCloudBackedPhotoBytes(db);
+  var pending = loadSyncQueue();
+  if (rung === 1){
+    var thumbed = evictionCandidates(db, function(e){
+      if (e.id === currentId || (pending && pending[e.id])) return false;
+      var o = db.orders[e.id];
+      return !!(o && orderHasCachedPhotoThumbs(o) && orderIsFullyCloudBacked(o));
+    });
+    thumbed.forEach(function(e){ db.orders[e.id] = stripPhotoThumbs(db.orders[e.id]); });
+    return thumbed.length > 0;
+  }
+  var records = evictionCandidates(db, function(e){
+    return orderRecordIsEvictable(db, e.id, pending);
+  });
+  records.forEach(function(e){
+    delete db.orders[e.id];
+    db.index = db.index.filter(function(x){ return x.id !== e.id; });
+  });
+  return records.length > 0;
+}
+var EVICT_MAX_RUNG = 2;
+/* Backstop on the drain loops. A rung reports honestly when it has nothing left
+   to free, so this only ever fires if a future rung is written non-progressing;
+   an unbounded while() there would hang the tab, which is worse than a cache
+   that stays too big. */
+var EVICT_MAX_ROUNDS = 512;
+/* Soft ceiling on the serialized cache, well under the ~5MB localStorage quota
+   so the OTHER keys sharing it (sync queue, field-value history, RoofMapper
+   local saves, email recipients) always have room. Enforced proactively by
+   saveDb() -- reactive eviction alone means the app only ever discovers the
+   wall by hitting it, which is exactly what the tech sees as a toast. */
+var LOCAL_CACHE_BUDGET_BYTES = 3000000;
+/* Shed cache, cheapest rung first, until the serialized size fits the budget.
+   Re-serializes after each rung rather than estimating: correctness over a few
+   milliseconds, and it only ever runs on a cache that is ALREADY over budget
+   (saveDb measures the string it was going to write anyway, so the common case
+   costs nothing). Returns the payload if it changed, else null. */
+function trimLocalCacheToBudget(db){
+  var payload = null;
+  for (var rung = 0; rung <= EVICT_MAX_RUNG; rung++){
+    var guard = 0;
+    while (evictLocalCacheRung(db, rung) && guard++ < EVICT_MAX_ROUNDS){
+      payload = JSON.stringify(db, leanDbReplacer);
+      if (payload.length <= LOCAL_CACHE_BUDGET_BYTES) return payload;
+    }
+  }
+  return payload;
+}
 function loadDb(){
   try{
     var raw = localStorage.getItem(STORE_KEY);
@@ -3073,21 +3247,45 @@ function loadDb(){
    resolvePhotoImg() rehydrates on demand. See "Photo bytes in IndexedDB" in
    DEV_NOTES.md. */
 function leanDbReplacer(key, value){
-  if (key === "img" && this && (this._idbBacked === true || this.storageRef)) return undefined;
+  /* imgFallback is NEVER persisted, at any cache size. It is display-only,
+     full-resolution (~650KB base64 per 1600px photo), and only ever exists
+     alongside a storageRef -- so it is always re-derivable, and cloudFetchOrder
+     re-derives it on the very next open. Caching it is what filled Mark's
+     desktop cache to 4.89MB of unevictable bytes on 2026-07-31: eight migrated
+     photos are the whole quota. See PHOTO_BYTE_FIELDS. */
+  if (key === "imgFallback" && this && this.storageRef) return undefined;
+  if (key === "img" && photoBytesAreRedundantLocally(this)) return undefined;
   return value;
 }
 function saveDb(db){
+  var payload = JSON.stringify(db, leanDbReplacer);
+  /* Proactive trim: stay under the budget rather than only discovering the
+     quota by slamming into it. Measured off the string we were writing anyway,
+     so a cache that already fits costs nothing extra. */
+  if (payload.length > LOCAL_CACHE_BUDGET_BYTES){
+    var trimmed = trimLocalCacheToBudget(db);
+    if (trimmed) payload = trimmed;
+  }
   try{
-    localStorage.setItem(STORE_KEY, JSON.stringify(db, leanDbReplacer));
+    localStorage.setItem(STORE_KEY, payload);
     return true;
   }catch(e){
     var isQuota = e && (e.name === "QuotaExceededError" || String(e.message).toLowerCase().indexOf("quota") > -1);
-    /* Quota hit -> free every photo that's safely in the cloud and RETRY, so a
-       save is never permanently blocked while there's evictable data. Only the
-       current order and still-unsynced photos keep their bytes. */
-    if (isQuota && evictCloudBackedPhotoBytes(db)){
-      try{ localStorage.setItem(STORE_KEY, JSON.stringify(db, leanDbReplacer)); return true; }
-      catch(e2){ e = e2; }
+    /* Quota hit -> shed cache one rung at a time and RETRY after each, so a save
+       is never permanently blocked while there is anything at all we can free.
+       Rung 0 (full-resolution bytes) alone used to be the whole recovery, which
+       silently became a no-op once Phase 1 moved every `img` to IndexedDB --
+       nothing to free, no retry, toast forever. Rungs 1 and 2 are what make the
+       failure recoverable. The current order and anything still unsynced are
+       protected at every rung. */
+    if (isQuota){
+      for (var rung = 0; rung <= EVICT_MAX_RUNG; rung++){
+        var guard = 0;
+        while (evictLocalCacheRung(db, rung) && guard++ < EVICT_MAX_ROUNDS){
+          try{ localStorage.setItem(STORE_KEY, JSON.stringify(db, leanDbReplacer)); return true; }
+          catch(e2){ e = e2; }
+        }
+      }
     }
     if (isQuota){
       toast("Storage is full — finish syncing first (tap “Retry now” on the banner), or delete old saved work orders, then save again.");
