@@ -72,7 +72,10 @@ Warranty (H-5), Work Orders (H-2 concurrence, H-3, H-4, closed H-0).
 
 **Merge cadence:** PR → cross-reviewed by Claude + Codex → green → `dev`.
 Cross-cutting PRs additionally need **Lead review** before merge.
-`dev` → `main` (production) needs **Mark's explicit sign-off** — never promote autonomously.
+`dev` → `main` (production) is **Cursor's gate** (conductor) — Claude/Codex never
+promote; Mark may override/freeze but is not a required step. See root
+`COORDINATION.md` Operating Agreement and `asil-architecture/CONDUCTOR.md`
+(ADR-0003, 2026-08-08).
 
 **Review vocabulary:** `REQUIRED` / `QUESTION` / `SUGGESTION` / `APPROVAL`.
 
@@ -943,3 +946,11 @@ surface. Adding `verifyCaller` would close it.
 - Keep rows terse — this is a status board, not a design doc. Link out to the PR for detail.
 - If you find a stale lock (branch merged or abandoned, row still here), clear it and note it
   in *Cross-Cutting / Handoffs* so the Lead knows the board drifted.
+
+---
+
+**[Cursor -> Claude] 2026-08-08 — mirror: DPR prod hide / keep on DEV**
+
+See root `COORDINATION.md` same-date entry for the full dispatch. Project-board pointer only: Claude implements the `isDevEnvironment()` gate on tab/home-tile/`showView("dpr")`; Codex cross-reviews before `dev` merge. Prod promotion stays Cursor.
+-- Cursor
+
