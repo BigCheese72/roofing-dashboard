@@ -2258,9 +2258,20 @@ function renderHomeTiles(){
       '<span class="home-tile-icon">' + (WORK_ORDER_TYPE_ICONS[t] || "📄") + '</span>' +
       '<span class="home-tile-label">' + esc(WORK_ORDER_TYPE_LABELS[t] || t) + '</span></button>';
   });
+  /* DPR is a dev-only surface on prod (Mark's 2026-08-08 dispatch). Omit the
+     home tile on production so there's no entry point; the tab and the
+     showView("dpr") route are gated the same way in js/core.js. typeof-guarded
+     because some test harnesses load workorders.js without core.js -- default
+     to hidden (fail-closed) if the predicate isn't present. */
+  var dprAllowed = (typeof isDprEnabled === "function") ? isDprEnabled()
+    : ((typeof isDevEnvironment === "function") ? isDevEnvironment() : false);
+  if (dprAllowed){
+    tiles.push(
+      '<button class="home-tile home-tile-secondary" onclick="showView(\'dpr\')">' +
+        '<span class="home-tile-icon">📅</span><span class="home-tile-label">Daily Progress Report</span></button>'
+    );
+  }
   tiles.push(
-    '<button class="home-tile home-tile-secondary" onclick="showView(\'dpr\')">' +
-      '<span class="home-tile-icon">📅</span><span class="home-tile-label">Daily Progress Report</span></button>',
     '<button class="home-tile home-tile-secondary" onclick="showView(\'roofmapper\')">' +
       '<span class="home-tile-icon">🗺️</span><span class="home-tile-label">RoofMapper</span></button>',
     '<button class="home-tile home-tile-secondary" onclick="showView(\'history\')">' +
