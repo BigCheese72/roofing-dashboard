@@ -1707,6 +1707,7 @@ function recomputeIsAdmin(){
   isAdmin = !!(currentAuthClaims && (currentAuthClaims.owner === true || currentAuthClaims.role === "admin"));
   updateAdminUI();
   updateServiceManagerUI();
+  updateDprEnvUI();
 }
 /* Service-Manager-and-up gate for the dispatch/proposals workspace. Same
    claims-based, UI-only convenience as isAdmin (see the "admin mode" comment
@@ -1730,6 +1731,30 @@ function updateServiceManagerUI(){
   var can = canServiceManage();
   if (tab) tab.style.display = can ? "" : "none";
   if (!can && typeof currentViewName !== "undefined" && currentViewName === "servicemanager"){
+    showView("edit");
+  }
+}
+/* DPR (Daily Progress Report) is a DEV-ONLY surface (Mark's 2026-08-08 dispatch,
+   COORDINATION.md): keep it fully working on the dev Firebase project and on
+   dev--/branch/deploy-preview builds, but hide every entry point on production.
+   Unlike updateAdminUI()/updateServiceManagerUI(), this keys off the DEPLOY, not
+   the signed-in user -- isDevEnvironment() (hostname) is the single source of
+   truth. isDprEnabled() is that one predicate; the tab, the home tile, and the
+   showView("dpr") hard gate all consult it so they can never disagree.
+
+   Fail-closed by design: #tab-dpr ships hidden (style="display:none" in
+   index.html) and is only REVEALED here on dev, so if this never runs the tab
+   stays hidden on prod. Nothing about js/dpr.js, the daily_progress_reports
+   collection/rules, or the dpr.* permissions changes -- only visibility/routing,
+   so dev keeps its full DPR. */
+function isDprEnabled(){ return isDevEnvironment(); }
+function updateDprEnvUI(){
+  var tab = document.getElementById("tab-dpr");
+  var allowed = isDprEnabled();
+  if (tab) tab.style.display = allowed ? "" : "none";
+  /* If a session were somehow left on the DPR view when it isn't allowed
+     (e.g. env misread), bounce to Edit -- same doctrine as the SM/admin tabs. */
+  if (!allowed && typeof currentViewName !== "undefined" && currentViewName === "dpr"){
     showView("edit");
   }
 }
@@ -3805,6 +3830,10 @@ function scheduleLocalAutosave(){
   }, LOCAL_AUTOSAVE_DEBOUNCE_MS);
 }
 document.addEventListener("DOMContentLoaded", function(){
+  /* Apply the DPR environment gate at boot -- independent of auth, so the tab
+     is correctly hidden on prod (and shown on dev) even before/without sign-in.
+     recomputeIsAdmin() also calls it on every auth-state change. */
+  if (typeof updateDprEnvUI === "function") updateDprEnvUI();
   var editView = document.getElementById("view-edit");
   if (!editView) return;
   editView.addEventListener("input", scheduleLocalAutosave);
@@ -3986,6 +4015,13 @@ function showView(v){
     v = "edit";
   }
   if (v === "servicemanager" && !canServiceManage()){
+    v = "edit";
+  }
+  /* DPR is dev-only on prod (see isDprEnabled/updateDprEnvUI). Hard-gate the
+     route too, not just the tab/tile, so a deep-link or stale bookmark can't
+     open it on production. Redirect to Edit + tell the user why. */
+  if (v === "dpr" && !isDprEnabled()){
+    if (typeof toast === "function") toast("Daily Progress Report is available on the dev environment only.");
     v = "edit";
   }
   currentViewName = v;
