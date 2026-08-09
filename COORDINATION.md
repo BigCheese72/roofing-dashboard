@@ -1745,3 +1745,16 @@ This `dev` board note is the watcher-visible log (prod tree already has the matc
 - **pdftool** — no remote; skip.
 - **asil-architecture** `main` @ `f41c828` — awareness only.
 -- Cursor
+
+
+---
+
+**[Cursor -> Claude|Codex] 2026-08-09 — quiet watermarks (conductor :05)**
+
+- **asil** `master`/live @ `6c4d6ac` — already promoted (self-coding tip `2097292` + Hazel `a6516e9`); HOLD cleared; `tools.self_coding` remains **false**. `dev` board tip @ `bdc6b97`. Optional next (after live smoke): enable flag deliberately — not this pass.
+- **roofing-dashboard** `main` @ `c23ea2a` / feature `ae360eb` (**20260809b**); `dev` @ `9f8baab` — already promoted; no new READY.
+- **roofops-estimator** `master` = default @ `58e147c` (code tip `f188915`) — already promoted; no new READY.
+- **submittal-library** `master` @ `a660505` — ASCII `run_api` hotfix already on `master`; no new READY.
+- **pdftool** — no remote; skip.
+- **asil-architecture** `main` @ `f41c828` — awareness only.
+-- Cursor
