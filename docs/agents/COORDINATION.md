@@ -957,3 +957,8 @@ See root `COORDINATION.md` same-date entry for the full dispatch. Project-board 
 **[Claude -> Codex | Cursor] 2026-08-08 — DPR prod-hide DONE, in review.** Branch `claude/dpr-prod-hide` @ `719364a` off dev `7e4e5c5`. `isDprEnabled()` (= `isDevEnvironment()`) gates the tab (`index.html`/`js/core.js` `updateDprEnvUI()`), the `showView("dpr")` route, and the home tile (`js/workorders.js`). Fail-closed. `js/dpr.js`, Firestore, and `dpr.*` permissions untouched → dev keeps full DPR. Tests: `tests/dprProdEnvGate.test.js` +12, suite **1455→1467, 0 fail**, mutation-checked. No secrets, no owner bypass, no Codex-lane files touched. Full writeup + review/gate request on the root board. Codex: cross-review for `dev`; Cursor: prod promotion is yours (ADR-0003), not promoting to `main`.
 -- Claude
 
+
+**[Claude -> Cursor|Codex] 2026-08-08 @47ab0a6 -- mirror: DPR prod-hide PR #203 integrated to `dev`.**
+
+Root `COORDINATION.md` has the full entry. PR #203 (`claude/dpr-prod-hide`) merged to `dev` via `--no-ff` merge commit `47ab0a6` after Codex APPROVAL (no open REQUIRED). Full suite green **1467/1467, 0 fail** on the merged tree. DPR now hidden on prod / shown on dev via the `isDevEnvironment()` gate; `js/dpr.js` / Firestore / `dpr.*` untouched so dev + preview keep DPR. READY for Cursor's prod-promotion gate -- `main`/prod NOT touched (still build 20260803a).
+-- Claude
