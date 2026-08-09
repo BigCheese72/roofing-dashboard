@@ -540,6 +540,51 @@ function rmReportOutlineDrawability(outline){
     (Array.isArray(outline.imageRing) && outline.imageRing.length >= 3);
   return { include: hasImageFrame, planUnavailable: hasImageFrame };
 }
+/* Finding/photo pins for the report Roof Plan (feedback fb_msdlj2bco8igq,
+   from Report Preview: "photos don't show up on the base map where they were
+   taken, where the pin was dropped"). The Roof Plan drew the outline + the
+   roof's permanent roof_assets, but NEVER the finding pins a tech drops while
+   documenting a leak/photo -- so the customer-facing drawing silently omitted
+   exactly the spots the photos were shot. Every OTHER view already plots them
+   (Building History's renderBuildingMap, RoofMapper's own export via
+   rmFetchExportOverlayData); the report was the one place that didn't. This
+   is a SEPARATE gap from the #45 image-frame stamp (already in prod): #45 is
+   about x/y pins rendering against the correct base image on the INTERACTIVE
+   base map; this is the report having no finding-pin render path at all.
+
+   Only world-coordinate (lat/lng) pins can be projected onto this
+   lat/lng-based plan -- x/y pins placed on a non-georeferenced custom base
+   map have no coordinate to plot here, the exact same documented limitation
+   already carried by roof_assets (rmFetchReportRoofOutlines) and by the
+   RoofMapper export (rmFetchExportOverlayData). Null Island (0,0) is skipped
+   (#40 synthetic "no real location"). Numbering is the GLOBAL finding number
+   (findingNoById), matching the photo grid's own "(Finding #N)" back-reference
+   so a marker, the findings table row and the photo tie together. Pure and
+   READ-ONLY: reads filledFindings()/filledPhotos() in memory only, never
+   Firestore -- rmFetchReportRoofOutlines() must stay side-effect-free. */
+function rmReportFindingPinsFor(o){
+  if (typeof filledFindings !== "function") return [];
+  var refs = (typeof rmReportPhotoFindingRefs === "function")
+    ? rmReportPhotoFindingRefs(o)
+    : { findingNoById: {}, photoNosByFindingId: {} };
+  var out = [];
+  filledFindings().forEach(function(f, i){
+    var pin = f && f.pin;
+    if (!pin || typeof pin.lat !== "number" || typeof pin.lng !== "number" ||
+        !isFinite(pin.lat) || !isFinite(pin.lng)) return;
+    if (pin.lat === 0 && pin.lng === 0) return; /* Null Island (#40) */
+    out.push({
+      lat: pin.lat,
+      lng: pin.lng,
+      roofId: (f.roofId || o.roofId || null),
+      findingNo: refs.findingNoById[f.id] || (i + 1),
+      photoNos: refs.photoNosByFindingId[f.id] || [],
+      warranty: f.warranty || null,
+      location: f.location || null
+    });
+  });
+  return out;
+}
 async function rmFetchReportRoofOutlines(o){
   /* Stored id first (audit FIX 1), canonical name-slug (buildingIdFor(),
      js/core.js) as the legacy fallback. */
@@ -567,6 +612,20 @@ async function rmFetchReportRoofOutlines(o){
         outline: outline,
         assets: (roof.roof_assets || []).filter(function(a){ return typeof a.lat === "number" && typeof a.lng === "number"; }),
         planUnavailable: draw.planUnavailable
+      });
+    });
+    /* Attach the work order's own finding/photo pins to the roof they belong
+       to. Single-roof job: a finding with no roofId of its own belongs to the
+       one roof (mirrors the reportDistinctRoofIds()/rmFetchReportRoofOutlines()
+       single-roof fallback). Multi-roof: only pins whose roofId resolves to a
+       specific entry are placed -- an ambiguous, roofId-less pin is left off
+       rather than guessed onto the wrong roof (same caution the report already
+       takes when grouping findings by roof). */
+    var findingPins = rmReportFindingPinsFor(o);
+    out.forEach(function(entry){
+      entry.findingPins = findingPins.filter(function(fp){
+        var rid = fp.roofId || (out.length === 1 ? entry.roofId : null);
+        return rid === entry.roofId;
       });
     });
     return { roofEntries: out, error: null };
@@ -1019,17 +1078,19 @@ function rmBuildReportRoofPlanSvg(roofEntries){
   var projected = roofEntries.map(function(r){
     var pts = r.outline.ring.map(function(p){ return rmExportProjectPoint(p, origin); });
     var assetPts = (r.assets || []).map(function(a){ return Object.assign({}, a, rmExportProjectPoint(a, origin)); });
+    var findingPinPts = (r.findingPins || []).map(function(fp){ return Object.assign({}, fp, rmExportProjectPoint(fp, origin)); });
     var centroidPt = rmExportProjectPoint(r.outline.center || rmGeomRingCentroid(r.outline.ring), origin);
-    return { roofLabel: r.roofLabel, outline: r.outline, pts: pts, assetPts: assetPts, centroidPt: centroidPt, methodInfo: rmReportMethodSentences(r.outline) };
+    return { roofLabel: r.roofLabel, outline: r.outline, pts: pts, assetPts: assetPts, findingPinPts: findingPinPts, centroidPt: centroidPt, methodInfo: rmReportMethodSentences(r.outline) };
   });
+  var anyFindingPins = projected.some(function(r){ return r.findingPinPts.length; });
   var allXs = [], allYs = [];
-  projected.forEach(function(r){ r.pts.concat(r.assetPts).forEach(function(p){ allXs.push(p.x); allYs.push(p.y); }); });
+  projected.forEach(function(r){ r.pts.concat(r.assetPts, r.findingPinPts).forEach(function(p){ allXs.push(p.x); allYs.push(p.y); }); });
   var minX = Math.min.apply(null, allXs), maxX = Math.max.apply(null, allXs);
   var minY = Math.min.apply(null, allYs), maxY = Math.max.apply(null, allYs);
   var padFt = Math.max(10, (maxX - minX) * 0.08);
   var w = (maxX - minX) + padFt * 2, h = (maxY - minY) + padFt * 2;
   var scale = Math.min(RM_EXPORT_MAX_SCALE, RM_EXPORT_MAX_CANVAS_DIM / Math.max(w, h));
-  var headerH = 40, footerH = 96 + (roofEntries.length > 1 ? 0 : 20);
+  var headerH = 40, footerH = 96 + (roofEntries.length > 1 ? 0 : 20) + (anyFindingPins ? 16 : 0);
   var svgW = Math.max(240, w * scale), svgH = Math.max(240, h * scale) + headerH + footerH;
   function toSvg(p){
     return { x: (p.x - minX + padFt) * scale, y: headerH + (h * scale) - ((p.y - minY + padFt) * scale) };
@@ -1087,6 +1148,20 @@ function rmBuildReportRoofPlanSvg(roofEntries){
       markerObstacles.push({ x: svgP.x, y: svgP.y, r: 6 });
       assetLabelItems.push(rmReportAssetLabelItem("asset-" + i + "-" + ai, a, svgP, 10.5));
     });
+    /* Finding/photo location markers -- a numbered disc (the GLOBAL finding
+       number, matching the findings table and the photo grid's "(Finding #N)"
+       back-reference) at the exact lat/lng the tech dropped the pin. Drawn
+       AFTER assets and outline so a marker is never hidden behind a fill, and
+       registered as a label obstacle so asset labels route around it. A single
+       accent color (not warranty-tinted) keeps the map unambiguous -- warranty
+       status is stated per finding in the findings table, not re-encoded here. */
+    r.findingPinPts.forEach(function(fp){
+      var svgP = toSvg(fp);
+      shapeSvg += '<circle cx="' + svgP.x.toFixed(1) + '" cy="' + svgP.y.toFixed(1) + '" r="9" fill="#1565C0" stroke="#ffffff" stroke-width="2"/>' +
+        '<text x="' + svgP.x.toFixed(1) + '" y="' + (svgP.y + 3.6).toFixed(1) + '" font-family="Arial, sans-serif" font-size="10.5" font-weight="700" fill="#ffffff" text-anchor="middle">' +
+        rmEscXml(String(fp.findingNo)) + '</text>';
+      markerObstacles.push({ x: svgP.x, y: svgP.y, r: 9 });
+    });
     if (roofEntries.length > 1){
       var lp = toSvg(r.centroidPt);
       roofLabelItems.push({ id: "roof-" + i, name: r.roofLabel, anchorX: lp.x, anchorY: lp.y, dx: 0, dy: 0, width: r.roofLabel.length * 14 * 0.6 + 6, height: 20 });
@@ -1132,12 +1207,23 @@ function rmBuildReportRoofPlanSvg(roofEntries){
   var methodSvg = methodLines.map(function(line, i){
     return '<text x="14" y="' + (footerY + i * 15) + '" font-family="Arial, sans-serif" font-size="10.5" fill="#37474F">' + rmEscXml(line) + '</text>';
   }).join("");
+  /* Legend gains the finding/photo marker row ONLY when at least one such
+     marker is actually on the drawing -- an unconditional row would explain a
+     symbol the reader can't see. Rendered as a disc to match the marker it
+     describes, not a rect swatch. */
+  var legendItems = RM_REPORT_LEGEND_ITEMS.slice();
+  if (anyFindingPins) legendItems.push({ swatch: "#1565C0", label: "Finding / photo location (numbered)", disc: true });
   var legendY = footerY + methodLines.length * 15 + 14;
   var legendSvg = '<text x="14" y="' + legendY + '" font-family="Arial, sans-serif" font-size="9.5" font-weight="700" fill="#5B6770">LEGEND</text>';
-  RM_REPORT_LEGEND_ITEMS.forEach(function(item, i){
+  legendItems.forEach(function(item, i){
     var ly = legendY + 16 + i * 14;
-    legendSvg += '<rect x="14" y="' + (ly - 9) + '" width="14" height="10" rx="2" fill="' + item.swatch + '"/>' +
-      '<text x="33" y="' + ly + '" font-family="Arial, sans-serif" font-size="9.5" fill="#37474F">' + rmEscXml(item.label) + '</text>';
+    if (item.disc){
+      legendSvg += '<circle cx="21" cy="' + (ly - 4).toFixed(1) + '" r="6" fill="' + item.swatch + '" stroke="#ffffff" stroke-width="1.5"/>' +
+        '<text x="33" y="' + ly + '" font-family="Arial, sans-serif" font-size="9.5" fill="#37474F">' + rmEscXml(item.label) + '</text>';
+    } else {
+      legendSvg += '<rect x="14" y="' + (ly - 9) + '" width="14" height="10" rx="2" fill="' + item.swatch + '"/>' +
+        '<text x="33" y="' + ly + '" font-family="Arial, sans-serif" font-size="9.5" fill="#37474F">' + rmEscXml(item.label) + '</text>';
+    }
   });
   var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + svgW + '" height="' + svgH + '" viewBox="0 0 ' + svgW + ' ' + svgH + '">' +
     '<rect width="100%" height="100%" fill="#ffffff"/>' + titleSvg + shapeSvg + labelSvg + methodSvg + legendSvg + '</svg>';
