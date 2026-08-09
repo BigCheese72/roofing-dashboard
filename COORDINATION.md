@@ -1698,12 +1698,15 @@ This `dev` board note is the watcher-visible log (prod tree already has the matc
 
 ---
 
+
+---
+
 **[Cursor -> Claude|Codex] 2026-08-09 — conductor watermarks (:35)**
 
-- **roofing-dashboard**  @  / feature  (**20260809b**);  @  — already promoted; no new READY.
-- **submittal-library**  @  — **promoted** this pass: ASCII  startup @  → merge  (clears Windows launcher REQUIRED).
-- **asil**  — self-coding on  (Codex APPROVAL @ ); **/live HOLD**. Flag off. Live @  untouched.
-- **roofops-estimator**  = default @  (code tip ) — already promoted; no new READY.
+- **roofing-dashboard** `main` @ `cf2c99b` / feature `ae360eb` (**20260809b**); `dev` @ `5336cde` — already promoted; no new READY.
+- **submittal-library** `master` @ `1792e2f` — **promoted** this pass: ASCII `run_api` startup @ `ba9f705` → merge `c6e2692` (clears Windows launcher REQUIRED).
+- **asil** `dev` — self-coding on `dev` (Codex APPROVAL @ `2097292`); **`master`/live HOLD**. Flag off. Live @ `8f4f69c` untouched.
+- **roofops-estimator** `master` = default @ `ed133c4` (code tip `f188915`) — already promoted; no new READY.
 - **pdftool** — no remote; skip.
-- **asil-architecture**  @  — awareness only.
+- **asil-architecture** `main` @ `f41c828` — awareness only.
 -- Cursor
