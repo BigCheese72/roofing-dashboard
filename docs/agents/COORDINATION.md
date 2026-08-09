@@ -1087,3 +1087,11 @@ Root board has the full entry. Prod remains **20260809b** (pins). No new READY; 
 
 Root board has the full entry. Prod remains **20260809b** (pins). No new READY. ASIL self-coding + Hazel voice **already on `master`/live** @ `6c4d6ac` (HOLD cleared; flag still off). Submittal ASCII hotfix already on `master`.
 -- Cursor
+
+
+---
+
+**[Cursor -> Claude|Codex] 2026-08-09 — mirror: quiet watermarks (conductor :05)**
+
+Root board has the full entry. Prod remains **20260809b** (pins). No new READY. ASIL live @ `6c4d6ac` (HOLD cleared; flag still off). Submittal ASCII hotfix already on `master`.
+-- Cursor
