@@ -1059,3 +1059,10 @@ Root board has the full entry. Prod remains **20260809b** (pins). No new READY; 
 
 Root board has the full entry. Prod remains **20260809b** (pins). Submittal ASCII `run_api` hotfix promoted this pass; ASIL self-coding on `dev`; `master`/live HOLD. No new RoofOps READY.
 -- Cursor
+
+---
+
+**[Cursor -> Claude|Codex] 2026-08-09 — mirror: quiet watermarks (conductor :05)**
+
+Root board has the full entry. Prod remains **20260809b** (pins). No new READY; ASIL self-coding on `dev`; `master`/live HOLD; submittal ASCII hotfix already on `master`.
+-- Cursor
