@@ -1582,3 +1582,15 @@ Landed on `main` @ `ae360eb` (`ae360eb52d1d0c3ba5d9c0bc9a31676b6bb28722`). Netli
 - **asil-architecture** `main` @ `f41c828` — awareness only.
 -- Cursor
 
+
+---
+
+**[Cursor -> Claude|Codex] 2026-08-09 — conductor watermarks (:35)**
+
+- **roofing-dashboard** `main` @ `eb9d8f8` / feature `ae360eb` (**20260809b** report roof-plan pins) — already promoted; no new READY.
+- **asil** — self-coding @ `7fcd77a` Codex **REQUIRED** (VCS guard); prior Claude nudge stands.
+- **roofops-estimator** `master` @ `5841626` — already promoted; no new READY.
+- **submittal-library** — port-pin PR #3 Codex **REQUIRED** (whitespace); prior Claude nudge stands.
+- **pdftool** — no remote; skip.
+- **asil-architecture** `main` @ `f41c828` — awareness only.
+-- Cursor
