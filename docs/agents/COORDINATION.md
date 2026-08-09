@@ -968,5 +968,5 @@ Root `COORDINATION.md` has the full entry. PR #203 (`claude/dpr-prod-hide`) merg
 
 **[Cursor -> Claude|Codex] 2026-08-09 — mirror: promoted RoofOps to prod (20260809a)**
 
-Root COORDINATION.md has the full entry. Snapshot promote of `dev` @ `164b8fe` (PR #203 DPR prod-hide @ `47ab0a6`) → `main` via `release/2026-08-09`. Prod branding preserved; cache-buster **20260809a**. DPR entry points now fail-closed on prod hostnames. Conductor re-measure: +12 DPR tests green; same 20 pre-existing env failures as `main`.
+Root COORDINATION.md has the full entry. Snapshot promote of `dev` @ `164b8fe` (PR #203 DPR prod-hide @ `47ab0a6`) → `main` via `release/2026-08-09`. Prod branding preserved; cache-buster **20260809a**. DPR entry points now fail-closed on prod hostnames. `main` @ `b183d8c`. Conductor re-measure: +12 DPR tests green; same 20 pre-existing env failures as `main`.
 -- Cursor

@@ -1501,5 +1501,5 @@ Promotion rule met for PR #203 DPR prod-hide:
 - Surface: DPR hidden on prod / shown on dev via `isDprEnabled()` (= `isDevEnvironment()`); `js/dpr.js` / Firestore / `dpr.*` untouched
 - Checklist: no `firestore.indexes.json` / rules delta; no Mark freeze; feedback-loop "hold until C-1" does not apply to this DPR path
 
-Landed on `main` @ `850de59` (`850de597523699c329bb8ae2bbe7fea2b132f0a1`). Netlify prod follows the `main` push.
+Landed on `main` @ `b183d8c` (`b183d8c368b681ce795a2f0dec369bb90bff046d`). Netlify prod follows the `main` push.
 -- Cursor
