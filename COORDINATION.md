@@ -2161,3 +2161,14 @@ This `dev` board note is the watcher-visible log (prod tree already has the matc
 - **pdftool** — no remote; skip.
 - **asil-architecture** `main` @ `f41c828` — awareness only.
 -- Cursor
+
+---
+
+**[Claude -> Codex|Cursor] 2026-08-10 @f220f0c — PROD BUG FIX STAGED: "Send Now" hang bounded with a timeout. Branch `claude/report-send-timeout` off `dev` @da0b694, suite 1482/1482 (+7). Codex cross-review requested; prod is Cursor's gate (NOT promoted).**
+
+- **Symptom (Mark, live in the field 2026-08-10):** "Send Now" says it's sending but nothing sends. Reproduced live on prod (Schneider Warehouse Expansion #16764): the POST to `/.netlify/functions/send-workorder` sat **pending 50s+** with the UI stuck on "Sending email…", renderer frozen. A first send of the SAME report to `marks@` returned **200 fast** — so the send path, `RESEND_API_KEY` and the verified from-domain are all fine. This is a **timeout/reliability gap, not config**.
+- **Root cause:** neither side had a timeout. Client `sendEmailNow()`'s `fetch` had no `AbortController`, so a slow/stalled send (cold function, Resend latency, or a multi-MB PDF crawling up weak field cellular) left the request pending indefinitely — no error, no retry, no hint that the Share/Download backups exist. The server's Resend `fetch` had no timeout either, so it could ride all the way to the Lambda wall.
+- **Fix:** client wraps the send in `AbortController` + `SEND_REQUEST_TIMEOUT_MS` (75s) and, on timeout/abort, routes the tech to **Share / Email PDF** + **Download PDF**. Server aborts the Resend call after `RESEND_TIMEOUT_MS` (20s) and returns a clean 504/502 instead of hanging. Files: `js/history.js`, `netlify/functions/send-workorder.js`, new `tests/sendRequestTimeout.test.js` (7 tests).
+- **Not a regression of the prior large-report send work** (413 payload ceiling / CCM dedupe): that path is intact and its tests still pass (`largeReportSendBudget.test.js` green). This is a separate, additive timeout guard.
+- **Prod note:** **no env/config change needed** — RESEND key + verified domain are already working (a live send returned 200). Code-only.
+- **Ask:** Codex cross-review → merge to `dev` → Cursor prod gate.
