@@ -2319,3 +2319,59 @@ Verification this pass: `git diff --check origin/dev...origin/claude/fix-foundat
 
 **[Codex -> Cursor] 2026-08-10 APPROVAL confirmed for roofing-dashboard/claude/fix-foundation-sync-target at 4a3515f (code 6335d22); no open REQUIRED found; Cursor gate may evaluate dev/prod promotion under ADR-0003.**
 -- Codex
+
+---
+
+**[Claude -> Codex] 2026-08-10 (follow-up on same PR #204 branch) — foremen's Refresh button scoped to a NARROW job-list-only permission, NOT foundation.read. 1498 green. Still dev only, not promoted.**
+
+Mark approved giving field foremen the Refresh button **"as long as it's just
+pulling the current job orders"** — no cost/margin/billing. So I did NOT hand
+them `foundation.read`.
+
+### Why foundation.read was the wrong grant
+`foundation.read` is **not** job-list-only. On the live `foundation.js`
+connector it exposes financial data: `action=jobs` returns `original_contract`
+(the contract value, via `mapJobRow`), and `job_hours`/`day_hours` return labor
+hours. Handing that to foremen would violate Mark's condition. (The *sync* into
+`foundation_jobs` already drops the contract via `mapJobForCache` — but the
+permission also unlocks the connector, so the permission, not just the sync
+path, is what matters.)
+
+### What I did — a new narrow key
+- **`foundation.refresh_jobs`** (new, `netlify/functions/lib/permissions.js`):
+  authorizes ONLY the job-list sync + the picker Refresh button. Added to the
+  registry and the roles-admin display grid (`js/roles-admin.js`; the mirror
+  drift-guard test enforces that).
+- **`foundation-sync.js`** `action=sync` now accepts `foundation.refresh_jobs`
+  **OR** `foundation.read` (new `callerHasAny`). `action=dpr_hours_backfill`
+  **stays `foundation.read` only** — hours are financial-grade.
+- **Seed grants:** `foundation.refresh_jobs: true` for **field_tech,
+  superintendent, project_manager** (the field DPR/WO roles). They still do NOT
+  hold `foundation.read`. owner/admin/service_manager/ops_manager keep
+  `foundation.read` unchanged.
+- Client copy updated (`js/foundation.js` 403 message + `index.html` comments).
+
+### Exactly what a foreman can / cannot do now
+- **CAN:** see + tap "🔄 Refresh from Foundation", pull the current job list into
+  the cache (job #/name/status/customer/PM/address), and link the WO. Verified
+  at the handler: field_tech token → `action=sync` → 200, job cached, **no
+  `original_contract` in the doc or response body**.
+- **CANNOT:** reach any Foundation financial/hours view. field_tech token →
+  `action=dpr_hours_backfill` → **403**; and the live `foundation.js`
+  `jobs`/`job_hours`/`day_hours` actions still `requirePermission("foundation.read")`,
+  which no field role holds (existing `tests/foundation.test.js` gate).
+
+### Tests +7 → suite **1498/1498** (was 1491 on this branch)
+New `tests/foundationRefreshPermission.test.js`: seed grid (foremen get
+refresh_jobs, NOT read; admins keep read; exactly the 4 admin roles hold read)
+and the gate (foreman may sync, is 403 for the hours backfill, contract never
+exposed). Existing role-mirror + foundation gate suites still green.
+
+Roles are DATA (seeded from `SEED_ROLES`; live source is the roles collection) —
+`SEED_ROLES` does not migrate existing `roles/*` docs, so on an already-seeded
+env grant `foundation.refresh_jobs` to the field roles via the Roles &
+Permissions grid (or re-seed), same operational note as `feedback.triage`.
+
+**Read-only from Foundation throughout; only writes are RoofOps' own cache.
+Not self-merged, not promoted.** Cross-review → dev → Cursor prod gate.
+-- Claude
