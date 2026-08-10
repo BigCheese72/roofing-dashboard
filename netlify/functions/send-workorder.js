@@ -13,6 +13,15 @@ const SEND_MAX_BODY_BYTES = 6000000;
 const SEND_ENVELOPE_RESERVE = 32768;
 const MAX_PDF_BASE64 = SEND_MAX_BODY_BYTES - SEND_ENVELOPE_RESERVE;
 
+// A field send that never comes back is worse than one that fails fast. The
+// Resend call had no timeout, so a slow/unresponsive upstream (or a large
+// attachment crawling out over weak field cellular) could ride all the way to
+// the Lambda wall -- and, with the client having no timeout either, that left
+// the app's "Sending email…" state hanging with nothing for the tech to act
+// on. Bound it and return a clean, actionable error instead. Kept well under
+// Lambda's own ceiling so THIS is what fires, not an opaque platform timeout.
+const RESEND_TIMEOUT_MS = 20000;
+
 exports.handler = async function (event) {
   if (event.httpMethod !== "POST") {
     return { statusCode: 405, body: JSON.stringify({ error: "Method not allowed" }) };
@@ -95,11 +104,26 @@ exports.handler = async function (event) {
   };
   if (!alreadyInTo) payload.bcc = [bccAddr];
 
-  const resp = await fetch("https://api.resend.com/emails", {
-    method: "POST",
-    headers: { "Authorization": "Bearer " + key, "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
-  });
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), RESEND_TIMEOUT_MS);
+  let resp;
+  try {
+    resp = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: { "Authorization": "Bearer " + key, "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: ac.signal
+    });
+  } catch (e) {
+    if ((e && e.name === "AbortError") || ac.signal.aborted) {
+      return { statusCode: 504, body: JSON.stringify({
+        error: "The email service didn't respond in time. Your report is saved — try again, or use Download PDF and attach it yourself." }) };
+    }
+    return { statusCode: 502, body: JSON.stringify({
+      error: "Couldn't reach the email service: " + (e && e.message ? e.message : "network error") }) };
+  } finally {
+    clearTimeout(timer);
+  }
   const out = await resp.text();
   if (!resp.ok) {
     return { statusCode: 502, body: JSON.stringify({ error: "Email service rejected it: " + out.slice(0, 300) }) };
