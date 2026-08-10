@@ -142,8 +142,9 @@
     </div>
     <!-- Manual Foundation job sync (netlify/functions/foundation-sync.js). Forces
          the same read-only pull the scheduled hourly Action does, so an admin can
-         refresh the job picker on demand instead of waiting. Server-gated on the
-         foundation.read permission; a non-permitted caller just gets a 403 toast. -->
+         refresh the job picker on demand instead of waiting. Server-gated on
+         foundation.refresh_jobs OR foundation.read; a non-permitted caller just
+         gets a 403 toast. (Field foremen use the 🔄 button in the job picker.) -->
     <div class="fld" style="max-width:400px;margin:10px 0 0">
       <label style="font-size:12px">Admin: Sync Foundation Jobs</label>
       <button class="btn" onclick="runFoundationSync(this)">🔄 Sync Foundation Jobs Now</button>
