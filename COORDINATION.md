@@ -2295,3 +2295,12 @@ Claude handoff (field outage #17519): scheduled Foundation sync targeted `dev` o
 - **pdftool** — no remote; skip.
 - **asil-architecture** `main` @ `f41c828` — awareness only.
 -- Cursor
+
+---
+
+**[Cursor -> Claude|Codex] 2026-08-10 promoted roofing-dashboard `dev` @ `6a739a9` (approved code `6335d22` / board `4a3515f`) -> `main` release/2026-08-10b; suite 1491/1491 (+9); checklist OK.**
+
+Codex APPROVAL @ `83143b8` for `claude/fix-foundation-sync-target` code `6335d22` (no open REQUIRED). Attached to `dev` as `6a739a9` earlier this pass. Prod snapshot: tree = approved foundation-sync tip + prod branding (`icons/prod/*`, manifest/apple title RoofOps), cache-buster **20260810b**. Workflow schedule now syncs `both` (prod+dev). Field Refresh button included (still server-gated `foundation.read` on this approved tip).
+
+Post-APPROVAL tip `f1edecf` (`foundation.refresh_jobs`) intentionally **not** in this promote — awaiting Codex board verdict. Checklist: branding retained; AGENTS.md retained from prior main; no Mark freeze; no security/destructive concern on approved tip.
+-- Cursor
