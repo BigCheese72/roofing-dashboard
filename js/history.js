@@ -2224,6 +2224,15 @@ function sendFailureMessage(status, out){
     "Try again in a minute, or use Download PDF as a backup.";
   return "server error " + status;
 }
+/* A send with no client-side timeout was the "Send Now says it's sending but
+   nothing happens" field bug (Mark, live on prod): on a weak connection (or a
+   cold function, or a multi-MB PDF crawling up cellular) the fetch stayed
+   pending indefinitely and the UI sat on "Sending email…" forever -- no error,
+   no retry, no hint that the Share / Download backups even exist. Bound it:
+   abort after SEND_REQUEST_TIMEOUT_MS and route the tech to the backups that do
+   NOT go through this function. Generous, because a legitimate large-PDF upload
+   over field cellular is genuinely slow -- but finite. */
+var SEND_REQUEST_TIMEOUT_MS = 75000;
 async function sendEmailNow(){
   var addrs = parseEmailRecipients(val("emailTo"));
   if (!addrs.length){
@@ -2293,13 +2302,18 @@ async function sendEmailNow(){
     "\n\nDate of Service: " + (o.serviceDate || "") +
     "\nLocation: " + (o.location || "") +
     "\n\nSent from the RoofOps app.";
+  var sendCtrl = (typeof AbortController !== "undefined") ? new AbortController() : null;
+  var sendTimedOut = false;
+  var sendTimer = sendCtrl ? setTimeout(function(){ sendTimedOut = true; sendCtrl.abort(); }, SEND_REQUEST_TIMEOUT_MS) : null;
   try{
     var resp = await fetch("/.netlify/functions/send-workorder", {
       method: "POST",
       headers: await authHeaders(),
       body: JSON.stringify({ to: addrs, subject: subject, body: body,
-        filename: pdfFileName(), pdfBase64: pdfBase64, jobNo: o.jobNo || "" })
+        filename: pdfFileName(), pdfBase64: pdfBase64, jobNo: o.jobNo || "" }),
+      signal: sendCtrl ? sendCtrl.signal : undefined
     });
+    if (sendTimer){ clearTimeout(sendTimer); sendTimer = null; }
     var out = null;
     try{ out = await resp.json(); }catch(e){}
     if (resp.ok && out && out.ok){
@@ -2316,7 +2330,12 @@ async function sendEmailNow(){
       toast("Send failed: " + sendFailureMessage(resp.status, out));
     }
   }catch(e){
-    toast("Couldn't reach the send service \u2014 this button only works from your Netlify site with internet. Use Share / Email PDF as backup.");
+    if (sendTimer){ clearTimeout(sendTimer); sendTimer = null; }
+    if (sendTimedOut || (e && e.name === "AbortError")){
+      toast("The send is taking too long \u2014 your connection may be weak or the report is large. Your work is saved. Use Share / Email PDF or Download PDF to send it now.");
+    } else {
+      toast("Couldn't reach the send service \u2014 this button only works from your Netlify site with internet. Use Share / Email PDF as backup.");
+    }
   }
 }
 async function sharePdf(){
