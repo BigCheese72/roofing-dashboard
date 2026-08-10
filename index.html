@@ -1571,7 +1571,11 @@
     </div>
     <div style="padding:14px 16px;overflow:auto">
       <input type="text" id="bp-search" placeholder="Search by job # or name (customer, address)…" style="width:100%;margin-bottom:10px;box-sizing:border-box" oninput="bpFilter(); bpDebouncedCcSearch(); fdnFilterPicker();">
-      <h2 class="cond" style="font-size:14px;margin:4px 0 8px">Jobs</h2>
+      <div style="display:flex;align-items:center;gap:8px;margin:4px 0 8px">
+        <h2 class="cond" style="font-size:14px;margin:0">Jobs</h2>
+        <span style="flex:1"></span>
+        <button class="btn" id="bp-fdn-refresh" onclick="fdnRefreshPicker(this)" title="Pull the newest active jobs from Foundation right now (e.g. a job you just created isn't showing yet)">🔄 Refresh from Foundation</button>
+      </div>
       <div id="bp-job-list" class="hint">Loading…</div>
       <h2 class="cond" style="font-size:14px;margin:16px 0 8px">Already in this app</h2>
       <div id="bp-list" class="hint">Loading…</div>
