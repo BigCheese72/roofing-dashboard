@@ -144,9 +144,13 @@ async function fdnPrimePicker() {
 // hasn't caught up. POSTs the SAME read-only pull the scheduled Action runs
 // (netlify/functions/foundation-sync.js, action:"sync"), then force-reloads the
 // cache and re-renders the picker so the new job is immediately selectable.
-// Server-gated on foundation.read: a user without it gets a clear toast, no data
-// leaks (the pull is read-only from Foundation and only writes RoofOps' own
-// foundation_jobs cache). Wired to the 🔄 button in the Select Job modal.
+// Server-gated on the narrow foundation.refresh_jobs (field foremen) OR
+// foundation.read (admins): a user with neither gets a clear toast. No data
+// leaks — the pull is read-only from Foundation and only writes RoofOps' own
+// foundation_jobs cache, which carries job #/name/status/customer/PM/address
+// and NEVER the contract value (mapJobForCache drops it). Contract values and
+// labor hours stay on foundation.read via the separate foundation.js connector.
+// Wired to the 🔄 button in the Select Job modal.
 async function fdnRefreshPicker(btn) {
   if (btn) btn.disabled = true;
   var toastFn = (typeof toast === "function") ? toast : function () {};
@@ -161,7 +165,7 @@ async function fdnRefreshPicker(btn) {
     var out = null; try { out = await r.json(); } catch (e) {}
     if (!r.ok || !out || out.ok === false) {
       var msg = (out && out.error) || ("server error " + r.status);
-      if (r.status === 403) msg = "you need the foundation.read permission — ask an admin. (" + msg + ")";
+      if (r.status === 403) msg = "you don't have permission to refresh Foundation jobs — ask an admin. (" + msg + ")";
       toastFn("Foundation refresh failed: " + msg);
       return;
     }

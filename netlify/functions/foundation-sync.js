@@ -18,9 +18,12 @@
 //      a Netlify Scheduled Function, because those carry no forgery-proof
 //      signal and were removed after an anonymous-access incident (see
 //      netlify.toml).
-//   2. A signed-in human holding `foundation.read` — for an on-demand "sync
-//      now". Verified via a real Firebase ID token; a plain signed-in user
-//      without the permission gets 403.
+//   2. A signed-in human holding EITHER `foundation.refresh_jobs` (the narrow,
+//      job-list-only key given to field foremen) OR `foundation.read` (admins)
+//      — for an on-demand "sync now" / picker "Refresh from Foundation".
+//      Verified via a real Firebase ID token; a signed-in user with neither
+//      key gets 403. The DPR-hours backfill below stays on foundation.read
+//      only — the narrow key authorizes the job-list sync and nothing else.
 // An unauthenticated caller gets an opaque 401 and learns nothing. And the
 // sync key is scoped to the WHITELISTED scheduled actions ONLY (action=sync
 // and action=dpr_hours_backfill) — anything else from the automated caller is
@@ -76,6 +79,21 @@ async function callerHas(caller, permKey) {
   if (!caller) return false;
   if (caller.owner) return true;
   return (await getPermissionValue(caller.role, permKey)) === true;
+}
+
+// True if the caller holds ANY of the listed permission keys (owner passes
+// unconditionally). Used for the job-list sync, which two different keys may
+// authorize: the narrow, job-list-only `foundation.refresh_jobs` (field
+// foremen) OR the broad `foundation.read` (admins, who also get financials on
+// the separate foundation.js connector). Financial/hours paths keep using the
+// single-key callerHas("foundation.read") — the narrow key never reaches them.
+async function callerHasAny(caller, permKeys) {
+  if (!caller) return false;
+  if (caller.owner) return true;
+  for (const k of permKeys) {
+    if ((await getPermissionValue(caller.role, k)) === true) return true;
+  }
+  return false;
 }
 
 // The actual sync. Pulls EVERY active job (limit 0 = no TOP cap — Watkins has
@@ -375,10 +393,14 @@ exports.handler = async function (event) {
   }
 
   if (action === "sync") {
-    // Human path must hold foundation.read; the automated caller is already
-    // proven by its secret.
-    if (!isSyncCaller && !(await callerHas(caller, "foundation.read"))) {
-      return resp(403, { error: "Forbidden: missing permission foundation.read" });
+    // Human path: EITHER the narrow job-list-only `foundation.refresh_jobs`
+    // (field foremen) OR the broad `foundation.read` (admins). The sync only
+    // ever mirrors the identifying job list into RoofOps' own foundation_jobs
+    // cache (contract value dropped by mapJobForCache), so the narrow key is
+    // sufficient and exposes no cost/margin/billing data. The automated caller
+    // is already proven by its secret.
+    if (!isSyncCaller && !(await callerHasAny(caller, ["foundation.refresh_jobs", "foundation.read"]))) {
+      return resp(403, { error: "Forbidden: missing permission foundation.refresh_jobs" });
     }
     const password = process.env.FOUNDATION_SQL_PASSWORD;
     if (!password) {

@@ -71,7 +71,16 @@ const PERMISSION_KEYS = [
   "feedback.submit",
   "feedback.triage",
   "warranty.manage_reports",
-  "foundation.read"
+  "foundation.read",
+  // Narrow, job-LIST-only Foundation capability. Authorizes ONLY triggering the
+  // read-only job-list refresh (foundation-sync.js action=sync -> the
+  // foundation_jobs cache, which carries job #/name/status/customer/PM/address
+  // and DROPS the contract value) and using the picker's "Refresh from
+  // Foundation" button. It does NOT grant the live foundation.js connector
+  // (contract values via action=jobs, labor hours via job_hours/day_hours) —
+  // that stays on foundation.read. Given to field foremen so they can pull the
+  // current job list without being handed any cost/margin/billing data.
+  "foundation.refresh_jobs"
 ];
 
 // Which permission keys may hold a SCOPED value (beyond plain true/false),
@@ -220,7 +229,9 @@ const SEED_ROLES = [
       "billing.view": "proj",
       "attachments.archive": "proj",
       "attachments.supersede": "proj",
-      "feedback.submit": true
+      "feedback.submit": true,
+      // Field job-list refresh only — NOT foundation.read (no contract/hours).
+      "foundation.refresh_jobs": true
     })
   },
   {
@@ -289,7 +300,9 @@ const SEED_ROLES = [
       "dpr.view": true,
       "billing.view": "proj",
       "companycam.link": "proj",
-      "feedback.submit": true
+      "feedback.submit": true,
+      // Field job-list refresh only — NOT foundation.read (no contract/hours).
+      "foundation.refresh_jobs": true
     })
   },
   {
@@ -339,7 +352,9 @@ const SEED_ROLES = [
       "dpr.create": true,
       "dpr.view": true,
       "companycam.link": true,
-      "feedback.submit": true
+      "feedback.submit": true,
+      // Field job-list refresh only — NOT foundation.read (no contract/hours).
+      "foundation.refresh_jobs": true
     })
   },
   {
