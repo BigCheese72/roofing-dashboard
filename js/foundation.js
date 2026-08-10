@@ -139,6 +139,44 @@ async function fdnPrimePicker() {
   }
 }
 
+// Field-accessible "Refresh from Foundation" — the on-demand escape hatch when
+// a just-created Foundation job isn't in the picker yet and the hourly sync
+// hasn't caught up. POSTs the SAME read-only pull the scheduled Action runs
+// (netlify/functions/foundation-sync.js, action:"sync"), then force-reloads the
+// cache and re-renders the picker so the new job is immediately selectable.
+// Server-gated on foundation.read: a user without it gets a clear toast, no data
+// leaks (the pull is read-only from Foundation and only writes RoofOps' own
+// foundation_jobs cache). Wired to the 🔄 button in the Select Job modal.
+async function fdnRefreshPicker(btn) {
+  if (btn) btn.disabled = true;
+  var toastFn = (typeof toast === "function") ? toast : function () {};
+  toastFn("Refreshing jobs from Foundation…");
+  try {
+    var headers = (typeof authHeaders === "function")
+      ? await authHeaders()
+      : { "Content-Type": "application/json" };
+    var r = await fetch("/.netlify/functions/foundation-sync", {
+      method: "POST", headers: headers, body: JSON.stringify({ action: "sync" })
+    });
+    var out = null; try { out = await r.json(); } catch (e) {}
+    if (!r.ok || !out || out.ok === false) {
+      var msg = (out && out.error) || ("server error " + r.status);
+      if (r.status === 403) msg = "you need the foundation.read permission — ask an admin. (" + msg + ")";
+      toastFn("Foundation refresh failed: " + msg);
+      return;
+    }
+    // Pull the freshly-synced cache and re-render the picker in place.
+    await fdnLoadJobs(true);
+    fdnFilterPicker();
+    var n = (out.active_jobs != null) ? out.active_jobs : ((fdnCache || []).length);
+    toastFn("Foundation jobs refreshed ✓ — " + n + " active job" + (n === 1 ? "" : "s") + ".");
+  } catch (e) {
+    toastFn("Foundation refresh failed: " + ((e && e.message) ? e.message : "network error"));
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
 function fdnFilterPicker() {
   var q = "";
   var input = document.getElementById("bp-search");
@@ -156,7 +194,7 @@ function fdnRenderPicker() {
   if (!host) return;
   if (!(fdnCache || []).length) {
     host.className = "hint";
-    host.textContent = "No jobs cached yet — an admin can run a sync (the list also refreshes automatically during the work day).";
+    host.textContent = "No jobs cached yet — tap 🔄 Refresh from Foundation above (the list also refreshes automatically during the work day).";
     return;
   }
   if (!fdnFiltered.length) { host.className = "hint"; host.textContent = "No matching jobs."; return; }
