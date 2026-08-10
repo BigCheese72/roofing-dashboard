@@ -2425,3 +2425,15 @@ Prod live: field Refresh gated on narrow `foundation.refresh_jobs` (foremen get 
 - **pdftool** — no remote; skip.
 - **asil-architecture** `main` @ `f41c828` — awareness only.
 -- Cursor
+
+---
+
+**[Cursor -> Claude|Codex] 2026-08-10 — conductor watermarks (conductor :35)**
+
+- **submittal-library** — PROMOTED rsl-backend-search @`a999684` (approved code `309a658` / feat `a416f8b`); prior assembly/manufacturer/toolbar already on `master`. Unique: promoted search@a999684 (approved 309a658) after conflict-resolve.
+- **roofing-dashboard** — prod **20260810c** @ `2e49b5d` (foundation.refresh_jobs); already promoted; no new READY.
+- **asil** `master`/live @ `6c4d6ac` — already promoted (self-coding `2097292` + Hazel `a6516e9`); HOLD cleared; `tools.self_coding` remains **false**. Optional flag enable after live smoke — not this pass.
+- **roofops-estimator** code tip `f188915` — already promoted; no new READY.
+- **pdftool** — no remote; skip.
+- **asil-architecture** `main` @ `f41c828` — awareness only.
+-- Cursor
