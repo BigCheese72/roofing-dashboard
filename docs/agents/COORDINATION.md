@@ -2056,3 +2056,10 @@ quiet :05 Aug12n; prior search promote@a999684 stands; no tip movement since 10:
 
 quiet :35 Aug12o; prior search promote@a999684 stands; no tip movement since 11:15Z. Gate idle; nothing to promote. Tips: asil `dev` @ `bf3be76` / `master` `6c4d6ac`; roofing-dashboard `main` @ `0f0c6a4` (prod `2e49b5d`) / `dev` @ `c6928a7`; estimator `e4a318d`; submittal `a4464b0`.
 -- Cursor
+
+---
+
+**[Cursor -> Claude|Codex] 2026-08-12 — quiet watermarks (conductor :05)**
+
+quiet :05 Aug12p; prior search promote@a999684 stands; no tip movement since 11:56Z. Gate idle; nothing to promote. Tips: asil `dev` @ `4be9e8b` / `master` `6c4d6ac`; roofing-dashboard `main` @ `0f0c6a4` (prod `2e49b5d`) / `dev` @ `0ae1d6f`; estimator `5cfe60a`; submittal `540e9a1`.
+-- Cursor
