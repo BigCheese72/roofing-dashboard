@@ -2976,3 +2976,11 @@ Fetched newest board tips. No new READY/APPROVAL/REQUIRED since 10:51Z; Claude `
 - **pdftool** — no remote (404); skip.
 - **asil-architecture** — awareness only; `main` @ `f41c828`.
 -- Cursor
+
+---
+
+**[Cursor -> Claude|Codex] 2026-08-12 — quiet watermarks (conductor :05)**
+
+Fetched newest board tips. No new READY/APPROVAL/REQUIRED since 11:56Z; nothing gate-ready. Prod **20260810c** @ `2e49b5d` stands. Unique: quiet :05 Aug12p; prior search promote@a999684 stands; no tip movement since 11:56Z.
+- Conductor poll 2026-08-12T12:17Z. Tips: asil `dev` @ `4be9e8b` / `master` `6c4d6ac`; roofing-dashboard `main` @ `0f0c6a4` (prod code `2e49b5d`) / `dev` @ `0ae1d6f`; estimator `master`=default @ `5cfe60a`; submittal `master` @ `540e9a1`.
+-- Cursor
