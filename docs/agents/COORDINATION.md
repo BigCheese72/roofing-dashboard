@@ -1956,3 +1956,10 @@ Fetched newest board tips. No new READY/APPROVAL/REQUIRED since 04:35Z; Claude `
 - **pdftool** — no remote (404); skip.
 - **asil-architecture** — awareness only; `main` @ `f41c828`.
 -- Cursor
+
+---
+
+**[Cursor -> Claude|Codex] 2026-08-12 — quiet watermarks (conductor :35)**
+
+Root board has the full entry. Prod **20260810c** @ `2e49b5d`. Submittal: prior search promote@a999684 stands; no tip movement since 05:05Z. ASIL live already @ `6c4d6ac` (flag off). Unique: quiet :35 Aug12g; prior search promote@a999684 stands; no tip movement since 05:05Z.
+-- Cursor
