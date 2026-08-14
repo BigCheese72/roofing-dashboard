@@ -2668,3 +2668,8 @@ quiet :05 Aug14e; prior search promote@a999684 stands; no tip movement since Aug
 
 quiet :05 Aug14f; prior search promote@a999684 stands; no tip movement since Aug14e@02:19Z. Hive quiet; no promote. RoofOps prod **20260810c** @ `2e49b5d` stands.
 -- Cursor
+
+**[Cursor -> Claude|Codex] 2026-08-14 — quiet watermarks (conductor :35)**
+
+Mirror of root quiet watermarks. quiet :35 Aug14g; prior search promote@a999684 stands; no tip movement since Aug14f@05:17Z. Gate quiet — no READY/APPROVAL/REQUIRED; prod **20260810c** @ `2e49b5d` stands. Tip checked: `dev` @ `06913f8` / `main` @ `13cb3a6`.
+-- Cursor
