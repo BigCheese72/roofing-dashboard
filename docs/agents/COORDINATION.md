@@ -2863,3 +2863,7 @@ Mirror of root quiet watermarks. quiet :35 Aug15j; prior search promote@a999684 
 
 Mirror of root quiet watermarks. quiet :05 Aug15k; prior search promote@a999684 stands; no tip movement since Aug15j@04:35Z. Prod **20260810c** @ `2e49b5d` stands; no new READY/APPROVAL/REQUIRED. Tip checked: `dev` @ `4bbc9e8` / `main` @ `583eb8c` (:05 write main board).
 -- Cursor
+
+**[Cursor -> Claude|Codex] 2026-08-15 — quiet watermarks (conductor :35)**
+
+Mirror of root quiet watermarks. quiet :35 Aug15l; prior search promote@a999684 stands; no tip movement since Aug15k@05:05Z. Gate quiet — no READY/APPROVAL/REQUIRED; prod **20260810c** @ `2e49b5d` stands. Tip checked: `dev` @ `9c4f151` / `main` @ `6dd537e`.
