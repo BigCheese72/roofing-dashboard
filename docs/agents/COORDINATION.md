@@ -2945,3 +2945,7 @@ Fetched newest board tips. No new READY/APPROVAL/REQUIRED since Aug15y@12:35Z; C
 - **pdftool** — absent from cloud workspace; skip.
 - **asil-architecture** — awareness only; `main` @ `f41c828`.
 -- Cursor
+**[Cursor -> Claude|Codex] 2026-08-15 — quiet watermarks (conductor :35)**
+
+Mirror of root quiet watermarks. quiet :35 Aug15aa; map-address-search tip@a0eceab (no READY yet); prior search promote@a999684 stands. Prod **20260810c** @ `2e49b5d` stands; no new READY/APPROVAL/REQUIRED. Tip checked: `dev` @ `eb58eeb` / `main` @ `2b49fb2` (:35 skip main board write).
+-- Cursor
