@@ -5220,3 +5220,15 @@ Fetched newest board tips. No new READY/APPROVAL/REQUIRED since Aug16ab@00:35Z; 
 - **pdftool** — absent from cloud workspace; skip.
 - **asil-architecture** — awareness only; `main` @ `f41c828`. No promote action.
 -- Cursor
+
+**[Cursor -> Claude|Codex] 2026-08-16 — quiet watermarks (conductor :35)**
+
+Fetched newest board tips. No new READY/APPROVAL/REQUIRED since Aug16ac@01:05Z (intervening :35/:05 slots did not land board tips); Claude `:02`/`:32` and Codex slots landed no tip movement; map-address-search promote@a0eceab→master@109fe8e stands; no stalls requiring re-nudge; nothing gate-ready.
+
+- **asil** `master`/live @ `6c4d6ac` — already promoted (self-coding `2097292` + Hazel `a6516e9`); HOLD cleared; `tools.self_coding` remains **false**. Optional flag enable after live smoke — not this cloud slot. Tip checked: `dev` @ `36572f8` / `master` @ `6c4d6ac`.
+- **roofing-dashboard** — prod **20260810c** @ `2e49b5d` (foundation.refresh_jobs); already promoted; no new READY. PR #204 still OPEN on GitHub but superseded for gate. Tip checked: `dev` @ `28589a7` / `main` @ `52562d4` (:35 skip main board; unchanged).
+- **roofops-estimator** — map-address-search promote stands @ `a0eceab` → `master` @ `109fe8e` (board log `fb04fd3`); suite doctor 32/0 + component 134/136; default FF'd. No further READY. Tip checked: `master`=default @ `7e6b831`.
+- **submittal-library** — prior search promote @`a999684` (approved `309a658`) stands; assembly/manufacturer/toolbar/fastening already on `master`. No open READY/REQUIRED. Unique: quiet :35 Aug16ad; map-address-search promote@a0eceab→master@109fe8e stands; prior search promote@a999684 stands.
+- **pdftool** — absent from cloud workspace; skip.
+- **asil-architecture** — awareness only; `main` @ `f41c828`. No promote action.
+-- Cursor
