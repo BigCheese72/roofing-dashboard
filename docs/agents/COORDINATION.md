@@ -46,6 +46,13 @@ Warranty (H-5), Work Orders (H-2 concurrence, H-3, H-4, closed H-0).
   builder (exact slab `1894-2919`, cross-boundary call graph, zero parse-time execution, and
   the two tests that break on a pure move). Advisory only — **board entry is my only edit**;
   no lock, no branch, no PR. Adopting Inspections' append-only format here.
+- **Leak Work Orders, 2026-08-17** — registered (last lane, roster #2). Built Mark's 2 Leak
+  field-feedback items (photo single-entry + one-tap roof base map) on
+  `feat/leak-photo-single-entry-and-basemap`; new owned file `js/leakbasemap.js`; suite
+  **1489/1489**; browser-verified; **dev-only**. Posted **LEAK-1**, and **LEAK-2** flagging that
+  `origin/dev`'s tree is gutted (code lives on local `dev`, board lives on `origin/dev`). Code
+  branch is off local `dev`; this board edit is on `coord/leak-register-and-anomaly` off
+  `origin/dev`.
 
 > ⚠️ **`js/workorders.js` IS UNDER A HARD LOCK.** Six agents' work touches it. Until the split
 > lands, **exactly one agent edits it at a time** — claim it in the lock table below or do not
@@ -105,7 +112,7 @@ Lane health: 🟩 **owns a real file** · 🟨 **lane exists, but the code lives
 | # | Agent | Owned lane | Lane health | In-flight work | Branch / PR |
 |---|---|---|---|---|---|
 | 1 | **Work Orders** | `js/workorders.js` (core WO form) + stewards the shared photo component `js/photos.js` | 🟩 owns it — **and stewards it for 5 other agents** | Never lose edits on back-out (flush + un-synced warning). Mark's other two field-use items are done — photo-zoom lightbox (#167) and captions-don't-block-Save (#169) are **live on prod** | `fix/wo-backout-autosave` — **PR #171** 🟢 open, awaiting cross-review. Rebases onto #170 per H-1. **Holds `js/workorders.js`; `js/photos.js` released** |
-| 2 | **Leak Work Orders** | *no file.* `woType === "Leak / Service"` variant of the shared WO form. Own code ≈80 lines: `js/workorders.js:1212–1293`, plus its gate in `onWoTypeChange()` (`js/core.js:2342`) | 🟥 no lane file | **Not yet registered** | — |
+| 2 | **Leak Work Orders** | **`js/leakbasemap.js` (NEW — Leak's first owned file).** Plus the `woType === "Leak / Service"` gates in `onWoTypeChange()` (`js/core.js`) and the Leak–No-Job block in `js/workorders.js`. NB the leak code moved since the Lead's audit — see **LEAK-1** | 🟨 owns a file now; form gates still shared | Mark's 2 field-feedback items: **photo single-entry** + **one-tap roof base map**. Built + tested (**1489/1489**, incl. 14 new) + browser-verified. See **LEAK-1** | `feat/leak-photo-single-entry-and-basemap` — pushed, **awaiting Codex + Work Orders cross-review**. Dev-only, Mark holds prod. |
 | 3 | **Inspections** | *no file.* Checklist engine `js/photos.js:29–165`; inspection PDF = `isInspection` branches in `js/export.js`. **Exclusively mine today:** `netlify/functions/inspection-reports.js` (whole file) + `index.html:289–295`. NB two unrelated "inspection" domains — see **INS-1** | 🟥 no lane file — extraction assigned (**H-2**) | Characterization tests for the 3 functions carrying the checklist's business rules — they had **zero** real coverage (all six existing tests stub them as no-ops). Groundwork for the H-2 extraction | `test/inspection-checklist-characterization` — **PR #173** 🟢 open, awaiting cross-review. **Holds nothing** — `tests/` only, no source changes |
 | 4 | **Change Orders** | *no file.* CO spans **5 shared files**, centred on `onWoTypeChange()` (`js/core.js:2342`) — agent's own report, **H-6**. Refs: `core.js` 26 · `export.js` 18 · `workorders.js` 18 · `index.html` 11 · `companycam.js` 9 | 🟥 no lane file | Registered + located the section. **No edits taken**, holding per Lead directive | `agent/change-orders` — board update only |
 | 5 | **Warranty** | *no file.* **Two domains**, per agent's own report (**H-5**): the `woType === "Warranty"` form variant (`js/workorders.js:299–380`, `1080–1109`) *and* `warranty.manage_reports` report ingestion (`js/history.js:427–650`) | 🟥 no lane file, **and split across two domains** | Registering only. **Holds nothing** | `agent/warranty` (worktree, board edit only) |
@@ -181,6 +188,66 @@ Post here when your work needs a change in another agent's lane or in a locked s
 The Lead reconciles, sequences, and assigns. Do not self-serve across lanes.
 
 ### Open
+
+**LEAK-1 — Leak Work Orders registered; Mark's 2 field-feedback items built on
+`feat/leak-photo-single-entry-and-basemap`** *(2026-08-17)*
+Registering the last lane, and delivering Mark's two prod field-feedback items for the Leak
+Work Order in one branch. **Dev-only, tested; Mark holds prod.**
+
+**1) Photo double-entry (fix).** Root cause is **perceived, not real**: there is ONE `photos[]`
+array; the per-finding capture and the bottom "Photo Documentation" card are two views onto it
+keyed by `finding_id`. The bottom upload buttons are *already* hidden on the findings types
+(prod too), but `renderPhotos()` still **re-lists every finding photo** there as a second full
+editable gallery — that second appearance is what reads as "enter them twice." Fix: on the
+findings types (Leak/Inspection/Warranty) collapse the re-list behind a one-line
+"Arrange photo order (N)" toggle; Repair keeps its open gallery (no findings → it's that type's
+only uploader). **Pure display — `photos[]` and every report/PDF untouched.**
+
+**2) Easy base map from the leak form (add).** New Leak-only "Roof Base Map" card in a NEW
+owned file **`js/leakbasemap.js`**. It resolves the job's existing base map via the existing
+job-centric resolver (`lookupProspectiveBuildingBaseMap`, `js/photos.js`) and says it will
+print on the report; when there's none, it's a one-tap jump into RoofMapper to draw one
+(`rmEnterMultiRoofCapture` / `rmOpenJobPicker`). **Reuses existing resolvers + entry points;
+edits no shared photo/roofmapper/history file.**
+
+**Files touched (for the lock table / reviewers):**
+- `js/leakbasemap.js` — **NEW, Leak lane owns it.** Only *calls* photos.js/roofmapper.js.
+- `js/core.js` — `onWoTypeChange()` gating (+ `renderPhotos()` count, + 2 small collapse
+  helpers). The one shared, unowned file; small and self-contained.
+- `index.html` — base-map card markup + the arrange-toggle wrapper + one `<script>` tag.
+- `tests/leakPhotoSingleEntryAndBaseMap.test.js` — **NEW**, 14 tests. Suite **1489/1489**.
+
+**Cross-review asks (per Mark's instruction to cross-review shared photo components):**
+- **Work Orders (`js/photos.js` steward):** I did not edit `js/photos.js`, but I changed
+  `renderPhotos()` and the global Photo Documentation card in `js/core.js`, and I *call*
+  `lookupProspectiveBuildingBaseMap()`. Please sanity-check the photo-card collapse and that I
+  haven't stepped on the shared photo model. **No lock taken on `js/photos.js`.**
+- **Codex:** standard cross-review of the branch.
+- Note for **RoofMapper (Codex)** and **Building History**: I *call* your entry points
+  (`rmEnterMultiRoofCapture`/`rmOpenJobPicker`/`rmOpenRoofInMapper`) and left your files alone;
+  the base-map card deliberately doesn't render a second interactive map (the inline history
+  card already does), only status + routing.
+
+**Corrections to the Lead's audit of my lane (from my own reading of current dev):**
+- The leak code is **not** at `js/workorders.js:1212–1293` on current dev — the file moved
+  (it's ~2466 lines now). The Leak–No-Job block and warranty-guidelines block are still there;
+  the *form definition* is `onWoTypeChange()` in `js/core.js`, and the leak **report builders**
+  live in `js/export.js`. A `workorders.js`-only split would not have given Leak a usable lane —
+  which is why my base-map work went into a **new** `js/leakbasemap.js` instead.
+- "repair area → scope" is **not** leak's — it's gated Repair-type-only (`js/photos.js`
+  `if (val("woType") !== "Repair") return;`). Not claimed.
+
+**⚠️ LEAK-2 — repo-state anomaly the conductor/Cursor should see BEFORE promoting.**
+`origin/dev`'s **tree is gutted** — 0 `js/` files at the tip (322 "chore(coord): quiet
+watermarks conductor" commits stripped it); `origin/main` is intact (15 js files). So the
+**current board lives on `origin/dev` but the current *code* does not.** My feature branch is
+therefore based on **local `dev` (`990b8e5`, "suite 1475/1475 green", the last full-code
+integration state)**, not on the gutted `origin/dev` tip. Consequences: (a) a normal
+"PR into dev" will look enormous/conflicted because dev's tip deleted the code my branch keeps;
+(b) this board update is a **separate branch (`coord/leak-register-and-anomaly`) off
+`origin/dev`** because that's where the board is current. **Someone owning the pipeline needs to
+decide the real integration target for code** (restore dev's tree, or promote from the code
+branch directly). I did not touch the gutted state — flagging, not fixing.
 
 **FB-1 — Feedback → auto-fix loop: data/API foundation → branch
 `feat/feedback-autofix-foundation` into `dev`** *(2026-07-28)*
