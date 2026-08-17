@@ -323,6 +323,25 @@
       <div class="btnrow"><button class="btn" onclick="addFinding()">+ Add Finding</button></div>
     </div>
 
+    <!-- Roof Base Map quick-attach (Leak WO lane — js/leakbasemap.js). Shown
+         only for the Leak type by onWoTypeChange(). The base map itself lives
+         per-roof on the building doc and is resolved onto this form from the
+         job's building / CompanyCam linkage (lookupProspectiveBuildingBaseMap()
+         in js/photos.js), then prints on the report roof-plan automatically.
+         This card is the in-form control Mark was missing: it says whether the
+         job's map is ready (and will print) and is a one-tap jump into the
+         RoofMapper to draw one when it isn't. renderLeakBaseMap() fills the
+         status + toggles the View button. -->
+    <div class="card" id="wo-basemap-card" style="display:none">
+      <h2 class="cond">Roof Base Map</h2>
+      <p class="hint" style="margin:0 0 8px">The roof map prints on the report and shows where each finding sits. It follows the job — draw it once and it's on every leak, work order and inspection for this site.</p>
+      <div id="wo-basemap-status"></div>
+      <div class="btnrow" id="wo-basemap-buttons" style="margin-top:10px">
+        <button class="btn primary" id="wo-basemap-draw-btn" onclick="leakBaseMapDraw()">✏️ Draw roof map</button>
+        <button class="btn" id="wo-basemap-view-btn" style="display:none" onclick="leakBaseMapView()">👁 View roof map</button>
+      </div>
+    </div>
+
     <div class="card" id="wo-repair-card" style="display:none">
       <h2 class="cond">Repair Scope</h2>
       <div class="fld"><label>Description of Work Performed</label>
@@ -467,7 +486,18 @@
         onchange="addPhotosFromFiles(this.files); this.value='';">
       <input type="file" id="cameraInput" accept="image/*" capture="environment" style="display:none"
         onchange="addPhotosFromCamera(this.files); this.value='';">
-      <div id="photos-list"></div>
+      <!-- Photo single-entry (Mark, field feedback): on the findings types the
+           per-finding capture is the ONE place photos are added; this card only
+           re-lists them to set print order. Collapsed behind this toggle by
+           default (onWoTypeChange -> setGlobalPhotosArrangeCollapsed) so the
+           same photos don't read as a second "enter them again" gallery. Repair
+           has no findings, so its list stays open — it's that type's uploader. -->
+      <div id="wo-globalphotos-arrange" style="display:none;margin:6px 0 0">
+        <button type="button" class="btn" id="wo-globalphotos-arrange-btn" onclick="toggleGlobalPhotosArrange()" aria-expanded="false"><span id="wo-globalphotos-arrange-caret">▸</span> Arrange photo order<span id="wo-globalphotos-arrange-count"></span></button>
+      </div>
+      <div id="wo-globalphotos-collapsible">
+        <div id="photos-list"></div>
+      </div>
       <div class="btnrow" id="wo-globalphotos-buttons">
         <button class="btn primary" onclick="document.getElementById('cameraInput').click()">📷 Take Photo</button>
         <button class="btn" onclick="document.getElementById('photoInput').click()">+ Add Photos</button>
@@ -2023,6 +2053,7 @@
 <script src="js/history.js?v=20260804a"></script>
 <script src="js/workorders.js?v=20260804a"></script>
 <script src="js/roofmapper.js?v=20260804a"></script>
+<script src="js/leakbasemap.js?v=20260804a"></script>
 <script src="js/dpr.js?v=20260804a"></script>
 <!-- Service Manager workspace: proposals inbox, Foundation cross-ref, pre-create
      work order, crew/day assignment, live dispatch board. Loaded after dpr.js

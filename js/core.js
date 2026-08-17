@@ -2604,7 +2604,34 @@ function repairPhotoAssignOptions(repairs){
   });
   return out;
 }
+/* Collapse/expand the re-listed Photo Documentation gallery (see the photo
+   single-entry note in onWoTypeChange). Collapsing is only applied to the
+   findings types; Repair is always expanded because that card is its only
+   uploader. Display-only — never touches photos[]. */
+function setGlobalPhotosArrangeCollapsed(collapsed){
+  var wrap = document.getElementById("wo-globalphotos-collapsible");
+  if (wrap) wrap.style.display = collapsed ? "none" : "";
+  var btn = document.getElementById("wo-globalphotos-arrange-btn");
+  if (btn) btn.setAttribute("aria-expanded", collapsed ? "false" : "true");
+  var caret = document.getElementById("wo-globalphotos-arrange-caret");
+  if (caret) caret.textContent = collapsed ? "▸" : "▾";
+}
+function toggleGlobalPhotosArrange(){
+  var wrap = document.getElementById("wo-globalphotos-collapsible");
+  var collapsed = !wrap || wrap.style.display !== "none";
+  setGlobalPhotosArrangeCollapsed(collapsed);
+}
 function renderPhotos(){
+  /* Keep the "Arrange photo order" toggle honest as photos are added/removed in
+     findings: show it only on the findings types and only when there are photos
+     to arrange, and keep its count current. Runs before the empty early-return
+     below so the row correctly disappears when the last photo is removed. */
+  var woTypeNow = (typeof val === "function") ? val("woType") : "";
+  var rpHasFindings = woTypeNow !== "Repair" && woTypeNow !== "Change Order";
+  var gpArrangeRow = document.getElementById("wo-globalphotos-arrange");
+  if (gpArrangeRow) gpArrangeRow.style.display = (rpHasFindings && photos.length) ? "" : "none";
+  var arrangeCount = document.getElementById("wo-globalphotos-arrange-count");
+  if (arrangeCount) arrangeCount.textContent = photos.length ? (" (" + photos.length + ")") : "";
   var host = document.getElementById("photos-list");
   host.innerHTML = "";
   if (!photos.length){
@@ -2915,6 +2942,27 @@ function onWoTypeChange(){
   if (hintFindings) hintFindings.style.display = hasFindings ? "" : "none";
   var hintNoFindings = document.getElementById("wo-globalphotos-hint-nofindings");
   if (hintNoFindings) hintNoFindings.style.display = hasFindings ? "none" : "";
+  /* Photo single-entry (Mark, field feedback from the Leak WO in prod): the
+     upload buttons are already hidden on the findings types (above), but this
+     card still RE-LISTS every finding photo as a second full gallery — which is
+     what reads as "I have to enter them twice." Collapse that re-listed gallery
+     behind a one-line "Arrange photo order" toggle for the findings types, so
+     the tech sees each photo once (in its finding) and only expands this when
+     they actually want to change the print order. Repair keeps its gallery open
+     — it has no findings, so this card is its only uploader. Pure display: the
+     photos[] array and the report are untouched. renderPhotos() keeps the row's
+     count fresh and hides it when there are no photos. */
+  var gpPhotoCount = (typeof photos !== "undefined" && photos) ? photos.length : 0;
+  var gpArrange = document.getElementById("wo-globalphotos-arrange");
+  if (gpArrange) gpArrange.style.display = (hasFindings && gpPhotoCount) ? "" : "none";
+  if (typeof setGlobalPhotosArrangeCollapsed === "function") setGlobalPhotosArrangeCollapsed(hasFindings);
+  /* Roof Base Map quick-attach card (Leak WO lane, js/leakbasemap.js): shown
+     only for the Leak type — the "is my roof map ready, draw one if not"
+     control Mark was missing on the leak form. renderLeakBaseMap() resolves the
+     job's map and paints status/buttons; it no-ops for every other type. */
+  var bmc = document.getElementById("wo-basemap-card");
+  if (bmc) bmc.style.display = isLeakType ? "" : "none";
+  if (isLeakType && typeof renderLeakBaseMap === "function") renderLeakBaseMap();
   /* Warranty Determination doesn't apply to a Change Order at all — it's a
      scope-of-work/authorization document, not a leak/warranty
      investigation (per Mark, same framing as the findings/repairs-made
