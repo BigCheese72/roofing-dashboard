@@ -457,6 +457,10 @@ function renderDoc(){
       (typeof isLeakNoJobOrder === "function" && isLeakNoJobOrder(o));
     toBox.value = (defaultToCharlotte ? EMAIL_DEFAULT_TO_LEAK : EMAIL_DEFAULT_TO).join(", ");
   }
+  /* Durable send status for THIS report, painted from its own saved state
+     (see renderEmailStatus() in js/history.js). Guarded so a load-order or
+     test harness without it never throws mid-render. */
+  if (typeof renderEmailStatus === "function") renderEmailStatus(typeof currentId !== "undefined" ? currentId : null);
 }
 /* Every DISTINCT roofId actually present among this report's findings
    (falling back to the work order's own single roofId for a finding with

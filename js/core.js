@@ -1136,7 +1136,8 @@ async function cloudFetchIndex(){
     arr.push({ id: d.id, jobName: v.jobName || "(untitled)", jobNo: v.jobNo || "",
       location: v.location || "", serviceDate: v.serviceDate || "", savedAt: v.savedAt || 0, cloud: true,
       companyCamProjectId: v.companyCamProjectId || null,
-      lastEmailedAt: v.lastEmailedAt || null, lastEmailedTo: v.lastEmailedTo || [] });
+      lastEmailedAt: v.lastEmailedAt || null, lastEmailedTo: v.lastEmailedTo || [],
+      lastEmailError: v.lastEmailError || null, emailLog: v.emailLog || [] });
   });
   return arr;
 }
@@ -2230,11 +2231,54 @@ function rememberEmailRecipients(addrs){
   }catch(e){ return; /* storage full/unavailable -- never block a successful send over this */ }
   populateEmailPick();
 }
-function toast(msg){
+/* Friendly display name for an email address, drawn from the Send-to
+   recipient list (Charlotte, Mark, etc.). Falls back to the local-part, then
+   the raw address, so an ad-hoc typed address still shows *something* human.
+   Lets the send-confirmation UI read "Emailed to Charlotte Washburn" instead
+   of a bare address. Label may be stored as "Name <email>"; strip to the
+   name. */
+function emailLabelFor(addr){
+  var a = (addr || "").trim();
+  if (!a) return "";
+  try{
+    var hit = getEmailRecipients().find(function(r){
+      return (r.email || "").toLowerCase() === a.toLowerCase();
+    });
+    if (hit && hit.label){
+      return hit.label.replace(/\s*<[^>]*>\s*$/, "").trim() || hit.label;
+    }
+  }catch(e){}
+  var at = a.indexOf("@");
+  return at > 0 ? a.slice(0, at) : a;
+}
+/* Comma-joined friendly names for a list of addresses (array or raw string). */
+function emailNamesFor(addrs){
+  var list = Array.isArray(addrs) ? addrs : parseEmailRecipients(addrs || "");
+  var names = list.map(emailLabelFor).filter(Boolean);
+  return names.length ? names.join(", ") : "";
+}
+/* One shared toast element, but a send result is too important to look like
+   every routine "Saving…" blip and vanish in 3.5s. `kind` styles and times
+   the toast by severity so success and FAILURE are unmistakable and stay up
+   long enough to actually be seen (Mark: the sent confirmation is too easy to
+   miss, and a failure must never look like a success). Fully back-compatible:
+   toast(msg) with no kind behaves exactly as before (neutral slate, 3.5s). */
+var TOAST_DURATIONS = { info: 3500, success: 6500, error: 12000 };
+function toast(msg, kind){
   var t = document.getElementById("toast");
-  t.textContent = msg; t.style.display = "block";
+  if (!t) return;
+  var k = (kind === "success" || kind === "error") ? kind : "info";
+  t.textContent = msg;
+  t.className = "toast toast-" + k;
+  /* A failure must SHOUT to a screen reader too, and interrupt — success and
+     info are announced politely. */
+  t.setAttribute("aria-live", k === "error" ? "assertive" : "polite");
+  t.style.display = "block";
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(function(){ t.style.display = "none"; }, 3500);
+  toastTimer = setTimeout(function(){
+    t.style.display = "none";
+    t.className = "toast";
+  }, TOAST_DURATIONS[k] || 3500);
 }
 /* Every full-screen modal (pin/asset/activity/profile/RoofMapper-save) is
    position:fixed with a dimmed (not opaque) backdrop over the page behind
@@ -3955,6 +3999,23 @@ function mergedIndex(){
   arr.sort(function(a, b){ return (b.savedAt || 0) - (a.savedAt || 0); });
   return arr;
 }
+/* Prominent, glanceable Saved-list send marker. Shows the recipient NAME
+   (not just a time) and, if the LAST attempt FAILED, a clearly-different red
+   chip instead of a green one -- a failed send must never look like a success
+   (Mark). Reads the record's own persisted lastEmailed / lastEmailError state
+   (see recordEmailAttempt() in js/history.js). */
+function emailedMarker(e){
+  var err = e.lastEmailError;
+  var failedLast = err && (!e.lastEmailedAt || err.at >= e.lastEmailedAt);
+  if (failedLast){
+    return ' \u00B7 <span style="background:#FBE7EB;color:#7E1329;font-weight:700;padding:1px 7px;border-radius:4px;white-space:nowrap">\u26A0\uFE0F Email FAILED ' + esc(fmtTs(err.at)) + '</span>';
+  }
+  if (e.lastEmailedAt){
+    var who = emailNamesFor(e.lastEmailedTo);
+    return ' \u00B7 <span style="color:#0F5A28;font-weight:700;white-space:nowrap">\u2705 Emailed' + (who ? ' to ' + esc(who) : '') + ' ' + esc(fmtTs(e.lastEmailedAt)) + '</span>';
+  }
+  return '';
+}
 function drawSaved(){
   var list = mergedIndex();
   document.getElementById("saved-count").textContent = list.length;
@@ -3979,7 +4040,7 @@ function drawSaved(){
       '<div class="name">' + esc(e.jobName) + (e.jobNo ? ' <span>#' + esc(e.jobNo) + '</span>' : '') + noJobChip + '</div>' +
       '<div class="meta">' + esc(e.location || "") + (e.serviceDate ? ' \u00B7 ' + esc(e.serviceDate) : '') +
       (e.cloud ? ' \u00B7 \u2601' : '') +
-      (e.lastEmailedAt ? ' \u00B7 \uD83D\uDCE7 Emailed ' + fmtTs(e.lastEmailedAt) : '') + '</div></div>' +
+      emailedMarker(e) + '</div></div>' +
       '<button class="btn" onclick="loadOrder(\'' + e.id + '\')">Open</button>' +
       /* Delete is admin-only (Mark's access-control change) -- a
          non-admin's Saved view only ever offers Open. Export was removed

@@ -2165,20 +2165,106 @@ async function saveActivityFromModal(){
    here doesn't mean the email didn't send (logReportAndHistoryEvent's
    history entry above is the durable record of record either way). */
 async function markWorkOrderEmailed(workOrderId, addrs){
-  var when = Date.now();
+  return recordEmailAttempt(workOrderId, { at: Date.now(), to: addrs, ok: true });
+}
+/* A FAILED send is recorded on the record too, not just toasted-and-gone.
+   Report-send has failed silently before; a durable red marker on the work
+   order (Saved list + Preview badge) means a failure can no longer hide
+   behind a toast that already vanished. */
+async function markWorkOrderEmailFailed(workOrderId, addrs, message){
+  return recordEmailAttempt(workOrderId, { at: Date.now(), to: addrs, ok: false, error: message || "" });
+}
+/* Lightweight per-work-order send log: the last 20 attempts (ok/fail, to,
+   when, error) so a send can be confirmed after the fact without digging the
+   Building History timeline. Capped so the doc never grows unbounded. */
+function appendEmailLog(existing, entry){
+  var arr = Array.isArray(existing) ? existing.slice() : [];
+  arr.push(entry);
+  if (arr.length > 20) arr = arr.slice(arr.length - 20);
+  return arr;
+}
+/* Single writer for every send outcome: updates the local index entry, the
+   in-memory cloud cache, redraws the Saved list, refreshes the on-report
+   badge, and best-effort merges the same state onto the Firestore doc. Never
+   throws into the caller -- a marker/log write must never turn a real send
+   result into an error. */
+async function recordEmailAttempt(workOrderId, log){
+  var when = log.at;
+  var errState = log.ok ? null : { at: when, to: log.to, message: log.error || "" };
+  var mergedLog = null;
   try{
     var db = loadDb();
     var entry = db.index.find(function(e){ return e.id === workOrderId; });
-    if (entry){ entry.lastEmailedAt = when; entry.lastEmailedTo = addrs; saveDb(db); }
+    if (entry){
+      mergedLog = appendEmailLog(entry.emailLog, log);
+      entry.emailLog = mergedLog;
+      if (log.ok){ entry.lastEmailedAt = when; entry.lastEmailedTo = log.to; entry.lastEmailError = null; }
+      else { entry.lastEmailError = errState; }
+      saveDb(db);
+    }
     var cloudEntry = cloudIndexCache.find(function(e){ return e.id === workOrderId; });
-    if (cloudEntry){ cloudEntry.lastEmailedAt = when; cloudEntry.lastEmailedTo = addrs; }
+    if (cloudEntry){
+      cloudEntry.emailLog = mergedLog || appendEmailLog(cloudEntry.emailLog, log);
+      if (log.ok){ cloudEntry.lastEmailedAt = when; cloudEntry.lastEmailedTo = log.to; cloudEntry.lastEmailError = null; }
+      else { cloudEntry.lastEmailError = errState; }
+    }
     drawSaved();
+    renderEmailStatus(workOrderId);
   }catch(e){ console.warn("local emailed-marker update failed", e); }
   if (!fdb) return;
   try{
-    await fdb.collection("workorders").doc(workOrderId).set(
-      { lastEmailedAt: when, lastEmailedTo: addrs }, { merge: true });
+    var patch = { emailLog: mergedLog || [log] };
+    if (log.ok){ patch.lastEmailedAt = when; patch.lastEmailedTo = log.to; patch.lastEmailError = null; }
+    else { patch.lastEmailError = errState; }
+    await fdb.collection("workorders").doc(workOrderId).set(patch, { merge: true });
   }catch(e){ console.warn("cloud emailed-marker update failed", e); }
+}
+/* The record persisted email state -- local index first (always current
+   after a send), then the cloud cache. */
+function emailStatusStateFor(workOrderId){
+  var entry = null;
+  try{ entry = (loadDb().index || []).find(function(e){ return e.id === workOrderId; }); }catch(e){}
+  if (!entry){ try{ entry = cloudIndexCache.find(function(e){ return e.id === workOrderId; }); }catch(e){} }
+  return entry || null;
+}
+/* Paints the durable send badge on the Preview screen (#email-status): green
+   "Emailed to <name>" or red "Last send FAILED", plus an expandable send
+   history. Called on preview render and after every send attempt. */
+function renderEmailStatus(workOrderId){
+  var host = document.getElementById("email-status");
+  if (!host) return;
+  var st = workOrderId ? emailStatusStateFor(workOrderId) : null;
+  if (!st || (!st.lastEmailedAt && !st.lastEmailError && !(st.emailLog && st.emailLog.length))){
+    host.style.display = "none"; host.innerHTML = ""; host.className = "email-status"; return;
+  }
+  var err = st.lastEmailError;
+  var failedLast = err && (!st.lastEmailedAt || err.at >= st.lastEmailedAt);
+  var cls, head, sub;
+  if (failedLast){
+    cls = "es-fail";
+    head = "\u26A0\uFE0F Last send FAILED";
+    sub = (err.to && err.to.length ? "Tried: " + emailNamesFor(err.to) + " \u00B7 " : "") +
+      fmtTs(err.at) + (err.message ? " \u2014 " + err.message : "");
+  } else {
+    cls = "es-ok";
+    head = "\u2705 Emailed to " + (emailNamesFor(st.lastEmailedTo) || "recipient");
+    sub = fmtTs(st.lastEmailedAt);
+  }
+  var logHtml = "";
+  if (st.emailLog && st.emailLog.length){
+    var rows = st.emailLog.slice().reverse().map(function(l){
+      return "<li><span class='" + (l.ok ? "ok" : "fail") + "'>" +
+        (l.ok ? "\u2713 Sent" : "\u2717 Failed") + "</span><span>" +
+        esc(emailNamesFor(l.to) || "") + "</span><span>" + esc(fmtTs(l.at)) + "</span>" +
+        (l.ok || !l.error ? "" : "<span>" + esc(l.error) + "</span>") + "</li>";
+    }).join("");
+    logHtml = "<details><summary>Send history (" + st.emailLog.length + ")</summary>" +
+      "<ul class='es-log'>" + rows + "</ul></details>";
+  }
+  host.className = "email-status " + cls;
+  host.innerHTML = "<div class='es-head'>" + esc(head) + "</div>" +
+    "<div class='es-sub'>" + esc(sub) + "</div>" + logHtml;
+  host.style.display = "flex";
 }
 
 async function downloadPdf(){
@@ -2308,15 +2394,23 @@ async function sendEmailNow(){
       var ccUp = { skipped: true };
       if (o.companyCamProjectId){
         ccUp = await uploadLinkedPdfToCompanyCam(d, o, "Email sent \u2713");
-      } else {
-        toast("Email sent \u2713 to " + addrs.join(", "));
       }
+      /* Always end on a loud, durable success confirmation. Previously a
+         CompanyCam-linked order showed only the CC upload toast and NO
+         explicit "it emailed" message -- exactly the easy-to-miss case. Now
+         every successful send, linked or not, gets the green success toast
+         AND the on-record badge/log (markWorkOrderEmailed above). */
+      toast("\u2705 Email sent to " + emailNamesFor(addrs), "success");
       await logReportAndHistoryEvent(o, "PDF Emailed", { sent: true, to: addrs, subject: subject }, ccUp);
     } else {
-      toast("Send failed: " + sendFailureMessage(resp.status, out));
+      var failMsg = sendFailureMessage(resp.status, out);
+      markWorkOrderEmailFailed(o.id, addrs, failMsg);
+      toast("\u274C Send FAILED \u2014 " + failMsg, "error");
     }
   }catch(e){
-    toast("Couldn't reach the send service \u2014 this button only works from your Netlify site with internet. Use Share / Email PDF as backup.");
+    var netMsg = "Couldn't reach the send service \u2014 this button only works from your Netlify site with internet. Use Share / Email PDF as backup.";
+    markWorkOrderEmailFailed(o.id, addrs, "Couldn't reach the send service (offline or blocked).");
+    toast("\u274C Send FAILED \u2014 " + netMsg, "error");
   }
 }
 async function sharePdf(){

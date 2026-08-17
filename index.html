@@ -518,6 +518,12 @@
       <button class="btn" onclick="copyDoc()" title="Copies the report as plain text to your clipboard.">Copy Text</button>
       <button class="btn" onclick="window.print()" title="Opens your device's print dialog for the on-screen report.">Print</button>
     </div>
+    <!-- Durable, glanceable send status for THIS report — populated by
+         renderEmailStatus() (js/history.js) from the work order's own saved
+         state, so "did this actually email, to whom, and when?" is answered
+         at a glance and survives the toast disappearing. Green = sent, red =
+         last attempt failed. -->
+    <div class="email-status no-print" id="email-status"></div>
     <p class="hint no-print">"Send Email Now" emails the finished PDF directly to the recipients above — no mail app needed,
       works the same on phone and computer. The other buttons are backups: "Share / Email PDF" uses your own mail app,
       "Download PDF" saves the file, "Email (text only)" sends a plain-text version without photos.</p>
@@ -1953,7 +1959,8 @@
   </div>
 </div>
 
-<div class="toast" id="toast"></div>
+<div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true"
+     title="Tap to dismiss" onclick="this.style.display='none'"></div>
 
 <!-- Field-value memory / autocomplete datalists (see FIELD_HISTORY_KEYS in
      the script below) -- one per shared suggestion pool, populated from

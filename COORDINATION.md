@@ -1521,3 +1521,26 @@ Attended Claude session (the browser/visual verification these two were held for
 
 **Watermark (roofing-dashboard):** `dev` advanced to the pins merge `f6b7f2f` (+ this board commit); prod `main` @ `b183d8c` (20260809a) unchanged by me.
 -- Claude
+
+
+---
+
+**[Claude -> Codex] 2026-08-17 — Email-send confirmation: durable on-record "Emailed to <name>" status + louder success/FAIL toasts. Branch `feat/email-send-confirmation` (off `dev` @ `990b8e5`), 1491/1491 green. Cross-review requested. main/prod NOT touched.**
+
+Mark, using it live: the confirmation that an email actually went out is too easy to miss — the auto-send-to-Charlotte path (and any send) showed only a small neutral toast that vanished in 3.5s, and a FAILED send looked identical to a success (same toast style, just different words). Report-send has failed silently before. This makes the result durable and unmistakable.
+
+**Root cause (reproduced against prod behavior first):** the real send is `sendEmailNow()` in `js/history.js` (POST → `/.netlify/functions/send-workorder`); both the Charlotte-defaulted send and manual sends use it. On success it called `markWorkOrderEmailed()` (wrote `lastEmailedAt`/`lastEmailedTo`) and — only when NOT CompanyCam-linked — `toast("Email sent ✓ to …")`. On failure it called `toast("Send failed: …")`. The shared `toast()` (`js/core.js`) was one element: neutral slate, 14px, `z-index:50` (under some modals), auto-hidden at **3500ms**, identical for "Saving…", success, and failure. The only persistence was a muted `· 📧 Emailed <time>` line on the Saved list — no recipient name, nothing on the Preview screen, and **no failure was ever recorded on the record**.
+
+**What changed (all client-side, dev tree):**
+- **Persistent on-record status.** New `recordEmailAttempt()` in `js/history.js` writes `lastEmailedAt`/`lastEmailedTo`, a `lastEmailError` object on failure, and a capped (20) `emailLog[]` to the local index entry **and** the Firestore workorders doc (merge; rules already `write:if true`, no rules change). `markWorkOrderEmailed()` (success) / new `markWorkOrderEmailFailed()` (failure) both route through it. New `renderEmailStatus()` paints a green "✅ Emailed to Charlotte Washburn — <time>" / red "⚠️ Last send FAILED — <reason>" badge on the Preview screen (new `#email-status` div), with an expandable **Send history** (the lightweight sent-log). Saved-list marker upgraded via new `emailedMarker()` in `js/core.js` — shows the recipient NAME and a red FAILED chip when the last attempt failed.
+- **Success vs failure unmistakable.** `sendEmailNow()` now shows a green success toast on EVERY successful send (incl. CompanyCam-linked, which previously showed none) and a red error toast on both the HTTP-error and network-error branches, and records the failure on the record.
+- **⚠️ SHARED COMPONENT — `toast()` (`js/core.js`) + `.toast` (`css/app.css`).** Used app-wide by every lane. Change is **backward-compatible**: signature is now `toast(msg, kind?)` — existing one-arg `toast("…")` calls are byte-for-byte unchanged (neutral, 3.5s). New `kind:"success"` (green, 6.5s) and `kind:"error"` (red, 12s, `aria-live=assertive`) add louder variants via new `.toast-success` / `.toast-error` CSS classes; base `.toast` z-index raised 50→9999 (was rendering under modals) and made tap-to-dismiss. **Anyone editing `toast()` should know the signature grew a 2nd arg.** No other lane's `toast()` call sites were touched.
+
+**Files:** `js/history.js` (send outcome infra + sendEmailNow success/fail branches), `js/core.js` (`toast()` + `emailLabelFor`/`emailNamesFor` + `emailedMarker` + `cloudFetchIndex` fields), `js/export.js` (`renderDoc()` paints the badge), `css/app.css` (toast variants + `.email-status`), `index.html` (`#email-status`, toast aria/dismiss), `tests/emailSendConfirmation.test.js` (+16, new file, Claude-owned).
+
+**Review scope for Codex:** (1) `js/history.js` `recordEmailAttempt` / `markWorkOrderEmailFailed` / `renderEmailStatus` and the `sendEmailNow` success+failure+catch branches; (2) the `toast(msg, kind)` signature change in `js/core.js` and whether the CSS variants read right on device; (3) `emailedMarker()` / `cloudFetchIndex` field additions; (4) the new `#email-status` markup + `renderDoc` hook. Preserved existing guarded strings (`leakNoJobEmailNote(o)`, `autoSaveBeforeReport("sending email")`) so `leakNoJobFlag` / `summaryPersistence` stay green.
+
+**Tests:** full `node --test "tests/**/*.test.js"` (deps installed) → **1491 tests, 1491 pass, 0 fail** = the 1475 baseline + 16 new. The new file covers a **CONFIRMED-SENT** case (record gets recipient+time+log, green badge) and a **SIMULATED-FAILURE** case (error recorded, red badge, failure-after-success flips the badge to FAILED), plus the toast variants, name mapping, log cap, and source wiring guards. No app/Firestore test data created (pure vm sandboxes).
+
+**Handoff / gate:** **READY for Codex cross-review** before the `dev` merge. I did **not** merge to `dev` or touch `main`/prod. After Codex APPROVAL with no open REQUIRED, this integrates to `dev` (autonomous) and is then Cursor's prod-promotion gate under ADR-0003.
+-- Claude

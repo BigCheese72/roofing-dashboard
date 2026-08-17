@@ -207,9 +207,40 @@
     font-size:13px;color:var(--slate);margin:2px 0 12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
   .cc-link b{color:#2E7D32}
   .cc-link .sp{flex:1}
+  /* z-index was 50 — under some full-screen modals, so a send result could
+     render BEHIND whatever was open. 9999 puts it above everything. Tappable
+     to dismiss (see the onclick on #toast) so a sticky error can be cleared. */
   .toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);
-    background:var(--slate);color:#fff;padding:10px 18px;border-radius:6px;font-size:14px;
-    z-index:50;box-shadow:0 4px 14px rgba(0,0,0,.25);display:none;max-width:90vw}
+    background:var(--slate);color:#fff;padding:11px 18px;border-radius:6px;font-size:14px;
+    z-index:9999;box-shadow:0 4px 14px rgba(0,0,0,.25);display:none;max-width:92vw;
+    text-align:center;line-height:1.4;cursor:pointer}
+  /* A send RESULT is too important to look like a routine "Saving…" blip and
+     vanish in 3.5s. success/error are louder, bigger, higher-contrast, and
+     unmistakably different from each other — a failed send must never be
+     mistaken for a success (Mark). Timing lives in toast() in js/core.js. */
+  .toast.toast-success{background:#1B7F3B;color:#fff;font-size:16px;font-weight:700;
+    padding:14px 22px;border:2px solid #0F5A28;box-shadow:0 8px 26px rgba(27,127,59,.45)}
+  .toast.toast-error{background:#B4223F;color:#fff;font-size:16px;font-weight:700;
+    padding:14px 22px;border:2px solid #7E1329;box-shadow:0 8px 26px rgba(180,34,63,.5)}
+
+  /* Durable "was this emailed, and to whom, and when?" state shown on the
+     report itself (Preview screen, right by the Send button) so the answer
+     survives the toast and a glance confirms it. Green = sent, red = the last
+     attempt FAILED. See renderEmailStatus() in js/history.js. */
+  .email-status{margin:2px 0 12px;padding:10px 14px;border-radius:8px;font-size:14px;
+    display:none;flex-direction:column;gap:6px;border:2px solid transparent}
+  .email-status .es-head{font-weight:700;font-size:15px;display:flex;align-items:center;
+    gap:8px;flex-wrap:wrap}
+  .email-status .es-sub{font-size:13px;font-weight:600;opacity:.92}
+  .email-status.es-ok{background:#E9F7EE;border-color:#1B7F3B;color:#0F5A28}
+  .email-status.es-fail{background:#FBE7EB;border-color:#B4223F;color:#7E1329}
+  .email-status details{font-size:13px}
+  .email-status details summary{cursor:pointer;font-weight:600;color:var(--slate)}
+  .email-status .es-log{list-style:none;margin:6px 0 0;padding:0}
+  .email-status .es-log li{padding:4px 0;border-top:1px solid rgba(0,0,0,.10);
+    display:flex;gap:10px;flex-wrap:wrap;color:var(--slate)}
+  .email-status .es-log .ok{color:#0F5A28;font-weight:700}
+  .email-status .es-log .fail{color:#7E1329;font-weight:700}
 
   /* saved list */
   .saved-item{background:#fff;border:1px solid var(--card-line);border-left:4px solid var(--orange);
