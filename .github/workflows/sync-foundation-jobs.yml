@@ -1,0 +1,126 @@
+# Work-day Foundation → Firestore job sync (hourly, 7 AM–4 PM Central).
+#
+# Mirrors every ACTIVE Foundation (construction accounting) job into the
+# `foundation_jobs` Firestore collection, so the work-order job picker and
+# auto-fill read a fast local cache instead of the accounting DB. Read-only
+# against Foundation; the only writes are to Firestore.
+#
+# This uses the SAME authenticated-caller model as poll-inspection-reports.yml:
+# a GitHub Actions cron POSTs with a shared secret in a header, compared with
+# timingSafeEqual on the server (netlify/functions/foundation-sync.js).
+# Deliberately NOT a Netlify Scheduled Function — those cannot attach a header
+# and carry no forgery-proof signal (see netlify.toml).
+#
+# SETUP -- both values must match, and both must be at least 32 characters:
+#   1. Netlify > Site configuration > Environment variables > FOUNDATION_SYNC_SECRET
+#   2. GitHub  > Settings > Secrets and variables > Actions > FOUNDATION_SYNC_SECRET
+# (This is a DEDICATED secret, separate from POLLER_SHARED_SECRET, so the
+# Foundation sync and the inspection-report poller rotate independently.)
+#
+# Until both exist, this workflow fails with 401 and the scheduled sync stays
+# off -- the correct, fail-closed default. A signed-in user with foundation.read
+# can still trigger an on-demand sync from the app, unaffected by this.
+#
+# WHERE THE SCHEDULE RUNS: GitHub runs `schedule` triggers ONLY from the copy of
+# this file on the repo's DEFAULT branch (`main`). Foundation is now promoted to
+# prod, so this file lives on `main` and the cron IS live. Editing it on `dev`
+# changes nothing about the cron until a dev->main promotion carries it across.
+#
+# WHAT THE SCHEDULE SYNCS: production AND dev, every scheduled run. Production is
+# the live field environment — its `foundation_jobs` cache is what the work-order
+# job picker reads, so it MUST refresh on the hourly cadence or a newly-created
+# Foundation job never appears for a field user until someone hand-runs a sync.
+# (That was a real field outage: 2026-08-10, job #17519 created but unlinkable on
+# prod because the scheduled sync only ever hit dev.) Dev is kept fresh in the
+# same run so Foundation feature work still has current data to test against.
+# A manual run may target just one via the `target` input below.
+name: Sync Foundation jobs
+
+on:
+  schedule:
+    # Hourly on the hour during the work day, 7 AM–4 PM Central.
+    # GitHub Actions cron is UTC and does NOT observe daylight saving, so this
+    # is pinned to Central SUMMER time (CDT, UTC-5): 12:00–21:00 UTC = 7 AM–4 PM
+    # CDT (10 runs/day). In CST/winter (UTC-6) the same expression effectively
+    # runs 6 AM–3 PM Central -- switch to "0 13-22 * * *" in November to keep it
+    # on 7 AM–4 PM, and back to "0 12-21 * * *" in March.
+    # NOTE: GitHub's scheduler is best-effort and routinely delays or drops
+    # individual runs under load, so treat this as "about hourly", not exact.
+    - cron: "0 12-21 * * *"
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Which deploy(s) to sync"
+        required: true
+        default: both
+        type: choice
+        options: [both, production, dev]
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sync active Foundation jobs into Firestore
+        env:
+          FOUNDATION_SYNC_SECRET: ${{ secrets.FOUNDATION_SYNC_SECRET }}
+          # Scheduled runs sync BOTH production and dev (input is empty on a
+          # schedule, so this falls back to 'both'). Production is the live
+          # field environment and is the one that must stay current; dev rides
+          # along so Foundation work has fresh data. A manual run can pick one.
+          TARGET: ${{ github.event.inputs.target || 'both' }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${FOUNDATION_SYNC_SECRET:-}" ]; then
+            echo "::error::FOUNDATION_SYNC_SECRET is not set as a GitHub Actions secret."
+            echo "The scheduled sync is disabled until it is set here AND in Netlify (same value, >= 32 chars)."
+            exit 1
+          fi
+
+          PROD_BASE="https://leak-work-orders.netlify.app"
+          DEV_BASE="https://dev--leak-work-orders.netlify.app"
+
+          case "$TARGET" in
+            production) BASES="$PROD_BASE" ;;
+            dev)        BASES="$DEV_BASE" ;;
+            both)       BASES="$PROD_BASE $DEV_BASE" ;;
+            *) echo "::error::Unknown target '$TARGET' (want production|dev|both)."; exit 1 ;;
+          esac
+
+          # Sync each target in turn. Every target must return 200; the run
+          # fails if ANY does, so a silent prod (or dev) sync outage is loud.
+          FAILED=0
+          for BASE in $BASES; do
+            echo "Syncing $BASE"
+
+            # -sS: quiet but still show errors. The secret goes in a header,
+            # never in the URL and never echoed. Only the HTTP status and the
+            # response body (active_jobs / written / skipped) are printed.
+            HTTP=$(curl -sS -o response.json -w '%{http_code}' \
+              -X POST "$BASE/.netlify/functions/foundation-sync" \
+              -H 'Content-Type: application/json' \
+              -H "x-foundation-sync-key: ${FOUNDATION_SYNC_SECRET}" \
+              -d '{"action":"sync"}')
+
+            echo "HTTP $HTTP"
+            cat response.json || true
+            echo
+
+            if [ "$HTTP" = "401" ] || [ "$HTTP" = "403" ]; then
+              echo "::error::Sync of $BASE was rejected ($HTTP). FOUNDATION_SYNC_SECRET here does not match Netlify's, or is under 32 characters."
+              FAILED=1
+            elif [ "$HTTP" != "200" ]; then
+              echo "::error::Sync of $BASE failed with HTTP $HTTP (see response above)."
+              FAILED=1
+            fi
+          done
+
+          if [ "$FAILED" != "0" ]; then
+            echo "::error::One or more Foundation syncs failed (see above)."
+            exit 1
+          fi
+
+          echo "Sync completed."

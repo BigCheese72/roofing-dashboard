@@ -1,0 +1,158 @@
+// Foundation (construction accounting) read-only integration — Phase 1
+// (connect + pull). Proxies a small, read-only slice of Watkins Roofing's
+// FoundationSoft SQL Server (jobs master + labor timecards) to the app.
+// Same guarded proxy pattern as companycam.js / outlook.js: the DB
+// credential lives only in a Netlify env var, never in the browser or the
+// repo, and every action is gated on a verified identity BEFORE anything
+// else happens.
+//
+// ---------------------------------------------------------------------
+// AUTH FIRST — Foundation data is admin-grade.
+// ---------------------------------------------------------------------
+// The jobs master exposes customers, PMs, contract values; the timecard
+// pull exposes employee hours. That is company-internal accounting data,
+// not a field operation, so unlike companycam.js (authentication-only,
+// any signed-in tech) this endpoint is a PERMISSION gate:
+// requirePermission(..., "foundation.read"). foundation.read is granted to
+// owner/admin/service_manager/ops_manager in lib/permissions.js.
+//
+// The permission check runs as the very FIRST thing, ahead of the
+// FOUNDATION_SQL_PASSWORD env read and ahead of the action dispatch —
+// including the unknown-action branch. Same discipline as outlook.js: an
+// unauthorized caller must get a 401/403, never a 500 that reveals whether
+// the deploy is configured, and the endpoint's protection must not depend
+// on being correctly configured. There is no unauthenticated path through
+// this function.
+//
+// The password (FOUNDATION_SQL_PASSWORD) is never returned, thrown to the
+// caller, or logged. On a DB error the caller gets a generic 502; the real
+// error goes to the function logs (console.error) with no password in it.
+const { requirePermission } = require("./lib/authGuard");
+const { asilKeyAllows } = require("./lib/asilKey");
+const foundationDb = require("./lib/foundationDb");
+
+// Read actions ASIL's bridge key may reach here (see lib/asilKey.js): job and
+// labor reads only. day_crew/day_hours and any unknown action stay human-gated.
+const ASIL_ALLOWED = ["jobs", "job_hours", "employees"];
+
+function resp(code, obj) {
+  return { statusCode: code, headers: { "Content-Type": "application/json" }, body: JSON.stringify(obj) };
+}
+
+exports.handler = async function (event) {
+  const p = event.queryStringParameters || {};
+  const action = p.action || "jobs";
+
+  // ---- PERMISSION GATE: first, for every method and every action. ----
+  // Everything here is foundation.read (admin-grade: customers, contract
+  // values, HOURS) — with ONE deliberate exception: action=day_crew returns
+  // only WHO punched on a job+day (names, never hours), which is exactly the
+  // roster information a foreman needs to fill the daily, so it's gated on
+  // dpr.create instead (the DPR-filling roles; every foundation.read role
+  // also holds dpr.create, so this is a widening for foremen only). The
+  // unknown-action branch stays behind foundation.read, and there is still
+  // no unauthenticated path anywhere.
+  try {
+    // Two ways in: a human holding the permission, or ASIL's bridge key — which
+    // authorizes ONLY the ASIL_ALLOWED read actions above. Any other action
+    // falls through to requirePermission and, carrying no bearer token, is
+    // refused, so the key can never reach day_crew, day_hours, or an unknown.
+    if (!asilKeyAllows(event, action, ASIL_ALLOWED)) {
+      await requirePermission(event, action === "day_crew" ? "dpr.create" : "foundation.read");
+    }
+  } catch (e) {
+    // Mirror outlook.js: surface the guard's own status code (401 missing/
+    // invalid token, 403 missing permission) with its message. A thrown
+    // authGuard safety-guard error (cross-project misconfig) has no
+    // statusCode and falls through to 500 here — the one case we DO want to
+    // surface, since it's an infra misconfiguration, not a data leak.
+    return resp(e.statusCode || 500, { error: e.message });
+  }
+
+  // Only AFTER auth do we look at whether the connector is configured.
+  const password = process.env.FOUNDATION_SQL_PASSWORD;
+  if (!password) {
+    return resp(500, {
+      error: "FOUNDATION_SQL_PASSWORD is not set. Add it in Netlify > Project configuration > Environment variables, then redeploy."
+    });
+  }
+
+  try {
+    if (action === "jobs") {
+      // Active jobs from dbo.jobs, optional ?search= over job no / name /
+      // customer. description is mapped to `name` in the connector.
+      const jobs = await foundationDb.fetchJobs(password, p.search);
+      return resp(200, { jobs: jobs });
+    }
+
+    if (action === "job_hours") {
+      const jobNo = foundationDb.normalizeJobNo(p.job_no);
+      if (!jobNo) return resp(400, { error: "Missing job_no" });
+      // Labor rows from dbo.his_timecard (trimmed job_no match) + a summed
+      // total. pay_rate/amount are never selected — admin-only hours, not
+      // pay. See lib/foundationDb.js.
+      const result = await foundationDb.fetchJobHours(password, jobNo);
+      return resp(200, result);
+    }
+
+    if (action === "employees") {
+      // Active employees from dbo.employees — id + first/last/display name
+      // ONLY (no pay, no PII; see buildEmployeesQuery). Feeds the DPR crew
+      // roster / name join. Admin-grade like everything here (foundation.read).
+      const employees = await foundationDb.fetchEmployees(password);
+      return resp(200, { employees: employees });
+    }
+
+    if (action === "day_crew") {
+      // WHO punched on one job + one day — names/ids ONLY, never hours (the
+      // hours stay behind foundation.read via action=day_hours). Powers the
+      // DPR's "crew fills itself from the time clock" for foremen.
+      const dcJobNo = foundationDb.normalizeJobNo(p.job_no);
+      if (!dcJobNo) return resp(400, { error: "Missing job_no" });
+      if (!foundationDb.normalizeDay(p.date)) return resp(400, { error: "Bad or missing date (YYYY-MM-DD)" });
+      const dayCrew = await foundationDb.fetchDayCrew(password, dcJobNo, p.date);
+      return resp(200, dayCrew);
+    }
+
+    if (action === "day_hours") {
+      // Per-employee summed punch hours for ONE job + ONE day, names joined
+      // from the employee master. Reads the raw pre-payroll ledger
+      // (dbo.pending_timecards) first — the daily punches exist there DAYS
+      // before payroll posts them to dbo.his_timecard — falling back to the
+      // posted history for older dates. Powers the DPR crew-hours auto-fill.
+      const jobNo = foundationDb.normalizeJobNo(p.job_no);
+      if (!jobNo) return resp(400, { error: "Missing job_no" });
+      if (!foundationDb.normalizeDay(p.date)) return resp(400, { error: "Bad or missing date (YYYY-MM-DD)" });
+      const result = await foundationDb.fetchDayHours(password, jobNo, p.date);
+      return resp(200, result);
+    }
+
+    return resp(400, { error: "Unknown action" });
+  } catch (e) {
+    // Never leak the password or raw driver internals to the caller. Log
+    // the real error server-side (Netlify function logs) for diagnosis —
+    // the password is not part of any error message this code constructs.
+    console.error("foundation.js DB error:", e && e.message ? e.message : e);
+    return resp(502, { error: "Foundation query failed. See function logs." });
+  }
+};
+
+/* ============================================================
+ * NOT BUILT YET — Phase 2, left as notes (per the DEV_NOTES/ROADMAP
+ * convention of documenting what's next without building ahead of a real
+ * spec). Phase 1 is the read-only pull only.
+ *
+ * Phase 2 — scheduled nightly sync + wiring into the app:
+ *   - A scheduled Netlify function mirrors active jobs (this same
+ *     fetchJobs()) into Firestore so the job picker / WO auto-fill read
+ *     from a fast local cache, not a live DB call per keystroke.
+ *   - WO auto-fill: selecting a Foundation job fills customer/PM/address
+ *     from the mirrored job (map already exposes name/customer_no/
+ *     project_manager_no/address).
+ *   - DPR (Daily Progress Report): PM comes from project_manager_no;
+ *     admin-only labor hours (fetchJobHours) surface on the WO for users
+ *     who hold foundation.read.
+ *   The clean hooks for all of this already exist: fetchJobs/fetchJobHours
+ *   and the mappers in lib/foundationDb.js. Do not build the sync/writes
+ *   here until Phase 2 is speced.
+ * ============================================================ */

@@ -1,0 +1,2075 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Leak Work Order / Repair Documentation</title>
+
+<!-- Home-screen / PWA icon (DEV build — badged with a red "DEV" ribbon so
+     it's visually distinct from the production icon at a glance; see
+     "Home-screen app icon" in DEV_NOTES.md and icons/README.md. Production
+     will point these same tags at icons/prod/* with an unbadged manifest
+     when this is carried over to main. iOS caches the home-screen icon
+     aggressively — after this deploys, remove and re-add the home-screen
+     shortcut to see the new icon, a plain page reload won't do it. -->
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icons/dev/icon-180.png">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/dev/icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="RoofOps DEV">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#000000">
+<link rel="stylesheet" href="css/app.css?v=20260804a">
+<script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-auth-compat.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<!-- KMZ/KML GroundOverlay import for RoofMapper. KMZ is a ZIP container, so
+     JSZip is the lightest browser-side fit for this static/no-build app. -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<!-- True GeoTIFF support (Mark's Mavic 3T / WebODM / RTK orthos are real
+     georeferenced GeoTIFFs, not flattened images) -- parses embedded
+     geodata and renders it at its TRUE geographic position/scale on the
+     existing Leaflet map, no manual calibration needed. Feasibility
+     validated end-to-end in the browser before building on it: a
+     synthetic GeoTIFF written with geotiff.js round-tripped through
+     parseGeoraster + GeoRasterLayer with exact bounds preserved onto a
+     real Leaflet map. See "GeoTIFF georeferenced ortho support" in
+     DEV_NOTES.md. -->
+<script src="https://cdn.jsdelivr.net/npm/geotiff@2/dist-browser/geotiff.js"></script>
+<script src="https://unpkg.com/georaster@1.6.0/dist/georaster.browser.bundle.min.js"></script>
+<script src="https://unpkg.com/georaster-layer-for-leaflet@3/dist/georaster-layer-for-leaflet.min.js"></script>
+</head>
+<body>
+
+<header class="no-print">
+  <img id="hdr-logo" alt="Watkins Roofing" style="height:38px;background:#fff;border-radius:4px;padding:2px 6px;cursor:pointer"
+    onclick="showView('home')" title="Home">
+  <div class="title cond">Leak Work Order <span class="accent">/</span> <span class="sub">Repair Documentation</span></div>
+  <div class="spacer"></div>
+  <button class="tab cond" style="background:#E8600A;color:#fff" onclick="newOrder()" title="New work order">➕<span class="tab-label"> New</span></button>
+  <button class="tab cond active" id="tab-edit" onclick="showView('edit')" title="Edit">✏️<span class="tab-label"> Edit</span></button>
+  <button class="tab cond" id="tab-preview" onclick="goToPreview()" title="Preview">👁️<span class="tab-label"> Preview</span></button>
+  <button class="tab cond" id="tab-saved" onclick="showView('saved')" title="Saved work orders">💾<span class="tab-label"> Saved</span> (<span id="saved-count">0</span>)</button>
+  <button class="tab cond" id="tab-history" onclick="showView('history')" title="Building History">🏢<span class="tab-label"> Building History</span></button>
+  <button class="tab cond" id="tab-reports" onclick="showView('reports')" title="Reports">📋<span class="tab-label"> Reports</span></button>
+  <button class="tab cond" id="tab-roofmapper" onclick="showView('roofmapper')" title="RoofMapper">🗺️<span class="tab-label"> RoofMapper</span></button>
+  <button class="tab cond" id="tab-dpr" onclick="showView('dpr')" style="display:none" title="Daily Progress Report">📅<span class="tab-label"> Daily Report</span></button>
+  <!-- Service Manager tab (dispatch + proposals). Hidden by default; shown by
+       updateServiceManagerUI() only for owner / admin / ops_manager /
+       service_manager (canServiceManage()) — the SAME role set that already
+       holds warranty.manage_reports, which server-gates the proposal source
+       (contacts-sync). UI-hiding is convenience only, per docs/AUTH_DESIGN.md;
+       no new permission key (see js/servicemanager.js header). -->
+  <button class="tab cond" id="tab-servicemanager" onclick="showView('servicemanager')" style="display:none" title="Service Manager — dispatch &amp; proposals">🚚<span class="tab-label"> Service Manager</span></button>
+  <!-- Admin-only tab (hidden for field techs; shown/hidden by updateAdminUI()
+       off the signed-in user's real role, never a toggle). Consolidates every
+       admin/maintenance control on one page — see #view-admin. -->
+  <button class="tab cond" id="tab-admin" onclick="showView('admin')" style="display:none" title="Admin">🔧<span class="tab-label"> Admin</span></button>
+  <!-- No admin toggle here on purpose (removed 2026-07-12) -- privileged
+       controls throughout this app are shown or hidden based on the
+       signed-in user's real role/claims (isAdmin, recomputed automatically
+       on every auth-state change in js/core.js), never a mode you switch
+       on. See "admin mode" comment block in js/core.js. -->
+  <button class="tab cond" id="account-toggle" onclick="openAccountModal()" style="font-size:11px" title="Account">🔐<span class="tab-label"> Account</span></button>
+</header>
+
+<!-- Offline-first sync status (Mark, 2026-07-12: "the tech must always
+     know where he stands... never a silent failure"). Hidden (display:none)
+     whenever the local sync queue is empty -- see renderSyncStatus() in
+     js/core.js, the only thing that ever shows/hides or fills this. -->
+<div class="card no-print" id="sync-status-bar" style="display:none;margin-bottom:12px;padding:8px 14px;background:#FFF4E5;border:1px solid #E8A33D;font-size:13px"></div>
+
+<!-- Roof-outline save fail-safe (Mark, 2026-07-14: a traced outline was LOST
+     when its save to the building failed on weak signal and the only notice
+     was a 3-second toast). Deliberately a SEPARATE bar from #sync-status-bar
+     above: that one is owned end-to-end by core.js's work-order sync queue,
+     and roof outlines retry through their own queue (see rmFlushPendingBuilding
+     Saves() in js/roofmapper.js -- and the comment there for why they are NOT
+     folded into the work-order queue). Sticky, not a toast: it stays on screen
+     until the outline is actually on the building. Filled/shown/hidden only by
+     rmRenderPendingSaveStatus() in js/roofmapper.js. -->
+<div class="card no-print" id="roof-sync-status-bar" style="display:none;position:sticky;top:0;z-index:600;margin-bottom:12px;padding:10px 14px;background:#FDECEA;border:2px solid #D64545;font-size:14px"></div>
+
+<!-- ================= Require-login gate (Auth Phase 5, dev only -- see
+     docs/AUTH_DESIGN.md). Non-dismissible: no close button, no click-outside
+     handler, unlike every other modal in this file. Hidden whenever fauth
+     isn't configured/available (graceful degrade, matching fdb/fauth's
+     existing null-safe pattern) or once someone is signed in -- see
+     renderLoginGate()/checkAuthBootstrapStatus() in js/core.js. ================= -->
+<div id="login-gate" style="display:none;position:fixed;inset:0;background:#1c2530;z-index:10000;overflow:auto">
+  <div style="max-width:440px;margin:8vh auto;background:#fff;border-radius:8px;overflow:hidden;width:94%">
+    <div style="background:#263238;color:#fff;padding:14px 16px">
+      <b class="cond" style="font-size:18px">RoofOps Field — Sign In Required</b>
+    </div>
+    <div style="padding:16px" id="login-gate-body"></div>
+  </div>
+</div>
+
+<div class="wrap">
+
+  <!-- ================= ADMIN VIEW (admin-only tab) =================
+       All admin / maintenance controls live on their own full-width page now,
+       out of the field flow — a hot, sweaty roofer never sees them. Admins
+       reach it via the admin-only "Admin" tab (tab-admin, shown/hidden in
+       updateAdminUI()); showView("admin") toggles this div like any other
+       view. Was previously an always-visible orange bar on top of EVERY view.
+       See "Admin page" in DEV_NOTES.md. -->
+  <div id="view-admin" style="display:none">
+    <h2 class="cond" style="margin:0 0 10px">🔧 Admin</h2>
+    <div class="card" style="padding:10px 14px;background:#FFF4E5;border:1px solid #E8A33D">
+    <div class="fld" style="max-width:300px;margin:0">
+      <label style="font-size:12px">Admin: Photo Size (applies to every user)</label>
+      <select id="adminPhotoSize" onchange="saveGlobalPhotoSizePref()">
+        <option value="small">Small — email-friendly (recommended)</option>
+        <option value="medium">Medium — more detail</option>
+        <option value="large">Large — max detail, big files</option>
+      </select>
+    </div>
+    <!-- Stage c of the photo storage migration -- see "Photo storage
+         migration" in DEV_NOTES.md. Scans first (writes nothing), shows
+         the real count, and requires an explicit confirm before touching
+         anything -- nothing runs just from this button existing. -->
+    <div class="fld" style="max-width:400px;margin:10px 0 0">
+      <label style="font-size:12px">Admin: Migrate Existing Photos to Cloud Storage</label>
+      <button class="btn" onclick="runPhotoStorageMigration()">☁️ Scan &amp; Migrate Photos</button>
+      <p class="hint" style="margin:4px 0 0">One-time cleanup — moves already-saved photos out of Firestore
+        into Firebase Storage. Non-destructive: nothing is deleted, safe to run more than once.</p>
+    </div>
+    <!-- Manual Foundation job sync (netlify/functions/foundation-sync.js). Forces
+         the same read-only pull the scheduled hourly Action does, so an admin can
+         refresh the job picker on demand instead of waiting. Server-gated on
+         foundation.refresh_jobs OR foundation.read; a non-permitted caller just
+         gets a 403 toast. (Field foremen use the 🔄 button in the job picker.) -->
+    <div class="fld" style="max-width:400px;margin:10px 0 0">
+      <label style="font-size:12px">Admin: Sync Foundation Jobs</label>
+      <button class="btn" onclick="runFoundationSync(this)">🔄 Sync Foundation Jobs Now</button>
+      <p class="hint" style="margin:4px 0 0">Pulls the latest active jobs from Foundation into the job picker now,
+        instead of waiting for the scheduled hourly sync. Read-only pull; safe to run anytime.</p>
+    </div>
+    <!-- Thumbnail backfill (see "captions but no photos" in DEV_NOTES.md) --
+         every already-migrated photo falls back to its full-size backup
+         today (js/core.js's imgFallback), this just makes the gallery
+         cheaper to load by generating a real small thumbnail. Additive-only
+         server-side, safe to run more than once. -->
+    <div class="fld" style="max-width:400px;margin:10px 0 0">
+      <label style="font-size:12px">Admin: Backfill Missing Photo Thumbnails</label>
+      <button class="btn" onclick="runThumbnailBackfill()">🖼️ Scan &amp; Backfill Thumbnails</button>
+      <p class="hint" style="margin:4px 0 0">One-time cleanup — generates a real thumbnail for photos migrated
+        to Storage before thumbnails existed. Doesn't touch the photo itself, safe to run more than once.</p>
+    </div>
+    <!-- Retroactive CompanyCam photo-feed backfill (issue #55). Pushes photos
+         from EXISTING CompanyCam-linked work orders into their project feeds
+         -- for reports sent before the photo-feed push shipped. Idempotent
+         (already-pushed photos are skipped), non-destructive, safe to re-run. -->
+    <div class="fld" style="max-width:400px;margin:10px 0 0">
+      <label style="font-size:12px">Admin: Backfill Photos to CompanyCam</label>
+      <button class="btn" onclick="runCompanyCamPhotoBackfill()">🏢 Backfill Photos to CompanyCam</button>
+      <p class="hint" style="margin:4px 0 0">Pushes photos from existing CompanyCam-linked work orders into their
+        project photo feeds (map-pinned) — for reports sent before this feature existed. Already-pushed photos are
+        skipped automatically, so it's safe to run more than once.</p>
+    </div>
+    <!-- Inspection-report ingestion (CCM Inspect emails -> Warranty
+         section, see netlify/functions/inspection-reports.js). A scheduled
+         function already polls automatically every 30 min; this button is
+         the on-demand "don't make me wait" path, same idempotency either
+         way (safe to tap even right after an automatic run). -->
+    <div class="fld" style="max-width:400px;margin:10px 0 0">
+      <label style="font-size:12px">Admin: Inspection Reports (from CCM Inspect email)</label>
+      <div class="btnrow" style="margin:0">
+        <button class="btn" onclick="checkForNewInspectionReports()">🔄 Check for New Inspection Reports</button>
+        <button class="btn" onclick="openWarrantyReviewModal()" id="warranty-review-btn">📋 Review Queue</button>
+      </div>
+      <p class="hint" style="margin:4px 0 0" id="warranty-check-status">Auto-checks every 30 minutes. Unmatched reports land in the Review Queue for manual assignment — never silently guessed.</p>
+    </div>
+    </div>
+
+    <!-- Roles & Permissions editor (owner-only -- hidden for non-owner
+         admins by updateAdminUI(), server-gated on settings.security either
+         way). Edits the LIVE roles/{roleId} permission grids; rendered and
+         saved entirely by js/roles-admin.js. First modular section of the
+         consolidated Admin page — see "Admin page" in DEV_NOTES.md. -->
+    <div class="card no-print" id="roles-admin-card" style="display:none;margin-top:12px;padding:10px 14px">
+      <h2 class="cond" style="margin:0 0 4px">🔑 Roles &amp; Permissions <span class="hint" style="font-size:12px">(owner only)</span></h2>
+      <p class="hint" style="margin:0 0 8px">Check what each role is allowed to do, then Save. Changes are live
+        immediately — every server action re-reads the role grid on each request. The Owner column is locked to
+        all permissions so you can never lock yourself out. Every save is recorded in the Audit Log.</p>
+      <div id="roles-admin-body"><p class="hint">Loading…</p></div>
+    </div>
+  </div>
+
+  <!-- ================= HOME / LAUNCHER VIEW ================= -->
+  <div id="view-home" style="display:none">
+    <div class="card home-hero">
+      <h2 class="cond">What are you creating?</h2>
+      <p class="hint">Pick a work order type to start, or jump straight into RoofMapper, Building
+        History, or Reports.</p>
+    </div>
+    <div class="home-tiles" id="home-tiles"></div>
+  </div>
+
+  <!-- ================= EDIT VIEW ================= -->
+  <div id="view-edit" style="display:none">
+    <div class="btnrow">
+      <button class="btn primary" onclick="saveOrder()">Save</button>
+    </div>
+
+    <div class="card">
+      <h2 class="cond">Job Information</h2>
+      <!-- "Leak – No Job" catch-all flag (see isLeakNoJobOrder() in
+           js/workorders.js). DERIVED, never stored: shows while the order
+           rides the catch-all job, clears by itself the moment a real
+           Foundation job is linked. -->
+      <div id="wo-leaknojob-banner" style="display:none;background:#FFF3E0;border:1px solid #E8600A;color:#8A5A00;border-radius:8px;padding:10px 12px;margin:0 0 12px;font-weight:600">
+        ⚠️ Leak – No Job ticket — no real Foundation job number yet. Charlotte needs to create
+        the job in Foundation; once it exists, link it here (🔍 Select Job) and this flag clears.
+      </div>
+      <div class="fld" style="max-width:280px">
+        <label>Work Order Type</label>
+        <select id="woType" onchange="onWoTypeChange()"></select>
+      </div>
+      <div class="btnrow" style="margin:0 0 12px">
+        <button class="btn" onclick="openBuildingPicker()">🔍 Select Job</button>
+        <span class="hint" style="margin:0">Search jobs by # or name to auto-fill customer / PM / address — or just type a new one in directly.</span>
+      </div>
+      <div id="fdn-link-info" class="hint" style="margin:0 0 10px;display:none"></div>
+      <div class="grid">
+        <div class="fld"><label>Job Name</label><input type="text" id="jobName" list="dl-jobName" onblur="rememberFieldValue('jobName', this.value); refreshInspectionRoofPickerIfNeeded();"></div>
+        <div class="fld"><label>Location</label><input type="text" id="location" list="dl-location" onblur="rememberFieldValue('location', this.value)">
+          <!-- Turn-by-turn handoff to the device's maps app (Mark): Apple Maps
+               on iOS, Google Maps elsewhere — see directionsUrlFor() in
+               js/workorders.js. target=_blank so the tech never navigates away
+               from the form they're filling out. Hidden until there's an
+               address. -->
+          <a id="location-directions" href="#" target="_blank" rel="noopener"
+             style="display:none;font-size:13px;font-weight:600;margin-top:4px">🧭 Directions</a>
+        </div>
+        <!-- Suite is a TAG for strip-mall / multi-tenant sites, never a
+             boundary: one address, one roof, one base map — see
+             currentSuiteTag() in js/workorders.js. Optional; blank for
+             single-tenant buildings. -->
+        <div class="fld"><label>Suite (optional)</label><input type="text" id="suite" placeholder="e.g. Suite 12"></div>
+        <div class="fld"><label>Date of Service</label><input type="text" id="serviceDate"></div>
+        <div class="fld"><label>Job No.</label><input type="text" id="jobNo"></div>
+        <div class="fld"><label>Project Manager</label><input type="text" id="projectManager" list="dl-projectManager"></div>
+        <div class="fld"><label>Bill To</label><input type="text" id="billTo" list="dl-billTo" onblur="rememberFieldValue('billTo', this.value); refreshInspectionRoofPickerIfNeeded();"></div>
+        <div class="fld"><label>Billing Contact</label><input type="text" id="billContact" list="dl-contactName" onblur="rememberFieldValue('contactName', this.value)"></div>
+        <div class="fld"><label>Contact Phone</label><input type="text" id="billPhone" list="dl-contactPhone" onblur="rememberFieldValue('contactPhone', this.value)">
+          <!-- Tap-to-call (same spirit as 🧭 Directions on Location): a tel:
+               handoff to the dialer — see telHrefFor() in js/workorders.js.
+               Hidden until the field holds a recognizable US number. -->
+          <a id="billphone-call" href="#" style="display:none;font-size:13px;font-weight:600;margin-top:4px">📞 Call</a>
+        </div>
+        <div class="fld"><label>Site Contact</label><input type="text" id="siteContact" list="dl-contactName" onblur="rememberFieldValue('contactName', this.value)"></div>
+        <div class="fld"><label>Technician</label><input type="text" id="technician" list="dl-technician" onblur="rememberFieldValue('technician', this.value)"></div>
+        <div class="fld"><label>Roof System</label>
+          <!-- Options are populated from the shared roof-type list (builtins +
+               app-wide user-added types) by populateRoofSystemSelect() in
+               js/workorders.js — the static list that used to live here is now
+               ROOF_TYPES_BUILTIN there. Last option is "➕ Add new roof type…". -->
+          <select id="roofSystem" onchange="onRoofSystemChange()"></select>
+        </div>
+      </div>
+      <div class="fld" id="wo-reportedarea-fld"><label>Reported Leak Area</label>
+        <textarea id="reportedArea" rows="3"></textarea></div>
+    </div>
+
+    <!-- ================= RETURN VISITS / AMENDMENTS =================
+         Mark, 2026-07-23: reopening an existing work order and going back to
+         the same job days or weeks later keeps it the SAME work order, but it
+         has to show that it's been AMENDED and record what was completed on
+         each return visit. Near the top on purpose: a tech reopening a job
+         weeks later should see the visit history before scrolling through the
+         original scope. Hidden until the order has actually reached the cloud
+         (a first-visit draft has nothing to amend yet) — see
+         renderAmendments() in js/workorders.js. The original visit is Visit 1
+         and is never stored here; amendments are append-only. -->
+    <div class="card" id="wo-amendments-card" style="display:none">
+      <h2 class="cond" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">🔁 Return Visits
+        <span id="wo-amended-badge" style="display:none;background:#E8A33D;color:#3B2B0B;border-radius:999px;padding:2px 10px;font-size:13px;font-weight:700;letter-spacing:0">Amended (0)</span>
+      </h2>
+      <p class="hint">Went back to this job on another day? Log it here instead of starting a new work order.
+        The original work order stays exactly as it is — each return visit is added on as its own record of what was completed.</p>
+      <div id="amendments-list"></div>
+      <div class="btnrow" id="wo-amendment-add-row">
+        <button class="btn primary" onclick="openAmendmentForm()">+ Add Amendment</button>
+      </div>
+      <div id="amendment-form" style="display:none"></div>
+    </div>
+
+    <!-- Foundation labor hours (admin-grade). Hidden by default; populated only
+         when the linked Foundation job's hours come back authorized from the
+         server (foundation.read) — see js/foundation.js fdnRefreshLaborCard().
+         Hours are fetched live from the Foundation connector, never cached. -->
+    <div class="card" id="wo-foundation-labor-card" style="display:none">
+      <h2 class="cond">🕒 Labor Hours</h2>
+      <div id="wo-foundation-labor-body" class="hint">Loading…</div>
+    </div>
+
+    <div class="card" id="wo-inspection-card" style="display:none">
+      <h2 class="cond">Inspection Checklist</h2>
+      <div id="wo-inspection-roof-picker"></div>
+      <p class="hint">Rate each area's condition as you go. Anything rated Fair, Poor, or Critical
+        automatically shows up in the Findings section below too.</p>
+      <div id="inspection-checklist-list"></div>
+    </div>
+
+    <div class="card" id="wo-findings-card">
+      <h2 class="cond" id="wo-findings-title">Roof Investigation Findings</h2>
+      <div id="findings-list"></div>
+      <div class="btnrow"><button class="btn" onclick="addFinding()">+ Add Finding</button></div>
+    </div>
+
+    <div class="card" id="wo-repair-card" style="display:none">
+      <h2 class="cond">Repair Scope</h2>
+      <div class="fld"><label>Description of Work Performed</label>
+        <textarea id="repairDescription" rows="4"></textarea></div>
+      <div id="repairitems-list"></div>
+      <div class="btnrow"><button class="btn" onclick="addRepairItem()">+ Add Repair Item</button></div>
+    </div>
+
+    <div class="card" id="wo-repairsperformed-card">
+      <h2 class="cond">Work Performed</h2>
+      <div id="repairs-list"></div>
+      <div class="btnrow"><button class="btn" onclick="addRepair()">+ Add Repair</button></div>
+    </div>
+
+    <!-- Work Order (stored type "Repair"), Leak / Service AND Change Order —
+         see onWoTypeChange() (Mark, from prod: Repair-only gating made this
+         look "missing" on the Leak form; Change Order added per "a change
+         order form needs materials too"). This itemized list is the primary
+         materials entry for all three. Rows live in materials[]
+         (js/workorders.js) and persist with the work order. The Change
+         Order card's old free-text #woMaterials survives as a hidden-until-
+         populated "Additional Material Notes" legacy field. -->
+    <div class="card" id="wo-materials-card" style="display:none">
+      <h2 class="cond">Material List</h2>
+      <div id="materials-list"></div>
+      <div class="btnrow"><button class="btn" onclick="addMaterial()">+ Add Material</button></div>
+    </div>
+
+    <div class="card" id="wo-changeorder-card" style="display:none">
+      <h2 class="cond">Change Order Details</h2>
+      <div class="grid">
+        <div class="fld"><label>Cost ($)</label><input type="number" step="0.01" id="woCost"></div>
+        <div class="fld"><label>Man-Hours</label><input type="number" step="0.25" id="woManHours"></div>
+        <div class="fld"><label>PO Number (optional)</label><input type="text" id="woPONumber"></div>
+        <div class="fld"><label>Date Completed (optional)</label><input type="text" id="woDateCompleted"></div>
+      </div>
+      <!-- Legacy free-text materials. The itemized Material List card above
+           is now the primary materials entry on a Change Order; this field
+           is hidden by default and revealed only for existing records that
+           already have text here (see onWoTypeChange()), so no historical CO
+           loses its materials note. Kept editable + printed by the Change
+           Order report builders under "Additional Material Notes". -->
+      <div class="fld" id="wo-co-materials-legacy" style="display:none">
+        <label>Additional Material Notes (legacy)</label>
+        <p class="hint" style="margin:0 0 8px">Older change orders captured materials as free text here. Prefer the itemized <b>Material List</b> above; this note is kept so nothing is lost and still prints on the change order.</p>
+        <textarea id="woMaterials" rows="3" placeholder="One item per line"></textarea></div>
+      <div class="fld"><label>Description of Work Performed</label>
+        <textarea id="woDescription" rows="4"></textarea></div>
+      <div class="fld"><label>Photos</label>
+        <p class="hint" style="margin:0 0 8px">Photos taken here are attached to this change order and print into its PDF.</p>
+        <div class="btnrow" style="margin:0">
+          <button class="btn primary" onclick="document.getElementById('coCamInput').click()">📷 Take Photo</button>
+          <button class="btn" onclick="document.getElementById('coLibInput').click()">+ Add Photos</button>
+        </div>
+        <input type="file" id="coCamInput" accept="image/*" capture="environment" style="display:none"
+          onchange="addPhotosFromCamera(this.files); this.value='';">
+        <input type="file" id="coLibInput" accept="image/*" multiple style="display:none"
+          onchange="addPhotosFromFiles(this.files); this.value='';">
+        <div id="co-photos-host"></div>
+      </div>
+      <!-- CompanyCam on a Change Order. The global Photo Documentation card
+           (#wo-globalphotos-card) — which used to be the ONLY place the
+           CompanyCam link banner (#cc-link-info) and the "Import from
+           CompanyCam" button lived — is hidden for Change Orders, which
+           silently removed every CompanyCam entry point from this form (a
+           regression from cac0f84/88dded9). This is that entry point, scoped
+           to the Change Order and reading the exact same ccLinkedProjectId as
+           everywhere else: same banner (#cc-link-info-co, rendered by
+           renderCCLinkInfo()), same modal (openCC()), same durable link on
+           buildings/{id}.companyCamProjectId. Nothing else from the global
+           card is un-hidden. A project is NEVER auto-created from the field —
+           linking only ever picks an EXISTING CompanyCam project. See
+           "Change Order CompanyCam link" in DEV_NOTES.md. -->
+      <div class="fld">
+        <label>CompanyCam</label>
+        <p class="hint" style="margin:0 0 8px">Link this change order to the building's CompanyCam project — the
+          signed Change Order PDF is then saved into that project automatically. If the building is already linked,
+          this fills in on its own.</p>
+        <div class="btnrow" style="margin:0">
+          <button class="btn" onclick="openCC()">🔗 Link / Import from CompanyCam</button>
+        </div>
+        <div id="cc-link-info-co"></div>
+      </div>
+      <div class="fld">
+        <label>Signature</label>
+        <p class="hint" style="margin:0 0 8px">Capture the customer's signature right on the device — it prints
+          into the Change Order PDF.</p>
+        <div id="co-signature-status"></div>
+      </div>
+    </div>
+
+    <div class="card" id="wo-warrantydetermination-card">
+      <h2 class="cond">Warranty Determination</h2>
+      <div id="wo-leak-warranty-extra" style="display:none">
+        <details style="margin:0 0 14px">
+          <summary style="cursor:pointer;font-weight:600;color:#B4223F">Warranty Guidelines (reference for techs)</summary>
+          <div id="warranty-guidelines-body" style="margin-top:8px"></div>
+        </details>
+        <div class="fld" style="max-width:280px"><label>Manufacturer Service # (optional)</label>
+          <input type="text" id="mfgServiceNo" placeholder="Manufacturer's work order / service number"></div>
+      </div>
+      <div class="fld"><label>Warrantable Repairs</label><textarea id="warrantable" rows="3"></textarea></div>
+      <div class="fld"><label>Non-Warrantable Repairs</label><textarea id="nonWarrantable" rows="3"></textarea></div>
+    </div>
+
+    <div class="card">
+      <h2 class="cond">Summary</h2>
+      <!-- AI-drafted summary (see "AI-drafted report summary" in
+           DEV_NOTES.md). Shown for Inspection, Leak, and Work Order — the
+           three summary-bearing types — by onWoTypeChange(); one shared
+           server function serves all three. The server side is a
+           deterministic PLACEHOLDER composer until the vision LLM is wired
+           (Phase 1, blocked on Mark provisioning an API key — it will then
+           also LOOK AT the report's photos via short-lived signed URLs).
+           Output only ever lands in the editable textarea below — a draft
+           the tech reviews, never an auto-final. Drafts fire from this
+           button only (on demand = the cost control), never automatically. -->
+      <div id="wo-draft-summary-row" style="display:none;margin:0 0 10px">
+        <div class="btnrow" style="margin:0">
+          <button class="btn" id="wo-draft-summary-btn" onclick="draftReportSummary(this)">✨ Draft Summary</button>
+        </div>
+        <!-- Wording rule: this hint is visible on a KEYLESS deploy too (the
+             button is a teaser there — a tap toasts "coming soon"), so it must
+             describe what the feature DOES without asserting anything about
+             whether a key exists on this deploy. The original wording claimed
+             the feature was only a placeholder with no model behind it, and
+             stayed on screen long after prod was keyed. Don't re-introduce a
+             claim about key state in either direction; the toast owns that.
+             tests/aiSummarySeedVision.test.js pins this. -->
+        <p class="hint" style="margin:6px 0 0">AI drafts a summary from this report's findings, checklist,
+          repair scope and photos — reading the photos themselves, and building on anything you've already
+          typed rather than replacing it. Always review and edit before saving or sending.</p>
+      </div>
+      <div class="fld"><textarea id="summary" rows="5"></textarea></div>
+    </div>
+
+    <div class="card" id="wo-globalphotos-card">
+      <h2 class="cond">Photo Documentation</h2>
+      <p class="hint" id="wo-globalphotos-hint-findings" style="display:none">Photos are captured directly in each finding above — caption, finding link, and map pin all attach in one step there, including importing from CompanyCam. This section shows every photo on the job, and controls the order they print into the PDF.</p>
+      <p class="hint" id="wo-globalphotos-hint-nofindings">Every photo needs a caption. Photos print into the PDF document automatically, in the order shown below.</p>
+      <input type="file" id="photoInput" accept="image/*" multiple style="display:none"
+        onchange="addPhotosFromFiles(this.files); this.value='';">
+      <input type="file" id="cameraInput" accept="image/*" capture="environment" style="display:none"
+        onchange="addPhotosFromCamera(this.files); this.value='';">
+      <div id="photos-list"></div>
+      <div class="btnrow" id="wo-globalphotos-buttons">
+        <button class="btn primary" onclick="document.getElementById('cameraInput').click()">📷 Take Photo</button>
+        <button class="btn" onclick="document.getElementById('photoInput').click()">+ Add Photos</button>
+        <button class="btn" onclick="openCC()">Import from CompanyCam</button>
+      </div>
+      <!-- Building-level CompanyCam link, always available on the types whose
+           per-finding capture hides the global import row above (Leak,
+           Inspection, Warranty). Links ONCE at the building/address level -- the
+           project id lands on buildings/{id}.companyCamProjectId (collect() ->
+           save patch) so every report type for that building inherits it via
+           bpSelectBuilding(). Change Order has its own (#cc-link-info-co); Repair
+           uses the row above. Shown/hidden by onWoTypeChange(). -->
+      <div class="btnrow" id="wo-cc-link-row" style="display:none">
+        <button class="btn" onclick="openCC()">🔗 Link / Import from CompanyCam</button>
+      </div>
+      <p class="hint" id="wo-cc-link-hint" style="display:none;margin:2px 0 0">Links CompanyCam to this building once — it then shows on every leak, work order, change order, and inspection for this address.</p>
+      <div id="cc-link-info"></div>
+    </div>
+
+    <div class="btnrow">
+      <button class="btn primary" onclick="saveOrder()">Save</button>
+      <button class="btn" onclick="goToPreview()">Preview Document →</button>
+    </div>
+  </div>
+
+  <!-- ================= PREVIEW VIEW ================= -->
+  <div id="view-preview" style="display:none">
+    <!-- Return path to the form. Feedback fb_ms7owm7pdbc5a: once you were on
+         Preview there was NO way back to edit. The header "Edit" tab does go
+         back, but on a phone it is an unlabelled icon in a horizontally
+         scrolling row that auto-collapses out of sight the moment you scroll
+         down the report (see .header-collapsed in css/app.css) -- so in the
+         field there was effectively no back. This row is the primary control;
+         #preview-back-bottom repeats it at the end of the document so a long
+         report never has to be scrolled back up. Both are no-print. -->
+    <div class="btnrow no-print" id="preview-back-top">
+      <button class="btn" onclick="backToEdit()" title="Back to the work order form. Nothing is lost — your edits are still there, and Preview rebuilds from the form when you return.">← Back to Edit</button>
+    </div>
+    <div class="btnrow no-print" style="align-items:center">
+      <select id="emailPick" style="width:auto" onchange="pickRecipient()">
+        <option value="">Send to…</option>
+      </select>
+      <input type="text" id="emailTo" placeholder="or type any email (separate with commas)" style="width:280px">
+      <button class="btn primary" onclick="sendEmailNow()" title="Emails the finished PDF straight to the recipients above — no mail app needed. Saves the work order and builds the PDF first.">Send Email Now</button>
+      <button class="btn primary" onclick="sharePdf()" title="Hands the PDF to your device's own share sheet / mail app instead of sending it directly.">Share / Email PDF</button>
+      <button class="btn primary" onclick="downloadPdf()" title="Saves the report PDF to this device.">Download PDF</button>
+      <button class="btn" onclick="emailDoc()" title="Sends a plain-text version through your mail app — no photos, no PDF.">Email (text only)</button>
+      <button class="btn" onclick="copyDoc()" title="Copies the report as plain text to your clipboard.">Copy Text</button>
+      <button class="btn" onclick="window.print()" title="Opens your device's print dialog for the on-screen report.">Print</button>
+    </div>
+    <p class="hint no-print">"Send Email Now" emails the finished PDF directly to the recipients above — no mail app needed,
+      works the same on phone and computer. The other buttons are backups: "Share / Email PDF" uses your own mail app,
+      "Download PDF" saves the file, "Email (text only)" sends a plain-text version without photos.</p>
+    <div class="doc" id="doc-output"></div>
+    <div class="btnrow no-print" id="preview-back-bottom" style="margin-top:14px">
+      <button class="btn" onclick="backToEdit()" title="Back to the work order form. Nothing is lost — your edits are still there, and Preview rebuilds from the form when you return.">← Back to Edit</button>
+    </div>
+  </div>
+
+  <!-- ================= SAVED VIEW ================= -->
+  <div id="view-saved" style="display:none">
+    <div class="btnrow">
+      <button class="btn" onclick="newOrder()">+ New Work Order</button>
+    </div>
+    <p class="hint" id="cloud-status"></p>
+    <div id="saved-list"></div>
+  </div>
+
+  <!-- ================= BUILDING HISTORY VIEW (foundation) ================= -->
+  <div id="view-history" style="display:none">
+    <div class="card">
+      <h2 class="cond">📍 Buildings Near Me</h2>
+      <p class="hint">Pulled up on site? Find the closest building already in the system instead of searching by
+        name.</p>
+      <button class="btn primary" onclick="findBuildingsNearMe()">📍 Buildings Near Me</button>
+      <div id="bnm-results" style="margin-top:10px"></div>
+    </div>
+    <div class="card">
+      <h2 class="cond">Building / Site History</h2>
+      <p class="hint">Every roof remembers. Each building below is created automatically from the Job Name and
+        Bill To fields when a work order is saved or a report is sent — its timeline fills in as reports go out.</p>
+    </div>
+    <!-- Desktop layout only -- see the #history-two-pane grid rule in the
+         responsive CSS block. Pure wrapping, no id/JS changes: below the
+         desktop breakpoint this has no layout effect and the list/detail
+         stack exactly as before. See "Responsive desktop layout" in
+         DEV_NOTES.md. -->
+    <div id="history-two-pane">
+      <div id="history-list"></div>
+      <div id="history-detail"></div>
+    </div>
+  </div>
+
+  <!-- ================= ALL REPORTS VIEW (read-only, cross-building) ================= -->
+  <div id="view-reports" style="display:none">
+    <div class="card" id="feedback-backlog-card" style="display:none">
+      <h2 class="cond">🗣️ Feedback Backlog (admin)</h2>
+      <p class="hint">In-app feedback submitted from the field via the 💬 button, newest first. Each submission is
+        also emailed to Mark.</p>
+      <div class="btnrow" style="margin:0 0 10px;align-items:center">
+        <select id="feedback-filter-type" onchange="renderFeedbackBacklog()">
+          <option value="">All types</option>
+          <option value="praise">👍 Works great</option>
+          <option value="confusing">🤔 Confusing</option>
+          <option value="bug">🐞 Bug</option>
+          <option value="feature">💡 Feature request</option>
+        </select>
+        <button class="btn" onclick="loadFeedbackBacklog()">Refresh</button>
+      </div>
+      <div id="feedback-backlog-list"><p class="hint">Tap Refresh to load.</p></div>
+    </div>
+    <div class="card" id="audit-log-card" style="display:none">
+      <h2 class="cond">🔒 Audit Log (admin)</h2>
+      <p class="hint">Every destructive or privileged admin.js action, newest first — who, what changed, before/after.
+        Append-only; nothing here can be edited or deleted, not even by the owner.</p>
+      <div class="btnrow" style="margin:0 0 10px">
+        <button class="btn" onclick="loadAuditLogBacklog()">Refresh</button>
+      </div>
+      <div id="audit-log-list"><p class="hint">Tap Refresh to load.</p></div>
+    </div>
+    <div class="card">
+      <h2 class="cond">All Reports</h2>
+      <p class="hint">Every generated report across every building, most recent first — read-only. Tap a report
+        to jump to that building's timeline.</p>
+      <div class="grid" style="margin-bottom:6px">
+        <div class="fld"><label>Search (building or customer)</label>
+          <input type="text" id="rp-search" oninput="rpRenderList()" placeholder="e.g. Westminster"></div>
+        <div class="fld"><label>From</label><input type="date" id="rp-from" onchange="rpRenderList()"></div>
+        <div class="fld"><label>To</label><input type="date" id="rp-to" onchange="rpRenderList()"></div>
+        <div class="fld"><label>Roof Area</label><select id="rp-roof" onchange="rpRenderList()"><option value="">All</option></select></div>
+        <div class="fld"><label>Technician</label><select id="rp-tech" onchange="rpRenderList()"><option value="">All</option></select></div>
+        <div class="fld"><label>Warranty Status</label><select id="rp-warranty" onchange="rpRenderList()"><option value="">All</option></select></div>
+        <div class="fld"><label>Report Type</label><select id="rp-reporttype" onchange="rpRenderList()"><option value="">All</option></select></div>
+        <div class="fld"><label>Work Order Type</label><select id="rp-wotype" onchange="rpRenderList()"><option value="">All</option></select></div>
+      </div>
+      <div class="btnrow" style="margin:0 0 10px;align-items:center">
+        <button class="btn" onclick="clearReportsFilters()">Clear Filters</button>
+        <span class="hint" id="reports-count" style="margin:0"></span>
+      </div>
+    </div>
+    <div id="reports-list"></div>
+  </div>
+
+
+  <!-- ================= ROOFMAPPER VIEW (Phase 1) ================= -->
+  <div id="view-roofmapper" style="display:none">
+    <div class="card">
+      <h2 class="cond">RoofMapper</h2>
+      <p class="hint">Stand at the building, find its footprint from GPS, tap the correct outline, then save it to
+        this building's record or export it.</p>
+      <div class="btnrow" style="margin:0 0 10px">
+        <button class="btn primary" id="rm-locate-btn" onclick="rmUseMyLocation()">📍 Use My Location</button>
+        <button class="btn" id="rm-job-picker-btn" onclick="rmOpenJobPicker()">🔍 Select Job</button>
+      </div>
+      <div id="rm-job-link-info" class="hint" style="margin:-4px 0 10px;display:none"></div>
+      <div class="btnrow" style="margin:0 0 10px">
+        <input type="text" id="rm-address-search" placeholder="…or type any address" style="flex:1;min-width:160px"
+          onkeydown="if(event.key==='Enter'){event.preventDefault();rmSearchByAddress();}">
+        <button class="btn" id="rm-address-search-btn" onclick="rmSearchByAddress()">🔍 Search</button>
+      </div>
+      <p class="hint" style="margin:-6px 0 12px">Works for any address — a brand-new roof, a scouting stop, anywhere
+        — whether or not it matches CompanyCam or an existing building.</p>
+      <div class="btnrow" style="margin:0 0 6px">
+        <button class="btn" id="rm-ortho-upload-btn" onclick="document.getElementById('rm-ortho-file-input').click()">📷 Trace on My Own Drone Image</button>
+        <input type="file" id="rm-ortho-file-input" accept=".kmz,.kml,.tif,.tiff,image/*" multiple style="display:none" onchange="rmUploadOrthoFile(this)">
+        <button class="btn" onclick="rmOpenCcOrthoPicker()">☁️ Trace From CompanyCam Photo</button>
+      </div>
+      <p class="hint" id="rm-ortho-hint" style="margin:-6px 0 12px">Have a sharper drone orthomosaic than satellite
+        imagery? Upload a KMZ, KML+image, GeoTIFF, or plain PNG/JPG and trace directly on it — no CompanyCam project
+        needed first. Already added it as a photo to this building's CompanyCam project instead? Pick it from there —
+        needs a building already linked (e.g. via Trace Another Roof), since that's where the CompanyCam project comes from.</p>
+      <p class="rm-status" id="rm-status"></p>
+      <div id="rm-map-wrap" style="display:none;margin-bottom:12px">
+        <div id="rm-map" style="height:min(70vh,640px);border-radius:6px;overflow:hidden"></div>
+        <button id="rm-recenter-btn" onclick="rmRecenter()" title="Recenter / fit to roof">🎯</button>
+        <div class="rm-crosshair-reticle"><div class="rm-crosshair-ring"></div></div>
+      </div>
+
+      <!-- Trace controls (Undo/Finish/Cancel/Record) live right here, immediately
+           below the map, so they're reachable without scrolling while actively
+           tapping/recording corners -- moved out of their own separate card. -->
+      <div id="rm-trace-panel" style="display:none">
+        <h2 class="cond" id="rm-trace-title" style="margin-top:0">Trace Roof Outline</h2>
+        <p class="hint" id="rm-trace-mode-hint">Tap the roof's corners in order, all the way around, right on the
+          satellite map above.</p>
+        <p class="hint"><span id="rm-trace-count">0 points</span> so far — need at least 3.</p>
+        <label id="rm-snap-toggle-wrap" style="display:flex;align-items:center;gap:6px;font-size:13px;margin:0 0 8px;color:var(--muted)">
+          <input type="checkbox" id="rm-snap-toggle" checked onchange="rmState.snapEnabled = this.checked">
+          🧲 Snap to existing roof corners/edges
+        </label>
+        <div class="btnrow">
+          <button class="btn primary" id="rm-walk-record-btn" onclick="rmWalkRecordCorner()" style="display:none">📍 Record This Corner</button>
+          <button class="btn" id="rm-place-crosshair-btn" onclick="rmPlaceAtCrosshair()" style="display:none">⊕ Place at Crosshair</button>
+          <button class="btn primary" id="rm-trace-finish-btn" onclick="rmFinishTrace()" disabled>✓ Finish Outline</button>
+          <button class="btn" id="rm-trace-undo-btn" onclick="rmTraceUndo()" disabled>↩️ Undo Last Point</button>
+          <button class="btn" onclick="rmCancelTrace()">✕ Cancel</button>
+        </div>
+      </div>
+
+      <div class="rm-actions" id="rm-search-again-wrap" style="display:none">
+        <button class="btn primary rm-bigbtn" id="rm-search-here-btn" onclick="rmSearchThisArea()">🔍 Search This Area</button>
+        <button class="btn rm-bigbtn" id="rm-widen-btn" style="display:none" onclick="rmWidenSearch()">🔎 Search Wider</button>
+        <button class="btn rm-bigbtn" id="rm-search-again-btn" onclick="rmUseMyLocation()">🔄 Re-locate & Search Again</button>
+      </div>
+      <p class="hint" id="rm-search-here-hint" style="display:none;margin:-6px 0 12px">Panned to the right spot? Tap
+        <b>Search This Area</b> to look for building footprints where the map is centered now — GPS doesn't need to
+        be right for this.</p>
+
+      <!-- Mode-switch row: made deliberately compact (plain small buttons, not
+           full-width rm-bigbtn) since these are secondary/occasional actions,
+           not the primary flow -- Mark: "roughly 3 small buttons in a row." -->
+      <div class="btnrow" id="rm-basemap-wrap" style="display:none">
+        <button class="btn" id="rm-baselayer-btn" onclick="rmToggleBaseLayer()">🛰️ Satellite View</button>
+        <button class="btn" id="rm-trace-btn" onclick="rmStartManualTrace()">✏️ Trace Manually</button>
+        <button class="btn" id="rm-walk-btn" onclick="rmStartWalkCorners()">🚶 Walk the Corners</button>
+      </div>
+      <p class="hint" id="rm-trace-hint" style="display:none;margin:-6px 0 12px">OpenStreetMap has no footprint here,
+        or none of the ones found are right? Switch to satellite view and trace the roof's outline by hand, or walk
+        its corners and tap to record each one — both work even where satellite imagery isn't good enough to trace.</p>
+    </div>
+
+    <!-- Desktop layout only (see the #view-roofmapper grid rule in the
+         responsive CSS block) -- groups everything that isn't the map/
+         search/trace card above into a persistent side panel next to a
+         much bigger map, instead of a long scroll below it. Pure wrapping,
+         no id/JS changes: every element inside keeps the exact same id, so
+         every existing getElementById() call is completely unaffected.
+         Below the desktop breakpoint this is just a plain <div> with no
+         layout effect at all -- mobile's DOM order (and the discoverability
+         fix that put the roof switcher right after the map, before Roof
+         Features) is completely unchanged. See "Responsive desktop layout"
+         in DEV_NOTES.md. -->
+    <div id="rm-desktop-sidebar">
+    <!-- Which roof (of possibly several on this building) RoofMapper is
+         currently showing/editing -- Mark: "on a multi-roof building he
+         must be able to clearly pick WHICH roof he's editing... not obvious
+         right now." Deliberately placed HERE, right after the map and
+         before Roof Features -- NOT inside the Roof Outline card further
+         down, even though that's conceptually where it lives -- because
+         Mark separately, explicitly asked that "Add Feature" be the very
+         next thing visible after the map once a roof is saved (see
+         rmShowFeaturePanel()'s own comment below), and this needs to be
+         seen/used BEFORE that, not after it. Same element/render function
+         either way (rmRenderRoofSwitcher()), just relocated in the DOM --
+         only a building with more than one roof ever sees it. See "Roof
+         switcher discoverability" in DEV_NOTES.md. -->
+    <div id="rm-roof-switcher"></div>
+
+    <div class="card" id="rm-features-panel" style="display:none">
+      <h2 class="cond">Roof Features</h2>
+      <p class="hint" id="rm-features-hint">Tap a marker on the map above to edit it, or add a new one. These are
+        permanent roof fixtures (drains, HVAC, scuppers, etc.); leak/repair findings still get pinned from their
+        work order as before, and everything shows up together in the exports above.</p>
+      <p class="hint" id="rm-basemap-status"></p>
+      <div class="rm-actions" id="rm-features-actions">
+        <button class="btn primary rm-bigbtn" onclick="rmAddFeature()">🔧 Add Feature</button>
+        <button class="btn rm-bigbtn" onclick="rmTraceAnotherRoof()">➕ Trace Another Roof</button>
+        <button class="btn rm-bigbtn" onclick="rmOpenCcOrthoPicker()">☁️ Trace From CompanyCam Photo</button>
+      </div>
+      <div id="rm-feature-form" style="display:none">
+        <p class="hint">Drag the marker on the map above to position it, or tap the map to move it there.</p>
+        <div class="grid">
+          <div class="fld">
+            <label>Type</label>
+            <select id="rm-feature-type"></select>
+          </div>
+          <div class="fld">
+            <label>Label (optional)</label>
+            <input type="text" id="rm-feature-label" placeholder="e.g. Drain #3, RTU-2">
+          </div>
+        </div>
+        <div class="fld">
+          <label>Notes (optional)</label>
+          <textarea id="rm-feature-notes" rows="2"></textarea>
+        </div>
+        <div id="rm-feature-drain-reference-fields" style="display:none">
+          <label style="font-size:12px;font-weight:600;display:block;margin:0 0 6px">Drain Reference Distances</label>
+          <div class="grid">
+            <div class="fld">
+              <label>Point 1</label>
+              <input type="text" id="rm-feature-ref1-label" placeholder="e.g. North parapet">
+            </div>
+            <div class="fld">
+              <label>Distance 1 (ft)</label>
+              <input type="number" step="0.1" min="0" id="rm-feature-ref1-distance" placeholder="0.0">
+            </div>
+            <div class="fld">
+              <label>Point 2</label>
+              <input type="text" id="rm-feature-ref2-label" placeholder="e.g. West wall">
+            </div>
+            <div class="fld">
+              <label>Distance 2 (ft)</label>
+              <input type="number" step="0.1" min="0" id="rm-feature-ref2-distance" placeholder="0.0">
+            </div>
+          </div>
+        </div>
+        <div id="rm-feature-core-fields" style="display:none">
+          <label style="font-size:12px;font-weight:600;display:block;margin:0 0 6px">Core/Test Cut Results</label>
+          <div class="fld">
+            <label>Results</label>
+            <textarea id="rm-feature-core-result" rows="2" placeholder="e.g. 60 mil TPO over 1/2 in HD cover board"></textarea>
+          </div>
+          <div class="fld">
+            <label>Photo Link / ID (optional)</label>
+            <input type="text" id="rm-feature-core-photo-link" placeholder="Paste CompanyCam/photo URL or reference">
+          </div>
+        </div>
+        <div class="btnrow" style="margin:8px 0 0">
+          <button class="btn primary" onclick="rmSaveFeature()">Save Feature</button>
+          <button class="btn" id="rm-feature-dup-btn" onclick="rmDuplicateFeature(rmFeatureEditingId)" style="display:none">📋 Duplicate</button>
+          <button class="btn danger" id="rm-feature-delete-btn" onclick="rmDeleteFeature()" style="display:none">Delete</button>
+          <button class="btn" onclick="rmCancelFeatureForm()">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Bluebeam-style markup layer (Mark, approved): arrows, text callouts,
+         shapes, revision clouds, measurements, and a count tool, drawn right
+         on this map -- works over whatever base layer is showing (satellite
+         or a drone ortho set as this roof's custom base), same surface roof
+         features already use. Each markup records who added it and when;
+         "Show" filters by period once more than one exists. See
+         rmStartMarkup()/"Markup layer" in DEV_NOTES.md. -->
+    <div class="card" id="rm-markup-panel" style="display:none">
+      <h2 class="cond">Markup</h2>
+      <p class="hint">Draw arrows, callouts, shapes, clouds, measurements, or count markers directly on the map
+        above. Everything is tagged with who added it and when.</p>
+      <div class="rm-actions" id="rm-markup-toolbar">
+        <button class="btn" onclick="rmStartMarkup('arrow')">↗️ Arrow</button>
+        <button class="btn" onclick="rmStartMarkup('text')">💬 Text</button>
+        <button class="btn" onclick="rmStartMarkup('rect')">▭ Rectangle</button>
+        <button class="btn" onclick="rmStartMarkup('circle')">⭕ Circle</button>
+        <button class="btn" onclick="rmStartMarkup('cloud')">☁️ Cloud</button>
+        <button class="btn" onclick="rmStartMarkup('measure')">📏 Measure</button>
+        <button class="btn" onclick="rmStartMarkup('count')">🔢 Count</button>
+      </div>
+      <div id="rm-markup-color-row" style="display:flex;gap:6px;margin:8px 0"></div>
+      <div class="fld" id="rm-markup-text-row" style="display:none">
+        <label>Caption</label>
+        <input type="text" id="rm-markup-text-input" placeholder="e.g. Ponding water, re-flash this corner">
+      </div>
+      <div id="rm-markup-placing" style="display:none">
+        <p class="hint" id="rm-markup-placing-hint"></p>
+        <div class="btnrow">
+          <button class="btn primary" id="rm-markup-finish-btn" onclick="rmFinishMarkup()" style="display:none">✓ Finish</button>
+          <button class="btn" onclick="rmUndoMarkupPoint()">↩ Undo Point</button>
+          <button class="btn" onclick="rmCancelMarkup()">✕ Cancel</button>
+        </div>
+      </div>
+      <div class="fld" id="rm-markup-filter-row" style="display:none">
+        <label>Show</label>
+        <select id="rm-markup-period-filter" onchange="rmFilterMarkupsByPeriod(this.value)"></select>
+      </div>
+      <div id="rm-markup-list"></div>
+    </div>
+
+    <div class="card" id="rm-footprint-panel" style="display:none">
+      <h2 class="cond">Selected Building</h2>
+      <div class="rm-footprint-info" id="rm-footprint-info"></div>
+      <div class="rm-actions">
+        <button class="btn primary rm-bigbtn" id="rm-generate-btn" onclick="rmGenerateOutline()">✏️ Generate Roof Outline</button>
+        <button class="btn rm-bigbtn" onclick="rmDeselectFootprint()">✕ Wrong Building? Choose Again</button>
+      </div>
+    </div>
+
+    <div class="card" id="rm-outline-panel" style="display:none">
+      <h2 class="cond">Roof Outline</h2>
+      <div id="rm-outline-warning"></div>
+      <div class="rm-outline-stats" id="rm-outline-stats"></div>
+      <div class="btnrow" style="margin:0 0 6px">
+        <button class="btn primary" id="rm-edit-shape-btn" onclick="rmToggleVertexEdit()">✏️ Edit Shape</button>
+        <!-- Only meaningful once this outline is actually saved to a named
+             roof -- shown/hidden alongside the rest of the "saved" controls
+             in rmUpdateControlVisibility(). Stays visible through Edit Shape
+             mode (this whole panel does), per Mark's explicit ask: rename
+             needs to be reachable "in particular while in EDIT SHAPE mode."
+             See rmRenameLinkedRoof() and "Rename a roof, discoverable from
+             RoofMapper" in DEV_NOTES.md. -->
+        <button class="btn" id="rm-rename-roof-btn" style="display:none" onclick="rmRenameLinkedRoof()">🏷️ Rename Roof</button>
+        <!-- Mark: "he must be able to MOVE THE ROOF LABEL AROUND" -- the
+             label itself is draggable right on the map (roofLabelMarker's
+             onDragEnd); this is the escape hatch back to the default
+             centroid, per his explicit "give a way to reset to default"
+             ask. Only shown once a custom position actually exists
+             (rmState.roofLabelHasCustomPos) -- see rmSaveRoofLabelPos()/
+             rmResetRoofLabelPos() and "Draggable roof labels" in
+             DEV_NOTES.md. -->
+        <button class="btn" id="rm-reset-label-btn" style="display:none" onclick="rmResetRoofLabelPos()">🎯 Reset Label Position</button>
+      </div>
+      <p class="hint" id="rm-edit-shape-hint" style="margin:0 0 10px;display:none">Drag any dot to move that corner —
+        the shape, area, and dimensions update as you go. Tap <b>✓ Done Editing</b> when it looks right.</p>
+      <!-- Mark's real Tri-Delta case: traced on satellite (several metres of
+           registration error, common for satellite tiles), then uploaded his
+           RTK ortho (cm-accurate -- the ortho is right, the satellite trace
+           is wrong). Dragging 20 vertices one at a time onto the ortho isn't
+           realistic -- this is the fast global fix first: grab the whole
+           outline and translate/rotate/scale it as one unit, THEN fine-tune
+           individual corners with Edit Shape above. See
+           rmToggleAlignMode()/rmAlignState and "Whole-outline alignment" in
+           DEV_NOTES.md. -->
+      <div class="btnrow" style="margin:0 0 6px">
+        <button class="btn" id="rm-align-btn" onclick="rmToggleAlignMode()">↔️ Move/Rotate/Scale Outline</button>
+        <button class="btn" id="rm-undo-align-btn" style="display:none" onclick="rmUndoAlign()">↩️ Undo Alignment</button>
+      </div>
+      <p class="hint" id="rm-align-hint" style="margin:0 0 10px;display:none">Drag the big center dot to move the whole
+        outline. Drag the blue dot to rotate, the green dot to resize. Tap <b>✓ Done Aligning</b> when it lines up with
+        the ortho.</p>
+      <p class="hint" id="rm-align-status" style="margin:0 0 10px"></p>
+      <div class="btnrow" style="margin:0 0 6px">
+        <button class="btn" id="rm-square-up-btn" onclick="rmSquareUpOutline()">🟦 Square Up</button>
+        <button class="btn" id="rm-undo-square-btn" style="display:none" onclick="rmUndoSquareUp()">↩️ Undo Square Up</button>
+      </div>
+      <p class="hint" id="rm-square-status" style="margin:0 0 10px"></p>
+      <!-- Existing roof reopened via "Open in RoofMapper" that has sliver
+           gaps/overlaps against an adjoining roof (traced before vertex
+           snapping shipped) -- checks every corner of THIS roof against
+           every neighboring roof's already-traced corners and snaps
+           whichever are close enough. See rmSnapExistingOutlineToNeighbors()
+           and "Re-snap existing roof to neighbors" in DEV_NOTES.md. -->
+      <div class="btnrow" style="margin:0 0 6px">
+        <button class="btn" id="rm-resnap-btn" onclick="rmSnapExistingOutlineToNeighbors()">🧲 Re-Snap to Neighbors</button>
+        <button class="btn" id="rm-undo-resnap-btn" style="display:none" onclick="rmUndoResnapToNeighbors()">↩️ Undo Re-Snap</button>
+      </div>
+      <p class="hint" id="rm-resnap-status" style="margin:0 0 10px"></p>
+      <div class="rm-actions">
+        <button class="btn primary rm-bigbtn" onclick="openRmSaveModal()">💾 Save Outline to Building</button>
+        <button class="btn rm-bigbtn" onclick="rmSaveLocally()">📱 Save on This Device Only</button>
+        <!-- An auto-pulled OSM footprint or hand trace is often really
+             several distinct roof sections at once (a warehouse + office
+             annex, several buildings on one parcel), each of which should
+             become its OWN roof. Works both BEFORE saving (rmSaveAllSplitSections()
+             creates N brand-new roofs) and on an ALREADY-saved roof
+             (rmSaveSplitSectionsToExistingRoof() -- the first section keeps
+             the existing roof's id/label/history, later sections become new
+             roofs) -- see "Split an already-saved roof" in DEV_NOTES.md. -->
+        <button class="btn rm-bigbtn" id="rm-split-btn" onclick="rmStartSplitting(-1)">✂️ Split Into Roof Sections</button>
+        <button class="btn danger rm-bigbtn" onclick="rmDeleteOutline()">🗑️ Delete Outline</button>
+      </div>
+      <div id="rm-split-panel"></div>
+      <!-- Which roof(s) an export includes -- Mark: "he must be able to
+           CHOOSE which roofs are included in an export... export one roof,
+           a couple, or the whole building." Only rendered for a building
+           with more than one roof (rmRenderExportRoofSelect()); default all
+           checked. A still-single-roof building (or an outline never saved
+           to a building at all) sees nothing here and exports exactly as
+           before -- rmBuildExportOutput() falls back to the original
+           single-outline path whenever this list is empty/absent. See
+           "Multi-roof export selection" in DEV_NOTES.md. -->
+      <div id="rm-export-roof-select"></div>
+      <!-- Mark: exports had "no base image (ortho/satellite) under the
+           outlines." Opt-in (default off -- an unlinked export shouldn't
+           silently get slower/heavier) toggle to fetch + stitch the same
+           free Esri World_Imagery tiles the live map uses and render them
+           beneath the line art. See rmFetchBasemapImage()/"Export layout
+           pass" in DEV_NOTES.md. -->
+      <label class="hint" style="display:flex;align-items:center;gap:6px;margin:0 0 10px"
+        title="Export only: draws the satellite image beneath the outline so the export isn't just line art. Off by default because it makes the export slower and heavier.">
+        <input type="checkbox" id="rm-export-basemap-cb" onchange="rmState.exportIncludeBasemap = this.checked">
+        🛰️ Include satellite imagery under the drawing
+      </label>
+      <div class="btnrow">
+        <button class="btn" onclick="rmZoomToOutline()" title="Fits the map tight to this roof's outline.">🔍 Zoom to Roof</button>
+        <button class="btn primary" onclick="rmPreviewExport()" title="Shows exactly what you'll get — outline, edge measurements, features, legend, and scale bar — before you export. You can export from inside the preview too.">👁️ Preview Export</button>
+        <button class="btn" onclick="rmExportSVG()" title="Exports as SVG — a sharp line drawing that scales to any size (good for editing later).">Export SVG</button>
+        <button class="btn" onclick="rmExportPNG()" title="Exports as PNG — a plain image, easy to drop into an email or report.">Export PNG</button>
+        <button class="btn" onclick="rmExportPDF()" title="Exports as a print-ready PDF.">Export PDF</button>
+      </div>
+      <p class="hint" id="rm-export-hint" style="margin:8px 0 0"></p>
+    </div>
+
+    <div class="card" id="rm-local-panel" style="display:none">
+      <h2 class="cond">Saved On This Device</h2>
+      <p class="hint">Outlines saved locally (no building link, or saved while offline). Link one to a building any
+        time from here.</p>
+      <div id="rm-local-list"></div>
+    </div>
+    </div><!-- /rm-desktop-sidebar -->
+  </div>
+
+  <!-- ================= Daily Progress Report (DPR) — Phase 1 =================
+       A distinct field-facing section (NOT a work-order type). One report per
+       job per day; multiple crews contribute to the same day's report. All the
+       logic lives in js/dpr.js; this is just the form shell. -->
+  <div id="view-dpr" style="display:none">
+    <div id="dpr-signin-gate" class="card" style="display:none">
+      <p class="hint">Sign in to view and submit daily progress reports.</p>
+    </div>
+    <div id="dpr-body">
+      <div class="btnrow">
+        <button class="btn primary" id="dpr-save-btn" onclick="dprSave()">Save Report</button>
+        <button class="btn" id="dpr-sign-btn" onclick="dprRequestSignature()">✍️ Sign &amp; Lock</button>
+        <button class="btn" onclick="dprDownloadPdf()">Download PDF</button>
+        <button class="btn" onclick="dprShowHistory()">History</button>
+        <button class="btn" onclick="dprNewReport()">➕ New</button>
+      </div>
+      <p class="hint" id="dpr-readonly-hint" style="display:none">View only — your role can browse daily progress reports but can't submit them.</p>
+      <p id="dpr-lock-banner" style="display:none;margin:0 0 10px;padding:8px 12px;background:#FFF3E0;border:1px solid #E8600A;border-radius:6px;color:#8a3b00;font-weight:600"></p>
+      <!-- Late-hours amendment note: a signed report whose hours were corrected
+           by the nightly Foundation-timecard sync says so, transparently
+           (js/dpr.js dprRenderAmendments). -->
+      <p id="dpr-amend-note" style="display:none;margin:0 0 10px;padding:6px 12px;background:#EAF4FF;border:1px solid #1E88E5;border-radius:6px;color:#0d3c61;font-size:13px"></p>
+
+      <div class="card">
+        <h2 class="cond">Daily Progress Report</h2>
+        <p class="hint" id="dpr-continue-notice" style="display:none;color:#2E7D32"></p>
+        <!-- Persistent, visible job link (Mark: "it should SHOW it's linked to
+             Frontier and stay linked"). Rendered by dprRenderLinkStatus() on
+             pick and on reload — the job it's filed under + its Foundation /
+             CompanyCam links. Hidden until there's a job. -->
+        <div id="dpr-link-status" style="display:none;margin:0 0 12px"></div>
+        <div class="btnrow" style="margin:0 0 12px">
+          <button class="btn" onclick="dprShowJobSelect()">🔍 Select Job</button>
+          <span class="hint" style="margin:0">Pick the job — its customer, address and job number fill in automatically. Or just type a new one below.</span>
+        </div>
+        <div id="dpr-job-select" style="display:none">
+          <div class="btnrow" style="margin:0 0 8px">
+            <input type="text" id="dpr-bld-search" placeholder="Filter jobs — name, customer, address, job #…" style="flex:1;min-width:180px" oninput="dprSearchBuildings()">
+          </div>
+          <div id="dpr-bld-results"></div>
+        </div>
+        <div class="fld" style="max-width:320px">
+          <label>Foreman <span class="hint" style="font-weight:400">— who's filling this out</span></label>
+          <input type="text" id="dpr-foreman" list="dl-dprForeman" placeholder="Start typing a name…"
+            onblur="dprRememberForeman(this.value)">
+        </div>
+        <div class="grid">
+          <div class="fld"><label>Job Name</label><input type="text" id="dpr-jobName" list="dl-dprJobName" onblur="rememberFieldValue('jobName', this.value)"></div>
+          <div class="fld"><label>Customer (Bill To)</label><input type="text" id="dpr-billTo" list="dl-dprBillTo" onblur="rememberFieldValue('billTo', this.value)"></div>
+          <div class="fld"><label>Location</label><input type="text" id="dpr-location" list="dl-dprLocation" onblur="rememberFieldValue('location', this.value)"></div>
+          <div class="fld"><label>Job No.</label><input type="text" id="dpr-jobNo" list="dl-dprJobNo" placeholder="Auto-fills from the job"></div>
+          <div class="fld"><label>Date</label><input type="date" id="dpr-date"></div>
+          <div class="fld"><label>Roof System</label><input type="text" id="dpr-roofSystem" list="dl-roofSystem"></div>
+        </div>
+        <div id="dpr-roof-picker" style="display:none"></div>
+        <!-- The day's weather at the job — auto-pulled from Open-Meteo for the
+             job's location and saved with the report (js/dpr.js dprRefreshWeather).
+             Display-only, never blocks the report. -->
+        <p class="hint" id="dpr-weather" style="display:none;margin:8px 0 0"></p>
+      </div>
+
+      <div class="card">
+        <h2 class="cond">Crew &amp; Hours</h2>
+        <div id="dpr-crew-list"></div>
+        <div class="btnrow">
+          <button class="btn" onclick="dprAddCrewRow()">+ Add Crew Member</button>
+          <!-- Deliberate merge from Foundation punches (names only via
+               action=day_crew; the auto path only fills an EMPTY roster) -->
+          <button class="btn" onclick="dprPopulateCrewFromPunches(true)">⏱ From Time Clock</button>
+        </div>
+        <div class="grid" style="margin-top:10px">
+          <div class="fld"><label>Headcount</label><input type="number" id="dpr-headcount" min="0" step="1"></div>
+          <div class="fld"><label>Hours Worked</label><input type="number" id="dpr-hours" min="0" step="0.25"></div>
+          <div class="fld"><label>Approx. Squares Applied</label><input type="number" id="dpr-squares" min="0" step="0.5"></div>
+        </div>
+      </div>
+
+      <!-- Job-to-date labor hours (admin-grade). Same pattern as the WO form's
+           card: hidden by default, populated only when the linked job's hours
+           come back authorized from the server (foundation.read) — see
+           dprRefreshLaborCard() in js/dpr.js. Live, never cached. -->
+      <div class="card" id="dpr-foundation-labor-card" style="display:none">
+        <h2 class="cond">🕒 Labor Hours (job to date)</h2>
+        <div id="dpr-foundation-labor-body" class="hint">Loading…</div>
+      </div>
+
+      <!-- Compact togglers for the optional sections (Mark: buttons, not a
+           tall stack of Yes/No cards). Tapping a chip reveals that section's
+           card below; untouched sections stay fully collapsed. The hidden
+           per-card <select> toggles remain the source of truth, so
+           collect()/fill() logic is unchanged — see dprToggleSection()
+           (js/dpr.js). -->
+      <div class="card">
+        <h2 class="cond">More to report?</h2>
+        <div class="btnrow" style="flex-wrap:wrap;gap:6px" id="dpr-section-chips"></div>
+      </div>
+
+      <!-- ============ Yes/No-gated sections (DPR Phase 2) ============
+           Each defaults to No and stays out of the way; flipping to Yes reveals
+           the details via dprGate() (js/dpr.js). Data stored on the DPR doc as
+           null (No) or an object/rows (Yes) — see dprCollect(). -->
+      <div class="card" id="dpr-card-delays" style="display:none">
+        <h2 class="cond">Delays</h2>
+        <div class="fld" style="max-width:220px;display:none">
+          <label>Any delays today?</label>
+          <select id="dpr-delays-toggle" onchange="dprGate('dpr-delays-toggle','dpr-delays-body','Yes')">
+            <option>No</option><option>Yes</option>
+          </select>
+        </div>
+        <div id="dpr-delays-body" style="display:none">
+          <div class="grid">
+            <div class="fld"><label>Cause</label>
+              <select id="dpr-delays-cause">
+                <option value=""></option>
+                <option>Weather</option><option>Material Delivery</option><option>Equipment</option>
+                <option>Access / Site</option><option>Other Trades</option><option>Other</option>
+              </select>
+            </div>
+            <div class="fld"><label>Hours Lost</label><input type="number" id="dpr-delays-hours" min="0" step="0.25"></div>
+          </div>
+          <div class="fld"><label>What happened</label><textarea id="dpr-delays-notes" rows="3"></textarea></div>
+        </div>
+      </div>
+
+      <div class="card" id="dpr-card-quantities" style="display:none">
+        <h2 class="cond">Material Quantities</h2>
+        <div class="fld" style="max-width:220px;display:none">
+          <label>Track quantities today?</label>
+          <select id="dpr-quantities-toggle" onchange="dprGate('dpr-quantities-toggle','dpr-quantities-body','Yes')">
+            <option>No</option><option>Yes</option>
+          </select>
+        </div>
+        <div id="dpr-quantities-body" style="display:none">
+          <div id="dpr-quantities-list"></div>
+          <div class="btnrow"><button class="btn" onclick="dprAddQuantityRow()">+ Add Quantity</button></div>
+        </div>
+      </div>
+
+      <div class="card" id="dpr-card-jsa" style="display:none">
+        <h2 class="cond">Job Safety Analysis (JSA)</h2>
+        <div class="fld" style="max-width:220px;display:none">
+          <label>JSA completed today?</label>
+          <select id="dpr-jsa-toggle" onchange="dprGate('dpr-jsa-toggle','dpr-jsa-body','Yes')">
+            <option>No</option><option>Yes</option>
+          </select>
+        </div>
+        <div id="dpr-jsa-body" style="display:none">
+          <div class="grid">
+            <div class="fld"><label>Conducted By</label><input type="text" id="dpr-jsa-by" list="dl-dprForeman"></div>
+            <div class="fld"><label>All crew present?</label>
+              <select id="dpr-jsa-crewpresent"><option value=""></option><option>Yes</option><option>No</option></select>
+            </div>
+          </div>
+          <div class="fld"><label>Topics / hazards covered</label><textarea id="dpr-jsa-topics" rows="3"></textarea></div>
+        </div>
+      </div>
+
+      <div class="card" id="dpr-card-incidents" style="display:none">
+        <h2 class="cond">Incidents / Near Misses</h2>
+        <div class="fld" style="max-width:220px;display:none">
+          <label>Any incidents today?</label>
+          <select id="dpr-incidents-toggle" onchange="dprGate('dpr-incidents-toggle','dpr-incidents-body','Yes')">
+            <option>No</option><option>Yes</option>
+          </select>
+        </div>
+        <div id="dpr-incidents-body" style="display:none">
+          <div class="grid">
+            <div class="fld"><label>Type</label>
+              <select id="dpr-incidents-type">
+                <option value=""></option>
+                <option>Injury</option><option>Near Miss</option><option>Property Damage</option><option>Other</option>
+              </select>
+            </div>
+            <div class="fld"><label>Reported To</label><input type="text" id="dpr-incidents-reportedto"></div>
+          </div>
+          <div class="fld"><label>What happened</label><textarea id="dpr-incidents-desc" rows="3"></textarea></div>
+        </div>
+      </div>
+
+      <div class="card" id="dpr-card-equipment" style="display:none">
+        <h2 class="cond">Equipment On Site</h2>
+        <div class="fld" style="max-width:220px;display:none">
+          <label>Equipment used today?</label>
+          <select id="dpr-equipment-toggle" onchange="dprGate('dpr-equipment-toggle','dpr-equipment-body','Yes')">
+            <option>No</option><option>Yes</option>
+          </select>
+        </div>
+        <div id="dpr-equipment-body" style="display:none">
+          <div class="fld"><label>Equipment</label>
+            <textarea id="dpr-equipment-notes" rows="3" placeholder="One per line — e.g. Crane (4 hrs), Kettle, Welder"></textarea></div>
+        </div>
+      </div>
+
+      <!-- Rented equipment — structured (type / rental company / unit # / note),
+           distinct from the free-text "Equipment On Site" notes above. When a
+           rented LIFT is recorded, the daily pre-use safety checklist scaffold
+           reveals (items pending Mark's OSHA/ANSI list — js/dpr.js
+           DPR_PREUSE_CHECKLIST). -->
+      <div class="card" id="dpr-card-rented" style="display:none">
+        <h2 class="cond">Rented Equipment</h2>
+        <div class="fld" style="max-width:220px;display:none">
+          <label>Any rented equipment on site today?</label>
+          <select id="dpr-rented-toggle" onchange="dprGate('dpr-rented-toggle','dpr-rented-body','Yes')">
+            <option>No</option><option>Yes</option>
+          </select>
+        </div>
+        <div id="dpr-rented-body" style="display:none">
+          <div id="dpr-rented-list"></div>
+          <div class="btnrow"><button class="btn" onclick="dprAddRentedRow()">+ Add Rented Item</button></div>
+          <div id="dpr-preuse-block" style="display:none"></div>
+        </div>
+      </div>
+
+      <!-- Toolbox / tailgate safety talk + crew sign-in. When the daily is
+           signed off, the talk given + the crew who acknowledged become part
+           of the signed record and print in the PDF. Sign-in reuses the crew
+           roster above (js/dpr.js dprRenderToolboxSignins). -->
+      <div class="card" id="dpr-card-toolbox" style="display:none">
+        <h2 class="cond">Toolbox Talk</h2>
+        <div class="fld" style="max-width:220px;display:none">
+          <label>Toolbox talk given today?</label>
+          <select id="dpr-toolbox-toggle" onchange="dprGate('dpr-toolbox-toggle','dpr-toolbox-body','Yes')">
+            <option>No</option><option>Yes</option>
+          </select>
+        </div>
+        <div id="dpr-toolbox-body" style="display:none">
+          <div class="fld"><label>Talk given</label>
+            <input type="text" id="dpr-toolbox-talk" list="dl-dprToolboxTalks" placeholder="e.g. Fall Protection, Ladder Safety"></div>
+          <div id="dpr-toolbox-signins"></div>
+        </div>
+      </div>
+
+      <div class="card" id="dpr-card-visitors" style="display:none">
+        <h2 class="cond">Site Visitors</h2>
+        <div class="fld" style="max-width:220px;display:none">
+          <label>Any visitors today?</label>
+          <select id="dpr-visitors-toggle" onchange="dprGate('dpr-visitors-toggle','dpr-visitors-body','Yes')">
+            <option>No</option><option>Yes</option>
+          </select>
+        </div>
+        <div id="dpr-visitors-body" style="display:none">
+          <div class="fld"><label>Who &amp; why</label>
+            <textarea id="dpr-visitors-notes" rows="3" placeholder="One per line — e.g. GC superintendent (walkthrough), Inspector"></textarea></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2 class="cond">Summary</h2>
+        <div class="fld"><textarea id="dpr-summary" rows="5" placeholder="General summary of the day's progress…"></textarea></div>
+      </div>
+
+      <div class="card" id="dpr-section-card">
+        <h2 class="cond">Roof Section Worked Today</h2>
+        <p class="hint" style="margin:0 0 8px">Trace the area of roof you completed today — on the building's roof plan /
+          drone image if it has one, otherwise satellite. Each day's section stacks up on the base map, so the crew and
+          office can see progress over time.</p>
+        <div class="btnrow" style="margin:0 0 8px">
+          <button class="btn primary" onclick="dprOpenSectionTrace()">✏️ Trace Today's Section</button>
+          <button class="btn" onclick="dprShowProgressMap()">📊 Progress Map (all days)</button>
+        </div>
+        <div id="dpr-section-status"></div>
+      </div>
+
+      <div class="card" id="dpr-capture-row">
+        <h2 class="cond">Photos</h2>
+        <p class="hint" style="margin:0 0 8px">Photos taken through the day. Each gets a caption and prints into the report PDF.</p>
+        <div class="btnrow" style="margin:0">
+          <button class="btn primary" onclick="document.getElementById('dprCamInput').click()">📷 Take Photo</button>
+          <button class="btn" onclick="document.getElementById('dprLibInput').click()">+ Add Photos</button>
+          <!-- Pull this job's CompanyCam photos straight into the report (they
+               print in the PDF). Opens the linked project directly, or lets the
+               foreman pick one. See dprOpenCompanyCam() in js/dpr.js. -->
+          <button class="btn" onclick="dprOpenCompanyCam()">☁️ From CompanyCam</button>
+        </div>
+        <input type="file" id="dprCamInput" accept="image/*" capture="environment" style="display:none"
+          onchange="dprAddPhotosFromCamera(this.files); this.value='';">
+        <input type="file" id="dprLibInput" accept="image/*" multiple style="display:none"
+          onchange="dprAddPhotosFromFiles(this.files); this.value='';">
+        <div id="dpr-photos-host"></div>
+      </div>
+
+      <!-- The Phase-2 gated sections (delays, quantities, JSA, incidents,
+           equipment, visitors) live above, between Crew & Hours and Summary.
+           Any FUTURE gated section drops in the same way: a card with a
+           Yes/No select wired to dprGate() (see js/dpr.js). -->
+
+      <div class="card" id="dpr-history-panel" style="display:none">
+        <h2 class="cond">Daily Progress Reports</h2>
+        <div id="dpr-history-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= SERVICE MANAGER VIEW (dispatch + proposals) =================
+       One place to pre-create a work order from a proposal (or blank), cross-
+       reference it to the real Foundation job, assign it to a CREW for a DAY,
+       and watch a live per-crew dispatch board that clears as work completes.
+       Gated to service_manager-and-up via tab visibility (updateServiceManagerUI);
+       all logic in js/servicemanager.js. See that file's header for the model. -->
+  <div id="view-servicemanager" style="display:none">
+    <h2 class="cond" style="margin:0 0 10px">🚚 Service Manager</h2>
+
+    <!-- Sign-in / permission gate (defence-in-depth; the tab is already hidden
+         for non-managers, this just keeps the body from flashing if reached
+         directly). Shown/hidden by smApplyPermissionUI(). -->
+    <div class="card" id="sm-gate" style="display:none;background:#FFF4E5;border:1px solid #E8A33D">
+      <p style="margin:0">The Service Manager workspace is available to service managers and up. Sign in with a manager account to use it.</p>
+    </div>
+
+    <div id="sm-body">
+      <!-- Segmented control: Proposals inbox vs live Dispatch board. -->
+      <div class="btnrow" style="margin:0 0 12px">
+        <button class="btn" id="sm-seg-proposals" onclick="smShowSection('proposals')">📨 Proposals</button>
+        <button class="btn" id="sm-seg-board" onclick="smShowSection('board')">🚚 Dispatch Board</button>
+      </div>
+
+      <!-- ---------- PROPOSALS ---------- -->
+      <div id="sm-section-proposals">
+        <div class="card">
+          <div class="btnrow" style="margin:0 0 10px;align-items:center">
+            <div class="fld" style="margin:0;min-width:180px">
+              <label style="font-size:12px">Proposal source</label>
+              <select id="sm-proposal-source" onchange="smLoadProposals()">
+                <option value="Proposals">📁 Proposals folder</option>
+                <option value="sentitems">📤 Sent Items (sent by me)</option>
+              </select>
+            </div>
+            <button class="btn" onclick="smLoadProposals()" title="Reload proposals from Outlook">🔄 Refresh</button>
+            <button class="btn" onclick="document.getElementById('sm-proposal-upload').click()" title="Upload a proposal PDF from this device">⬆️ Upload PDF</button>
+            <input type="file" id="sm-proposal-upload" accept="application/pdf" style="display:none" onchange="smUploadProposal(this)">
+          </div>
+          <p class="hint" style="margin:0 0 10px">Proposals from Nathan or sent by you. A <b>✅ WO exists</b> flag is a best-effort
+            match by customer / address / subject — always confirm. Pick a proposal to pre-create its work order.</p>
+          <div id="sm-proposals-list" class="hint">Loading proposals…</div>
+        </div>
+      </div>
+
+      <!-- ---------- DISPATCH BOARD ---------- -->
+      <div id="sm-section-board" style="display:none">
+        <div class="card">
+          <div class="btnrow" style="margin:0 0 10px;align-items:center;flex-wrap:wrap">
+            <div class="fld" style="margin:0;min-width:160px">
+              <label style="font-size:12px">Day</label>
+              <input type="date" id="sm-board-date" onchange="smRenderBoard()">
+            </div>
+            <button class="btn" onclick="smBoardSetDay(0)" title="Today">Today</button>
+            <button class="btn" onclick="smBoardSetDay(1)" title="Tomorrow">Tomorrow</button>
+            <button class="btn" onclick="smBoardSetDay(2)" title="Day after tomorrow">+2</button>
+            <span style="flex:1"></span>
+            <button class="btn primary" onclick="smOpenPrecreate(null)" title="Pre-create a blank work order and assign it">➕ New Work Order</button>
+            <button class="btn" onclick="smOpenAssignExisting()" title="Assign an already-saved work order to a crew/day">📋 Assign Existing</button>
+            <button class="btn" onclick="smRenderBoard()" title="Refresh the board">🔄</button>
+          </div>
+          <p class="hint" style="margin:0 0 10px">Live board for the selected day. A crew's work order <b>drops off when it's cleared</b>.
+            Run low? Add more with the buttons above.</p>
+          <div id="sm-board" class="hint">Loading board…</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ================= Service Manager: Pre-create Work Order =================
+     Compact create form (from a selected proposal or blank). Prefills customer/
+     address/scope, cross-references Foundation for the real job, and assigns a
+     crew + day. On save it builds the WO and writes it through the same
+     cloud-save path as the edit form (js/servicemanager.js). -->
+<div id="sm-precreate-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)smClosePrecreate()">
+  <div style="background:#fff;max-width:620px;margin:4vh auto;border-radius:8px;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;width:96%">
+    <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
+      <b class="cond" style="font-size:17px" id="sm-precreate-title">Pre-create Work Order</b>
+      <span style="flex:1"></span>
+      <button class="btn" onclick="smClosePrecreate()">Close</button>
+    </div>
+    <div style="padding:14px 16px;overflow:auto">
+      <div id="sm-precreate-proposal" class="card" style="display:none;background:#EFF6FF;border:1px solid #90C2F0;margin:0 0 12px"></div>
+      <div class="grid">
+        <div class="fld"><label>Work Order Type</label><select id="sm-pc-woType"></select></div>
+        <div class="fld"><label>Target date (crew day)</label><input type="date" id="sm-pc-date"></div>
+        <div class="fld"><label>Customer / Bill To</label><input type="text" id="sm-pc-billTo" list="dl-billTo"></div>
+        <div class="fld"><label>Job / Building name</label><input type="text" id="sm-pc-jobName" list="dl-jobName" oninput="smJobNameEdited()"></div>
+      </div>
+      <div class="fld"><label>Address / Location</label><input type="text" id="sm-pc-location" list="dl-location"></div>
+      <div class="fld"><label>Scope of work (repair description)</label><textarea id="sm-pc-scope" rows="3" placeholder="What needs doing…"></textarea></div>
+
+      <!-- Foundation cross-reference: match this proposal's address/name to the
+           real Foundation job so accounting identity is bound from creation. -->
+      <div class="card" style="margin:12px 0;background:#F6FBF6;border:1px solid #B5D9B5">
+        <div class="btnrow" style="margin:0;align-items:center">
+          <b style="font-size:13px">🏗️ Foundation job</b>
+          <span style="flex:1"></span>
+          <button class="btn" type="button" onclick="smMatchFoundationFromForm()" title="Find the matching Foundation job by address/name">🔎 Cross-reference</button>
+          <button class="btn" type="button" onclick="smOpenFoundationPicker()" title="Search all Foundation jobs and link one by hand">🔗 Link job…</button>
+        </div>
+        <div id="sm-pc-foundation" class="hint" style="margin:8px 0 0">Not linked. Cross-reference to bind the real job number.</div>
+      </div>
+
+      <!-- CompanyCam link/create. DELIBERATE RULE EXCEPTION: RoofOps normally
+           never creates CompanyCam projects. This flow offers a one-click CREATE
+           only when the WO is Foundation-linked AND no existing project matches
+           the address — a gated, audit-logged action (see js/servicemanager.js
+           smCreateCompanyCamProject + netlify/functions/companycam.js). -->
+      <div class="card" style="margin:12px 0;background:#FFF7F0;border:1px solid #E8A33D">
+        <div class="btnrow" style="margin:0;align-items:center">
+          <b style="font-size:13px">📸 CompanyCam project</b>
+          <span style="flex:1"></span>
+          <button class="btn" type="button" onclick="smCheckCompanyCam()" title="Search CompanyCam for a matching project by address/name">🔎 Check CompanyCam</button>
+        </div>
+        <div id="sm-pc-companycam" class="hint" style="margin:8px 0 0">Check for an existing CompanyCam project to link. Creating one is a deliberate action, offered only when Foundation-linked with no match.</div>
+      </div>
+
+      <!-- AI scope-prefill (Phase 2). Hidden until the endpoint reports a key is
+           configured (capability probe) — inert on keyless deploys. -->
+      <div class="btnrow" id="sm-pc-ai-row" style="display:none;margin:0 0 8px">
+        <button class="btn" type="button" onclick="smAiPrefillScope()" title="Read the proposal PDF and draft the scope for you to confirm">✨ AI: draft scope from proposal</button>
+      </div>
+
+      <div class="fld"><label>Assign to crew (foreman)</label><input type="text" id="sm-pc-crew" list="dl-smCrew" placeholder="e.g. Kelly Walker"></div>
+      <p class="hint" style="margin:2px 0 0">Leave crew blank to pre-create without dispatching yet — it'll be a saved work order you can assign later.</p>
+    </div>
+    <div style="padding:12px 16px;border-top:1px solid var(--line)">
+      <button class="btn primary" style="width:100%" onclick="smSubmitPrecreate()">Create &amp; Assign Work Order</button>
+    </div>
+  </div>
+</div>
+
+<!-- Service Manager: manual "link to Foundation job" search/picker. The auto
+     cross-reference refuses to guess on ambiguity and can't see an address at
+     all when the proposal came from email — this is the one-tap way through.
+     Reads the same cached job list as the Select Job picker (js/foundation.js
+     fdnLoadJobs); z-index sits above the pre-create modal it opens from. -->
+<div id="sm-fdn-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:10000" onclick="if(event.target===this)smCloseFoundationPicker()">
+  <div style="background:#fff;max-width:560px;margin:6vh auto;border-radius:8px;max-height:84vh;display:flex;flex-direction:column;overflow:hidden;width:96%">
+    <div style="background:#2E5E2E;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
+      <b class="cond" style="font-size:16px">🏗️ Link a Foundation job</b>
+      <span style="flex:1"></span>
+      <button class="btn" onclick="smCloseFoundationPicker()">Close</button>
+    </div>
+    <div style="padding:12px 16px 0">
+      <div class="fld" style="margin:0">
+        <label>Search by name, job #, customer or city</label>
+        <input type="text" id="sm-fdn-search" oninput="smRenderFoundationPicker()" placeholder="e.g. Prairie Farms, 17456, ACME">
+      </div>
+    </div>
+    <div id="sm-fdn-list" style="padding:12px 16px;overflow:auto"></div>
+  </div>
+</div>
+
+<!-- Service Manager: assign an EXISTING saved work order to a crew/day. -->
+<div id="sm-assign-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)smCloseAssignExisting()">
+  <div style="background:#fff;max-width:620px;margin:5vh auto;border-radius:8px;max-height:88vh;display:flex;flex-direction:column;overflow:hidden;width:96%">
+    <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
+      <b class="cond" style="font-size:17px">Assign Existing Work Order</b>
+      <span style="flex:1"></span>
+      <button class="btn" onclick="smCloseAssignExisting()">Close</button>
+    </div>
+    <div style="padding:14px 16px;overflow:auto">
+      <div class="grid">
+        <div class="fld"><label>Assign to crew (foreman)</label><input type="text" id="sm-assign-crew" list="dl-smCrew"></div>
+        <div class="fld"><label>Target date (crew day)</label><input type="date" id="sm-assign-date"></div>
+      </div>
+      <input type="text" id="sm-assign-search" placeholder="Search saved work orders by job, address, customer…" style="width:100%;margin:6px 0 10px;box-sizing:border-box" oninput="smRenderAssignList()">
+      <div id="sm-assign-list" class="hint">Loading work orders…</div>
+    </div>
+  </div>
+</div>
+
+<div id="cc-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)closeCC()">
+  <div style="background:#fff;max-width:740px;margin:4vh auto;border-radius:8px;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;width:94%">
+    <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
+      <b class="cond" style="font-size:17px" id="cc-title">Import from CompanyCam</b>
+      <span style="flex:1"></span>
+      <button class="btn" onclick="closeCC()">Close</button>
+    </div>
+    <div style="padding:14px 16px;overflow:auto" id="cc-body"></div>
+  </div>
+</div>
+
+<div id="rm-job-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)rmCloseJobPicker()">
+  <div style="background:#fff;max-width:640px;margin:4vh auto;border-radius:8px;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;width:94%">
+    <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
+      <b class="cond" style="font-size:17px">Select Job for RoofMapper</b>
+      <span style="flex:1"></span>
+      <button class="btn" onclick="rmCloseJobPicker()">Close</button>
+    </div>
+    <div style="padding:14px 16px;overflow:auto">
+      <input type="text" id="rm-job-search" placeholder="Search by job #, name, customer, city, or address…" style="width:100%;margin-bottom:10px;box-sizing:border-box" oninput="rmFilterJobPicker();">
+      <div id="rm-job-list" class="hint">Loading jobs…</div>
+    </div>
+  </div>
+</div>
+
+<div id="pin-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)closePinModal()">
+  <div style="background:#fff;max-width:760px;margin:3vh auto;border-radius:8px;max-height:94vh;display:flex;flex-direction:column;overflow:hidden;width:96%">
+    <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
+      <b class="cond" style="font-size:17px">Place Pin on Roof Map</b>
+      <span style="flex:1"></span>
+      <button class="btn" onclick="closePinModal()">Close</button>
+    </div>
+    <div id="pin-roof-picker" style="padding:10px 16px 0"></div>
+    <div id="pin-map" style="height:min(55vh,480px);width:100%;background:#ECEFF1"></div>
+    <div style="padding:12px 16px">
+      <p class="hint" id="pin-hint" style="margin:0 0 10px"></p>
+      <!-- Mark: "if the pin is inside Roof 4 but the dropdown says Roof
+           10, flag the mismatch rather than silently disagreeing." See
+           checkPinRoofMismatch() in openPinModalSatellite(). -->
+      <p id="pin-roof-mismatch-warning" style="display:none;margin:-4px 0 10px;color:#D64545;font-weight:600;font-size:13px"></p>
+      <div class="btnrow" style="margin:0">
+        <button class="btn" id="pin-mylocation-btn" onclick="useMyLocationForPin()" style="display:none">📍 Use My Location</button>
+        <button class="btn primary" onclick="savePinFromModal()">Save Pin</button>
+        <button class="btn danger" id="pin-clear-btn" onclick="clearPinFromModal()" style="display:none">Clear Pin</button>
+        <button class="btn" onclick="closePinModal()">Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Reusable signature-capture modal -- draw a signature, printed name +
+     auto date. Not tied to any one form; openSignaturePad({title, onSave,
+     existing}) is the generic entry point, first wired up for the Change
+     Order flow -- see "In-app signature capture" in DEV_NOTES.md. -->
+<div id="signature-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)closeSignaturePad()">
+  <div style="background:#fff;max-width:560px;margin:3vh auto;border-radius:8px;max-height:94vh;display:flex;flex-direction:column;overflow:hidden;width:96%">
+    <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
+      <b class="cond" style="font-size:17px" id="signature-modal-title">Signature</b>
+      <span style="flex:1"></span>
+      <button class="btn" onclick="closeSignaturePad()">Close</button>
+    </div>
+    <div style="padding:12px 16px">
+      <p class="hint" style="margin:0 0 8px">Sign with a finger or stylus below.</p>
+      <div style="border:1px solid var(--line);border-radius:6px;overflow:hidden;touch-action:none">
+        <canvas id="signature-canvas" style="display:block;width:100%;height:200px;background:#fff"></canvas>
+      </div>
+      <div class="btnrow" style="margin:8px 0 0">
+        <button class="btn" onclick="sigPadClear()">Clear</button>
+      </div>
+      <div class="fld" style="margin-top:12px">
+        <label>Print Name</label>
+        <input type="text" id="signature-print-name" placeholder="Signer's printed name">
+      </div>
+      <p class="hint" style="margin:6px 0 0">Date: <b id="signature-date-display"></b></p>
+      <div class="btnrow" style="margin:12px 0 0">
+        <button class="btn primary" onclick="sigPadSave()">Save Signature</button>
+        <button class="btn" onclick="closeSignaturePad()">Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="asset-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)closeAssetModal()">
+  <div style="background:#fff;max-width:760px;margin:3vh auto;border-radius:8px;max-height:94vh;display:flex;flex-direction:column;overflow:hidden;width:96%">
+    <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
+      <b class="cond" style="font-size:17px" id="asset-modal-title">Add Roof Feature</b>
+      <span style="flex:1"></span>
+      <button class="btn" onclick="closeAssetModal()">Close</button>
+    </div>
+    <div id="asset-map" style="height:min(45vh,380px);width:100%;background:#ECEFF1"></div>
+    <div style="padding:12px 16px">
+      <p class="hint" id="asset-hint" style="margin:0 0 10px"></p>
+      <div class="grid">
+        <div class="fld">
+          <label>Type</label>
+          <select id="asset-type"></select>
+        </div>
+        <div class="fld">
+          <label>Label (optional)</label>
+          <input type="text" id="asset-label" placeholder="e.g. Drain #3, RTU-2" list="dl-assetLabel" onblur="rememberFieldValue('assetLabel', this.value)">
+        </div>
+      </div>
+      <div class="fld">
+        <label>Notes (optional)</label>
+        <textarea id="asset-notes" rows="2"></textarea>
+      </div>
+      <div id="asset-drain-reference-fields" style="display:none">
+        <label style="font-size:12px;font-weight:600;display:block;margin:0 0 6px">Drain Reference Distances</label>
+        <div class="grid">
+          <div class="fld">
+            <label>Point 1</label>
+            <input type="text" id="asset-ref1-label" placeholder="e.g. North parapet">
+          </div>
+          <div class="fld">
+            <label>Distance 1 (ft)</label>
+            <input type="number" step="0.1" min="0" id="asset-ref1-distance" placeholder="0.0">
+          </div>
+          <div class="fld">
+            <label>Point 2</label>
+            <input type="text" id="asset-ref2-label" placeholder="e.g. West wall">
+          </div>
+          <div class="fld">
+            <label>Distance 2 (ft)</label>
+            <input type="number" step="0.1" min="0" id="asset-ref2-distance" placeholder="0.0">
+          </div>
+        </div>
+      </div>
+      <div id="asset-core-fields" style="display:none">
+        <label style="font-size:12px;font-weight:600;display:block;margin:0 0 6px">Core/Test Cut Results</label>
+        <div class="fld">
+          <label>Results</label>
+          <textarea id="asset-core-result" rows="2" placeholder="e.g. 60 mil TPO over 1/2 in HD cover board"></textarea>
+        </div>
+        <div class="fld">
+          <label>Photo Link / ID (optional)</label>
+          <input type="text" id="asset-core-photo-link" placeholder="Paste CompanyCam/photo URL or reference">
+        </div>
+      </div>
+      <div class="btnrow" style="margin:0">
+        <button class="btn primary" onclick="saveAssetFromModal()">Save Feature</button>
+        <button class="btn danger" id="asset-delete-btn" onclick="deleteAssetFromModal()" style="display:none">Delete</button>
+        <button class="btn" onclick="closeAssetModal()">Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="bp-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)closeBuildingPicker()">
+  <div style="background:#fff;max-width:640px;margin:4vh auto;border-radius:8px;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;width:94%">
+    <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
+      <b class="cond" style="font-size:17px">Select Job</b>
+      <span style="flex:1"></span>
+      <button class="btn" onclick="closeBuildingPicker()">Close</button>
+    </div>
+    <div style="padding:14px 16px;overflow:auto">
+      <input type="text" id="bp-search" placeholder="Search by job # or name (customer, address)…" style="width:100%;margin-bottom:10px;box-sizing:border-box" oninput="bpFilter(); bpDebouncedCcSearch(); fdnFilterPicker();">
+      <div style="display:flex;align-items:center;gap:8px;margin:4px 0 8px">
+        <h2 class="cond" style="font-size:14px;margin:0">Jobs</h2>
+        <span style="flex:1"></span>
+        <button class="btn" id="bp-fdn-refresh" onclick="fdnRefreshPicker(this)" title="Pull the newest active jobs from Foundation right now (e.g. a job you just created isn't showing yet)">🔄 Refresh from Foundation</button>
+      </div>
+      <div id="bp-job-list" class="hint">Loading…</div>
+      <h2 class="cond" style="font-size:14px;margin:16px 0 8px">Already in this app</h2>
+      <div id="bp-list" class="hint">Loading…</div>
+      <h2 class="cond" style="font-size:14px;margin:16px 0 8px">☁️ From CompanyCam (not yet a building here)</h2>
+      <div id="bp-cc-list" class="hint">Loading…</div>
+    </div>
+  </div>
+</div>
+
+<!-- Move/reassign a roof to a different building (Mark: traced a roof onto
+     the wrong building, no way out). Deliberately a SEPARATE, smaller modal
+     from #bp-modal above rather than a reuse -- bpSelectBuilding() is
+     hardwired to the work-order edit form's own fields, and the CompanyCam-
+     merge search there doesn't make sense here (the destination has to
+     already be a real building, not a CompanyCam-only project). Admin-gated
+     -- see archiveBuildingAdmin()/moveRoofToBuilding() and "Move/reassign a
+     roof to a different building" in DEV_NOTES.md. -->
+<div id="mr-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)closeMoveRoofModal()">
+  <div style="background:#fff;max-width:640px;margin:4vh auto;border-radius:8px;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;width:94%">
+    <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
+      <b class="cond" style="font-size:17px" id="mr-modal-title">Move Roof to a Different Building</b>
+      <span style="flex:1"></span>
+      <button class="btn" onclick="closeMoveRoofModal()">Close</button>
+    </div>
+    <div style="padding:14px 16px;overflow:auto">
+      <p class="hint" id="mr-hint" style="margin:0 0 10px"></p>
+      <input type="text" id="mr-search" placeholder="Search by building, customer, or address…" style="width:100%;margin-bottom:10px;box-sizing:border-box" oninput="mrFilter()">
+      <div id="mr-list" class="hint">Loading…</div>
+    </div>
+  </div>
+</div>
+
+<div id="rm-save-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)closeRmSaveModal()">
+  <div style="background:#fff;max-width:640px;margin:4vh auto;border-radius:8px;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;width:94%">
+    <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
+      <b class="cond" style="font-size:17px">Save Roof Outline to Building</b>
+      <span style="flex:1"></span>
+      <button class="btn" onclick="closeRmSaveModal()">Close</button>
+    </div>
+    <div style="padding:14px 16px;overflow:auto">
+      <div id="rm-continue-building-banner" style="display:none"></div>
+      <h2 class="cond" style="font-size:15px;margin:0 0 8px">Link to Existing Building</h2>
+      <input type="text" id="rm-bp-search" placeholder="Search by building, customer, or address…" style="width:100%;margin-bottom:10px;box-sizing:border-box" oninput="rmBpFilter(); rmBpDebouncedCcSearch();">
+      <div id="rm-bp-list" class="hint">Loading…</div>
+      <h2 class="cond" style="font-size:14px;margin:14px 0 8px">☁️ From CompanyCam (not yet a building here)</h2>
+      <div id="rm-bp-cc-list" class="hint">Loading…</div>
+      <div id="rm-roof-picker" style="margin-top:10px"></div>
+      <h2 class="cond" style="font-size:15px;margin:18px 0 8px">Or Create a New Building</h2>
+      <div class="grid">
+        <div class="fld"><label>Job Name / Building</label><input type="text" id="rm-new-jobname" placeholder="e.g. Westminster Plaza" list="dl-jobName" onblur="rememberFieldValue('jobName', this.value)"></div>
+        <div class="fld"><label>Bill To / Customer</label><input type="text" id="rm-new-billto" placeholder="e.g. ACME Property Group" list="dl-billTo" onblur="rememberFieldValue('billTo', this.value)"></div>
+      </div>
+      <div class="btnrow">
+        <button class="btn primary" onclick="rmCreateBuildingAndSave()">Create Building & Save Outline</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="rm-preview-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)closeRmPreviewModal()">
+  <div style="background:#fff;max-width:720px;margin:4vh auto;border-radius:8px;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;width:94%">
+    <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
+      <b class="cond" style="font-size:17px">Preview Export</b>
+      <span style="flex:1"></span>
+      <button class="btn" onclick="closeRmPreviewModal()">Close</button>
+    </div>
+    <div style="padding:14px 16px;overflow:auto">
+      <p class="hint" style="margin:0 0 10px">This is what SVG/PNG exports will look like (the PDF includes the same
+        info in its own page layout).</p>
+      <div id="rm-preview-svg-host" style="border:1px solid var(--line);border-radius:6px;overflow:auto;background:#fafbfc"></div>
+      <div class="btnrow" style="margin-top:12px">
+        <button class="btn primary" onclick="rmExportSVG()">Export SVG</button>
+        <button class="btn primary" onclick="rmExportPNG()">Export PNG</button>
+        <button class="btn primary" onclick="rmExportPDF()">Export PDF</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Ortho, secondary path: pick an existing CompanyCam photo to trace on
+     (local upload is primary -- see the "Trace on My Own Drone Image"
+     button in RoofMapper's initial capture card). -->
+<div id="rm-cc-ortho-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)closeRmCcOrthoModal()">
+  <div style="background:#fff;max-width:640px;margin:4vh auto;border-radius:8px;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;width:94%">
+    <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
+      <b class="cond" style="font-size:17px">Trace From a CompanyCam Photo</b>
+      <span style="flex:1"></span>
+      <button class="btn" onclick="closeRmCcOrthoModal()">Close</button>
+    </div>
+    <div style="padding:14px 16px;overflow:auto">
+      <p class="hint" style="margin:0 0 10px">Tap a photo to use it as the tracing base — same flat-canvas + Calibrate
+        flow as uploading your own image.</p>
+      <div class="cc-grid" id="rm-cc-ortho-grid"></div>
+      <div class="btnrow" style="margin-top:10px">
+        <button class="btn" id="rm-cc-ortho-more" style="display:none" onclick="rmLoadMoreCcOrthoPhotos()">Load More</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ================= Account (Auth Phase 1/5 -- see docs/AUTH_DESIGN.md).
+     Real Firebase Auth + custom claims are the ONLY gate on privileged
+     actions app-wide now -- there is no PIN left anywhere in this
+     app. ================= -->
+<div id="account-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)closeAccountModal()">
+  <div style="background:#fff;max-width:420px;margin:10vh auto;border-radius:8px;overflow:hidden;width:94%">
+    <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
+      <b class="cond" style="font-size:17px">Account</b>
+      <span style="flex:1"></span>
+      <button class="btn" onclick="closeAccountModal()">Close</button>
+    </div>
+    <div style="padding:14px 16px" id="account-modal-body"></div>
+  </div>
+</div>
+
+<!-- ================= User Management (Auth Phase 5 -- see
+     docs/AUTH_DESIGN.md). Reachable via Account > Manage Users, shown only
+     when signed in as owner/admin (client-side convenience only -- every
+     action here is independently re-checked server-side/rules-side
+     regardless of what this UI shows). ================= -->
+<div id="usermgmt-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)closeUserManagementModal()">
+  <div style="background:#fff;max-width:640px;margin:6vh auto;border-radius:8px;max-height:88vh;display:flex;flex-direction:column;overflow:hidden;width:94%">
+    <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
+      <b class="cond" style="font-size:17px">Manage Users</b>
+      <span style="flex:1"></span>
+      <button class="btn" onclick="closeUserManagementModal()">Close</button>
+    </div>
+    <div style="padding:14px 16px;overflow:auto" id="usermgmt-modal-body"></div>
+  </div>
+</div>
+
+<div id="activity-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)closeActivityModal()">
+  <div style="background:#fff;max-width:520px;margin:6vh auto;border-radius:8px;max-height:88vh;display:flex;flex-direction:column;overflow:hidden;width:94%">
+    <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
+      <b class="cond" style="font-size:17px">Log Activity</b>
+      <span style="flex:1"></span>
+      <button class="btn" onclick="closeActivityModal()">Close</button>
+    </div>
+    <div style="padding:14px 16px;overflow:auto">
+      <p class="hint" id="activity-roof-hint" style="margin:0 0 8px"></p>
+      <!-- Mark: "the roof's history is only worth something if the past can
+           be entered, not just the future." This is THE retroactive-backfill
+           path -- set the date it actually happened below, not today's date,
+           and the timeline orders by that real date, not when it was typed
+           in. See "Retroactive backfill: back-dating" in DEV_NOTES.md. -->
+      <p class="hint" style="margin:0 0 10px">Backfilling a past repair, inspection, drawing, or photo set? Set the
+        date it ACTUALLY happened below — the timeline sorts by that date, not today's.</p>
+      <div class="grid">
+        <div class="fld"><label>Activity Type</label><select id="activity-type"></select></div>
+        <div class="fld"><label>Date it happened</label><input type="date" id="activity-date"></div>
+      </div>
+      <div class="fld"><label>Technician / Author (optional)</label><input type="text" id="activity-technician" list="dl-technician" onblur="rememberFieldValue('technician', this.value)"></div>
+      <!-- "Record BOTH: the event date... and the entered-at date... plus
+           who added it — so the record is honest and auditable." entered-at
+           itself is automatic (Date.now(), see logActivityEvent()); this is
+           just the "who" when it's someone other than the technician typed
+           above (e.g. Mark backfilling old jobs on a tech's behalf). Falls
+           back to the Technician field when left blank -- the common case
+           of someone logging their own activity needs no second name typed. -->
+      <div class="fld"><label>Entered by (optional, if different from Technician)</label>
+        <input type="text" id="activity-entered-by" list="dl-technician"></div>
+      <div class="fld"><label>Notes / Description</label><textarea id="activity-notes" rows="4"></textarea></div>
+      <!-- "ATTACH EXISTING ARTIFACTS to a building/roof retroactively:
+           drawings, photos, documents, reports, orthos." Scoped to photos
+           for this pass (existing photos from a device library, not camera
+           capture -- these are things that already exist, being pulled in)
+           -- reuses the exact resizeImageFile() pattern Send Feedback's own
+           single-photo attach already uses, just multi-file. Drawings/
+           documents/orthos as their own distinct artifact types are a
+           real, flagged follow-up (see ROADMAP.md's "digital memory of
+           every roof" pillar), not silently out of scope. See "Retroactive
+           backfill: attach existing photos" in DEV_NOTES.md. -->
+      <div class="fld"><label>Attach existing photos (optional)</label>
+        <input type="file" id="activity-photo-input" accept="image/*" multiple style="display:none" onchange="attachActivityPhotos(this)">
+        <button class="btn" onclick="document.getElementById('activity-photo-input').click()">📷 Add Photos From Library</button>
+        <div id="activity-photos-status" style="margin-top:8px"></div>
+      </div>
+      <div class="btnrow">
+        <button class="btn primary" onclick="saveActivityFromModal()">Save Activity</button>
+        <button class="btn" onclick="closeActivityModal()">Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Manual counterpart to the automatic point-in-polygon retroactive pass
+     (rmAutoAssignExistingPinsToRoofs, the "🎯 Auto-Assign Photos to Roofs"
+     button) -- for whatever it flags ambiguous/outside-all, or simply gets
+     wrong, this lets Mark check several pins across ANY past report for
+     this building and move them to the right roof in one action, instead
+     of opening each finding's pin picker one at a time. Explicitly the one
+     piece flagged as not built in the original GPS auto-assign pass -- see
+     "GPS auto-assign photos to roofs" in DEV_NOTES.md. -->
+<div id="bulk-reassign-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)closeBulkReassignModal()">
+  <div style="background:#fff;max-width:640px;margin:4vh auto;border-radius:8px;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;width:94%">
+    <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
+      <b class="cond" style="font-size:17px">Bulk Reassign Pins to a Roof</b>
+      <span style="flex:1"></span>
+      <button class="btn" onclick="closeBulkReassignModal()">Close</button>
+    </div>
+    <div style="padding:14px 16px;overflow:auto" id="bulk-reassign-body"></div>
+  </div>
+</div>
+
+<div id="warranty-upload-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)closeWarrantyUploadModal()">
+  <div style="background:#fff;max-width:520px;margin:8vh auto;border-radius:8px;max-height:88vh;display:flex;flex-direction:column;overflow:hidden;width:94%">
+    <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
+      <b class="cond" style="font-size:17px">Upload Inspection Report</b>
+      <span style="flex:1"></span>
+      <button class="btn" onclick="closeWarrantyUploadModal()">Close</button>
+    </div>
+    <div style="padding:14px 16px;overflow:auto">
+      <p class="hint" style="margin:0 0 10px">Uploads a warranty/inspection PDF directly onto this building — files the same way an emailed report does (Warranty section + the linked CompanyCam project, if one exists).</p>
+      <div class="fld"><label>PDF file</label><input type="file" id="warranty-upload-file" accept="application/pdf,.pdf"></div>
+      <div class="fld" id="warranty-upload-supersede-fld" style="display:none">
+        <label>This replaces an existing report (optional)</label>
+        <select id="warranty-upload-supersede"><option value="">— New report, don't replace anything —</option></select>
+      </div>
+      <p class="hint" id="warranty-upload-status" style="margin:8px 0"></p>
+      <div class="btnrow" style="margin:10px 0 0"><button class="btn primary" onclick="submitWarrantyUpload()">Upload</button></div>
+    </div>
+  </div>
+</div>
+
+<div id="warranty-review-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)closeWarrantyReviewModal()">
+  <div style="background:#fff;max-width:720px;margin:4vh auto;border-radius:8px;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;width:94%">
+    <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
+      <b class="cond" style="font-size:17px">Inspection Report Review Queue</b>
+      <span style="flex:1"></span>
+      <button class="btn" onclick="closeWarrantyReviewModal()">Close</button>
+    </div>
+    <div style="padding:14px 16px;overflow:auto">
+      <p class="hint" style="margin:0 0 10px">Reports that couldn't be confidently matched to a building — assign each to the correct one, or dismiss it if it's not a real inspection report.</p>
+      <div id="warranty-review-list" class="hint">Loading…</div>
+    </div>
+  </div>
+</div>
+
+<!-- Re-file ONE work order under a different building. Distinct from the merge
+     below: this moves a single record, not two buildings together. See
+     openRelinkBuildingModal() in js/companycam.js. -->
+<div id="relink-bld-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)closeRelinkBuildingModal()">
+  <div class="card" style="max-width:600px;margin:6vh auto;max-height:88vh;overflow:auto">
+    <h2 class="cond">File Under a Different Building</h2>
+    <p class="hint" id="relink-bld-current" style="margin:0 0 4px"></p>
+    <p class="hint" style="margin:0 0 10px">Only THIS work order moves — its history entry and report follow it. No
+      building, roof, or other work order is changed. Closest matches (same CompanyCam project, Foundation job, or
+      address) are listed first.</p>
+    <div id="relink-bld-list" class="hint"></div>
+    <div class="btnrow" style="margin-top:12px">
+      <button class="btn" onclick="closeRelinkBuildingModal()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- Merge a duplicate building record into the one you have open. The building
+     you opened is the SURVIVOR; you pick the duplicate to absorb. See
+     openMergeBuildingModal() in js/companycam.js. -->
+<div id="merge-bld-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)closeMergeBuildingModal()">
+  <div class="card" style="max-width:600px;margin:6vh auto;max-height:88vh;overflow:auto">
+    <h2 class="cond">Merge Duplicate Building</h2>
+    <p class="hint" id="merge-bld-keep" style="margin:0 0 4px"></p>
+    <p class="hint" style="margin:0 0 10px">Pick the duplicate record to merge IN. Its roofs, base maps, timeline and
+      reports move onto the building above, and the duplicate is archived. Candidates share this building's CompanyCam
+      project, Foundation job, or address.</p>
+    <div id="merge-bld-list" class="hint"></div>
+    <div class="btnrow" style="margin-top:12px">
+      <button class="btn" onclick="closeMergeBuildingModal()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- Re-link a BUILDING to a CompanyCam project. Building History's "Move to
+     Different Building" re-points a ROOF at another RoofOps building; this
+     re-points the BUILDING at another CompanyCam project, which is what
+     decides where its photos and signed PDFs actually land. See
+     openCcProjectPicker() in js/companycam.js. -->
+<div id="cc-link-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)closeCcProjectPicker()">
+  <div class="card" style="max-width:560px;margin:6vh auto;max-height:88vh;overflow:auto">
+    <h2 class="cond">Link CompanyCam Project</h2>
+    <p class="hint" id="cc-link-current" style="margin:0 0 10px"></p>
+    <div class="fld">
+      <label>Search CompanyCam by address or site name</label>
+      <input type="text" id="cc-link-search" oninput="ccLinkModalOnInput()" placeholder="e.g. 1200 W Main St, or Prairie Farms">
+      <p class="hint" style="margin:4px 0 0">Prefilled from this building's address. The CompanyCam site name often
+        differs from the customer name, so address is matched first.</p>
+    </div>
+    <div id="cc-link-results" class="hint"></div>
+    <div class="btnrow" style="margin-top:12px">
+      <button class="btn" onclick="closeCcProjectPicker()">Close</button>
+    </div>
+  </div>
+</div>
+
+<div id="profile-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)closeRoofProfileModal()">
+  <div style="background:#fff;max-width:640px;margin:4vh auto;border-radius:8px;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;width:94%">
+    <div style="background:#263238;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px">
+      <b class="cond" style="font-size:17px">Edit Roof Profile</b>
+      <span style="flex:1"></span>
+      <button class="btn" onclick="closeRoofProfileModal()">Close</button>
+    </div>
+    <div style="padding:14px 16px;overflow:auto">
+      <div class="grid">
+        <div class="fld"><label>Roof System</label><input type="text" id="profile-roofsystem"></div>
+        <div class="fld"><label>Area (squares)</label><input type="number" id="profile-areasquares" min="0" step="0.1" placeholder="e.g. 34"></div>
+        <div class="fld"><label>Install Date</label><input type="date" id="profile-installdate"></div>
+        <div class="fld"><label>Estimated Age (years)</label><input type="number" id="profile-estimatedage"></div>
+        <div class="fld"><label>Health Score (0-100)</label><input type="number" id="profile-healthscore" min="0" max="100"></div>
+        <div class="fld"><label>Condition</label><select id="profile-condition"></select></div>
+        <div class="fld"><label>Manufacturer</label><input type="text" id="profile-manufacturer"></div>
+        <div class="fld"><label>Deck Type</label><input type="text" id="profile-decktype"></div>
+        <div class="fld"><label>Insulation Type</label><input type="text" id="profile-insulationtype"></div>
+        <div class="fld"><label>Warranty Provider</label><input type="text" id="profile-warrantyprovider"></div>
+        <div class="fld"><label>Warranty Expiration</label><input type="date" id="profile-warrantyexpiration"></div>
+        <div class="fld"><label>Warranty Status</label><select id="profile-warrantystatus"></select></div>
+        <div class="fld"><label>Estimated Remaining Life (years)</label><input type="number" id="profile-remaininglife"></div>
+      </div>
+      <div class="fld"><label>Drainage Notes</label><textarea id="profile-drainagenotes" rows="2"></textarea></div>
+      <div class="fld"><label>Customer Contacts</label><textarea id="profile-customercontacts" rows="2"></textarea></div>
+      <div class="fld"><label>Internal Notes</label><textarea id="profile-internalnotes" rows="2"></textarea></div>
+      <div class="fld"><label>Replacement History</label><textarea id="profile-replacementhistory" rows="2"></textarea></div>
+      <div class="btnrow">
+        <button class="btn primary" onclick="saveRoofProfileFromModal()">Save Profile</button>
+        <button class="btn" onclick="closeRoofProfileModal()">Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="photo-lightbox" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:10000" onclick="if(event.target===this)closePhotoLightbox()">
+  <button class="btn" style="position:absolute;top:14px;right:14px;z-index:1" onclick="closePhotoLightbox()">✕ Close</button>
+  <img id="photo-lightbox-img" class="photo-lightbox-img" src="">
+  <div class="photo-lightbox-zoombar" onclick="event.stopPropagation()">
+    <button class="btn" onclick="zoomLightboxBy(1/1.4)" title="Zoom out" aria-label="Zoom out">−</button>
+    <span class="zoom-pct" id="photo-lightbox-pct">100%</span>
+    <button class="btn" onclick="zoomLightboxBy(1.4)" title="Zoom in" aria-label="Zoom in">＋</button>
+    <button class="btn" onclick="resetLightboxZoom(true)" title="Reset zoom" aria-label="Reset zoom">Reset</button>
+  </div>
+  <div class="photo-lightbox-hint">Scroll or ± to zoom · drag to pan · double-click to toggle</div>
+</div>
+
+<!-- ================= Send Feedback (reachable from every screen) =================
+     Floating button lives outside every view's own div so showView() never
+     hides it. See "Send Feedback" in DEV_NOTES.md. -->
+<button id="feedback-fab" onclick="openFeedbackModal()" title="Send Feedback" aria-label="Send Feedback"
+  style="position:fixed;right:16px;bottom:74px;z-index:400;width:48px;height:48px;border-radius:50%;
+  background:#263238;color:#fff;border:none;font-size:22px;line-height:1;box-shadow:0 2px 8px rgba(0,0,0,.35);
+  cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0">💬</button>
+
+<div id="feedback-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999" onclick="if(event.target===this)closeFeedbackModal()">
+  <div style="background:#fff;max-width:440px;margin:40px auto;border-radius:8px;overflow:hidden;max-height:calc(100vh - 80px);display:flex;flex-direction:column">
+    <div style="background:#263238;color:#fff;padding:14px 16px;display:flex;justify-content:space-between;align-items:center;flex:none">
+      <b>Send Feedback</b>
+      <button class="btn" onclick="closeFeedbackModal()" style="background:transparent;color:#fff;border:1px solid rgba(255,255,255,.4)">Close</button>
+    </div>
+    <div style="padding:16px;overflow-y:auto">
+      <div class="fld">
+        <label>Type</label>
+        <div id="feedback-type-picker" class="btnrow" style="margin:0"></div>
+      </div>
+      <div class="fld">
+        <label>Comments</label>
+        <textarea id="feedback-comments" rows="4" placeholder="What's going on?"></textarea>
+      </div>
+      <div class="fld">
+        <label>Screenshot (optional)</label>
+        <div id="feedback-screenshot-status"></div>
+        <div class="btnrow" style="margin:6px 0 0">
+          <button class="btn" type="button" onclick="captureFeedbackScreenshot()">📸 Capture Screen</button>
+          <button class="btn" type="button" onclick="document.getElementById('feedback-photo-input').click()">🖼️ Attach Photo</button>
+        </div>
+        <input type="file" id="feedback-photo-input" accept="image/*" style="display:none" onchange="attachFeedbackPhoto(this)">
+      </div>
+      <p class="hint" id="feedback-context-hint" style="margin:10px 0 0"></p>
+    </div>
+    <div style="padding:12px 16px;border-top:1px solid var(--line);flex:none">
+      <button class="btn primary" style="width:100%" onclick="submitFeedback()">Submit Feedback</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<!-- Field-value memory / autocomplete datalists (see FIELD_HISTORY_KEYS in
+     the script below) -- one per shared suggestion pool, populated from
+     localStorage, referenced by list="dl-<key>" on the wired inputs. -->
+<datalist id="dl-jobName"></datalist>
+<datalist id="dl-location"></datalist>
+<datalist id="dl-billTo"></datalist>
+<datalist id="dl-contactName"></datalist>
+<datalist id="dl-contactPhone"></datalist>
+<datalist id="dl-technician"></datalist>
+<datalist id="dl-roofLocationDetail"></datalist>
+<datalist id="dl-repairItemNotes"></datalist>
+<datalist id="dl-materialName"></datalist>
+<datalist id="dl-materialUnit"></datalist>
+<!-- Shared roof-type suggestions for free-text roof-system inputs (the DPR
+     form's #dpr-roofSystem already points here) — populated from the same
+     shared list as the work-order select, see populateRoofSystemDatalist()
+     in js/workorders.js. NOT part of FIELD_HISTORY_KEYS' per-device memory:
+     this one is the app-wide list. -->
+<datalist id="dl-roofSystem"></datalist>
+<datalist id="dl-photoCaption"></datalist>
+<!-- Service Manager crew (foreman) picker — seeded from DPR_FOREMEN by
+     js/servicemanager.js (a "crew" is keyed by its foreman name, matching how
+     the DPR already identifies a crew). -->
+<datalist id="dl-smCrew"></datalist>
+<datalist id="dl-assetLabel"></datalist>
+<!-- Foremen roster for the Daily Progress Report's Foreman field. Populated
+     from DPR_FOREMEN in js/dpr.js (see dprPopulateForemen()). Empty until
+     Mark provides the roster — the field works as free text meanwhile, and
+     also remembers typed values via field-history autocomplete. -->
+<datalist id="dl-dprForeman"></datalist>
+<!-- DPR field pick-lists, populated from real records (existing buildings +
+     prior daily reports) by dprPopulateDataLists() in js/dpr.js — distinct
+     from the work-order form's device-history datalists so the two don't
+     clobber each other. -->
+<datalist id="dl-dprJobName"></datalist>
+<datalist id="dl-dprBillTo"></datalist>
+<datalist id="dl-dprLocation"></datalist>
+<datalist id="dl-dprJobNo"></datalist>
+<datalist id="dl-dprCrew"></datalist>
+<datalist id="dl-dprRentedType"></datalist>
+<datalist id="dl-dprToolboxTalks"></datalist>
+
+<!-- Modularized (see DEV_NOTES.md) -- index.html is now just markup + these
+     script tags in order. Plain globals, not ES modules: this app's
+     onclick="..." handlers call these functions directly from inline HTML,
+     which requires them attached to window. Load order among these seven
+     doesn't affect correctness (nothing here runs at parse time except
+     simple var/function declarations -- every real call happens later,
+     from a UI event, well after all scripts have loaded) -- core.js loads
+     first by convention since it defines the shared state/utilities every
+     other module's functions reference. The one exception is the tiny
+     inline <script> at the very end of this file (init bootstrap): that
+     one DOES run immediately at parse time and calls into several of
+     these modules, so it must load dead last, after all seven. -->
+<script src="js/core.js?v=20260804a"></script>
+<script src="js/companycam.js?v=20260804a"></script>
+<script src="js/foundation.js?v=20260804a"></script>
+<script src="js/export.js?v=20260804a"></script>
+<script src="js/photos.js?v=20260804a"></script>
+<script src="js/inspections.js?v=20260804a"></script>
+<!-- buildinghistory.js loads BEFORE history.js on purpose: history.js calls
+     renderBuildingMap(), which lives here. It used to live in workorders.js,
+     which loads after history.js -- worked only because the call is at
+     runtime. See docs/agents/WORKORDERS_SPLIT_PLAN.md Phase 1. -->
+<script src="js/buildinghistory.js?v=20260804a"></script>
+<script src="js/history.js?v=20260804a"></script>
+<script src="js/workorders.js?v=20260804a"></script>
+<script src="js/roofmapper.js?v=20260804a"></script>
+<script src="js/dpr.js?v=20260804a"></script>
+<!-- Service Manager workspace: proposals inbox, Foundation cross-ref, pre-create
+     work order, crew/day assignment, live dispatch board. Loaded after dpr.js
+     (reuses DPR_FOREMEN as the crew roster) and workorders.js (dispatch fields
+     live in collect()/fill()). See js/servicemanager.js header. -->
+<script src="js/servicemanager.js?v=20260804a"></script>
+<script src="js/roles-admin.js?v=20260804a"></script>
+<!-- AI training-label write path (see js/ailabels.js). Pure data plumbing,
+     no UI of its own and deliberately no callers yet — loaded so the flows
+     that confirm/correct an issue label (work orders, photos, inspections)
+     can call recordConfirmedLabel() as they wire up. -->
+<script src="js/ailabels.js?v=20260804a"></script>
+<!-- Help Center / tooltips / first-run walkthrough (see js/help.js). Loaded
+     last among the modules since it wraps showView() from the outside and
+     needs that + every other global already defined; builds its own DOM at
+     runtime, so no other markup in this file belongs to it. -->
+<script src="js/help.js?v=20260804a"></script>
+<script>
+"use strict";
+/* ================= init ================= */
+document.getElementById("hdr-logo").src = LOGO;
+loadGlobalPhotoSizePref();
+populateAllFieldDatalists();
+populateEmailPick();
+/* App opens on the home/launcher screen now, not straight into a blank
+   Leak/Service form — see "Home / launcher screen" in DEV_NOTES.md.
+   populateWoTypeSelect() runs here too (not just inside fill()) so the
+   Work Order Type dropdown has real options ready even if a user reaches
+   Preview/Save before ever picking a launcher tile or loading a saved
+   order — harmless either way, just extra safety. */
+populateWoTypeSelect();
+/* Roof-type select + shared datalist: builtins render immediately (plus any
+   types this device already cached), then the app-wide list refreshes from
+   Firestore in the background — see "shared roof-type list" in
+   js/workorders.js. */
+loadRoofTypes();
+populateWarrantyGuidelines();
+showView("home");
+renderSaved();
+updateAdminUI();
+updateServiceManagerUI();
+registerServiceWorker();
+</script>
+</body>
+</html>

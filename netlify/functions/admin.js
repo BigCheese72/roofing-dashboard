@@ -1,0 +1,1420 @@
+// Privileged admin operations. This is the ONLY place in the app allowed to
+// delete building/report/history records — firestore.rules (repo root)
+// blocks client-side deletes on those collections entirely, so the only
+// path to destroy data is through here, using the Firebase Admin SDK
+// (which is not subject to Firestore security rules).
+//
+// Auth Phase 5 (per Mark's direct order: "Kill the PIN and finish the
+// logins" -- see docs/AUTH_DESIGN.md): every action below is gated by a
+// VERIFIED caller's Firebase custom claims, resolved against the live
+// roles/{roleId} permission grid (requirePermission() in lib/authGuard.js).
+// The ADMIN_PIN environment variable is not read anywhere in this file --
+// there is no PIN check left to bypass, not even as a fallback. A missing
+// or insufficient token is rejected the same way regardless of anything
+// else in the request body.
+const { getDb, requirePermission, hostnameFromEvent } = require("./lib/authGuard");
+const { PERMISSION_KEYS, PERMISSION_SCOPES, isValidPermissionValue } = require("./lib/permissions");
+const { purgeLabelsForBuilding } = require("./lib/aiLabels");
+const {
+  TRIAGE_STATUSES, isValidTriageStatus, clampDiagnosis, normalizeBranchUrl, parseFeedbackQuery
+} = require("./lib/feedbackStatus");
+
+function resp(code, obj) {
+  return { statusCode: code, headers: { "Content-Type": "application/json" }, body: JSON.stringify(obj) };
+}
+
+function parseFeedbackReturnOptions(body) {
+  const src = body || {};
+  if (src.omitScreenshot === undefined || src.omitScreenshot === null || src.omitScreenshot === "") {
+    return { ok: true, omitScreenshot: false };
+  }
+  if (src.omitScreenshot === true || src.omitScreenshot === "true") {
+    return { ok: true, omitScreenshot: true };
+  }
+  if (src.omitScreenshot === false || src.omitScreenshot === "false") {
+    return { ok: true, omitScreenshot: false };
+  }
+  return { ok: false, error: "Invalid omitScreenshot" };
+}
+
+// Auth Phase 2/5 -- immutable audit log for admin.js's mutating actions
+// (see "Audit log" in docs/AUTH_DESIGN.md: append-only, rules deny
+// update/delete to EVERYONE including owner, written only via the Admin
+// SDK here, never subject to rules at all).
+//
+// caller is always a real verified identity now (requirePermission()
+// throws before any action body runs otherwise) -- no more optional
+// tryVerifyCaller()/"pin_only" degradation, since there's no PIN-only path
+// left for any of these actions to take. A logging failure NEVER blocks
+// the underlying admin action -- the write already happened; losing the
+// audit trail for one action is a lesser failure than silently reporting
+// the action itself failed when it didn't.
+async function writeAuditLog(db, caller, action, target, before, after) {
+  try {
+    await db.collection("audit_logs").doc().set({
+      ts: Date.now(),
+      actorUid: caller.uid,
+      actorEmail: caller.email,
+      actorRole: caller.owner ? "owner" : caller.role,
+      actorMethod: "claims",
+      action: action,
+      target: target,
+      before: before === undefined ? null : before,
+      after: after === undefined ? null : after
+    });
+  } catch (e) {
+    console.error("audit log write failed (action still succeeded):", action, e && e.message);
+  }
+}
+
+// Server-side mirror of getBuildingRoofs()/saveBuildingRoofs() in index.html
+// — see "Multiple roofs per building" in DEV_NOTES.md / DATA_MODEL.md for
+// the full design. Duplicated here (not shared code) because this function
+// runs under the Firebase Admin SDK, not the browser; keep both in sync by
+// hand if the roof shape ever changes.
+function getBuildingRoofsServer(bld) {
+  bld = bld || {};
+  if (Array.isArray(bld.roofs) && bld.roofs.length) return bld.roofs;
+  return [{
+    id: "roof_default",
+    label: "Roof 1",
+    roofSystem: bld.roofSystem || "",
+    roof_base_map_type: bld.roof_base_map_type || null,
+    roof_base_map_url: bld.roof_base_map_url || null,
+    roof_base_map_bounds: bld.roof_base_map_bounds || null,
+    roof_base_map_synthetic: bld.roof_base_map_synthetic || false,
+    roof_assets: bld.roof_assets || [],
+    roof_outlines: bld.roof_outlines || []
+  }];
+}
+
+// ---- Roof label renumbering ------------------------------------------------
+// Mark, 2026-07-20: after the Orr Street merge his roofs read "Roof 1 (2)".
+// That suffix is the merge's collision guard working correctly -- two buildings
+// each had a "Roof 1" and one had to give -- but it is ugly and it reads like a
+// duplicate. Renumber to a clean sequence instead.
+//
+// SAFE BY CONSTRUCTION: a roof's identity is its `id`. Every pin, base map,
+// outline, asset, checklist row (keyed by roofId+key) and history event points
+// at the id; NOTHING anywhere keys off the label. So this rewrites a display
+// string and moves no data. It renames -- it must never delete, because each of
+// these is a real roof carrying real geometry.
+//
+// CUSTOM NAMES ARE PRESERVED. A generic label is exactly "Roof <n>", optionally
+// with the merge's " (<m>)" suffix. Anything a human typed -- "North Wing",
+// "Boiler Room Roof" -- is left alone. Blindly renumbering everything to
+// Roof 1..N would destroy those, which is worse than the suffix it fixes.
+const GENERIC_ROOF_LABEL = /^\s*roof\s+\d+\s*(\(\s*\d+\s*\))?\s*$/i;
+function renumberRoofLabels(roofs) {
+  const list = Array.isArray(roofs) ? roofs : [];
+  // Exact custom labels are reserved so a renumber can never collide with one
+  // (belt-and-braces: a label matching GENERIC_ROOF_LABEL is by definition not
+  // custom, so this set cannot contain "Roof 2" -- but if the pattern is ever
+  // loosened, this keeps the invariant "no two roofs share a label").
+  const reserved = new Set();
+  list.forEach(r => {
+    const label = String((r && r.label) || "");
+    if (label && !GENERIC_ROOF_LABEL.test(label)) reserved.add(label.trim().toLowerCase());
+  });
+
+  const changes = [];
+  let next = 1;
+  const out = list.map(r => {
+    const from = String((r && r.label) || "");
+    if (!GENERIC_ROOF_LABEL.test(from)) return r; // custom name: untouched
+    let to;
+    do { to = "Roof " + next; next++; } while (reserved.has(to.trim().toLowerCase()));
+    reserved.add(to.trim().toLowerCase());
+    if (to === from) return r; // already correct: no write, no audit noise
+    changes.push({ roofId: (r && r.id) || null, from: from, to: to });
+    // Object.assign preserves geometry, pins, base map, assets, outlines --
+    // only the display label changes.
+    return Object.assign({}, r, { label: to, updatedAt: Date.now() });
+  });
+  return { roofs: out, changes: changes };
+}
+
+// Server-side mirror of resolveMergedBuildingId() in js/core.js. Must follow
+// the SAME chain the save path follows, or the audit below would judge a work
+// order against a different building than the one a save would actually write
+// to. Keep the two in sync by hand -- browser/CommonJS split, same discipline
+// as getBuildingRoofsServer().
+//
+// The `hop <= MAX` bound is deliberate and was a bug once: `hop <` followed 3
+// pointers but never inspected the 3rd target, so a chain of exactly 3
+// exhausted the budget and returned the archived husk -- worse than no guard.
+const MAX_MERGE_HOPS_SERVER = 3;
+async function resolveMergedBuildingIdServer(db, buildingId, cache) {
+  if (!buildingId) return buildingId;
+  let current = String(buildingId);
+  const seen = Object.create(null);
+  try {
+    for (let hop = 0; hop <= MAX_MERGE_HOPS_SERVER; hop++) {
+      if (seen[current]) return buildingId;           // cycle: keep the original
+      seen[current] = true;
+      let v = cache ? cache.get(current) : undefined;
+      if (v === undefined) {
+        const snap = await db.collection("buildings").doc(current).get();
+        v = snap.exists ? (snap.data() || {}) : null;
+        if (cache) cache.set(current, v);
+      }
+      if (!v) return current;                          // dangling: leave visible
+      // Only follow a pointer on a building that was ACTUALLY merged away.
+      if (!v.archived || !v.mergedIntoBuildingId) return current;
+      current = String(v.mergedIntoBuildingId);
+    }
+  } catch (e) { return buildingId; }
+  return buildingId;                                   // budget blown: original
+}
+
+// Server-side mirror of genId() in js/workorders.js. Same shape as every roof
+// id the app has ever minted (roof_<base36 time><5 random base36>).
+function genRoofId() {
+  return "roof_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+}
+// Which array positions share an id with an earlier entry. This is the defect
+// the re-id action exists to break: two roofs answering to one id.
+function duplicateRoofIdIndexes(roofs) {
+  const seen = Object.create(null), dupes = [];
+  (Array.isArray(roofs) ? roofs : []).forEach((r, i) => {
+    const id = r && r.id ? String(r.id) : "";
+    if (!id) return;
+    if (seen[id] !== undefined) dupes.push({ index: i, id: id, firstIndex: seen[id] });
+    else seen[id] = i;
+  });
+  return dupes;
+}
+
+exports.handler = async function (event) {
+  if (event.httpMethod !== "POST") {
+    return resp(405, { error: "Method not allowed" });
+  }
+  let body;
+  try { body = JSON.parse(event.body || "{}"); }
+  catch (e) { return resp(400, { error: "Bad request" }); }
+
+  try {
+    const db = getDb(hostnameFromEvent(event));
+
+    if (body.action === "delete_building") {
+      // Hard delete -- the "purge" tier per docs/AUTH_DESIGN.md ("No
+      // client deletes anywhere... purge has no client path at all --
+      // server function, callable only when the caller's claims have
+      // owner === true"). buildings.purge resolves to owner-only via the
+      // seed grid (admin is explicitly excluded), so this IS an
+      // owner-only check, just expressed as a data-driven permission
+      // rather than a hardcoded caller.owner test.
+      let caller;
+      try { caller = await requirePermission(event, "buildings.purge"); }
+      catch (e) { return resp(e.statusCode || 401, { error: e.message }); }
+
+      const buildingId = String(body.buildingId || "");
+      if (!buildingId) return resp(400, { error: "Missing buildingId" });
+      const [bldSnapBefore, evtSnap, repSnap] = await Promise.all([
+        db.collection("buildings").doc(buildingId).get(),
+        db.collection("building_history_events").where("buildingId", "==", buildingId).get(),
+        db.collection("reports").where("buildingId", "==", buildingId).get()
+      ]);
+      // "before" is a summary, not a full backup (name/address/customerId
+      // plus counts) -- enough to identify what was destroyed and by whom,
+      // not a restore mechanism; roofs[]/history content can be large and
+      // isn't what this log is for.
+      const bldBefore = bldSnapBefore.exists ? bldSnapBefore.data() : null;
+      // Deletion cascade for AI training labels (see lib/aiLabels.js +
+      // "AI training labels" in DEV_NOTES.md): label records reference this
+      // building's photos, which are customer property -- purge them BEFORE
+      // the building doc itself, so a mid-delete failure leaves the
+      // building (and a retry path) intact rather than orphaning labels
+      // behind a building that no longer exists.
+      const deletedLabels = await purgeLabelsForBuilding(db, buildingId);
+      const batch = db.batch();
+      evtSnap.forEach(d => batch.delete(d.ref));
+      repSnap.forEach(d => batch.delete(d.ref));
+      batch.delete(db.collection("buildings").doc(buildingId));
+      await batch.commit();
+      await writeAuditLog(db, caller, "delete_building", { collection: "buildings", id: buildingId },
+        bldBefore ? { name: bldBefore.name || null, address: bldBefore.address || null,
+          customerId: bldBefore.customerId || null, deletedEvents: evtSnap.size, deletedReports: repSnap.size,
+          deletedAiLabels: deletedLabels } : null,
+        null);
+      return resp(200, { ok: true, deletedEvents: evtSnap.size, deletedReports: repSnap.size, deletedAiLabels: deletedLabels });
+    }
+
+    if (body.action === "delete_history_event") {
+      // Same purge tier as delete_building above -- a history event is
+      // just as irreversible once gone, and there's no separate
+      // permission key for "delete one event" vs "delete a building";
+      // both are the same hard-delete danger class.
+      let caller;
+      try { caller = await requirePermission(event, "buildings.purge"); }
+      catch (e) { return resp(e.statusCode || 401, { error: e.message }); }
+
+      const eventId = String(body.eventId || "");
+      if (!eventId) return resp(400, { error: "Missing eventId" });
+      const evtSnapBefore = await db.collection("building_history_events").doc(eventId).get();
+      const evtBefore = evtSnapBefore.exists ? evtSnapBefore.data() : null;
+      const batch = db.batch();
+      batch.delete(db.collection("building_history_events").doc(eventId));
+      batch.delete(db.collection("reports").doc(eventId)); // same id — see logReportAndHistoryEvent in index.html
+      await batch.commit();
+      await writeAuditLog(db, caller, "delete_history_event", { collection: "building_history_events", id: eventId },
+        evtBefore ? { buildingId: evtBefore.buildingId || null, workOrderType: evtBefore.workOrderType || null } : null, null);
+      return resp(200, { ok: true });
+    }
+
+    if (body.action === "set_building_roof_map") {
+      // Building-wide admin setting -- settings.company tier (Admin +
+      // Owner, per docs/AUTH_DESIGN.md's settings split), not the owner-
+      // only purge tier above.
+      let caller;
+      try { caller = await requirePermission(event, "settings.company"); }
+      catch (e) { return resp(e.statusCode || 401, { error: e.message }); }
+
+      // Setting AND clearing a building's base map both go through here —
+      // it's a shared, building-wide setting (affects every future report's
+      // history map), not per-work-order draft data, so it gets the same
+      // admin-only treatment as the delete actions above rather than being
+      // left to a client-side-only check.
+      const buildingId = String(body.buildingId || "");
+      if (!buildingId) return resp(400, { error: "Missing buildingId" });
+      // roofId is optional — omitted (every call before this change) means
+      // "the building's first roof", same as before. Passing it targets a
+      // specific roof on a multi-roof building instead.
+      const roofId = body.roofId ? String(body.roofId) : null;
+      const type = body.roof_base_map_type ? String(body.roof_base_map_type) : null;
+      const url = body.roof_base_map_url ? String(body.roof_base_map_url) : null;
+      if (type && ["drone_ortho", "satellite", "roof_plan", "sketch"].indexOf(type) === -1) {
+        return resp(400, { error: "Invalid roof_base_map_type" });
+      }
+      // Purely cosmetic label, not read by any type-dispatch logic —
+      // RoofMapper's ortho-upload flow (see rmPersistOrthoBaseMap() in
+      // index.html) saves an uploaded drone image as type "sketch" (x/y
+      // pixel space, since its bounds are synthetic/Null Island, not real
+      // GPS) but still wants to say "drone photo" instead of "hand
+      // sketch" wherever this shows up. Only meaningful alongside a
+      // truthy type; explicitly false/absent otherwise.
+      const synthetic = type ? !!body.roof_base_map_synthetic : false;
+      let bounds = null;
+      if (type === "drone_ortho") {
+        const b = body.roof_base_map_bounds || {};
+        const n = Number(b.north), s = Number(b.south), e = Number(b.east), w = Number(b.west);
+        const valid = [n, s, e, w].every(v => Number.isFinite(v)) &&
+          n > s && n <= 90 && s >= -90 && e > w && e <= 180 && w >= -180;
+        if (!valid) {
+          return resp(400, { error: "roof_base_map_bounds must have valid north/south/east/west (north>south, east>west, in range)" });
+        }
+        bounds = { north: n, south: s, east: e, west: w };
+      }
+
+      const bldRef = db.collection("buildings").doc(buildingId);
+      const bldSnap = await bldRef.get();
+      const bld = bldSnap.exists ? bldSnap.data() : {};
+      const roofs = getBuildingRoofsServer(bld);
+      const foundIdx = roofId ? roofs.findIndex(r => r.id === roofId) : 0;
+      const idx = foundIdx >= 0 ? foundIdx : 0;
+      const roofBefore = { roof_base_map_type: roofs[idx].roof_base_map_type || null,
+        roof_base_map_url: roofs[idx].roof_base_map_url || null };
+      roofs[idx] = Object.assign({}, roofs[idx], {
+        roof_base_map_type: type,
+        roof_base_map_url: url,
+        roof_base_map_bounds: bounds,
+        roof_base_map_synthetic: synthetic,
+        updatedAt: Date.now()
+      });
+
+      const patch = { roofs, updatedAt: Date.now() };
+      // Mirror onto the legacy singular fields whenever the building still
+      // has exactly one roof — same dual-write rule as saveBuildingRoofs()
+      // client-side, so production (which only reads those legacy fields)
+      // keeps working for every still-single-roof building.
+      if (roofs.length === 1) {
+        patch.roof_base_map_type = type;
+        patch.roof_base_map_url = url;
+        patch.roof_base_map_bounds = bounds;
+        patch.roof_base_map_synthetic = synthetic;
+        patch.roof_base_map_updated_at = Date.now();
+      }
+      await bldRef.set(patch, { merge: true });
+      await writeAuditLog(db, caller, "set_building_roof_map", { collection: "buildings", id: buildingId, roofId: roofs[idx].id },
+        roofBefore, { roof_base_map_type: type, roof_base_map_url: url });
+      return resp(200, { ok: true });
+    }
+
+    if (body.action === "set_roof_profile") {
+      // Admin-editable facts ABOUT a roof (age, warranty, condition, etc.)
+      // — same settings.company tier as the base-map action above.
+      let caller;
+      try { caller = await requirePermission(event, "settings.company"); }
+      catch (e) { return resp(e.statusCode || 401, { error: e.message }); }
+
+      const buildingId = String(body.buildingId || "");
+      if (!buildingId) return resp(400, { error: "Missing buildingId" });
+      const roofId = body.roofId ? String(body.roofId) : null;
+      const rawProfile = (body.profile && typeof body.profile === "object") ? body.profile : {};
+      // Allow-list of fields — never let an arbitrary client payload write
+      // unexpected keys onto a roof, even though this whole action is
+      // already claims-gated.
+      // areaSquares (Mark, 2026-07-19): roofers size a roof in SQUARES (100
+      // sq ft), and on a multi-roof building "which one is the 34-square TPO"
+      // is how a roof actually gets identified in conversation. RoofMapper can
+      // only derive an area from a TRACED outline, which needs a base map --
+      // and the multi-roof buildings driving this work have no imagery yet, so
+      // a manually-recorded area is the only one they will have.
+      const ALLOWED_PROFILE_FIELDS = ["installDate", "estimatedAgeYears", "healthScore",
+        "condition", "manufacturer", "deckType", "insulationType", "warrantyProvider",
+        "warrantyExpiration", "warrantyStatus", "drainageNotes", "customerContacts",
+        "internalNotes", "replacementHistory", "estimatedRemainingLifeYears",
+        "areaSquares"];
+      const profile = {};
+      ALLOWED_PROFILE_FIELDS.forEach(k => { if (rawProfile[k] !== undefined) profile[k] = rawProfile[k]; });
+      profile.updatedAt = Date.now();
+      const roofSystem = body.roofSystem !== undefined ? String(body.roofSystem) : undefined;
+
+      const bldRef = db.collection("buildings").doc(buildingId);
+      const bldSnap = await bldRef.get();
+      const bld = bldSnap.exists ? bldSnap.data() : {};
+      const roofs = getBuildingRoofsServer(bld);
+      const foundIdx = roofId ? roofs.findIndex(r => r.id === roofId) : 0;
+      const idx = foundIdx >= 0 ? foundIdx : 0;
+      const profileBefore = roofs[idx].profile || null;
+      const updatedRoof = Object.assign({}, roofs[idx], { profile: profile });
+      if (roofSystem !== undefined) updatedRoof.roofSystem = roofSystem;
+      roofs[idx] = updatedRoof;
+
+      const patch = { roofs, updatedAt: Date.now() };
+      // profile is a brand-new concept — there's no legacy singular field
+      // for it to mirror into (production's old code has no notion of a
+      // roof profile at all). roofSystem, however, predates roofs[] and
+      // still needs the usual single-roof mirror for production parity.
+      if (roofs.length === 1 && roofSystem !== undefined) {
+        patch.roofSystem = roofSystem;
+      }
+      await bldRef.set(patch, { merge: true });
+      await writeAuditLog(db, caller, "set_roof_profile", { collection: "buildings", id: buildingId, roofId: roofs[idx].id },
+        profileBefore, profile);
+      return resp(200, { ok: true });
+    }
+
+    if (body.action === "list_feedback") {
+      // In-app Send Feedback backlog (💬 button, every screen — see
+      // "Send Feedback" in DEV_NOTES.md). firestore.rules blocks client
+      // reads on `feedback` entirely (create-only) -- this Admin-SDK read
+      // is the only way to list them. Gated on audit.view: the closest
+      // existing permission key for "sees internal operational backlog
+      // data," same tier as the audit log itself just below.
+      let caller;
+      try { caller = await requirePermission(event, "audit.view"); }
+      catch (e) { return resp(e.statusCode || 401, { error: e.message }); }
+
+      // Optional filters (all absent = the original "newest 200, unfiltered"
+      // behaviour the admin backlog card has always sent, so that view is
+      // unchanged by this feature). With filters, this is also the query the
+      // Dispatch feedback->auto-fix watcher polls -- see "Feedback auto-fix
+      // loop" in DEV_NOTES.md for the exact params.
+      const parsed = parseFeedbackQuery(body);
+      if (!parsed.ok) return resp(400, { error: parsed.error });
+      const q = parsed.query;
+      const returnOpts = parseFeedbackReturnOptions(body);
+      if (!returnOpts.ok) return resp(400, { error: returnOpts.error });
+
+      let ref = db.collection("feedback");
+      // Equality filters BEFORE the range/orderBy field -- that ordering is
+      // what lets one composite index (type, triageStatus, createdAt) serve
+      // every combination below. The indexes are in firestore.indexes.json
+      // and deploy per-context on every Netlify build; they are NOT
+      // click-to-create (see the header comment in that file).
+      if (q.type) ref = ref.where("type", "==", q.type);
+      if (q.triageStatus) ref = ref.where("triageStatus", "==", q.triageStatus);
+      if (q.sinceCreatedAt !== null) ref = ref.where("createdAt", ">", q.sinceCreatedAt);
+      const snap = await ref.orderBy("createdAt", "desc").limit(q.limit).get();
+      const items = snap.docs.map(d => {
+        const data = Object.assign({ id: d.id }, d.data());
+        if (returnOpts.omitScreenshot) delete data.screenshot;
+        return data;
+      });
+      // `query` is echoed back so the watcher can log exactly what it asked
+      // for, and `statuses` so it never has to hardcode the enum.
+      return resp(200, { ok: true, items, query: Object.assign({}, q, { omitScreenshot: returnOpts.omitScreenshot }), statuses: TRIAGE_STATUSES });
+    }
+
+    if (body.action === "update_feedback_status") {
+      // The WRITE half of the feedback -> auto-fix loop: Dispatch's watcher
+      // (and Mark, through the backlog card) moves a report along its triage
+      // lifecycle here.
+      //
+      // This is deliberately the ONLY writer. firestore.rules keeps
+      // `feedback` create-only for clients -- update/delete stay `if false`
+      // and this feature did NOT loosen them -- so a browser cannot forge a
+      // diagnosis or a branch link even though it can submit feedback.
+      //
+      // Gated on feedback.triage: list_feedback remains audit.view, but
+      // lifecycle writes use their own write-tier key so audit readers are
+      // not automatically allowed to move a report through the fix loop.
+      let caller;
+      try { caller = await requirePermission(event, "feedback.triage"); }
+      catch (e) { return resp(e.statusCode || 401, { error: e.message }); }
+
+      const feedbackId = String(body.feedbackId || "").trim();
+      if (!feedbackId) return resp(400, { error: "feedbackId is required" });
+      if (!isValidTriageStatus(body.triageStatus)) {
+        return resp(400, { error: "triageStatus must be one of: " + TRIAGE_STATUSES.join(", ") });
+      }
+
+      // null/"" clears the link; a non-allowlisted or non-https URL is a hard
+      // 400 rather than a silent drop -- the viewer renders this into an
+      // <a href>, and a watcher that thinks it published a branch link when
+      // it didn't is worse than a failed call it can retry.
+      const branchUrl = normalizeBranchUrl(body.branchUrl);
+      if (branchUrl === null) return resp(400, { error: "branchUrl must be an https:// github.com URL" });
+
+      const ref = db.collection("feedback").doc(feedbackId);
+      const snap = await ref.get();
+      if (!snap.exists) return resp(404, { error: "Feedback not found" });
+      const before = snap.data() || {};
+
+      // Field-by-field merge, never a whole-doc set: the submission fields
+      // (comments, screenshot, device, route...) are the evidence this loop
+      // runs on and must survive every status write. `agentDiagnosis` and
+      // `branchUrl` are only touched when the caller actually sent them, so
+      // a plain "new -> triaging" call can't blank an earlier diagnosis.
+      const patch = { triageStatus: body.triageStatus, updatedAt: Date.now() };
+      if (body.agentDiagnosis !== undefined) patch.agentDiagnosis = clampDiagnosis(body.agentDiagnosis);
+      if (body.branchUrl !== undefined) patch.branchUrl = branchUrl;
+      await ref.set(patch, { merge: true });
+
+      await writeAuditLog(db, caller, "update_feedback_status", { feedbackId },
+        { triageStatus: before.triageStatus || null, branchUrl: before.branchUrl || null },
+        { triageStatus: patch.triageStatus, branchUrl: patch.branchUrl === undefined ? (before.branchUrl || null) : patch.branchUrl });
+
+      return resp(200, { ok: true, feedbackId, triageStatus: patch.triageStatus, updatedAt: patch.updatedAt });
+    }
+
+    if (body.action === "list_audit_log") {
+      // audit.view -- matches the permission key exactly.
+      let caller;
+      try { caller = await requirePermission(event, "audit.view"); }
+      catch (e) { return resp(e.statusCode || 401, { error: e.message }); }
+
+      // ts is a plain Date.now() number (matches every audit_logs writer
+      // in this app), not a Firestore Timestamp, so no server->client
+      // conversion is needed here the way there would be for a
+      // serverTimestamp() field.
+      const snap = await db.collection("audit_logs").orderBy("ts", "desc").limit(200).get();
+      const items = snap.docs.map(d => Object.assign({ id: d.id }, d.data()));
+      return resp(200, { ok: true, items });
+    }
+
+    if (body.action === "archive_building") {
+      let caller;
+      try { caller = await requirePermission(event, "buildings.archive"); }
+      catch (e) { return resp(e.statusCode || 401, { error: e.message }); }
+
+      // Replaces the old hard-delete-only path (delete_building above,
+      // "can't be undone") with a recoverable soft delete -- Mark's actual
+      // need was "get a wrong/junk building out of my way," not "destroy
+      // its history forever," and the old path was the ONLY option, which
+      // meant real history sometimes got destroyed just to clear clutter.
+      // Purely an additive flag -- never touches roofs[]/companyCamProjectId/
+      // building_history_events/reports at all, so nothing about the
+      // building's data changes, only its visibility in default lists (see
+      // renderHistoryList()/rmBpRender()/etc. in index.html, all of which
+      // now filter archived out by default). See "Building archive" in
+      // DEV_NOTES.md.
+      const buildingId = String(body.buildingId || "");
+      if (!buildingId) return resp(400, { error: "Missing buildingId" });
+      const bldRef = db.collection("buildings").doc(buildingId);
+      const bldSnap = await bldRef.get();
+      if (!bldSnap.exists) return resp(404, { error: "Building not found" });
+      const bldBefore = bldSnap.data();
+      await bldRef.set({ archived: true, archivedAt: Date.now() }, { merge: true });
+      await writeAuditLog(db, caller, "archive_building", { collection: "buildings", id: buildingId },
+        { archived: !!bldBefore.archived, name: bldBefore.name || null }, { archived: true });
+      return resp(200, { ok: true });
+    }
+
+    if (body.action === "unarchive_building") {
+      let caller;
+      try { caller = await requirePermission(event, "buildings.restore"); }
+      catch (e) { return resp(e.statusCode || 401, { error: e.message }); }
+
+      const buildingId = String(body.buildingId || "");
+      if (!buildingId) return resp(400, { error: "Missing buildingId" });
+      const bldRef = db.collection("buildings").doc(buildingId);
+      const bldSnap = await bldRef.get();
+      if (!bldSnap.exists) return resp(404, { error: "Building not found" });
+      await bldRef.set({ archived: false, archivedAt: null }, { merge: true });
+      await writeAuditLog(db, caller, "unarchive_building", { collection: "buildings", id: buildingId },
+        { archived: true }, { archived: false });
+      return resp(200, { ok: true });
+    }
+
+    if (body.action === "merge_buildings") {
+      // Mark, 106 Orr St, 2026-07-19: one real building ended up as TWO
+      // records -- "(unnamed project)" holding the base map and all 4 roofs,
+      // and "Orr St Studios - Roof Eval" holding the correct name and nothing
+      // else. Neither record is usable on its own, and there was no way to
+      // combine them.
+      //
+      // This is move_roof generalised from one roof to a whole building: same
+      // multi-collection re-pointing, same settings.company tier, same audit
+      // discipline. It moves EVERY roof (each carrying its own base map,
+      // assets and outlines), re-points EVERY history event and report --
+      // unfiltered by roofId, since events predating roofs[] carry none -- and
+      // carries the CompanyCam/Foundation links forward before archiving the
+      // source. Archive rather than delete, matching archive_building: a merge
+      // that turns out wrong must be inspectable afterwards.
+      let caller;
+      try { caller = await requirePermission(event, "settings.company"); }
+      catch (e) { return resp(e.statusCode || 401, { error: e.message }); }
+
+      const sourceBuildingId = String(body.sourceBuildingId || "");
+      const destBuildingId = String(body.destBuildingId || "");
+      if (!sourceBuildingId || !destBuildingId) {
+        return resp(400, { error: "Missing sourceBuildingId or destBuildingId" });
+      }
+      if (sourceBuildingId === destBuildingId) return resp(400, { error: "Source and destination are the same building" });
+
+      const [srcSnap, dstSnap] = await Promise.all([
+        db.collection("buildings").doc(sourceBuildingId).get(),
+        db.collection("buildings").doc(destBuildingId).get()
+      ]);
+      if (!srcSnap.exists) return resp(404, { error: "Source building not found" });
+      if (!dstSnap.exists) return resp(404, { error: "Destination building not found" });
+      const srcBld = srcSnap.data();
+      const dstBld = dstSnap.data();
+
+      // Only move roofs that were really stored. getBuildingRoofsServer()
+      // synthesises a default roof for a building that never had roofs[], and
+      // merging that phantom would plant an empty "Roof 1" on the survivor.
+      const srcRoofs = Array.isArray(srcBld.roofs) ? srcBld.roofs.slice() : [];
+      const dstRoofs = Array.isArray(dstBld.roofs) ? dstBld.roofs.slice() : getBuildingRoofsServer(dstBld).slice();
+
+      // Same auto-suffix rule move_roof uses, applied across the whole batch so
+      // two roofs both called "Roof 1" cannot collide on the survivor.
+      // RETRY SAFETY. sourcePatch now commits LAST, so a chunk-2 failure leaves
+      // the source roofs intact -- which is the point, the merge stays
+      // retryable. But a retry then re-reads those roofs and would append them
+      // to a destination that already received them in the failed run, and the
+      // label auto-suffix below would helpfully rename the copies to "Roof 1
+      // (2)" instead of catching the collision. Skip any roof already present
+      // by id so a merge is idempotent.
+      const dstRoofIds = {};
+      dstRoofs.forEach(r => { if (r && r.id) dstRoofIds[r.id] = true; });
+      const roofsToMove = srcRoofs.filter(r => !(r && r.id && dstRoofIds[r.id]));
+      const taken = dstRoofs.map(r => String(r.label || "").trim().toLowerCase());
+      const movedRoofs = roofsToMove.map(r => {
+        let label = r.label || "Roof";
+        if (taken.indexOf(label.trim().toLowerCase()) !== -1) {
+          let n = 2, candidate;
+          do { candidate = label + " (" + n + ")"; n++; }
+          while (taken.indexOf(candidate.trim().toLowerCase()) !== -1);
+          label = candidate;
+        }
+        taken.push(label.trim().toLowerCase());
+        return Object.assign({}, r, { label: label, updatedAt: Date.now() });
+      });
+      // The suffix above is the COLLISION GUARD -- it guarantees two roofs
+      // never share a label mid-merge. Renumbering then turns the result into
+      // a clean sequence so the survivor reads "Roof 1..N" rather than
+      // "Roof 1 (2)" (Mark, after Orr Street). Order matters: de-collide
+      // first, renumber second. Custom names survive both steps.
+      const merged = renumberRoofLabels(dstRoofs.concat(movedRoofs));
+      const newDestRoofs = merged.roofs;
+      const roofRenumbering = merged.changes;
+
+      // Best name wins. The survivor is chosen by the caller, but its name may
+      // still be the placeholder -- so prefer, in order: an explicit name the
+      // caller passed, the survivor's own real name, the source's real name,
+      // then whatever is left. "(unnamed project)" is mapProject()'s display
+      // fallback for a nameless CompanyCam project and must never win.
+      const PLACEHOLDER = "(unnamed project)";
+      const realName = (n) => (n && String(n).trim() && String(n).trim() !== PLACEHOLDER) ? String(n).trim() : "";
+      const chosenName = realName(body.survivingName) || realName(dstBld.name) ||
+        realName(srcBld.name) || String(dstBld.name || srcBld.name || "").trim();
+
+      const destPatch = { roofs: newDestRoofs, updatedAt: Date.now() };
+      if (chosenName) destPatch.name = chosenName;
+      // Carry links forward ONLY where the survivor has none -- a merge must
+      // never silently re-point a building that already has its own link.
+      if (!dstBld.companyCamProjectId && srcBld.companyCamProjectId) {
+        destPatch.companyCamProjectId = srcBld.companyCamProjectId;
+        destPatch.companyCamProjectName = srcBld.companyCamProjectName || "";
+      }
+      if (!dstBld.foundationJobNo && srcBld.foundationJobNo) {
+        destPatch.foundationJobNo = srcBld.foundationJobNo;
+        destPatch.foundationCustomerNo = srcBld.foundationCustomerNo || null;
+        destPatch.foundationAddress = srcBld.foundationAddress || "";
+      }
+      if (!dstBld.location && srcBld.location) destPatch.location = srcBld.location;
+      // Legacy single-roof mirror fields, same convention as move_roof.
+      if (newDestRoofs.length === 1) {
+        const only = newDestRoofs[0];
+        destPatch.roofSystem = only.roofSystem || "";
+        destPatch.roof_base_map_type = only.roof_base_map_type || null;
+        destPatch.roof_base_map_url = only.roof_base_map_url || null;
+        destPatch.roof_base_map_bounds = only.roof_base_map_bounds || null;
+        destPatch.roof_base_map_synthetic = only.roof_base_map_synthetic || false;
+        destPatch.roof_assets = only.roof_assets || [];
+        destPatch.roof_outlines = only.roof_outlines || [];
+      }
+
+      const sourcePatch = {
+        roofs: [], archived: true, archivedAt: Date.now(),
+        mergedIntoBuildingId: destBuildingId, updatedAt: Date.now(),
+        roofSystem: "", roof_base_map_type: null, roof_base_map_url: null,
+        roof_base_map_bounds: null, roof_base_map_synthetic: false,
+        roof_assets: [], roof_outlines: []
+      };
+
+      // Unfiltered by roofId on purpose: a building's history includes events
+      // written before roofs[] existed, which carry no roofId at all. Filtering
+      // by roof would strand exactly the oldest history a merge is meant to
+      // rescue.
+      // Mark, KOMU 2026-07-19: this list used to be events + reports ONLY, so a
+      // merge left every saved WORK ORDER still pointing at the loser. The
+      // inspection he was running resolved to the archived record -- which the
+      // merge had just emptied (roofs: []), so getBuildingRoofs() synthesised a
+      // single phantom "Roof 1" with no base map and no history. The record
+      // looked broken; it was orphaned.
+      //
+      // Every collection that stores a buildingId belongs here. Archived/voided
+      // work orders are re-pointed too (Mark: keep it all consistent) -- an
+      // archived WO still aimed at an emptied building is a landmine the day
+      // someone restores it.
+      const [evtSnap, repSnap, woSnap, dprSnap] = await Promise.all([
+        db.collection("building_history_events").where("buildingId", "==", sourceBuildingId).get(),
+        db.collection("reports").where("buildingId", "==", sourceBuildingId).get(),
+        db.collection("workorders").where("buildingId", "==", sourceBuildingId).get(),
+        db.collection("daily_progress_reports").where("buildingId", "==", sourceBuildingId).get()
+      ]);
+      const reassign = {
+        buildingId: destBuildingId, buildingName: chosenName || dstBld.name || "",
+        customerId: dstBld.customerId || srcBld.customerId || null,
+        customerName: dstBld.customerName || srcBld.customerName || ""
+      };
+      /* WORK ORDERS NEED MORE THAN THE POINTER -- this was live data loss.
+         A work order carries the building's identity a SECOND time, in its own
+         editable fields: jobName, location, billTo. Re-pointing buildingId
+         while leaving those holding the LOSER's values sets a trap that springs
+         on the next ordinary save:
+             ensureCustomerAndBuilding() resolves the stored buildingId, sees
+             the SURVIVOR (which was not itself merged away, so
+             redirectedByMerge is false), concludes ownsBuilding === true, and
+             writes patch.name = o.jobName / patch.location = o.location /
+             patch.customerName from o.billTo straight onto the survivor.
+         The survivor is then renamed to the loser -- "Orr Street Studios"
+         becomes "KOMU" -- and its address is overwritten. Nothing warns; it
+         looks like a normal save.
+         So the work-order patch also carries the SURVIVOR's identity, which is
+         what relinkModalPick() already does when a user re-links by hand. Same
+         three fields, same source of truth.
+         Deliberately NOT applied to history events / reports / DPRs: they do
+         not carry these editable identity fields, and adding them would write
+         stray keys onto documents that never had them.
+         NOT roofSystem: a work order's roofSystem describes the roof being
+         worked, which legitimately differs per order -- copying it would be a
+         different bug, not a fix. (That the save path also writes roofSystem
+         onto the building is a separate pre-existing concern.) */
+      const woReassign = Object.assign({}, reassign, {
+        jobName: chosenName || dstBld.name || "",
+        location: dstBld.location || "",
+        billTo: dstBld.customerName || srcBld.customerName || ""
+      });
+      // Firestore caps a batch at 500 writes; chunk so a building with a long
+      // history merges rather than failing at the limit.
+      const writes = [];
+      writes.push({ ref: db.collection("buildings").doc(destBuildingId), data: destPatch });
+      evtSnap.forEach(d => writes.push({ ref: d.ref, data: reassign }));
+      repSnap.forEach(d => writes.push({ ref: d.ref, data: reassign }));
+      // Work orders and DPRs carry buildingId AND the denormalised name, same
+      // as the history docs -- re-point both so a reopened record resolves to
+      // the survivor and reads with the survivor's name.
+      woSnap.forEach(d => writes.push({ ref: d.ref, data: woReassign }));
+      dprSnap.forEach(d => writes.push({ ref: d.ref, data: reassign }));
+      // The DESTRUCTIVE patch goes LAST, deliberately. Chunks commit
+      // sequentially and are not atomic across chunk boundaries, and adding
+      // work orders + DPRs is exactly what pushes a busy building past 400
+      // writes into multiple chunks. With sourcePatch first, a chunk-2 failure
+      // (function timeout, DEADLINE_EXCEEDED) left the source already emptied
+      // and archived while records still pointed at it -- unrecoverable
+      // without a hand fix, and not even audit-logged, since that write comes
+      // after. Last means a mid-way failure leaves the source INTACT and the
+      // whole merge safely retryable.
+      writes.push({ ref: db.collection("buildings").doc(sourceBuildingId), data: sourcePatch });
+      for (let i = 0; i < writes.length; i += 400) {
+        const batch = db.batch();
+        writes.slice(i, i + 400).forEach(w => batch.set(w.ref, w.data, { merge: true }));
+        await batch.commit();
+      }
+
+      await writeAuditLog(db, caller, "merge_buildings",
+        { collection: "buildings", id: sourceBuildingId },
+        { sourceBuildingId, sourceName: srcBld.name || null, sourceRoofs: srcRoofs.length },
+        { destBuildingId, destName: chosenName || dstBld.name || null,
+          movedRoofs: movedRoofs.length, movedEvents: evtSnap.size, movedReports: repSnap.size,
+          movedWorkOrders: woSnap.size, movedDprs: dprSnap.size,
+          // old->new roof labels: a report printed before the merge names the
+          // pre-renumber label, so the mapping has to be recoverable.
+          roofRenumbering: roofRenumbering });
+      return resp(200, { ok: true, movedRoofs: movedRoofs.length,
+        movedEvents: evtSnap.size, movedReports: repSnap.size,
+        movedWorkOrders: woSnap.size, movedDprs: dprSnap.size,
+        roofRenumbering: roofRenumbering,
+        survivingName: chosenName });
+    }
+
+    if (body.action === "audit_stale_workorder_identity") {
+      let caller;
+      try { caller = await requirePermission(event, "settings.company"); }
+      catch (e) { return resp(e.statusCode || 401, { error: e.message }); }
+
+      /* READ-ONLY. Finds work orders that would RENAME OR OVERWRITE their
+         building on an ordinary save -- the Orr St near-miss, generalised.
+
+         A work order carries the building's identity a second time, in its own
+         editable jobName / location / billTo. Merges before the woReassign fix
+         re-pointed buildingId but left those three holding the merged-away
+         building's values, so the next save wrote them back onto the survivor.
+
+         WHY A PLAIN MISMATCH IS NOT ENOUGH. ensureCustomerAndBuilding() only
+         writes those fields when ownsBuilding is true, and ownsBuilding is
+         false whenever the stored buildingId RESOLVES to a different building
+         (redirectedByMerge). So a work order still pointing at the loser is
+         already protected -- the redirect guard stops it. The dangerous set is
+         narrower: stored id === resolved id AND the fields disagree. Flagging
+         plain mismatches would over-report and send someone rewriting records
+         that are in no danger.
+
+         WRITES NOTHING. There is no apply path on this action at all -- not a
+         guarded one, none. The backfill is a separate, still-unbuilt action
+         (see the design note below) that needs Mark's sign-off. */
+      const db = getDb();
+      // Bounded: Netlify functions cap around 26s. Page with `startAfter`.
+      const limit = Math.min(Math.max(Number(body.limit) || 500, 1), 2000);
+      const startAfter = body.startAfter ? String(body.startAfter) : null;
+      const includeRows = body.includeRows !== false;
+
+      let q = db.collection("workorders").orderBy("__name__").limit(limit);
+      if (startAfter) q = q.startAfter(startAfter);
+      const woSnap = await q.get();
+
+      const bldCache = new Map();   // one read per building, not per work order
+      const rows = [], byBuilding = Object.create(null);
+      let scanned = 0, noBuilding = 0, missingBuilding = 0, redirected = 0, stale = 0, ok = 0;
+
+      for (const d of woSnap.docs) {
+        scanned++;
+        const wo = d.data() || {};
+        const storedId = wo.buildingId ? String(wo.buildingId) : "";
+        if (!storedId) { noBuilding++; continue; }
+
+        const resolvedId = await resolveMergedBuildingIdServer(db, storedId, bldCache);
+        /* redirectedByMerge -> ownsBuilding false -> the save writes NOTHING to
+           the building. Not at risk, however stale the fields look. */
+        if (resolvedId !== storedId) { redirected++; continue; }
+
+        let bld = bldCache.get(resolvedId);
+        if (bld === undefined) {
+          const bs = await db.collection("buildings").doc(resolvedId).get();
+          bld = bs.exists ? (bs.data() || {}) : null;
+          bldCache.set(resolvedId, bld);
+        }
+        if (!bld) { missingBuilding++; continue; }
+
+        // Compared exactly as the save path writes them (js/core.js):
+        //   patch.name = (o.jobName||"").trim()
+        //   patch.location = o.location || ""
+        //   patch.customerName = custName from o.billTo
+        const woName = String(wo.jobName || "").trim();
+        const woLoc  = String(wo.location || "");
+        const woBill = String(wo.billTo || "");
+        const bName  = String(bld.name || "").trim();
+        const bLoc   = String(bld.location || "");
+        const bCust  = String(bld.customerName || "");
+
+        const nameMismatch = woName !== bName;
+        const locMismatch  = woLoc !== bLoc;
+        const billMismatch = woBill !== bCust;
+        const safeToSave = !(nameMismatch || locMismatch || billMismatch);
+        if (safeToSave) { ok++; continue; }
+
+        stale++;
+        byBuilding[resolvedId] = (byBuilding[resolvedId] || 0) + 1;
+        if (includeRows && rows.length < 200) {
+          rows.push({
+            workOrderId: d.id, buildingId: resolvedId,
+            buildingName: bName, buildingLocation: bLoc, buildingCustomer: bCust,
+            woJobName: woName, woLocation: woLoc, woBillTo: woBill,
+            wouldOverwrite: [nameMismatch && "name", locMismatch && "location",
+                             billMismatch && "customerName"].filter(Boolean),
+            SAFE_TO_SAVE: false
+          });
+        }
+      }
+
+      const lastId = woSnap.docs.length ? woSnap.docs[woSnap.docs.length - 1].id : null;
+      return resp(200, {
+        ok: true, readOnly: true, buildingId: null,
+        scanned, limit,
+        counts: {
+          staleWorkOrders: stale,
+          buildingsAffected: Object.keys(byBuilding).length,
+          safe: ok,
+          skippedRedirected: redirected,
+          skippedNoBuildingId: noBuilding,
+          skippedMissingBuilding: missingBuilding
+        },
+        perBuilding: byBuilding,
+        rows: includeRows ? rows : undefined,
+        rowsTruncated: includeRows && stale > rows.length,
+        nextStartAfter: woSnap.docs.length === limit ? lastId : null,
+        note: woSnap.docs.length === limit
+          ? "More work orders remain -- call again with startAfter set to nextStartAfter and add the counts up."
+          : "Scan complete for this collection."
+      });
+    }
+
+    /* ---- DESIGN NOTE: the backfill this audit feeds (NOT BUILT) --------------
+       Deliberately not implemented until Mark signs off, because unlike the
+       roof tools it rewrites FIELDS A HUMAN TYPED.
+
+       Shape it would take, matching the guardrail discipline already here:
+         action: "backfill_stale_workorder_identity"
+         * DRY RUN unless apply === true, same as every other action here.
+         * Operates on ONE buildingId at a time, never the whole collection --
+           the blast radius of a bad run should be one site, not the database.
+         * Re-uses this audit's exact predicate (stored === resolved AND a
+           field disagrees) so it can only ever touch rows the audit flagged.
+         * Writes ONLY jobName / location / billTo, from the SURVIVOR building.
+           Never roofSystem (legitimately per-order), never buildingId (already
+           correct by the predicate).
+         * Audit-logs the full before/after per work order, so it is reversible.
+
+       THE JUDGEMENT CALL FOR MARK, which is why this stays unbuilt: a work
+       order's jobName is not always meant to equal the building name. A tech
+       may have typed a job-specific label ("Orr St - north wing tear-off").
+       Overwriting that with the building name is data loss of a different
+       kind. The audit's rows[] let him see real examples before deciding
+       whether to rewrite all three fields, only location/billTo, or to fix
+       them case by case. -------------------------------------------------- */
+
+    if (body.action === "remove_building_roof_by_index") {
+      let caller;
+      try { caller = await requirePermission(event, "settings.company"); }
+      catch (e) { return resp(e.statusCode || 401, { error: e.message }); }
+
+      /* Removes an EMPTY DUPLICATE roofs[] entry -- the phantom left by the Orr
+         St merge, where two entries both answered to "roof_default" and the
+         second carried nothing. Deleting it resolves the collision outright:
+         one roof_default remains, ids are unambiguous again, and Rename / Move
+         / RoofMapper stop silently targeting index 0.
+
+         This is the only destructive roof operation in the codebase, so it is
+         fenced on three sides:
+           1. addressed strictly BY ARRAY INDEX (the id is ambiguous by
+              definition -- that is the whole defect),
+           2. the target must be a DUPLICATE OCCURRENCE of an id, never the
+              first one,
+           3. the target must be EMPTY.
+         Any of the three failing is a hard refusal, not a warning. */
+      const buildingId = String(body.buildingId || "");
+      if (!buildingId) return resp(400, { error: "Missing buildingId" });
+      if (!Number.isInteger(body.roofIndex) || body.roofIndex < 0) {
+        return resp(400, { error: "roofIndex must be a non-negative integer (roofs[] position)" });
+      }
+      const roofIndex = body.roofIndex;
+      const apply = body.apply === true;   // DRY RUN unless explicitly true
+
+      const db = getDb();
+      const ref = db.collection("buildings").doc(buildingId);
+      const snap = await ref.get();
+      if (!snap.exists) return resp(404, { error: "Building not found" });
+      const bld = snap.data() || {};
+
+      // Never synthesise -- a phantom default roof must not be materialised
+      // and then "removed".
+      const stored = Array.isArray(bld.roofs) ? bld.roofs : [];
+      if (roofIndex >= stored.length) {
+        return resp(400, { error: "roofIndex " + roofIndex + " is out of range (building has " + stored.length + " roofs)" });
+      }
+      const target = stored[roofIndex] || {};
+      const dupes = duplicateRoofIdIndexes(stored);
+
+      /* GUARD 1 -- must be a LATER occurrence of a colliding id.
+         duplicateRoofIdIndexes() reports the first occurrence as `firstIndex`
+         and only subsequent ones as `index`, so the roof that every by-id
+         lookup already resolves to CANNOT be selected here: index 0 of the Orr
+         St building appears as firstIndex, never as index. That also means the
+         entry being removed is one nothing can currently reach by id, so no
+         reference changes meaning when it goes. */
+      const isRemovableDuplicate = dupes.some(d => d.index === roofIndex);
+      if (!isRemovableDuplicate) {
+        return resp(409, {
+          error: "Refusing: roofs[" + roofIndex + "] is not a later duplicate of another roof's id. " +
+                 "Only a redundant duplicate entry can be removed, never the roof that by-id lookups resolve to.",
+          duplicateIndexes: dupes,
+          roofs: stored.map((r, i) => ({ index: i, id: (r && r.id) || null, label: (r && r.label) || "" }))
+        });
+      }
+
+      /* GUARD 2 -- must carry no work. Anything here means a real roof. */
+      const carries = {
+        outlines: Array.isArray(target.roof_outlines) ? target.roof_outlines.length : 0,
+        assets: Array.isArray(target.roof_assets) ? target.roof_assets.length : 0,
+        markup: Array.isArray(target.roof_markup) ? target.roof_markup.length : 0,
+        baseMapType: target.roof_base_map_type || null,
+        baseMapUrl: target.roof_base_map_url || null
+      };
+      const isEmpty = carries.outlines === 0 && carries.assets === 0 && carries.markup === 0 &&
+                      !carries.baseMapType && !carries.baseMapUrl;
+      if (!isEmpty) {
+        return resp(409, {
+          error: "Refusing: roofs[" + roofIndex + "] carries work (outlines/assets/markup/base map) and is a real roof, " +
+                 "not an empty duplicate. Use reid_building_roof to give it its own id instead.",
+          carries: carries
+        });
+      }
+
+      const removed = Object.assign({}, target);
+      const next = stored.filter((r, i) => i !== roofIndex);
+      const payload = {
+        ok: true, buildingId, dryRun: !apply,
+        removing: { index: roofIndex, id: target.id || null, label: target.label || "", carries: carries },
+        /* Surfaced deliberately: emptiness is judged on WORK (outlines, assets,
+           markup, base map), not on descriptive metadata. A phantom can still
+           carry a roofSystem or profile someone typed, and deleting it loses
+           that. Small, but it should be a seen decision rather than a silent
+           one -- which is also why the audit entry below stores the whole roof. */
+        alsoLosesMetadata: {
+          roofSystem: target.roofSystem || null,
+          areaSqFt: target.areaSqFt != null ? target.areaSqFt : null,
+          ageYears: target.ageYears != null ? target.ageYears : null
+        },
+        resultingRoofs: next.map((r, i) => ({ index: i, id: (r && r.id) || null, label: (r && r.label) || "" })),
+        remainingDuplicates: duplicateRoofIdIndexes(next)
+      };
+      if (!apply) return resp(200, payload);
+
+      await ref.set({ roofs: next, updatedAt: Date.now() }, { merge: true });
+      /* The ENTIRE removed roof goes in the audit `before`, so this destructive
+         action is reversible from the audit trail alone. */
+      await writeAuditLog(db, caller, "remove_building_roof_by_index", buildingId,
+        { roofIndex, removedRoof: removed, duplicateIndexes: dupes },
+        { resultingRoofs: payload.resultingRoofs, remainingDuplicates: payload.remainingDuplicates });
+      return resp(200, payload);
+    }
+
+    if (body.action === "reid_building_roof") {
+      // Same settings.company tier as every other building-structure action.
+      let caller;
+      try { caller = await requirePermission(event, "settings.company"); }
+      catch (e) { return resp(e.statusCode || 401, { error: e.message }); }
+
+      /* Breaks a roofId COLLISION: two entries in roofs[] carrying the same id
+         (Orr St, 2026-07-20 -- two roofs both answering to "roof_default").
+         While that holds, the building is not safely operable: every roof
+         mutation in the app resolves by id and takes the FIRST match, so
+         Rename/Move/RoofMapper all target index 0 no matter which roof the
+         user clicked, and a delete-by-id would destroy the wrong roof.
+
+         ADDRESSED BY ARRAY INDEX, deliberately. The id is ambiguous by
+         definition here -- index is the only unambiguous handle, and no other
+         action in this file takes one. */
+      const buildingId = String(body.buildingId || "");
+      if (!buildingId) return resp(400, { error: "Missing buildingId" });
+      if (!Number.isInteger(body.roofIndex) || body.roofIndex < 0) {
+        return resp(400, { error: "roofIndex must be a non-negative integer (roofs[] position)" });
+      }
+      const roofIndex = body.roofIndex;
+      const apply = body.apply === true;   // DRY RUN unless explicitly true
+
+      const db = getDb();
+      const ref = db.collection("buildings").doc(buildingId);
+      const snap = await ref.get();
+      if (!snap.exists) return resp(404, { error: "Building not found" });
+      const bld = snap.data() || {};
+
+      // Never synthesise: getBuildingRoofsServer() invents a default roof for a
+      // building with no roofs[], and re-iding a phantom would materialise it.
+      const stored = Array.isArray(bld.roofs) ? bld.roofs : [];
+      if (roofIndex >= stored.length) {
+        return resp(400, { error: "roofIndex " + roofIndex + " is out of range (building has " + stored.length + " roofs)" });
+      }
+      const target = stored[roofIndex] || {};
+      const oldId = target.id ? String(target.id) : "";
+
+      /* GUARD: only ever break a real collision. This action re-keys a roof
+         WITHOUT re-pointing the records that reference it, which is only
+         defensible when the id was ambiguous to begin with. Re-iding a roof
+         with a unique id would orphan every one of its records deliberately. */
+      const dupes = duplicateRoofIdIndexes(stored);
+      const involved = dupes.some(d => d.id === oldId);
+      if (!oldId || !involved) {
+        return resp(400, {
+          error: "Roof at index " + roofIndex + " (id " + (oldId || "<none>") +
+            ") does not share its id with another roof. This action only breaks id collisions.",
+          duplicateIndexes: dupes
+        });
+      }
+
+      const newId = genRoofId();
+      if (stored.some(r => r && r.id === newId)) {
+        return resp(500, { error: "Generated id collided with an existing roof; retry." });
+      }
+
+      /* The records still pointing at the OLD id. They are NOT re-pointed here
+         -- deciding which physical roof each one describes needs a human and
+         the photo GPS, and guessing would bake a wrong answer into the record.
+         Counting them is the point: after the split, every one of these
+         resolves to the FIRST entry still holding the old id, so the caller
+         must see the size of what they are about to make unambiguous. */
+      const [evtSnap, repSnap] = await Promise.all([
+        db.collection("building_history_events").where("buildingId", "==", buildingId).where("roofId", "==", oldId).get(),
+        db.collection("reports").where("buildingId", "==", buildingId).where("roofId", "==", oldId).get()
+      ]);
+      const stillOnOldId = stored.filter((r, i) => i !== roofIndex && r && r.id === oldId).length;
+
+      const payload = {
+        ok: true, buildingId, dryRun: !apply,
+        roofIndex, oldId, newId,
+        roofLabel: target.label || "",
+        carries: {
+          outlines: Array.isArray(target.roof_outlines) ? target.roof_outlines.length : 0,
+          assets: Array.isArray(target.roof_assets) ? target.roof_assets.length : 0,
+          baseMap: target.roof_base_map_type || null,
+          roofSystem: target.roofSystem || null
+        },
+        referencesToOldId: {
+          historyEvents: evtSnap.size, reports: repSnap.size,
+          note: "These are NOT re-pointed. After the split they all resolve to the remaining roof(s) holding " +
+                oldId + " (" + stillOnOldId + " left). Attribution is a separate, human step."
+        },
+        duplicateIndexes: dupes
+      };
+      if (!apply) return resp(200, payload);
+
+      const next = stored.slice();
+      // Only the id changes -- geometry, base map, assets, outlines, profile
+      // all ride through untouched.
+      next[roofIndex] = Object.assign({}, target, { id: newId, updatedAt: Date.now() });
+      await ref.set({ roofs: next, updatedAt: Date.now() }, { merge: true });
+      await writeAuditLog(db, caller, "reid_building_roof", buildingId,
+        { roofIndex, oldId, label: target.label || "", duplicateIndexes: dupes },
+        { roofIndex, newId, referencesLeftOnOldId: payload.referencesToOldId });
+      return resp(200, payload);
+    }
+
+    if (body.action === "renumber_building_roofs") {
+      // Same settings.company tier as every other building-structure action.
+      let caller;
+      try { caller = await requirePermission(event, "settings.company"); }
+      catch (e) { return resp(e.statusCode || 401, { error: e.message }); }
+
+      // DRY RUN BY DEFAULT. The whole anxiety here is losing a roof, so the
+      // caller sees the exact old->new mapping BEFORE anything is written;
+      // `apply: true` is a separate, deliberate second call. Also makes the
+      // Orr Street backfill (which mutates production data) reviewable.
+      const buildingId = String(body.buildingId || "");
+      if (!buildingId) return resp(400, { error: "Missing buildingId" });
+      const apply = body.apply === true;
+
+      const db = getDb();
+      const ref = db.collection("buildings").doc(buildingId);
+      const snap = await ref.get();
+      if (!snap.exists) return resp(404, { error: "Building not found" });
+      const bld = snap.data() || {};
+
+      // NOT getBuildingRoofsServer(): that synthesises a default roof for a
+      // building which never stored roofs[], and writing that back would
+      // materialise a phantom roofs[] on a building that legitimately has
+      // none. Only ever renumber roofs that were really stored. (Same rule the
+      // merge follows for srcRoofs.)
+      const stored = Array.isArray(bld.roofs) ? bld.roofs : [];
+      if (!stored.length) {
+        return resp(200, { ok: true, buildingId, dryRun: !apply, changes: [], roofCount: 0,
+          note: "Building has no stored roofs[] — nothing to renumber." });
+      }
+
+      /* REFUSE ON AN ID COLLISION (Orr St, 2026-07-20). Renumbering is a
+         LABEL operation whose whole safety argument is "identity is the id, so
+         renaming disturbs nothing". That argument collapses when two roofs
+         share an id: the tool cannot tell them apart, it would swap which
+         physical roof carries which name, and -- worst -- a clean "Roof 1..N"
+         makes the building LOOK healthy while the collision remains. The
+         visible "(2)" is currently the only symptom; erasing it without
+         fixing the cause is strictly worse than leaving it alone.
+         Break the collision with reid_building_roof first, then renumber. */
+      const collisions = duplicateRoofIdIndexes(stored);
+      if (collisions.length) {
+        return resp(409, {
+          error: "Refusing to renumber: two or more roofs share a roofId, so labels cannot be " +
+                 "safely reassigned. Break the collision with reid_building_roof first.",
+          duplicateIndexes: collisions,
+          roofs: stored.map((r, i) => ({ index: i, id: (r && r.id) || null, label: (r && r.label) || "" }))
+        });
+      }
+      const result = renumberRoofLabels(stored);
+      const payload = {
+        ok: true, buildingId, dryRun: !apply,
+        roofCount: stored.length,
+        changes: result.changes,
+        labels: result.roofs.map(r => ({ roofId: (r && r.id) || null, label: (r && r.label) || "" }))
+      };
+      if (!apply || !result.changes.length) {
+        if (!result.changes.length) payload.note = "Labels are already a clean sequence — nothing to change.";
+        return resp(200, payload);
+      }
+
+      await ref.set({ roofs: result.roofs, updatedAt: Date.now() }, { merge: true });
+      // Records old->new so a report printed under an old roof name stays
+      // traceable: renumbering changes what a roof is CALLED, and paper issued
+      // before the rename still carries the old label.
+      await writeAuditLog(db, caller, "renumber_building_roofs", buildingId,
+        { labels: stored.map(r => (r && r.label) || "") },
+        { labels: result.roofs.map(r => (r && r.label) || ""), changes: result.changes });
+      return resp(200, payload);
+    }
+
+    if (body.action === "move_roof") {
+      // Cross-cutting, multi-collection structural change -- same
+      // settings.company tier as the other building-admin actions above.
+      let caller;
+      try { caller = await requirePermission(event, "settings.company"); }
+      catch (e) { return resp(e.statusCode || 401, { error: e.message }); }
+
+      // Mark: traced a roof onto the wrong building with no way to fix it
+      // short of admin-deleting the whole wrong building (destroying
+      // everything else on it too). A roof isn't just a roofs[] array
+      // entry -- building_history_events/reports docs reference it by
+      // (buildingId, roofId) pair too (see DATA_MODEL.md), so a real move
+      // has to re-point every one of those, not just relocate the roofs[]
+      // entry itself, or the moved roof's history would silently vanish
+      // from both buildings' timelines. High-blast-radius, multi-collection
+      // write -- same admin-gated + audited treatment as every other
+      // cross-cutting building/roof action in this file, not a plain
+      // client write even though firestore.rules would technically allow
+      // one. See "Move/reassign a roof to a different building" in
+      // DEV_NOTES.md.
+      const sourceBuildingId = String(body.sourceBuildingId || "");
+      const destBuildingId = String(body.destBuildingId || "");
+      const roofId = String(body.roofId || "");
+      if (!sourceBuildingId || !destBuildingId || !roofId) {
+        return resp(400, { error: "Missing sourceBuildingId, destBuildingId, or roofId" });
+      }
+      if (sourceBuildingId === destBuildingId) return resp(400, { error: "Source and destination are the same building" });
+
+      const [sourceSnap, destSnap] = await Promise.all([
+        db.collection("buildings").doc(sourceBuildingId).get(),
+        db.collection("buildings").doc(destBuildingId).get()
+      ]);
+      if (!sourceSnap.exists) return resp(404, { error: "Source building not found" });
+      if (!destSnap.exists) return resp(404, { error: "Destination building not found" });
+      const sourceBld = sourceSnap.data();
+      const destBld = destSnap.data();
+
+      const sourceRoofs = getBuildingRoofsServer(sourceBld);
+      const roofIdx = sourceRoofs.findIndex(r => r.id === roofId);
+      if (roofIdx === -1) return resp(404, { error: "Roof not found on the source building" });
+      const movingRoof = sourceRoofs[roofIdx];
+
+      // Same duplicate-name handling as the client's rmResolveUniqueRoofLabel()
+      // (see index.html) -- a moved roof landing on a building that already
+      // has a roof with the same label gets auto-suffixed rather than
+      // silently colliding, no server-side prompt/confirm loop possible
+      // here so this always just picks the suggestion.
+      const destRoofs = getBuildingRoofsServer(destBld);
+      const takenLabels = destRoofs.map(r => String((r.label || "")).trim().toLowerCase());
+      let newLabel = movingRoof.label || "Roof";
+      if (takenLabels.indexOf(newLabel.trim().toLowerCase()) !== -1) {
+        let n = 2, candidate;
+        do { candidate = newLabel + " (" + n + ")"; n++; }
+        while (takenLabels.indexOf(candidate.trim().toLowerCase()) !== -1);
+        newLabel = candidate;
+      }
+      const movedRoof = Object.assign({}, movingRoof, { label: newLabel, updatedAt: Date.now() });
+
+      const newSourceRoofs = sourceRoofs.slice(0, roofIdx).concat(sourceRoofs.slice(roofIdx + 1));
+      const newDestRoofs = destRoofs.concat([movedRoof]);
+
+      const sourcePatch = { roofs: newSourceRoofs, updatedAt: Date.now() };
+      // If that was the source building's ONLY roof, its legacy mirror
+      // fields (roof_outlines/roof_assets/roof_base_map_*) still point at
+      // the roof that just left -- clear them so getBuildingRoofs() falls
+      // back to synthesizing a genuinely empty default roof instead of
+      // resurrecting stale data for a roof that now lives elsewhere. Same
+      // dual-write convention saveBuildingRoofs()/set_building_roof_map
+      // already use, just in reverse (un-mirroring instead of mirroring).
+      if (newSourceRoofs.length === 0) {
+        sourcePatch.roofSystem = "";
+        sourcePatch.roof_base_map_type = null;
+        sourcePatch.roof_base_map_url = null;
+        sourcePatch.roof_base_map_bounds = null;
+        sourcePatch.roof_base_map_synthetic = false;
+        sourcePatch.roof_assets = [];
+        sourcePatch.roof_outlines = [];
+      } else if (newSourceRoofs.length === 1) {
+        const only = newSourceRoofs[0];
+        sourcePatch.roofSystem = only.roofSystem || "";
+        sourcePatch.roof_base_map_type = only.roof_base_map_type || null;
+        sourcePatch.roof_base_map_url = only.roof_base_map_url || null;
+        sourcePatch.roof_base_map_bounds = only.roof_base_map_bounds || null;
+        sourcePatch.roof_base_map_synthetic = only.roof_base_map_synthetic || false;
+        sourcePatch.roof_assets = only.roof_assets || [];
+        sourcePatch.roof_outlines = only.roof_outlines || [];
+      }
+      const destPatch = { roofs: newDestRoofs, updatedAt: Date.now() };
+      if (newDestRoofs.length === 1) {
+        const only = newDestRoofs[0];
+        destPatch.roofSystem = only.roofSystem || "";
+        destPatch.roof_base_map_type = only.roof_base_map_type || null;
+        destPatch.roof_base_map_url = only.roof_base_map_url || null;
+        destPatch.roof_base_map_bounds = only.roof_base_map_bounds || null;
+        destPatch.roof_base_map_synthetic = only.roof_base_map_synthetic || false;
+        destPatch.roof_assets = only.roof_assets || [];
+        destPatch.roof_outlines = only.roof_outlines || [];
+      }
+
+      // Re-point every building_history_events/reports doc for this
+      // specific roof so BOTH buildings' timelines/roof maps stay accurate
+      // -- the source building's history for this roof would otherwise
+      // still claim it (a roof that no longer exists there), and the
+      // destination's history would be missing it entirely.
+      const [evtSnap, repSnap] = await Promise.all([
+        db.collection("building_history_events").where("buildingId", "==", sourceBuildingId).where("roofId", "==", roofId).get(),
+        db.collection("reports").where("buildingId", "==", sourceBuildingId).where("roofId", "==", roofId).get()
+      ]);
+      const batch = db.batch();
+      batch.set(db.collection("buildings").doc(sourceBuildingId), sourcePatch, { merge: true });
+      batch.set(db.collection("buildings").doc(destBuildingId), destPatch, { merge: true });
+      const reassign = {
+        buildingId: destBuildingId, buildingName: destBld.name || "",
+        customerId: destBld.customerId || null, customerName: destBld.customerName || ""
+      };
+      evtSnap.forEach(d => batch.set(d.ref, reassign, { merge: true }));
+      repSnap.forEach(d => batch.set(d.ref, reassign, { merge: true }));
+      await batch.commit();
+
+      await writeAuditLog(db, caller, "move_roof",
+        { collection: "buildings", id: sourceBuildingId, roofId: roofId },
+        { sourceBuildingId, sourceBuildingName: sourceBld.name || null, roofLabel: movingRoof.label || null },
+        { destBuildingId, destBuildingName: destBld.name || null, newLabel: newLabel,
+          movedEvents: evtSnap.size, movedReports: repSnap.size });
+      return resp(200, { ok: true, movedEvents: evtSnap.size, movedReports: repSnap.size, newLabel: newLabel });
+    }
+
+    if (body.action === "set_photo_size_pref") {
+      // Global (not per-user, not per-work-order) photo size — settings.company
+      // tier, same as the other admin-settings actions, even though this
+      // one isn't destructive — it affects every photo every user takes
+      // from here on, so it shouldn't be a client-side-only check either.
+      let caller;
+      try { caller = await requirePermission(event, "settings.company"); }
+      catch (e) { return resp(e.statusCode || 401, { error: e.message }); }
+
+      const ALLOWED_SIZES = ["small", "medium", "large"];
+      const value = String(body.value || "");
+      if (ALLOWED_SIZES.indexOf(value) === -1) return resp(400, { error: "Invalid photo size value" });
+      await db.collection("app_settings").doc("global").set(
+        { photoSizePref: value, updatedAt: Date.now() }, { merge: true });
+      return resp(200, { ok: true });
+    }
+
+    if (body.action === "list_roles") {
+      // Data source for the Roles & Permissions editor (Admin page).
+      // settings.security tier -- the seed grid grants it to the owner
+      // ONLY (admin is explicitly excluded), so this whole editor is
+      // owner-only today unless the owner deliberately grants
+      // settings.security to another role through this very editor.
+      // Roles are client-readable via firestore.rules anyway (not
+      // secret), but the editor loads through here so the key list and
+      // scope registry it renders come from the SAME code the validator
+      // below enforces -- no drift between what the grid shows and what
+      // the server will accept.
+      let caller;
+      try { caller = await requirePermission(event, "settings.security"); }
+      catch (e) { return resp(e.statusCode || 401, { error: e.message }); }
+
+      const snap = await db.collection("roles").get();
+      const roles = snap.docs.map(d => Object.assign({ id: d.id }, d.data()));
+      roles.sort((a, b) => (b.rank || 0) - (a.rank || 0));
+      return resp(200, { ok: true, roles, permissionKeys: PERMISSION_KEYS, permissionScopes: PERMISSION_SCOPES });
+    }
+
+    if (body.action === "set_role_permissions") {
+      // Writes ONE role's edited permission grid (Roles & Permissions
+      // editor's Save). Same settings.security tier as list_roles above.
+      // The roles collection is the LIVE enforcement source of truth
+      // (authGuard's getPermissionValue() re-reads it on every check), so
+      // this takes effect on the very next permission check -- which is
+      // exactly why every guardrail here is server-side, not just UI:
+      let caller;
+      try { caller = await requirePermission(event, "settings.security"); }
+      catch (e) { return resp(e.statusCode || 401, { error: e.message }); }
+
+      const roleId = String(body.roleId || "");
+      if (!roleId) return resp(400, { error: "Missing roleId" });
+      // Guardrail: the owner role is LOCKED to all-permissions, always.
+      // Not editable, not reducible, by anyone -- including the owner
+      // themself -- so there is no sequence of grid edits that can lock
+      // the owner out of this editor (or anything else).
+      if (roleId === "owner") {
+        return resp(403, { error: "The owner role is locked to all permissions and cannot be edited." });
+      }
+      const roleRef = db.collection("roles").doc(roleId);
+      const roleSnap = await roleRef.get();
+      if (!roleSnap.exists) return resp(404, { error: "Unknown role: " + roleId });
+
+      const incoming = (body.permissions && typeof body.permissions === "object" && !Array.isArray(body.permissions))
+        ? body.permissions : null;
+      if (!incoming) return resp(400, { error: "Missing permissions object" });
+      // Guardrail: only keys in the code-defined PERMISSION_KEYS registry
+      // may EVER appear in a role grid -- an unknown key is a hard reject
+      // (whole request, nothing written), not a silent strip, so a typo'd
+      // or stale client can't half-apply an edit without anyone noticing.
+      const unknownKeys = Object.keys(incoming).filter(k => PERMISSION_KEYS.indexOf(k) === -1);
+      if (unknownKeys.length) {
+        return resp(400, { error: "Unknown permission key(s): " + unknownKeys.join(", ") });
+      }
+      // Values: true/false, or a scope string PERMISSION_SCOPES explicitly
+      // allows for that specific key ("proj"/"own"/"billing") -- a scope on
+      // a boolean-only key is rejected, since enforcement code for that key
+      // wouldn't know what the scope means.
+      for (const k of Object.keys(incoming)) {
+        if (!isValidPermissionValue(k, incoming[k])) {
+          return resp(400, { error: "Invalid value for " + k + ": " + JSON.stringify(incoming[k]) });
+        }
+      }
+
+      // Merge onto the role's EXISTING grid (a partial body edits only the
+      // keys it names), then normalize to exactly the registry: every
+      // PERMISSION_KEYS key present (default false), any stale key from a
+      // since-removed registry entry dropped.
+      const existing = roleSnap.data().permissions || {};
+      const normalized = {};
+      PERMISSION_KEYS.forEach(k => {
+        normalized[k] = incoming[k] !== undefined ? incoming[k]
+          : (existing[k] !== undefined ? existing[k] : false);
+      });
+
+      // before/after in the audit entry is the DIFF (changed keys only),
+      // not two full ~38-key grids -- keeps the Audit Log view legible.
+      const changedBefore = {}, changedAfter = {};
+      PERMISSION_KEYS.forEach(k => {
+        const prev = existing[k] === undefined ? false : existing[k];
+        if (prev !== normalized[k]) { changedBefore[k] = prev; changedAfter[k] = normalized[k]; }
+      });
+      if (!Object.keys(changedAfter).length) {
+        return resp(200, { ok: true, changed: 0 });
+      }
+
+      await roleRef.set({ permissions: normalized, updatedAt: Date.now() }, { merge: true });
+      await writeAuditLog(db, caller, "role_permissions_changed", { collection: "roles", id: roleId },
+        changedBefore, changedAfter);
+      return resp(200, { ok: true, changed: Object.keys(changedAfter).length });
+    }
+
+    return resp(400, { error: "Unknown action" });
+  } catch (e) {
+    return resp(e.statusCode || 500, { error: "Server error: " + (e && e.message ? e.message : "unknown") });
+  }
+};

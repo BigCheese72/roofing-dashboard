@@ -1,0 +1,395 @@
+// Firestore Security Rules for the watkins-service-orders project.
+//
+// LIVE as of 2026-07-11 — published directly in Firebase Console ->
+// Firestore Database -> Rules. This file is still the source of truth for
+// the rule LOGIC (edit here first, then paste + Publish in the Console, or
+// via `firebase deploy --only firestore:rules` if that's ever set up
+// locally) — nothing in this repo auto-syncs a Console edit back here, so
+// after any manual Console change, mirror it back into this file by hand
+// so the two never silently drift apart again.
+//
+// Auth (see docs/AUTH_DESIGN.md) now gates real, checkable state here: the
+// `roles`/`users`/`audit_logs`/`changeorder_approvals` blocks below are not
+// aspirational — they're enforced live, verified end-to-end signed in as
+// the real owner account (roles/users reads succeed; owner write attempts
+// on users/roles/audit_logs, and update/delete on audit_logs, all correctly
+// denied even for the owner; signed-out reads of all four correctly denied
+// too). The app requires login as of the same date (dev only).
+//
+// What the REST of this file does: keeps the app's pre-existing work-order
+// data (customers/buildings/reports/building_history_events/workorders/
+// companycam_projects/app_settings) exactly as open as it already was —
+// see "Shared Firestore, dev/prod risk boundary" in docs/AUTH_DESIGN.md for
+// why: dev and production share this one Firestore project, and production
+// sends zero Firebase Auth tokens, so tightening those existing collections
+// would break production with no fallback. Tightening them is later,
+// separately-scoped work, not silently done here. DELETE is blocked on
+// customers/buildings/reports/building_history_events for every client
+// regardless — the only way to delete those is netlify/functions/admin.js,
+// using the Firebase Admin SDK, which is not subject to these rules at all.
+//
+// workorders (+ its photos subcollection) deliberately keeps its existing
+// open behavior, including delete — that's the pre-existing, tech-facing
+// "Delete" button in the Saved tab, unchanged. Locking that down too is a
+// separate decision (it would need a different flow, since techs
+// legitimately delete their own draft work orders today) — not part of
+// this change.
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    match /workorders/{workOrderId} {
+      allow read, write: if true;
+
+      match /photos/{photoId} {
+        allow read, write: if true;
+      }
+
+      // Auth Phase 5 (see docs/AUTH_DESIGN.md) -- change-order approval
+      // state. Brand new subcollection, zero production risk (production's
+      // code never writes here), so it goes straight to write:false rather
+      // than inheriting the parent workorders doc's open write rule --
+      // Firestore subcollections do NOT inherit a parent match block's
+      // rules (see the sibling `photos` block above, which needed its own
+      // explicit rule for the same reason), so this locks it down
+      // independently. Only netlify/functions/changeorders.js (Admin SDK,
+      // requires changeorder.approve_pricing) can write here -- a
+      // field_tech attempting to set pricing_approved directly via the
+      // client Firestore SDK is blocked here regardless of whether that
+      // function is ever called correctly.
+      match /changeorder_approvals/{approvalId} {
+        allow read: if true;
+        allow write: if false;
+      }
+    }
+
+    match /customers/{customerId} {
+      allow read, create, update: if true;
+      allow delete: if false;
+    }
+
+    match /buildings/{buildingId} {
+      allow read, create, update: if true;
+      allow delete: if false;
+
+      // Warranty inspection reports (see netlify/functions/inspection-
+      // reports.js) -- read stays open, matching every other field-facing
+      // collection's "no login yet" tier (a tech needs to open a PDF on
+      // the roof same as viewing any other building data). Write is
+      // server-only, unconditionally -- filing a report involves matching,
+      // Storage upload, best-effort CompanyCam upload, and supersede
+      // bookkeeping that must never be split across a client write plus a
+      // function call; the ONLY way onto this subcollection is
+      // inspection-reports.js's Admin SDK writes.
+      match /warranty_reports/{reportId} {
+        allow read: if true;
+        allow write: if false;
+      }
+    }
+
+    match /reports/{reportId} {
+      allow read, create, update: if true;
+      allow delete: if false;
+    }
+
+    // Daily Progress Reports (DPR — Phase 1, see js/dpr.js). BRAND NEW
+    // collection: production's code never touches it, so — unlike the legacy
+    // wide-open field collections above — this one is gated from day one with
+    // zero production risk (same reasoning as the Auth Phase 1 blocks below).
+    //
+    // read  = any signed-in user (view = crew + office; the app's login gate
+    //         already blocks anonymous access, this enforces it at the data
+    //         layer too).
+    // create/update = owner, OR a role whose LIVE roles/{role} doc grants
+    //         dpr.create (resolved via get(), exactly like the audit_logs read
+    //         gate below and requirePermission() server-side). This is the real
+    //         enforcement of "create/submit = field/foreman roles." NOTE: the
+    //         roles collection must be re-seeded (netlify/functions/auth.js
+    //         seed_roles, owner-only) once for the dpr.create grants in
+    //         permissions.js to go live for non-owner users — the owner passes
+    //         regardless, so field testing is never blocked.
+    // delete  = nobody via the client (Admin SDK only), matching every other
+    //         report-bearing collection here.
+    //
+    // Doc id is deterministic (dpr_<buildingId>_<YYYY-MM-DD>) so there is
+    // structurally one report per job per day — see dprDocId() in js/dpr.js.
+    match /daily_progress_reports/{dprId} {
+      allow read: if request.auth != null;
+      allow create, update: if request.auth != null && (
+        request.auth.token.owner == true ||
+        (request.auth.token.role != null &&
+          get(/databases/$(database)/documents/roles/$(request.auth.token.role)).data.permissions['dpr.create'] == true)
+      );
+      allow delete: if false;
+
+      // Subcollections do NOT inherit the parent match block's rules (see the
+      // workorders/photos precedent above), so the DPR's photo docs need their
+      // own explicit rule — same gate as the parent report.
+      match /photos/{photoId} {
+        allow read: if request.auth != null;
+        allow write: if request.auth != null && (
+          request.auth.token.owner == true ||
+          (request.auth.token.role != null &&
+            get(/databases/$(database)/documents/roles/$(request.auth.token.role)).data.permissions['dpr.create'] == true)
+        );
+      }
+    }
+
+    match /building_history_events/{eventId} {
+      allow read, create, update: if true;
+      allow delete: if false;
+    }
+
+    match /companycam_projects/{projectId} {
+      allow read, create, update: if true;
+      allow delete: if false;
+    }
+
+    // App-wide settings (currently just the global photo-size preference —
+    // see "Global photo size setting" in DEV_NOTES.md). Every client needs
+    // to READ this on load, but only netlify/functions/admin.js (Admin
+    // PIN-gated, Admin SDK) is allowed to write it — unlike the
+    // read/create/update collections above, there's no client-side write
+    // path here at all, matching the delete-only-via-admin.js pattern for
+    // deletes elsewhere in this file.
+    match /app_settings/{settingId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // The ONE app_settings doc clients may write: the shared roof-type
+    // list (see "shared roof-type list" in js/workorders.js). Overlapping
+    // matches grant access when ANY matching allow grants it, so this
+    // opens write for exactly this doc without loosening the write:false
+    // above for the rest of app_settings. Signed-in users only, and the
+    // doc can only ever be { types: [...] } — nothing else can be smuggled
+    // into it. Client additions go through arrayUnion; pruning stays
+    // possible for a future admin.js action (Admin SDK bypasses rules).
+    // Zero prod risk: production's code never writes this doc, and the
+    // rule is purely additive.
+    match /app_settings/roof_types {
+      allow write: if request.auth != null
+        && request.resource.data.keys().hasOnly(['types'])
+        && request.resource.data.types is list;
+    }
+
+    // In-app Send Feedback submissions (💬 button, every screen — see
+    // "Send Feedback" in DEV_NOTES.md). Any client can create one (no PIN
+    // needed — anyone should be able to submit), but nobody reads/updates/
+    // deletes directly through the client SDK: the admin backlog view goes
+    // through netlify/functions/admin.js's list_feedback action (Admin
+    // SDK, PIN-gated) instead, same pattern as app_settings' write-only
+    // gate above, just mirrored onto read.
+    match /feedback/{feedbackId} {
+      allow create: if request.resource.data.keys().hasOnly([
+          'type', 'typeLabel', 'comments', 'screen', 'technician',
+          'adminMode', 'device', 'workOrderId', 'workOrderJobName',
+          'screenshot', 'createdAt', 'appVersion', 'route', 'env',
+          'triageStatus'
+        ])
+        && request.resource.data.keys().hasAll([
+          'type', 'typeLabel', 'screen', 'adminMode', 'device', 'createdAt'
+        ])
+        && request.resource.data.type in ['praise', 'confusing', 'bug', 'feature']
+        && request.resource.data.typeLabel is string
+        && request.resource.data.screen is string
+        && request.resource.data.adminMode is bool
+        && request.resource.data.device is string
+        && request.resource.data.createdAt is number
+        && (!request.resource.data.keys().hasAny(['comments']) || request.resource.data.comments is string)
+        && (!request.resource.data.keys().hasAny(['technician']) || request.resource.data.technician is string)
+        && (!request.resource.data.keys().hasAny(['workOrderId']) || request.resource.data.workOrderId == null || request.resource.data.workOrderId is string)
+        && (!request.resource.data.keys().hasAny(['workOrderJobName']) || request.resource.data.workOrderJobName == null || request.resource.data.workOrderJobName is string)
+        && (!request.resource.data.keys().hasAny(['screenshot']) || request.resource.data.screenshot == null || request.resource.data.screenshot is string)
+        && (!request.resource.data.keys().hasAny(['appVersion']) || request.resource.data.appVersion is string)
+        && (!request.resource.data.keys().hasAny(['route']) || (request.resource.data.route is string && request.resource.data.route.size() <= 500))
+        && (!request.resource.data.keys().hasAny(['env']) || request.resource.data.env in ['dev', 'prod'])
+        // Mid-deploy compatibility: old bundles submitted no triageStatus;
+        // the new bundle may seed only "new". Server-owned triage fields
+        // agentDiagnosis/branchUrl/updatedAt are not in hasOnly() above.
+        && (!request.resource.data.keys().hasAny(['triageStatus']) || request.resource.data.triageStatus == 'new');
+      allow read, update, delete: if false;
+    }
+
+    // ================= Auth Phase 1 (see docs/AUTH_DESIGN.md) =================
+    // All three collections below are brand new -- production's existing
+    // code never touches them, so locking them down now is zero risk to
+    // production even though dev and prod share this one Firestore project
+    // (see "Shared Firestore, dev/prod risk boundary" in AUTH_DESIGN.md).
+
+    // Role definitions (data-driven roles -- see "Data-driven roles" in
+    // AUTH_DESIGN.md). Not secret, just structural -- readable by any
+    // signed-in user (useful for a future role-management UI to browse/
+    // display). Never client-writable: seeding/editing goes through
+    // netlify/functions/auth.js's seed_roles action (Admin SDK) only, so a
+    // role's permission grid can never be tampered with from the client.
+    match /roles/{roleId} {
+      allow read: if request.auth != null;
+      allow write: if false;
+    }
+
+    // Per-user privilege mirror (non-authoritative -- the Firebase custom
+    // claims on the ID token are the enforcement truth, this is
+    // display/query only). A user may read their OWN doc; an owner or
+    // admin may read anyone's, straight off the caller's own verified
+    // token claims (request.auth.token.owner/.role) -- no extra lookup
+    // needed, which is exactly the payoff of keeping claims small (see
+    // "Custom claims size" in AUTH_DESIGN.md). NO client write path at
+    // all, ever, for any field -- role/status/mfaEnrolled/owner/
+    // projectRoles are all set exclusively by netlify/functions/auth.js
+    // via the Admin SDK. A user can never modify their own privilege
+    // record, not even their own displayName (kept simple/absolute for
+    // Phase 1; a narrower "can edit non-privilege fields" rule can be
+    // added later if that turns out to matter).
+    match /users/{uid} {
+      allow read: if request.auth != null &&
+        (request.auth.uid == uid || request.auth.token.owner == true || request.auth.token.role == 'admin');
+      allow write: if false;
+    }
+
+    // Immutable audit log (see "Audit log" in AUTH_DESIGN.md). Read gated
+    // by the audit.view permission, resolved from the CALLER's role doc
+    // (get() here mirrors exactly how server-function permission checks
+    // resolve a role's live grid -- see requirePermission() in
+    // netlify/functions/lib/authGuard.js). Create/update/delete all
+    // blocked for every client, including the owner -- writes go through
+    // Admin SDK only (netlify/functions/*, bypasses rules entirely), and
+    // update/delete are denied to EVERYONE, permanently, by design: an
+    // audit trail that can be edited or deleted isn't one.
+    match /audit_logs/{entryId} {
+      allow read: if request.auth != null && (
+        request.auth.token.owner == true ||
+        (request.auth.token.role != null &&
+          get(/databases/$(database)/documents/roles/$(request.auth.token.role)).data.permissions['audit.view'] == true)
+      );
+      allow create, update, delete: if false;
+    }
+
+    // Server-only secrets — currently just the Microsoft Graph delegated
+    // OAuth refresh token (netlify/functions/lib/graphDelegatedAuth.js),
+    // written and read exclusively via the Firebase Admin SDK, which is
+    // not subject to these rules at all. This block is explicit defense
+    // in depth on top of Firestore's own implicit deny-by-default for any
+    // collection with no matching rule — a client SDK must never be able
+    // to read or write anything under here, no exceptions, ever.
+    match /secrets/{secretId} {
+      allow read, write: if false;
+    }
+
+    // CompanyCam push de-duplication ledger — SHA-256 of every image byte-set
+    // this app has pushed into a given project, so the same photo is never sent
+    // twice (netlify/functions/lib/companyCamDedup.js). Written and read
+    // exclusively through the Admin SDK inside the upload_photo action, which
+    // is not subject to these rules at all; this block is explicit defense in
+    // depth, same tier as secrets/ above.
+    //
+    // Closed to clients in BOTH directions, and the write half is the one that
+    // matters: a client that could create entries here could pre-seed the
+    // ledger with the hashes of photos that have NOT been pushed and thereby
+    // make the app silently skip real field evidence — a false skip, which is
+    // exactly the failure this feature is built to avoid. Nothing in the app
+    // needs client access: the push is entirely server-side.
+    match /cc_push_ledger/{projectId} {
+      allow read, write: if false;
+      match /entries/{sha256} {
+        allow read, write: if false;
+      }
+    }
+
+    // Warranty-report ingestion internals (see netlify/functions/
+    // inspection-reports.js) -- fully closed to every client, same tier as
+    // secrets/ above. The review queue holds extracted-but-unconfirmed
+    // matching signals and a Storage ref to a not-yet-filed PDF; only
+    // whoever holds warranty.manage_reports should ever see it, and that's
+    // enforced by inspection-reports.js's list_review_queue/assign_review_item/
+    // dismiss_review_item actions, not by a client Firestore read.
+    // ingested_email_attachments is a pure idempotency ledger (Graph
+    // message+attachment id -> already processed), no reason for a client
+    // to ever touch it.
+    match /warranty_review_queue/{itemId} {
+      allow read, write: if false;
+    }
+    match /ingested_email_attachments/{idemId} {
+      allow read, write: if false;
+    }
+
+    // Foundation (construction accounting) jobs cache — Phase 2. A nightly
+    // sync (netlify/functions/foundation-sync.js, via the GitHub Actions cron
+    // in .github/workflows/sync-foundation-jobs.yml) mirrors every ACTIVE
+    // Foundation job here so the work-order job picker/auto-fill read a fast
+    // local collection instead of the accounting DB. Readable by any signed-in
+    // user — these are identifying fields (job name, customer, PM, address),
+    // no more sensitive than the already-open `buildings` data, and the picker
+    // is a normal work-order operation. The financially-sensitive bits are
+    // deliberately NOT here: the contract value is dropped before caching
+    // (mapJobForCache), and labor hours are never cached at all (they stay
+    // behind foundation.read on the live foundation.js connector). Writes are
+    // Admin-SDK only (the sync); no client may write, ever.
+    match /foundation_jobs/{jobId} {
+      allow read: if request.auth != null;
+      allow write: if false;
+    }
+
+    // Last-run summary for the Foundation sync (synced_at, counts). Lets the
+    // app show "jobs last synced ..."; written only by the sync via Admin SDK.
+    match /foundation_sync_meta/{metaId} {
+      allow read: if request.auth != null;
+      allow write: if false;
+    }
+
+    // AI training labels — the learning-model data foundation (see
+    // js/ailabels.js + "AI training labels" in DEV_NOTES.md/DATA_MODEL.md).
+    // Each doc is one tech-confirmed issue label on one photo: a labeled
+    // training example for a future model. Brand-new collection, zero
+    // production risk (production's code never touches it).
+    //
+    // CREATE: any signed-in tech, but only a well-formed record —
+    // confirmedByUid must be the caller's own uid (a label is a personal
+    // attestation, not writable on someone else's behalf), the label must
+    // be a bounded string key (vocabulary membership is enforced by
+    // js/ailabels.js — the vocab is admin-extendable data, so rules can't
+    // pin the exact list without a rules redeploy per new label), and the
+    // photo field must be a REFERENCE map, never a URL string.
+    //
+    // READ/UPDATE/DELETE: denied to every client, including the owner —
+    // training data references customer roof photos and is sensitive;
+    // reads are Admin SDK only (future export/labeling tooling), and the
+    // deletion cascade is netlify/functions/lib/aiLabels.js via admin.js's
+    // delete_building (same feedback-style write-only pattern, hardened).
+    match /ai_training_labels/{labelId} {
+      allow create: if request.auth != null
+        && request.resource.data.confirmedByUid == request.auth.uid
+        // Accepts BOTH versions on purpose. v2 (predicted* / agreed / modelId /
+        // controlled cause) is additive, and a client still running the previous
+        // bundle mid-deploy must keep writing valid v1 rows rather than having
+        // its labels silently rejected. See AI_LABEL_SCHEMA_VERSION in
+        // js/ailabels.js -- these two MUST move together.
+        && request.resource.data.schemaVersion in [1, 2]
+        && request.resource.data.source in ['leak', 'inspection', 'workorder']
+        && request.resource.data.label is string
+        && request.resource.data.label.size() >= 2
+        && request.resource.data.label.size() <= 60
+        && request.resource.data.buildingId is string
+        && request.resource.data.buildingId.size() > 0
+        && request.resource.data.buildingId.size() <= 200
+        && request.resource.data.photo is map
+        && request.resource.data.photo.kind in ['storage', 'companycam', 'workorder_embedded']
+        && request.resource.data.confirmedAt is number
+        && request.resource.data.createdAt is number;
+      allow read, update, delete: if false;
+    }
+
+    // Custom invite tokens (netlify/functions/auth.js's create_user/
+    // resend_invite/check_invite/accept_invite -- see the invite-token
+    // comment block there). Each doc holds only a SHA-256 HASH of the
+    // emailed token (never the token itself), but it also holds
+    // email/role/expiry/used state no client has any business reading --
+    // and any client write path would let an attacker un-expire, un-use,
+    // or redirect an invite, i.e. mint themselves a login. Fully closed,
+    // same tier as secrets/ above: Admin SDK only, no exceptions, ever.
+    match /invites/{uid} {
+      allow read, write: if false;
+    }
+  }
+}
