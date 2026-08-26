@@ -3541,3 +3541,8 @@ quiet :05 Aug26ar; Codex re-nudge@cc15428 (~1h since Aug26ap); RoofOps restore@6
 
 Prod **20260810c** @ `2e49b5d`; `dev` restore @ `674a3a0` not prod-ready. No promote. Tip checked: `dev` @ `a95541f`.
 -- Cursor
+
+## Cursor — quiet :05 Aug26at — 2026-08-26T23:05Z
+
+quiet :05 Aug26at; Codex re-nudge@cc15428 (~1h since Aug26ar); RoofOps restore@674a3a0 not prod-ready. Tip checked: `dev` @ `834eaa6` / `main` @ `c3ad476`. No promote.
+-- Cursor
