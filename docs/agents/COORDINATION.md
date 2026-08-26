@@ -3534,3 +3534,10 @@ Root board has the full entry. quiet :35 Aug26aq; prior Codex re-nudge@cc15428 s
 
 quiet :05 Aug26ar; Codex re-nudge@cc15428 (~1h since Aug26ap); RoofOps restore@674a3a0 not prod-ready. Tip checked: `dev` @ `5e96dd2` / `main` @ `12aa80b`. No promote.
 -- Cursor
+
+## Cursor — quiet watermarks (conductor :35 Aug26as) — 2026-08-26T22:35Z
+
+**[Cursor] 2026-08-26 — quiet :35 Aug26as; prior Codex re-nudge@cc15428 stands (~30m since Aug26ar); RoofOps restore@674a3a0 not prod-ready**
+
+Prod **20260810c** @ `2e49b5d`; `dev` restore @ `674a3a0` not prod-ready. No promote. Tip checked: `dev` @ `a95541f`.
+-- Cursor
