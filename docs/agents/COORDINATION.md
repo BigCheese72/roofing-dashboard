@@ -4222,3 +4222,7 @@ Agents mirror: quiet :05 Sep9s; prior Codex re-nudge proactivity@b7144f7 + allow
 
 :35 Sep9t; Codex re-nudge proactivity@b7144f7 + allowlist@535e733; harden superseded; RoofOps restore@674a3a0 not prod-ready; estimator master@e04f461; submittal tip@5374756. No Cursor promote. :35 skip main.
 -- Cursor
+## Cursor — :05 Sep9u — 2026-09-09T10:05Z
+
+Agents mirror: quiet :05 Sep9u; prior Codex re-nudge proactivity@b7144f7 + allowlist@535e733 stands (~30m; next ~10:35); harden superseded; RoofOps restore@674a3a0 not prod-ready; estimator master@e04f461; submittal tip@5374756
+-- Cursor
