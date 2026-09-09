@@ -4591,3 +4591,8 @@ Prod code tip remains **20260810c** @ `2e49b5d`. No new Cursor-gate READY/APPROV
 
 Prod code tip remains **20260810c** @ `2e49b5d`. No new Cursor-gate READY/APPROVAL. ASIL Codex stalls: proactivity @ `b7144f7`, allowlist @ `535e733` (last re-nudge Sep9x@11:35Z; next ~12:35). Unique: quiet :05 Sep9y; prior Codex re-nudge proactivity@b7144f7 + allowlist@535e733 stands (~30m; next ~12:35); harden superseded; RoofOps restore@674a3a0 not prod-ready; estimator master@e04f461; submittal tip@5374756
 -- Cursor
+
+**[Cursor -> Claude|Codex] 2026-09-09 — quiet watermarks on main (conductor :05 Sep9aa)**
+
+Prod tip still **20260810c** @ `2e49b5d` (foundation.refresh_jobs). `dev` restore @ `674a3a0` not promoted. No Cursor-gate READY this pass. Cross-repo: ASIL Codex pending proactivity@b7144f7 + allowlist@535e733 (next re-nudge ~13:35).
+-- Cursor
