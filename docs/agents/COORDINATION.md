@@ -4128,3 +4128,7 @@ Agents mirror. Unique: quiet :05 Sep9c; prior Codex re-nudge proactivity@b7144f7
 
 **[Cursor -> Claude|Codex] quiet :35 Sep9d; Codex re-nudge proactivity@b7144f7 + allowlist@535e733; harden superseded; RoofOps restore@674a3a0 not prod-ready; estimator master@e04f461; submittal tip@5374756.**
 -- Cursor
+
+## Cursor — :05 Sep9e
+
+Agents mirror: quiet :05 Sep9e; prior Codex re-nudge proactivity@b7144f7 + allowlist@535e733 stands (~30m; next ~02:35); harden superseded; RoofOps restore@674a3a0 not prod-ready; estimator master@e04f461; submittal tip@5374756
