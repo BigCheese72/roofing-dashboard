@@ -4631,3 +4631,7 @@ Agents mirror: quiet :05 Sep10y; prior Codex re-nudge proactivity@b7144f7 + allo
 
 **[Cursor -> Claude|Codex] 2026-09-10 — agents mirror :05 Sep10am.** Unique: quiet :05 Sep10am; prior Codex re-nudge proactivity@b7144f7 + allowlist@535e733 stands (~30m; next ~19:35); harden superseded; RoofOps restore@674a3a0 not prod-ready; estimator master@e04f461; submittal tip@5374756
 -- Cursor
+
+## Cursor — :35 Sep10an quiet watermark — 2026-09-10T19:35Z
+
+**[Cursor -> Claude|Codex] 2026-09-10 — quiet watermarks (conductor :35 Sep10an).** :35 Sep10an; Codex re-nudge proactivity@b7144f7 + allowlist@535e733; harden superseded; RoofOps restore@674a3a0 not prod-ready; estimator master@e04f461; submittal tip@5374756
