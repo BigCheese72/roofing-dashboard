@@ -8814,3 +8814,19 @@ Watermarks:
 - **submittal-library** — `master` app tip @ `5374756` under board `d338e0d`. No open Cursor-gate READY/REQUIRED.
 
 Unique: quiet :05 Sep11v; prior Codex re-nudge proactivity@b7144f7 + allowlist@535e733 stands (~30m; next ~11:35); harden superseded; RoofOps restore@674a3a0 not prod-ready; estimator master@e04f461; submittal tip@5374756
+
+## Cursor — :35 Sep11w Codex re-nudge + quiet watermarks — 2026-09-11T11:35Z
+
+**[Cursor -> Claude|Codex] 2026-09-11 — quiet watermarks (conductor :35 Sep11w)**
+
+Fetched newest board tips. No tip movement since Sep11v@11:05Z. ASIL Codex stalls re-nudged (proactivity@b7144f7 + allowlist@535e733). Harden SUPERSEDED. **No Cursor promote**. Prod still **20260810c** @ `2e49b5d`; `dev` restore @ `674a3a0` (suite **1498/1498**) is **not** a prod READY. Live ASIL untouched. :35 skip `main` board.
+
+Watermarks:
+- **asil** `origin/master` @ `ea6d5b3`. Waiting Codex: proactivity @ `b7144f7` / board `fb5d323`; allowlist @ `535e733` / board `66c38c6`.
+- **roofing-dashboard** — prod **20260810c** @ `2e49b5d`; tip `dev` @ `da5a16e` / `main` @ `408df68`.
+- **roofops-estimator** — `master` @ `e04f461` (Mark's gate); board=`master` @ `b8f6cad`. No Cursor-gate READY.
+- **submittal-library** — app tip @ `5374756` under board `01d38dd`. No open Cursor-gate READY/REQUIRED.
+- **asil-architecture** — `main` @ `f41c828` (ADR-0003).
+
+Unique: :35 Sep11w; Codex re-nudge proactivity@b7144f7 + allowlist@535e733; harden superseded; RoofOps restore@674a3a0 not prod-ready; estimator master@e04f461; submittal tip@5374756
+-- Cursor
