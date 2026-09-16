@@ -52,12 +52,15 @@ const { requirePermission } = require("./lib/authGuard");
 const { asilKeyAllows } = require("./lib/asilKey");
 const { graphFetchDelegated, hasCalendarScope } = require("./lib/graphDelegatedAuth");
 
-// Actions ASIL's bridge key may reach here (see lib/asilKey.js): read actions
-// plus create_draft (writes to Drafts only). Everything else (upsert, move,
-// rules_create, folder_create, categorize, ...) stays human-gated.
+// Actions ASIL's bridge key may reach here (see lib/asilKey.js): read actions,
+// create_draft (writes to Drafts only), plus move and folder_create (both
+// reversible mail-filing on the delegated Mail.ReadWrite token — no delete/send
+// path exists). Everything else (upsert, rules_create, categorize,
+// calendar_create, ...) stays human-gated.
 const ASIL_ALLOWED = [
   "folders", "list_messages", "mail_read", "attachments_list",
-  "attachment_get", "calendar_list", "create_draft"
+  "attachment_get", "calendar_list", "create_draft",
+  "move", "folder_create"
 ];
 
 function resp(code, obj) {
