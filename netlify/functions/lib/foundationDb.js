@@ -140,6 +140,48 @@ function buildJobHoursQuery(jobNo) {
 }
 
 // ---------------------------------------------------------------------
+// SCHEMA MAP + FULL JOB FINANCIALS (read-only) — added 2026-08-04.
+// Powers the "map Foundation" catalog and the job-cost/billing pull the
+// Phase-1 queries didn't surface. STILL SELECT-only; STILL gated on
+// foundation.read in foundation.js (not added to ASIL_ALLOWED, so the
+// bridge key can never reach these). INFORMATION_SCHEMA returns metadata
+// only (table/column names + types), never row data.
+// ---------------------------------------------------------------------
+
+// The database "map": every base table + view. Metadata only.
+function buildSchemaTablesQuery() {
+  const text =
+    "SELECT TABLE_SCHEMA, TABLE_NAME, TABLE_TYPE" +
+    " FROM INFORMATION_SCHEMA.TABLES" +
+    " ORDER BY TABLE_SCHEMA, TABLE_NAME";
+  return { text: text, inputs: [] };
+}
+
+// Columns for ONE table (name parameter-bound, length-capped). Metadata only.
+function buildSchemaColumnsQuery(table) {
+  const t = String(table == null ? "" : table).trim().slice(0, 128);
+  const text =
+    "SELECT COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH," +
+    " NUMERIC_PRECISION, NUMERIC_SCALE, IS_NULLABLE, ORDINAL_POSITION" +
+    " FROM INFORMATION_SCHEMA.COLUMNS" +
+    " WHERE TABLE_NAME = @table" +
+    " ORDER BY ORDINAL_POSITION";
+  return { text: text, inputs: [{ name: "table", value: t }] };
+}
+
+// The FULL job-master row for ONE job — every dbo.jobs column, including the
+// contract / billed-to-date / retention / cost-to-date fields the Phase-1
+// jobs query never selected. Single row, parameter-bound job_no (the CHAR
+// padding is trimmed on the match, same gotcha as buildJobHoursQuery).
+function buildJobMasterQuery(jobNo) {
+  const trimmed = normalizeJobNo(jobNo);
+  const text =
+    "SELECT * FROM dbo.jobs" +
+    " WHERE LTRIM(RTRIM(job_no)) = @job_no";
+  return { text: text, inputs: [{ name: "job_no", value: trimmed }] };
+}
+
+// ---------------------------------------------------------------------
 // Normalizers + row mappers (pure)
 // ---------------------------------------------------------------------
 function normalizeSearch(search) {
@@ -278,6 +320,19 @@ async function runSelect(password, query) {
 async function fetchJobs(password, search, limit) {
   const rows = await runSelect(password, buildJobsQuery(search, limit));
   return rows.map(mapJobRow);
+}
+
+// --- Schema map + full job financials (read-only). Raw recordsets: schema
+// rows are metadata; the job-master row is the whole dbo.jobs record. ---
+async function fetchSchemaTables(password) {
+  return await runSelect(password, buildSchemaTablesQuery());
+}
+async function fetchTableColumns(password, table) {
+  return await runSelect(password, buildSchemaColumnsQuery(table));
+}
+async function fetchJobMaster(password, jobNo) {
+  const rows = await runSelect(password, buildJobMasterQuery(jobNo));
+  return rows[0] || null;
 }
 
 // Projects a mapped job down to the fields that are safe + useful to mirror
@@ -543,6 +598,9 @@ module.exports = {
   buildEmployeesQuery,
   buildDayHoursQuery,
   buildPendingTailQuery,
+  buildSchemaTablesQuery,
+  buildSchemaColumnsQuery,
+  buildJobMasterQuery,
   normalizeDay,
   mapEmployeeRow,
   // DB-hitting API (used by foundation.js; DB stubbed in tests)
@@ -551,6 +609,9 @@ module.exports = {
   fetchEmployees,
   fetchDayHours,
   fetchDayCrew,
+  fetchSchemaTables,
+  fetchTableColumns,
+  fetchJobMaster,
   _resetPoolForTest,
   // constants exposed for tests/assertions
   FOUNDATION_SERVER,

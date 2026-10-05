@@ -1,0 +1,22 @@
+{
+  "generated_at": "2026-08-28",
+  "edge_source": "\\192.168.0.250\\data\\The_Edge_for_Windows_7.6\\jobs  (aka F:\\The_Edge_for_Windows_7.6\\jobs, Charlotte NAS)",
+  "edge_extract_source": "G:\\My Drive\\Watkins Roofing\\EDGE_Extracted_Data (run 2026-08-28 10:50)",
+  "edge_format": ".job (working estimate); .jbk/.jbx are saved/backup copies of the same estimate, excluded",
+  "edge_files_total": 780,
+  "edge_files_unique_sha": 779,
+  "edge_vintage": "2000-2007 (259 of 780 filenames carry a date; none 2020 or later)",
+  "foundation_jobs_total": 3439,
+  "foundation_jobs_with_cost_history": 2928,
+  "foundation_history_starts": "2021",
+  "match_class_counts": {
+    "no_match": 619,
+    "site_match_exact": 16,
+    "site_match_strong": 34,
+    "site_match_weak": 111
+  },
+  "hard_links_by_job_number": 0,
+  "distinct_foundation_jobs_site_matched": 118,
+  "distinct_foundation_jobs_site_matched_high_conf": 41,
+  "headline": "0 of 3439 Foundation jobs tie to an EDGE estimate file as the SAME job. The EDGE archive predates Foundation entirely."
+}

@@ -103,6 +103,30 @@ exports.handler = async function (event) {
       return resp(200, { employees: employees });
     }
 
+    if (action === "schema") {
+      // Read-only Foundation schema MAP (INFORMATION_SCHEMA metadata only —
+      // table/column names + types, never row data). With ?table=NAME it
+      // returns that one table's columns; without, the full table/view list.
+      // foundation.read-gated like everything here; NOT in ASIL_ALLOWED, so
+      // the bridge key can't reach it.
+      if (p.table) {
+        const columns = await foundationDb.fetchTableColumns(password, p.table);
+        return resp(200, { table: p.table, columns: columns });
+      }
+      const tables = await foundationDb.fetchSchemaTables(password);
+      return resp(200, { tables: tables });
+    }
+
+    if (action === "job_master") {
+      // The FULL dbo.jobs row for one job — contract, billed-to-date,
+      // retention, cost-to-date and every other job-master column the
+      // Phase-1 `jobs` action didn't select. Read-only, single row.
+      const jmJobNo = foundationDb.normalizeJobNo(p.job_no);
+      if (!jmJobNo) return resp(400, { error: "Missing job_no" });
+      const job = await foundationDb.fetchJobMaster(password, jmJobNo);
+      return resp(200, { job_no: jmJobNo, job: job });
+    }
+
     if (action === "day_crew") {
       // WHO punched on one job + one day — names/ids ONLY, never hours (the
       // hours stay behind foundation.read via action=day_hours). Powers the
