@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "pr1-review-static",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [".claude/serve.py"],
+      "port": 4599,
+      "autoPort": true
+    }
+  ]
+}
